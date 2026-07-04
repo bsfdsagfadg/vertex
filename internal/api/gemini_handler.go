@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
@@ -82,6 +83,7 @@ func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (
 
 func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, model string) {
 	actualModel, _ := stripFakePrefix(model, g.cfg.FakePrefixes())
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -107,6 +109,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 
 func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *http.Request, model string) {
 	actualModel, useFake := stripFakePrefix(model, g.cfg.FakePrefixes())
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -193,6 +196,7 @@ func (g *GeminiHandler) geminiFakeStream(ctx context.Context, sw *sseWriter, mod
 
 func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request, model string) {
 	actualModel, _ := stripFakePrefix(model, g.cfg.FakePrefixes())
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
