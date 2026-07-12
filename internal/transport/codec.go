@@ -9,14 +9,6 @@ import (
 	"strings"
 )
 
-func padB64(s string) string {
-	s = strings.ReplaceAll(strings.ReplaceAll(s, "-", "+"), "_", "/")
-	if pad := len(s) % 4; pad != 0 {
-		s += strings.Repeat("=", 4-pad)
-	}
-	return s
-}
-
 // ParseURI 解析各种协议的节点链接
 func ParseURI(uri string) (map[string]any, error) {
 	if strings.HasPrefix(uri, "vless://") {
@@ -154,15 +146,6 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 		}
 	}
 	return out, nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if trimmed := strings.TrimSpace(v); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
 }
 
 func queryFlag(q url.Values, keys ...string) bool {

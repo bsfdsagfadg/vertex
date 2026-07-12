@@ -524,7 +524,7 @@ func drawTUI() {
 	if lastHeight > 0 {
 		// \033[%dF 向上移动 N 行至行首
 		// \033[J 清除当前光标到屏幕末尾的所有字符（完美根治重影）
-		_, _ = fmt.Fprintf(osStdout, "\033[%dF\033[J", lastHeight)
+		_, _ = fmt.Fprintf(osStdout, "\033[%dA\r\033[J", lastHeight)
 	}
 	_, _ = fmt.Fprint(osStdout, tuiContent)
 

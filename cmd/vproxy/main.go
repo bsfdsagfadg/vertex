@@ -169,7 +169,7 @@ func main() {
 
 	spool.SetMaxSpillBytes(int64(cfg.MaxSpillMB()) << 20)
 
-	dialer := transport.NewMihomoDialer(transport.ProxyDialerConfig{
+	dialer := transport.NewSingDialer(transport.ProxyDialerConfig{
 		GCInterval: 5 * time.Minute,
 		MaxIdle:    30 * time.Minute,
 	})
