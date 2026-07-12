@@ -172,6 +172,7 @@ func main() {
 	dialer := transport.NewSingDialer(transport.ProxyDialerConfig{
 		GCInterval: 5 * time.Minute,
 		MaxIdle:    30 * time.Minute,
+		EntryProxy: cfg.ProxyURL(),
 	})
 	nodes.DeleteNodeCallback = dialer.RemoveDialer
 	netClient := transport.NewNetworkClient(cfg.DebugMode(), dialer)

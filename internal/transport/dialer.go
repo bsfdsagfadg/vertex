@@ -15,4 +15,5 @@ type ProxyDialer interface {
 type ProxyDialerConfig struct {
 	GCInterval time.Duration
 	MaxIdle    time.Duration
+	EntryProxy string
 }

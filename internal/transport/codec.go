@@ -29,6 +29,21 @@ func ParseURI(uri string) (map[string]any, error) {
 	if strings.HasPrefix(uri, "tuic://") {
 		return parseSimple(uri, "tuic")
 	}
+	if strings.HasPrefix(uri, "socks5://") || strings.HasPrefix(uri, "socks5h://") || strings.HasPrefix(uri, "socks://") {
+		return parseSocks(uri)
+	}
+	if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
+		return parseHTTP(uri)
+	}
+	if strings.HasPrefix(uri, "ssr://") || strings.HasPrefix(uri, "shadowsocksr://") {
+		return parseShadowsocksR(uri)
+	}
+	if strings.HasPrefix(uri, "hysteria://") {
+		return parseHysteria(uri)
+	}
+	if strings.HasPrefix(uri, "anytls://") {
+		return parseAnyTLS(uri)
+	}
 	if strings.HasPrefix(uri, "clash://") {
 		b, _ := base64.StdEncoding.DecodeString(padB64(uri[8:]))
 		var d map[string]any
@@ -438,4 +453,206 @@ func parseSS(uri string) (map[string]any, error) {
 		}, nil
 	}
 	return nil, fmt.Errorf("ss parse failed")
+}
+
+func parseSocks(uri string) (map[string]any, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+	port, _ := strconv.Atoi(u.Port())
+	if port == 0 {
+		port = 1080
+	}
+	name := u.Fragment
+	if dec, err := url.QueryUnescape(name); err == nil {
+		name = dec
+	}
+	out := map[string]any{"name": name, "type": "socks5", "server": u.Hostname(), "port": port}
+	if u.User != nil {
+		out["username"] = u.User.Username()
+		out["password"], _ = u.User.Password()
+	}
+	return out, nil
+}
+
+func parseHTTP(uri string) (map[string]any, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+	port, _ := strconv.Atoi(u.Port())
+	if port == 0 {
+		port = 80
+	}
+	name := u.Fragment
+	if dec, err := url.QueryUnescape(name); err == nil {
+		name = dec
+	}
+	out := map[string]any{"name": name, "type": "http", "server": u.Hostname(), "port": port}
+	if u.User != nil {
+		out["username"] = u.User.Username()
+		out["password"], _ = u.User.Password()
+	}
+	if strings.HasPrefix(uri, "https://") {
+		out["tls"] = true
+	}
+	return out, nil
+}
+
+func parseShadowsocksR(uri string) (map[string]any, error) {
+	prefix := "ssr://"
+	if strings.HasPrefix(uri, "shadowsocksr://") {
+		prefix = "shadowsocksr://"
+	}
+	body := uri[len(prefix):]
+
+	name := ""
+	if idx := strings.Index(body, "#"); idx != -1 {
+		if dec, err := url.QueryUnescape(body[idx+1:]); err == nil {
+			name = dec
+		} else {
+			name = body[idx+1:]
+		}
+		body = body[:idx]
+	}
+
+	b, err := base64.StdEncoding.DecodeString(padB64(body))
+	if err != nil {
+		return nil, fmt.Errorf("ssr: failed to decode body: %w", err)
+	}
+
+	decoded := string(b)
+
+	params := ""
+	if idx := strings.Index(decoded, "?"); idx != -1 {
+		params = decoded[idx+1:]
+		decoded = decoded[:idx]
+	}
+
+	parts := strings.SplitN(decoded, ":", 6)
+	if len(parts) < 6 {
+		return nil, fmt.Errorf("ssr: invalid body format: %s", decoded)
+	}
+
+	server := parts[0]
+	port, _ := strconv.Atoi(parts[1])
+	protocol := parts[2]
+	method := parts[3]
+	obfs := parts[4]
+	pwdB64 := strings.TrimRight(parts[5], "/")
+
+	pwdBytes, err := base64.StdEncoding.DecodeString(padB64(pwdB64))
+	if err != nil {
+		return nil, fmt.Errorf("ssr: failed to decode password: %w", err)
+	}
+
+	out := map[string]any{
+		"name":     name,
+		"type":     "ssr",
+		"server":   server,
+		"port":     port,
+		"cipher":   method,
+		"password": string(pwdBytes),
+		"protocol": protocol,
+		"obfs":     obfs,
+	}
+
+	if params != "" {
+		q, _ := url.ParseQuery(params)
+		if obfsParam := q.Get("obfsparam"); obfsParam != "" {
+			out["obfs-param"] = obfsParam
+		}
+		if protoParam := q.Get("protoparam"); protoParam != "" {
+			out["protocol-param"] = protoParam
+		}
+		if remarks := q.Get("remarks"); remarks != "" && name == "" {
+			if dec, err := url.QueryUnescape(remarks); err == nil {
+				out["name"] = dec
+			} else {
+				out["name"] = remarks
+			}
+		}
+		if group := q.Get("group"); group != "" {
+			out["group"] = group
+		}
+	}
+
+	return out, nil
+}
+
+func parseHysteria(uri string) (map[string]any, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+	port, _ := strconv.Atoi(u.Port())
+	if port == 0 {
+		port = 443
+	}
+	q := u.Query()
+	name := u.Fragment
+	if dec, err := url.QueryUnescape(name); err == nil {
+		name = dec
+	}
+
+	out := map[string]any{"name": name, "type": "hysteria", "server": u.Hostname(), "port": port}
+
+	authStr := ""
+	if u.User != nil {
+		authStr = u.User.Username()
+	}
+	if authStr == "" {
+		authStr = q.Get("auth")
+	}
+	if authStr != "" {
+		out["auth_str"] = authStr
+	}
+
+	out["tls"] = true
+	sni := firstNonEmpty(q.Get("sni"), q.Get("peer"), u.Hostname())
+	out["sni"] = sni
+	out["servername"] = sni
+
+	if queryFlag(q, "allowInsecure", "insecure") {
+		out["skip-cert-verify"] = true
+	}
+
+	if obfs := q.Get("obfs"); obfs != "" {
+		out["obfs"] = obfs
+	}
+	if alpn := q.Get("alpn"); alpn != "" {
+		out["alpn"] = strings.Split(alpn, ",")
+	}
+
+	return out, nil
+}
+
+func parseAnyTLS(uri string) (map[string]any, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+	port, _ := strconv.Atoi(u.Port())
+	if port == 0 {
+		port = 443
+	}
+	name := u.Fragment
+	if dec, err := url.QueryUnescape(name); err == nil {
+		name = dec
+	}
+
+	out := map[string]any{"name": name, "type": "anytls", "server": u.Hostname(), "port": port}
+
+	if u.User != nil {
+		out["password"] = u.User.Username()
+	} else {
+		out["password"] = ""
+	}
+
+	out["tls"] = true
+	out["sni"] = u.Hostname()
+	out["servername"] = u.Hostname()
+
+	return out, nil
 }

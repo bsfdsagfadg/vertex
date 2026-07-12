@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,18 +94,56 @@ func (d *singDialer) CreateDialer(uri string, reqID string) (func(ctx context.Co
 	return makeBoxDialFunc(nb.outbound), nil
 }
 
+type dialerOptionsSetter interface {
+	TakeDialerOptions() option.DialerOptions
+	ReplaceDialerOptions(option.DialerOptions)
+}
+
+func setOutboundDetour(o *option.Outbound, tag string) {
+	s, ok := o.Options.(dialerOptionsSetter)
+	if !ok {
+		return
+	}
+	opts := s.TakeDialerOptions()
+	opts.Detour = tag
+	s.ReplaceDialerOptions(opts)
+}
+
 func (d *singDialer) newBoxForURI(uri string) (*nodeBox, error) {
-	outbound, err := buildOutbound(uri)
+	var outbounds []option.Outbound
+
+	entryTag := ""
+	if entry := d.cfg.EntryProxy; entry != "" &&
+		(strings.HasPrefix(entry, "socks5://") ||
+			strings.HasPrefix(entry, "socks5h://") ||
+			strings.HasPrefix(entry, "socks://") ||
+			strings.HasPrefix(entry, "http://") ||
+			strings.HasPrefix(entry, "https://")) {
+
+		entryOb, err := buildOutbound(entry)
+		if err != nil {
+			return nil, fmt.Errorf("build entry proxy: %w", err)
+		}
+		entryOb.Tag = "entry-proxy"
+		outbounds = append(outbounds, entryOb)
+		entryTag = "entry-proxy"
+	}
+
+	node, err := buildOutbound(uri)
 	if err != nil {
 		return nil, fmt.Errorf("build outbound: %w", err)
 	}
-	outbound.Tag = "default"
+	node.Tag = "default"
+	if entryTag != "" {
+		setOutboundDetour(&node, entryTag)
+	}
+	outbounds = append(outbounds, node)
 
 	newBox, err := box.New(box.Options{
 		Context: include.Context(context.Background()),
 		Options: option.Options{
 			Log:       &option.LogOptions{Disabled: true},
-			Outbounds: []option.Outbound{outbound},
+			Outbounds: outbounds,
 		},
 	})
 	if err != nil {
