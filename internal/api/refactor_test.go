@@ -15,6 +15,7 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/db"
 	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
@@ -89,7 +90,8 @@ func newTestServer(t *testing.T) *testFixture {
 	})
 
 	// ── VertexAIClient ──
-	vc := vertex.NewVertexAIClient(config.StaticProvider(cfg))
+	netClient := transport.NewNetworkClient(cfg.DebugMode, nil)
+	vc := vertex.NewVertexAIClient(config.StaticProvider(cfg), netClient)
 	vc.SetTokenPool(mockPool)
 
 	// ── 恢复 api 全局状态 ──

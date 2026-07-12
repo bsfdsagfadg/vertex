@@ -169,8 +169,12 @@ func main() {
 
 	spool.SetMaxSpillBytes(int64(cfg.MaxSpillMB()) << 20)
 
-	nodes.DeleteNodeCallback = transport.RemoveProxy
-	transport.StartProxyGC(5*time.Minute, 30*time.Minute)
+	dialer := transport.NewMihomoDialer(transport.ProxyDialerConfig{
+		GCInterval: 5 * time.Minute,
+		MaxIdle:    30 * time.Minute,
+	})
+	nodes.DeleteNodeCallback = dialer.RemoveDialer
+	netClient := transport.NewNetworkClient(cfg.DebugMode(), dialer)
 
 	keys := api.NewAPIKeyManager()
 	keys.LoadKeys()
@@ -178,7 +182,7 @@ func main() {
 	api.EnsureAdminPassword()
 	api.StartAdminSessionCleanup(time.Hour)
 
-	vc := vertex.NewVertexAIClient(cfg)
+	vc := vertex.NewVertexAIClient(cfg, netClient)
 
 	telemetryEnabled := true
 	if cfg.TelemetryEnabled() != nil {
@@ -212,7 +216,7 @@ func main() {
 				log.Printf("[vproxy] 优雅关闭超时/出错：%v（强制结束）", err)
 			}
 			cancel()
-			transport.StopAllProxies()
+			dialer.StopAll()
 			telemetry.Stop()
 			_ = dailyLogger.Close()
 			close(shutdownDone)

@@ -81,9 +81,12 @@ func (s *Session) Close() {
 
 type NetworkClient struct {
 	debugMode bool
+	dialer    ProxyDialer
 }
 
-func NewNetworkClient(debugMode bool) *NetworkClient { return &NetworkClient{debugMode: debugMode} }
+func NewNetworkClient(debugMode bool, dialer ProxyDialer) *NetworkClient {
+	return &NetworkClient{debugMode: debugMode, dialer: dialer}
+}
 
 //nolint:gochecknoglobals // Read-only list of browser profiles
 var browserProfiles = []profiles.ClientProfile{
@@ -95,7 +98,7 @@ func pickProfile() profiles.ClientProfile {
 }
 
 // injectProxy 统一处理网络代理挂载，如果代理初始化失败，返回 error
-func injectProxy(opts []tls_client.HttpClientOption, proxyURI string, reqID string, debugMode bool) ([]tls_client.HttpClientOption, error) {
+func (c *NetworkClient) injectProxy(opts []tls_client.HttpClientOption, proxyURI string, reqID string) ([]tls_client.HttpClientOption, error) {
 	if proxyURI == "" {
 		return opts, nil
 	}
@@ -105,7 +108,7 @@ func injectProxy(opts []tls_client.HttpClientOption, proxyURI string, reqID stri
 	}
 
 	// 订阅节点，获取并挂载内部 Dialer
-	dialCtx, err := getOrStartProxyDialer(proxyURI, reqID, debugMode)
+	dialCtx, err := c.dialer.CreateDialer(proxyURI, reqID)
 	if err != nil {
 		return nil, fmt.Errorf("节点内部 Dialer 启动失败: %w", err)
 	}
@@ -127,7 +130,7 @@ func (c *NetworkClient) CreateSession(timeoutSec int, proxyURI string, reqID str
 
 	// 使用 injectProxy 挂载代理，失败则直接熔断，坚决不走静默直连！
 	var err error
-	opts, err = injectProxy(opts, proxyURI, reqID, c.debugMode)
+	opts, err = c.injectProxy(opts, proxyURI, reqID)
 	if err != nil {
 		return nil, err
 	}
