@@ -23,6 +23,7 @@ type Response = http.Response
 type Session struct {
 	client   tls_client.HttpClient
 	ProxyURI string
+	cleanup  func()
 }
 
 func (s *Session) Do(ctx context.Context, method, url string, header http.Header, body io.Reader) (*http.Response, error) {
@@ -77,6 +78,9 @@ func (s *Session) Close() {
 	if s.client != nil {
 		s.client.CloseIdleConnections()
 	}
+	if s.cleanup != nil {
+		s.cleanup()
+	}
 }
 
 type NetworkClient struct {
@@ -98,23 +102,24 @@ func pickProfile() profiles.ClientProfile {
 }
 
 // injectProxy 统一处理网络代理挂载，如果代理初始化失败，返回 error
-func (c *NetworkClient) injectProxy(opts []tls_client.HttpClientOption, proxyURI string, reqID string) ([]tls_client.HttpClientOption, error) {
+// cleanup 返回的清理函数，需要调用方在不再使用连接时调用。
+func (c *NetworkClient) injectProxy(opts []tls_client.HttpClientOption, proxyURI string, reqID string) ([]tls_client.HttpClientOption, func(), error) {
 	if proxyURI == "" {
-		return opts, nil
+		return opts, nil, nil
 	}
 	// 用户自定义的外部标准代理，直接使用 URL
 	if strings.HasPrefix(proxyURI, "http://") || strings.HasPrefix(proxyURI, "https://") || strings.HasPrefix(proxyURI, "socks5://") {
-		return append(opts, tls_client.WithProxyUrl(proxyURI)), nil
+		return append(opts, tls_client.WithProxyUrl(proxyURI)), nil, nil
 	}
 
 	// 订阅节点，获取并挂载内部 Dialer
-	dialCtx, err := c.dialer.CreateDialer(proxyURI, reqID)
+	dialCtx, cleanup, err := c.dialer.CreateDialer(proxyURI, reqID)
 	if err != nil {
-		return nil, fmt.Errorf("节点内部 Dialer 启动失败: %w", err)
+		return nil, nil, fmt.Errorf("节点内部 Dialer 启动失败: %w", err)
 	}
 
 	opts = append(opts, tls_client.WithDialContext(dialCtx))
-	return opts, nil
+	return opts, cleanup, nil
 }
 
 // CreateSession 创建一个新 Session：随机 Chrome 指纹 + 可选代理 + 独立 cookie jar。
@@ -129,16 +134,20 @@ func (c *NetworkClient) CreateSession(timeoutSec int, proxyURI string, reqID str
 	}
 
 	// 使用 injectProxy 挂载代理，失败则直接熔断，坚决不走静默直连！
+	var cleanup func()
 	var err error
-	opts, err = c.injectProxy(opts, proxyURI, reqID)
+	opts, cleanup, err = c.injectProxy(opts, proxyURI, reqID)
 	if err != nil {
 		return nil, err
 	}
 
 	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), opts...)
 	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
 		return nil, fmt.Errorf("error: %w", err)
 
 	}
-	return &Session{client: client, ProxyURI: proxyURI}, nil
+	return &Session{client: client, ProxyURI: proxyURI, cleanup: cleanup}, nil
 }
