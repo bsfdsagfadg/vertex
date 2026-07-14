@@ -76,6 +76,9 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(c.cfg.RequestTimeoutSeconds())*time.Second)
+	defer cancel()
+
 	log.Printf("[Server] [ChatCompletions] 收到请求: 模型=%s, 真模型=%s, 流式=%v, n=%d", rawModel, actualModel, stream, n)
 
 	transform.ApplyImageConfig(geminiPayload, body)
@@ -97,21 +100,21 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 
 	if aggregateStream {
-		c.oaiAggregateStream(r.Context(), w, model, geminiPayload)
+		c.oaiAggregateStream(requestCtx, w, model, geminiPayload)
 		return
 	}
 	if stream && useFake {
-		c.oaiFakeStream(r.Context(), w, model, geminiPayload)
+		c.oaiFakeStream(requestCtx, w, model, geminiPayload)
 		return
 	}
 
 	if stream {
-		c.streamChatCompletions(r.Context(), w, model, geminiPayload)
+		c.streamChatCompletions(requestCtx, w, model, geminiPayload)
 		return
 	}
 
 	if n > 1 {
-		responses, vErr := c.vc.CompleteChatN(r.Context(), model, geminiPayload, n)
+		responses, vErr := c.vc.CompleteChatN(requestCtx, model, geminiPayload, n)
 		if vErr != nil {
 			ve := toVertexError(vErr)
 			if isSafetyBlock(ve) {
@@ -126,7 +129,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	geminiResp, vErr := c.vc.CompleteChat(r.Context(), model, geminiPayload)
+	geminiResp, vErr := c.vc.CompleteChat(requestCtx, model, geminiPayload)
 	if vErr != nil {
 		ve := toVertexError(vErr)
 		if isSafetyBlock(ve) {

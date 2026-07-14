@@ -36,7 +36,23 @@ func (s *Session) Do(ctx context.Context, method, url string, header http.Header
 	if header != nil {
 		req.Header = header
 	}
-	return s.client.Do(req) //nolint:wrapcheck
+
+	type doResult struct {
+		resp *http.Response
+		err  error
+	}
+	ch := make(chan doResult, 1)
+	go func() {
+		resp, doErr := s.client.Do(req)
+		ch <- doResult{resp, doErr}
+	}()
+	select {
+	case <-ctx.Done():
+		s.client.CloseIdleConnections()
+		return nil, ctx.Err()
+	case r := <-ch:
+		return r.resp, r.err
+	}
 }
 
 func (s *Session) DoAndRead(ctx context.Context, method, url string, header http.Header, body io.Reader) (int, []byte, error) {

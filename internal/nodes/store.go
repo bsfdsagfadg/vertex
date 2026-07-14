@@ -47,6 +47,14 @@ var (
 	DeleteNodeCallback func(uri string)               //nolint:gochecknoglobals
 )
 
+func ResetState() {
+	mu.Lock()
+	defer mu.Unlock()
+	nodeList = nil
+	healthMap = make(map[string]*NodeHealth)
+	loaded = false
+}
+
 func ensureLoaded() {
 	if loaded {
 		return

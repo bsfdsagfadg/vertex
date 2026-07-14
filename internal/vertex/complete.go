@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"sort"
+	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 )
@@ -51,15 +52,29 @@ func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, geminiP
 
 	remaining := len(cands)
 	var successes []candidateResult
+	var lastError error
+
+	maxWait := time.NewTimer(120 * time.Second)
+	defer maxWait.Stop()
 
 	for remaining > 0 {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
+		case <-maxWait.C:
+			cancel()
+			if len(successes) > 0 {
+				return pickBestResult(successes)
+			}
+			if lastError != nil {
+				return nil, lastError
+			}
+			return nil, NewInternalError("parallel pool timed out waiting for candidates")
 		case res := <-resCh:
 			remaining--
 			if res.err != nil {
 				if res.err != context.Canceled && !errors.Is(res.err, context.Canceled) {
+					lastError = res.err
 					ve := asVertexError(res.err)
 					if ve != nil && ve.Kind == "ratelimit" {
 						if c.cfg.DebugMode() {
@@ -88,6 +103,9 @@ func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, geminiP
 	}
 
 	if len(successes) == 0 {
+		if lastError != nil {
+			return nil, lastError
+		}
 		return nil, NewEmptyResponseError("所有候选节点均失败")
 	}
 

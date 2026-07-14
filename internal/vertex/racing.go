@@ -20,7 +20,7 @@ func StreamParallel(ctx context.Context, cfg config.ConfigProvider,
 	defer streamCancel()
 
 	wrappedOp := func(ctx context.Context, uri string) (<-chan StreamChunk, error) {
-		ch := op(streamCtx, uri)
+		ch := op(ctx, uri)
 		first, ok := <-ch
 		if !ok {
 			return nil, fmt.Errorf("stream: %s closed immediately", nodes.GetNodeName(uri))

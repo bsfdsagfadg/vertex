@@ -28,6 +28,7 @@ type AppConfig struct { //nolint:govet
 	MaxN                      int               `json:"max_n"`
 	MaxSpillMB                int               `json:"max_spill_mb"`
 	MaxRequestMB              int               `json:"max_request_mb"`
+	RequestTimeoutSeconds     int               `json:"request_timeout_seconds"`
 
 	// 并发池与节点锁定配置
 	ActiveNodeURI            string `json:"active_node_uri"`
@@ -61,6 +62,7 @@ func DefaultConfig() AppConfig {
 		CountTokensQuerySignature: defaultCountTokensQuerySig,
 		MaxN:                      8,
 		MaxSpillMB:                2048,
+		RequestTimeoutSeconds:     180,
 		ParallelPoolEnabled:       true,
 		StickyNodePriority:        false,
 		ParallelPoolSize:          15, // 默认为 15 并发

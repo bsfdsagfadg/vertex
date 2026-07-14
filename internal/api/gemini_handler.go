@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
@@ -89,9 +90,12 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {
 		body = reqObj
 	}
+	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.RequestTimeoutSeconds())*time.Second)
+	defer cancel()
+
 	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
 
-	resp, vErr := g.vc.CompleteChat(r.Context(), actualModel, body)
+	resp, vErr := g.vc.CompleteChat(requestCtx, actualModel, body)
 	if vErr != nil {
 		ve := toVertexError(vErr)
 		if isSafetyBlock(ve) {
@@ -114,18 +118,21 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {
 		body = reqObj
 	}
+	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.RequestTimeoutSeconds())*time.Second)
+	defer cancel()
+
 	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 假流式=%v", model, actualModel, useFake)
 
 	sw := newSSEWriter(w, "text/event-stream")
 
 	if useFake {
-		g.geminiFakeStream(r.Context(), sw, actualModel, body)
+		g.geminiFakeStream(requestCtx, sw, actualModel, body)
 		return
 	}
 
 	gotChunk := false
 	hasFinish := false
-	g.vc.StreamChat(r.Context(), actualModel, body, func(ch vertex.StreamChunk) bool {
+	g.vc.StreamChat(requestCtx, actualModel, body, func(ch vertex.StreamChunk) bool {
 		if ch.Err != nil {
 			if isSafetyBlock(ch.Err) {
 				_ = sw.write(g.geminiSSE(geminiSafetyChunk(ch.Err)))
