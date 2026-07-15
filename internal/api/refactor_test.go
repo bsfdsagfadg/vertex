@@ -95,7 +95,7 @@ func newTestServer(t *testing.T) *testFixture {
 	})
 
 	// ── VertexAIClient ──
-	netClient := transport.NewNetworkClient(cfg.DebugMode, nil)
+	netClient := transport.NewNetworkClient(nil)
 	vc := vertex.NewVertexAIClient(config.StaticProvider(cfg), netClient)
 	vc.SetTokenPool(mockPool)
 
@@ -497,7 +497,6 @@ func TestRefactor(t *testing.T) {
 			cfg.ParallelPoolSize = 3
 			cfg.MaxRetries = 2
 			cfg.RequestTimeoutSeconds = 5
-			cfg.ParallelPoolDelayMs = 100
 		}, &directDialer{})
 
 		nodes.MergeNodes([]nodes.Node{
@@ -673,7 +672,7 @@ func newTestServerCustomMock(t *testing.T, mockHandler http.HandlerFunc, cfgMod 
 	if len(dialers) > 0 {
 		dialer = dialers[0]
 	}
-	netClient := transport.NewNetworkClient(cfg.DebugMode, dialer)
+	netClient := transport.NewNetworkClient(dialer)
 	vc := vertex.NewVertexAIClient(config.StaticProvider(cfg), netClient)
 	vc.SetTokenPool(mockPool)
 

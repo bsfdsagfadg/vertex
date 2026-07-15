@@ -71,12 +71,9 @@ func (m *middleware) withCORS(next http.Handler) http.Handler {
 }
 
 func (m *middleware) withBodyLimit(next http.Handler) http.Handler {
-	limit := int64(m.cfg.MaxRequestMB()) << 20
-	if limit <= 0 {
-		return next
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Body != nil {
+		limit := int64(m.cfg.MaxRequestMB()) << 20
+		if limit > 0 && r.Body != nil {
 			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		next.ServeHTTP(w, r)

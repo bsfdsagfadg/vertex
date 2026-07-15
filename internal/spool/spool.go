@@ -17,11 +17,26 @@ var (
 	maxMemSize int64 // 0 = unlimited（永不落盘）
 	//nolint:gochecknoglobals // Internal spool state
 	spilledBytes int64
+	//nolint:gochecknoglobals // Dynamic spill provider for hot-reload
+	maxSpillProvider func() int64
 )
 
 // SetMaxSpillBytes 设置磁盘溢出阈值（字节数）；0 或负数表示永不落盘。
 func SetMaxSpillBytes(limit int64) {
 	maxMemSize = limit
+}
+
+// SetMaxSpillProvider 注册一个动态提供 spill 阈值的函数（支持热重载）。
+// 非 nil 时优先于 SetMaxSpillBytes 的静态值。
+func SetMaxSpillProvider(fn func() int64) {
+	maxSpillProvider = fn
+}
+
+func getMaxMemSize() int64 {
+	if maxSpillProvider != nil {
+		return maxSpillProvider()
+	}
+	return maxMemSize
 }
 
 // SpilledBytes 返回进程启动以来写入临时文件的累计字节数。
@@ -52,7 +67,7 @@ func (b *Buffer) Write(p []byte) (int, error) {
 
 	}
 
-	if maxMemSize > 0 && int64(len(b.mem)+len(p)) > maxMemSize {
+	if limit := getMaxMemSize(); limit > 0 && int64(len(b.mem)+len(p)) > limit {
 		tmp, err := os.CreateTemp("", "spool-*")
 		if err != nil {
 			return 0, fmt.Errorf("error: %w", err)

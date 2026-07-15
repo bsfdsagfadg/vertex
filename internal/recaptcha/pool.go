@@ -1,19 +1,18 @@
 package recaptcha
 
 import (
+	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
 type TokenPool struct {
-	fetch        func(proxyURI string) (string, error)
-	defaultProxy string
+	net   *transport.NetworkClient
+	cfg   config.ConfigProvider
+	fetch func(proxyURI string) (string, error) // optional override for testing
 }
 
-func NewTokenPool(net *transport.NetworkClient, defaultProxy string, debugMode bool) *TokenPool {
-	return &TokenPool{
-		fetch:        func(proxyURI string) (string, error) { return FetchRecaptchaToken(net, proxyURI, debugMode) },
-		defaultProxy: defaultProxy,
-	}
+func NewTokenPool(net *transport.NetworkClient, cfg config.ConfigProvider) *TokenPool {
+	return &TokenPool{net: net, cfg: cfg}
 }
 
 // NewTokenPoolCustom creates a token pool with a custom fetch function.
@@ -36,12 +35,18 @@ func (p *TokenPool) Stats() (size, fill int) {
 }
 
 func (p *TokenPool) GetToken() (string, error) {
-	return p.fetch(p.defaultProxy)
+	if p.fetch != nil {
+		return p.fetch("")
+	}
+	return FetchRecaptchaToken(p.net, p.cfg.ProxyURL(), p.cfg.DebugMode())
 }
 
 func (p *TokenPool) GetTokenWithProxy(proxyURI string) (string, error) {
+	if p.fetch != nil {
+		return p.fetch(proxyURI)
+	}
 	if proxyURI == "" {
 		return p.GetToken()
 	}
-	return p.fetch(proxyURI)
+	return FetchRecaptchaToken(p.net, proxyURI, p.cfg.DebugMode())
 }

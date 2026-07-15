@@ -14,7 +14,6 @@ var adminAllowedSettings = map[string]bool{
 	"parallel_pool_enabled": true, "parallel_pool_size": true,
 	"telemetry_enabled":           true,
 	"parallel_pool_delay_dynamic": true,
-	"parallel_pool_delay_ms":      true,
 	"active_node_uri":             true,
 	"sticky_node_priority":        true,
 	"parallel_pool_retry_enabled": true,
@@ -42,7 +41,6 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"telemetry_enabled": telEnabled,
 		"proxy_url":         adm.cfg.ProxyURL(), "parallel_pool_enabled": adm.cfg.ParallelPoolEnabled(), "parallel_pool_size": adm.cfg.ParallelPoolSize(), "active_node_uri": adm.cfg.ActiveNodeURI(),
 		"parallel_pool_delay_dynamic": adm.cfg.ParallelPoolDelayDynamic(),
-		"parallel_pool_delay_ms":      adm.cfg.ParallelPoolDelayMs(),
 		"sticky_node_priority":        adm.cfg.StickyNodePriority(),
 		"parallel_pool_retry_enabled": adm.cfg.ParallelPoolRetryEnabled(),
 		"background_image":            adm.cfg.BackgroundImage(),
@@ -74,7 +72,7 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 			continue
 		}
 		switch k {
-		case "max_retries", "max_spill_mb", "max_request_mb", "max_n", "parallel_pool_size", "parallel_pool_delay_ms":
+		case "max_retries", "max_spill_mb", "max_request_mb", "max_n", "parallel_pool_size":
 			if f, ok := v.(float64); ok {
 				updates[k] = int(f)
 				continue

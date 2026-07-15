@@ -26,7 +26,6 @@ type ConfigProvider interface {
 	ParallelPoolRetryEnabled() bool
 	ParallelPoolSize() int
 	ParallelPoolDelayDynamic() bool
-	ParallelPoolDelayMs() int
 	ActiveNodeURI() string
 	ParallelNodeTopK() int
 
@@ -85,7 +84,6 @@ func (d dynamicConfig) StickyNodePriority() bool       { return Load().StickyNod
 func (d dynamicConfig) ParallelPoolRetryEnabled() bool { return Load().ParallelPoolRetryEnabled }
 func (d dynamicConfig) ParallelPoolSize() int          { return Load().ParallelPoolSize }
 func (d dynamicConfig) ParallelPoolDelayDynamic() bool { return Load().ParallelPoolDelayDynamic }
-func (d dynamicConfig) ParallelPoolDelayMs() int       { return Load().ParallelPoolDelayMs }
 func (d dynamicConfig) ActiveNodeURI() string          { return Load().ActiveNodeURI }
 func (d dynamicConfig) ParallelNodeTopK() int          { return Load().ParallelNodeTopK }
 func (d dynamicConfig) BackgroundImage() string        { return Load().BackgroundImage }

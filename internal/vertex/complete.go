@@ -66,6 +66,9 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, g
 }
 
 func pickBestResult(results []candidateResult) (map[string]any, error) {
+	if len(results) == 0 {
+		return nil, NewInternalError("no viable candidate results")
+	}
 	sort.Slice(results, func(i, j int) bool {
 		fi := candidateFinish(results[i].resp)
 		fj := candidateFinish(results[j].resp)
@@ -77,7 +80,29 @@ func pickBestResult(results []candidateResult) (map[string]any, error) {
 		}
 		return responseContentLength(results[i].resp) > responseContentLength(results[j].resp)
 	})
-	return results[0].resp, nil
+	for _, r := range results {
+		if hasViableResponse(r.resp) {
+			return r.resp, nil
+		}
+	}
+	return nil, NewInternalError("no viable candidate results")
+}
+
+func hasViableResponse(resp map[string]any) bool {
+	cands, ok := resp["candidates"].([]any)
+	if !ok || len(cands) == 0 {
+		return false
+	}
+	c, ok := cands[0].(map[string]any)
+	if !ok {
+		return false
+	}
+	content, ok := c["content"].(map[string]any)
+	if !ok {
+		return false
+	}
+	parts, ok := content["parts"].([]any)
+	return ok && len(parts) > 0
 }
 
 func responseContentLength(resp map[string]any) int {

@@ -177,17 +177,26 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		mu.Unlock()
 	}
 
-	launchNode(cands[0].RawURI)
+	var delay time.Duration
+	var nextIdx int
+	var timer *time.Timer
 
-	delay := time.Duration(cfg.ParallelPoolDelayMs()) * time.Millisecond
-	if cfg.ParallelPoolDelayDynamic() {
+	if !cfg.ParallelPoolDelayDynamic() {
+		for _, cand := range cands {
+			launchNode(cand.RawURI)
+		}
+		nextIdx = len(cands)
+		timer = time.NewTimer(0)
+		if !timer.Stop() {
+			<-timer.C
+		}
+	} else {
+		launchNode(cands[0].RawURI)
 		delay = time.Duration(nodes.GetAverageLatency()) * time.Millisecond
+		timer = time.NewTimer(delay)
+		nextIdx = 1
 	}
-
-	timer := time.NewTimer(delay)
 	defer timer.Stop()
-
-	nextIdx := 1
 	var zero T
 
 	for {
@@ -286,6 +295,12 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 				rc.collectedResults = append(rc.collectedResults, res)
 				nodes.RecordTest(res.uri, true, 50, "")
 				stickyPool.Add(res.uri)
+
+				if nextIdx < len(cands) && ctxRace.Err() == nil {
+					launchNode(cands[nextIdx].RawURI)
+					nextIdx++
+					safeResetTimer(timer, delay)
+				}
 			} else {
 				if !errors.Is(res.err, context.Canceled) && !errors.Is(res.err, context.DeadlineExceeded) {
 					if cfg.DebugMode() {

@@ -89,12 +89,11 @@ func (s *Session) Close() {
 }
 
 type NetworkClient struct {
-	debugMode bool
-	dialer    ProxyDialer
+	dialer ProxyDialer
 }
 
-func NewNetworkClient(debugMode bool, dialer ProxyDialer) *NetworkClient {
-	return &NetworkClient{debugMode: debugMode, dialer: dialer}
+func NewNetworkClient(dialer ProxyDialer) *NetworkClient {
+	return &NetworkClient{dialer: dialer}
 }
 
 //nolint:gochecknoglobals // Read-only list of browser profiles

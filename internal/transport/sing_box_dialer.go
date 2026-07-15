@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/include"
@@ -22,10 +23,10 @@ type nodeBox struct {
 }
 
 type singDialer struct {
-	cfg ProxyDialerConfig
+	cfg config.ConfigProvider
 }
 
-func NewSingDialer(cfg ProxyDialerConfig) *singDialer {
+func NewSingDialer(cfg config.ConfigProvider) *singDialer {
 	return &singDialer{cfg: cfg}
 }
 
@@ -58,7 +59,7 @@ func (d *singDialer) newBoxForURI(uri string) (*nodeBox, error) {
 	var outbounds []option.Outbound
 
 	entryTag := ""
-	if entry := d.cfg.EntryProxy; entry != "" &&
+	if entry := d.cfg.ProxyURL(); entry != "" &&
 		(strings.HasPrefix(entry, "socks5://") ||
 			strings.HasPrefix(entry, "socks5h://") ||
 			strings.HasPrefix(entry, "socks://") ||

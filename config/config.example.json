@@ -5,7 +5,6 @@
   "max_n": 8,
   "max_retries": 1,
   "parallel_pool_delay_dynamic": false,
-  "parallel_pool_delay_ms": 2500,
   "parallel_pool_enabled": true,
   "sticky_node_priority": false,
   "parallel_pool_size": 15,

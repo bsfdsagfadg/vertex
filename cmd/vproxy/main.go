@@ -167,13 +167,11 @@ func main() {
 	}
 	defer db.CloseDB()
 
-	spool.SetMaxSpillBytes(int64(cfg.MaxSpillMB()) << 20)
+	spool.SetMaxSpillProvider(func() int64 { return int64(config.Load().MaxSpillMB) << 20 })
 
-	dialer := transport.NewSingDialer(transport.ProxyDialerConfig{
-		EntryProxy: cfg.ProxyURL(),
-	})
+	dialer := transport.NewSingDialer(cfg)
 	nodes.DeleteNodeCallback = dialer.RemoveDialer
-	netClient := transport.NewNetworkClient(cfg.DebugMode(), dialer)
+	netClient := transport.NewNetworkClient(dialer)
 
 	keys := api.NewAPIKeyManager()
 	keys.LoadKeys()

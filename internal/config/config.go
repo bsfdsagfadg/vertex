@@ -40,7 +40,6 @@ type AppConfig struct { //nolint:govet
 	ParallelNodeTopK         int    `json:"parallel_node_top_k"`
 	DebugMode                bool   `json:"debug_mode"`
 	ParallelPoolDelayDynamic bool   `json:"parallel_pool_delay_dynamic"`
-	ParallelPoolDelayMs      int    `json:"parallel_pool_delay_ms"`
 	// 匿名遥测：仅发送实例 ID + 版本 + 平台，不含任何用户/网络/隐私数据。
 	// 用于了解软件的版本分布和活跃数。指针类型区分"未设置"和"显式 false"，未设置时默认开启。
 	TelemetryEnabled *bool `json:"telemetry_enabled,omitempty"`
@@ -68,7 +67,6 @@ func DefaultConfig() AppConfig {
 		ParallelPoolSize:          15, // 默认为 15 并发
 		ParallelNodeTopK:          80,
 		ParallelPoolDelayDynamic:  false, // 建议默认关闭动态对冲，改为稳定的秒级接力
-		ParallelPoolDelayMs:       2500,  // 固定对冲间隔设为 2500ms（2.5秒），单节点撞墙后触发接力
 		BackgroundImage:           "url('background.jpg')",
 		FontSize:                  "14px",
 		FontColorType:             "adaptive",

@@ -25,15 +25,23 @@ func setupRaceNodes(t *testing.T, uris ...string) {
 
 func raceTestConfig() config.AppConfig {
 	return config.AppConfig{
+		ParallelPoolEnabled:      true,
+		ParallelPoolSize:         3,
+		ParallelPoolDelayDynamic: true,
+		ParallelNodeTopK:         80,
+	}
+}
+
+func raceTestConfigAllAtOnce() config.AppConfig {
+	return config.AppConfig{
 		ParallelPoolEnabled: true,
 		ParallelPoolSize:    3,
-		ParallelPoolDelayMs: 50,
 		ParallelNodeTopK:    80,
 	}
 }
 
 // TestRunRace_NoLaunchAfterCtxCancel verifies that after ctx is canceled,
-// RunRace does NOT launch new candidate nodes (scenario A).
+// RunRace does NOT launch new candidate nodes (scenario A, hedge mode).
 func TestRunRace_NoLaunchAfterCtxCancel(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2", "uri3")
 	defer nodes.ResetState()
@@ -58,6 +66,33 @@ func TestRunRace_NoLaunchAfterCtxCancel(t *testing.T) {
 
 	if count := atomic.LoadInt32(&launchCount); count > 1 {
 		t.Errorf("expected launchCount <= 1, got %d", count)
+	}
+}
+
+// TestRunRace_AllAtOnce_LaunchesAllCandidates verifies that when
+// ParallelPoolDelayDynamic=false, all candidates launch simultaneously.
+func TestRunRace_AllAtOnce_LaunchesAllCandidates(t *testing.T) {
+	setupRaceNodes(t, "uri1", "uri2", "uri3")
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var launchCount int32
+
+	run := func(ctx context.Context, uri string) (string, error) {
+		atomic.AddInt32(&launchCount, 1)
+		return fmt.Sprintf("result-%s", uri), nil
+	}
+
+	_, err := RunRace[string](ctx, cfg, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if count := atomic.LoadInt32(&launchCount); count != 3 {
+		t.Errorf("expected all 3 candidates to launch, got %d", count)
 	}
 }
 
@@ -102,7 +137,12 @@ func TestRunRace_SuccessAfterHedge(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2", "uri3")
 	defer nodes.ResetState()
 
-	cfg := config.StaticProvider(raceTestConfig())
+	cfg := config.StaticProvider(config.AppConfig{
+		ParallelPoolEnabled:      true,
+		ParallelPoolSize:         3,
+		ParallelPoolDelayDynamic: false,
+		ParallelNodeTopK:         80,
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -158,7 +198,7 @@ func TestRunRace_NoHedgeOnWrappedContextError(t *testing.T) {
 
 	_, err := RunRace[string](ctx, cfg, run)
 
-	// 1. No hedge nodes launched (Fix 3 effective).
+	// 1. In hedge mode, the node returns context error so no hedge should launch.
 	if count := atomic.LoadInt32(&launchCount); count > 1 {
 		t.Errorf("expected launchCount <= 1 (no hedge), got %d", count)
 	}
