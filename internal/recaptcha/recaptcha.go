@@ -77,23 +77,19 @@ func FetchRecaptchaToken(net *transport.NetworkClient, proxyURI string, debugMod
 	return "", nil
 }
 
-func fetchOnce(net *transport.NetworkClient, proxyURI string) (string, bool) {
-	sess, err := net.CreateSession(15, proxyURI, "recaptcha")
-	if err != nil {
-		return "", false
-	}
-	defer sess.Close()
-
+// FetchRecaptchaTokenWithSession 在有 Session 的上下文中执行 anchor→reload 全流程。
+// 这是共享核心操作，生产路径和节点测速路径均调用。
+// 错误均为非 nil（网络失败、正则解析失败、reload 非 200），调用方按自身语义处理。
+func FetchRecaptchaTokenWithSession(ctx context.Context, sess *transport.Session) (string, error) {
 	cb := randomString(10)
 	anchorURL := fmt.Sprintf(
 		"%s/recaptcha/enterprise/anchor?ar=1&k=%s&co=%s&hl=%s&v=%s&size=invisible&anchor-ms=20000&execute-ms=15000&cb=%s",
 		recaptchaBase, siteKey, recaptchaCo, recaptchaHl, recaptchaV, cb,
 	)
 
-	// token 预取与具体请求无关（后台细流），故用 context.Background()，不随某个请求取消。
-	_, anchorBody, err := sess.DoAndRead(context.Background(), "GET", anchorURL, transport.AnchorHeaders(), nil)
+	_, anchorBody, err := sess.DoAndRead(ctx, "GET", anchorURL, transport.AnchorHeaders(), nil)
 	if err != nil {
-		return "", false
+		return "", fmt.Errorf("GET anchor 失败: %w", err)
 	}
 	m := tokenRe.FindSubmatch(anchorBody)
 	if m == nil {
@@ -102,7 +98,7 @@ func fetchOnce(net *transport.NetworkClient, proxyURI string) (string, bool) {
 			bodyStr = bodyStr[:500] + "..."
 		}
 		log.Printf("[Recaptcha] anchor token正则匹配失败, body前缀: %s", bodyStr)
-		return "", false
+		return "", fmt.Errorf("从 anchor HTML 解析 recaptcha-token 失败")
 	}
 	baseToken := string(m[1])
 
@@ -124,16 +120,31 @@ func fetchOnce(net *transport.NetworkClient, proxyURI string) (string, bool) {
 		recaptchaBase, anchorURL, "same-origin",
 	)
 
-	status, reloadBody, err := sess.DoAndRead(context.Background(), "POST", reloadURL, header, strings.NewReader(form.Encode()))
+	status, reloadBody, err := sess.DoAndRead(ctx, "POST", reloadURL, header, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", false
+		return "", fmt.Errorf("POST reload 失败: %w", err)
 	}
 	if status != 200 {
 		log.Printf("[Recaptcha] Reload 失败, HTTP 状态码: %d, 返回内容: %s", status, string(reloadBody))
+		return "", fmt.Errorf("reload 返回非 200 状态码: %d", status)
 	}
 	rm := rrespRe.FindSubmatch(reloadBody)
 	if rm == nil {
+		return "", fmt.Errorf("从 reload 响应解析 rresp 失败")
+	}
+	return string(rm[1]), nil
+}
+
+func fetchOnce(net *transport.NetworkClient, proxyURI string) (string, bool) {
+	sess, err := net.CreateSession(15, proxyURI, "recaptcha")
+	if err != nil {
 		return "", false
 	}
-	return string(rm[1]), true
+	defer sess.Close()
+
+	token, err := FetchRecaptchaTokenWithSession(context.Background(), sess)
+	if err != nil {
+		return "", false
+	}
+	return token, true
 }

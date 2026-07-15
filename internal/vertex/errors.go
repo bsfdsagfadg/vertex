@@ -2,7 +2,9 @@
 package vertex
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 )
@@ -31,14 +33,23 @@ type VertexError struct { //nolint:govet
 	Kind             string
 	Details          map[string]any
 	UpstreamResponse string
-	RetryAfter       int // 仅 ratelimit 用，0 表示未设
+	RetryAfter       int   // 仅 ratelimit 用，0 表示未设
+	cause            error // 仅 NewContextError 设置；供 errors.Is 穿透 context 错误
 }
 
 // Error 实现 error 接口。
 func (e *VertexError) Error() string { return e.Message }
 
+// Unwrap 让 errors.Is(err, context.DeadlineExceeded) 能穿透 VertexError。
+func (e *VertexError) Unwrap() error { return e.cause }
+
 // IsRetryable 判定是否可重试：408/429/5xx 可重试；认证错误（按 Kind 判，不看 code）也可重试。
+// context 错误（cause 链含 Canceled/DeadlineExceeded）不可重试——这是防御性兜底；
+// 正常路径中这些错误在 stream.go 的 retry 循环和 RunRace 的 Fix 3 中被提前拦截。
 func (e *VertexError) IsRetryable() bool {
+	if errors.Is(e.cause, context.Canceled) || errors.Is(e.cause, context.DeadlineExceeded) {
+		return false
+	}
 	switch e.Code {
 	case 408, 429, 500, 502, 503, 504:
 		return true
@@ -76,6 +87,12 @@ func NewRateLimitError(msg string, retryAfter int) *VertexError {
 // NewInternalError 内部错误（500）。
 func NewInternalError(msg string) *VertexError {
 	return &VertexError{Message: msg, Code: 500, Status: StatusInternal, Kind: "internal"}
+}
+
+// NewContextError 包装 context.Canceled/DeadlineExceeded，保留 cause 以供 errors.Is 透传。
+// 对外表现与 NewInternalError 一致（Code=500, Kind="internal"），仅多了 cause 链。
+func NewContextError(err error) *VertexError {
+	return &VertexError{Message: err.Error(), Code: 500, Status: StatusInternal, Kind: "internal", cause: err} //nolint:exhaustruct
 }
 
 // NewEmptyResponseError 上游空响应（502）。

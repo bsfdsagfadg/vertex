@@ -22,7 +22,6 @@ type handler struct {
 	cfg  config.ConfigProvider
 }
 
-
 func (h *handler) decodeAdminBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	if r.Body == nil {
 		writeJSON(w, http.StatusBadRequest, adminErr("请求体为空 (empty body)"))

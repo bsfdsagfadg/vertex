@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
@@ -93,6 +94,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.RequestTimeoutSeconds())*time.Second)
 	defer cancel()
 
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
 
 	resp, vErr := g.vc.CompleteChat(requestCtx, actualModel, body)
@@ -121,11 +123,12 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.RequestTimeoutSeconds())*time.Second)
 	defer cancel()
 
-	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 假流式=%v", model, actualModel, useFake)
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
+	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 假非流=%v, 聚合流=%v", model, actualModel, useFake, g.cfg.AggregateStream())
 
 	sw := newSSEWriter(w, "text/event-stream")
 
-	if useFake {
+	if useFake || g.cfg.AggregateStream() {
 		g.geminiFakeStream(requestCtx, sw, actualModel, body)
 		return
 	}
@@ -183,18 +186,9 @@ func (g *GeminiHandler) geminiFakeStream(ctx context.Context, sw *sseWriter, mod
 		return
 	}
 
-	text := geminiResponseText(resp)
-	chunks := splitIntoRuneChunks(text)
-	for i, piece := range chunks {
-		cand := map[string]any{"index": 0, "content": map[string]any{"role": "model", "parts": []any{map[string]any{"text": piece}}}}
-		if i == len(chunks)-1 {
-			cand["finishReason"] = "STOP"
-		}
-		chunk := map[string]any{"candidates": []any{cand}}
-		if !sw.write(g.geminiSSE(chunk)) {
-			return
-		}
-	}
+	// 假非流/聚合流：完整响应单包发送（无 [DONE]）。
+	cleanGeminiFinishReason(resp)
+	sw.write(g.geminiSSE(resp))
 }
 
 func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request, model string) {
@@ -203,6 +197,7 @@ func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 	log.Printf("[Server] [CountTokens] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
 
 	var contents []any
@@ -328,34 +323,3 @@ func geminiSafetyChunk(e *vertex.VertexError) map[string]any {
 		},
 	}
 }
-
-func geminiResponseText(resp map[string]any) string {
-	var sb strings.Builder
-	cands, _ := resp["candidates"].([]any)
-	for _, cRaw := range cands {
-		c, ok := cRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-		content, ok := c["content"].(map[string]any)
-		if !ok {
-			continue
-		}
-		parts, _ := content["parts"].([]any)
-		for _, pRaw := range parts {
-			p, ok2 := pRaw.(map[string]any)
-			if !ok2 {
-				continue
-			}
-			if isTruthyAny(p["thought"]) {
-				continue
-			}
-			if t, ok3 := p["text"].(string); ok3 {
-				sb.WriteString(t)
-			}
-		}
-	}
-	return sb.String()
-}
-
-func isTruthyAny(v any) bool { return jsonx.Truthy(v) }

@@ -17,6 +17,24 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
+// sessionTimeoutFromContext 从 context 的 deadline 推导 Session 的超时秒数。
+// 至少返回 1 秒（tls-client.WithTimeoutSeconds 只接受正秒），但 context 的 deadline
+// 仍由 Session.Do 优先检查；该值仅用于构造传输层超时。
+func sessionTimeoutFromContext(ctx context.Context, defaultSec int) int {
+	if d, ok := ctx.Deadline(); ok {
+		rem := time.Until(d)
+		if rem <= 0 {
+			return 1
+		}
+		sec := int(rem.Seconds())
+		if sec < 1 {
+			return 1
+		}
+		return sec
+	}
+	return defaultSec
+}
+
 // finishReasonUnspecified 是匿名 batchGraphql 每帧都携带的 protobuf 默认值（无意义）。
 //
 // 流式最关键红线（红线⑤）：匿名端点每个增量帧都带 finishReason="FINISH_REASON_UNSPECIFIED"，
@@ -72,7 +90,7 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 	var lastError *VertexError
 
 	reqID := RequestIDFromContext(ctx)
-	sess, err := c.net.CreateSession(180, proxyURI, reqID)
+	sess, err := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
 	if err != nil {
 		yield(StreamChunk{Err: NewInternalError("create session: " + err.Error())})
 		return
@@ -123,6 +141,11 @@ retryLoop:
 			return
 		}
 
+		if errors.Is(attemptErr, context.Canceled) || errors.Is(attemptErr, context.DeadlineExceeded) {
+			lastError = NewContextError(attemptErr)
+			break retryLoop
+		}
+
 		ve := asVertexError(attemptErr)
 		switch {
 		case ve != nil && ve.Kind == "auth":
@@ -155,7 +178,7 @@ retryLoop:
 			}
 			// 429：销毁旧 session 重建新的，换 token。
 			sess.Close()
-			newSess, e := c.net.CreateSession(180, proxyURI, reqID)
+			newSess, e := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
 			if e != nil {
 				yield(StreamChunk{Err: NewInternalError("recreate session: " + e.Error())})
 				return
@@ -228,7 +251,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 
 	sr, err := sess.DoStream(ctx, "POST", c.getBatchGraphqlURL(), header, reader)
 	if err != nil {
-		return NewInternalError("upstream request: " + err.Error())
+		return fmt.Errorf("upstream request: %w", err)
 	}
 	defer sr.Close() // 排干 → close，防串流。
 

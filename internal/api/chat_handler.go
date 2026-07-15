@@ -98,13 +98,8 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-
-	if aggregateStream {
-		c.oaiAggregateStream(requestCtx, w, model, geminiPayload)
-		return
-	}
-	if stream && useFake {
-		c.oaiFakeStream(requestCtx, w, model, geminiPayload)
+	if aggregateStream || (stream && useFake) {
+		c.oaiSingleStreamSSE(requestCtx, w, model, geminiPayload)
 		return
 	}
 
@@ -232,98 +227,74 @@ func (c *ChatHandler) writeStreamError(write func(string) bool, e *vertex.Vertex
 	_ = write("data: [DONE]\n\n")
 }
 
-func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
-	requestID := reqID24()
-	sw := newSSEWriter(w, "text/event-stream")
-
-	resp, vErr := c.vc.CompleteChat(ctx, model, geminiPayload)
-	if vErr != nil {
-		ve := toVertexError(vErr)
-		c.writeStreamError(sw.write, ve, requestID, model)
-		return
-	}
-
-	oai := c.respConv.ToOAI(resp, model)
-	contentText := firstChoiceContent(oai)
-
-	createdTS := time.Now().Unix()
-	chunks := splitIntoRuneChunks(contentText)
-	for i, piece := range chunks {
-		base := streamChunkBase(model, requestID)
-		base["created"] = createdTS
-		var delta map[string]any
-		if i == 0 {
-			delta = map[string]any{"role": "assistant", "content": piece}
-		} else {
-			delta = map[string]any{"content": piece}
-		}
-		choice := map[string]any{"index": 0, "delta": delta}
-		if i == len(chunks)-1 {
-			choice["finish_reason"] = "stop"
-		}
-		base["choices"] = []any{choice}
-		if !sw.write(sseEvent(base)) {
-			return
-		}
-	}
-	_ = sw.write("data: [DONE]\n\n")
-}
-
-func (c *ChatHandler) oaiAggregateStream(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
-	requestID := reqID24()
-	sw := newSSEWriter(w, "text/event-stream")
-
-	resp, vErr := c.vc.CompleteChat(ctx, model, geminiPayload)
-	if vErr != nil {
-		ve := toVertexError(vErr)
-		c.writeStreamError(sw.write, ve, requestID, model)
-		return
-	}
-
-	oai := c.respConv.ToOAI(resp, model)
-	contentText := firstChoiceContent(oai)
-
-	createdTS := time.Now().Unix()
+// oaiSinglePacketSSE 把完整 OAI 响应转为单包 SSE 事件 + [DONE]。
+// 单个 choice 的 delta 内放入所有可表达内容（text、tool_calls、reasoning_content），
+// 事件本身包含 finish_reason 和 usage。
+func (c *ChatHandler) oaiSinglePacketSSE(sw *sseWriter, oai map[string]any, model, requestID string) {
 	base := streamChunkBase(model, requestID)
-	base["created"] = createdTS
-	
-	choice := map[string]any{
-		"index": 0, 
-		"delta": map[string]any{"role": "assistant", "content": contentText},
+	choices := firstChoice(oai)
+	if choices == nil {
+		_ = sw.write(sseEvent(base))
+		_ = sw.write("data: [DONE]\n\n")
+		return
+	}
+
+	msg, _ := choices["message"].(map[string]any)
+	finishReason, _ := choices["finish_reason"].(string)
+	if msg == nil {
+		msg = map[string]any{}
+	}
+
+	delta := map[string]any{}
+	if role, ok := msg["role"].(string); ok {
+		delta["role"] = role
+	}
+	if content, ok := msg["content"]; ok && content != nil {
+		delta["content"] = content
+	}
+	if tc, ok := msg["tool_calls"]; ok && tc != nil {
+		delta["tool_calls"] = tc
+	}
+	if rc, ok := msg["reasoning_content"]; ok && rc != nil {
+		delta["reasoning_content"] = rc
+	}
+
+	choice := map[string]any{"index": 0, "delta": delta}
+	if finishReason != "" {
+		choice["finish_reason"] = finishReason
 	}
 	base["choices"] = []any{choice}
-	if !sw.write(sseEvent(base)) {
-		return
+
+	if usage, ok := oai["usage"]; ok {
+		base["usage"] = usage
 	}
-	
-	// Stream end
-	baseEnd := streamChunkBase(model, requestID)
-	baseEnd["created"] = createdTS
-	choiceEnd := map[string]any{
-		"index": 0, 
-		"delta": map[string]any{},
-		"finish_reason": "stop",
-	}
-	baseEnd["choices"] = []any{choiceEnd}
-	sw.write(sseEvent(baseEnd))
+	_ = sw.write(sseEvent(base))
 	_ = sw.write("data: [DONE]\n\n")
 }
 
-func firstChoiceContent(oai map[string]any) string {
+func (c *ChatHandler) oaiSingleStreamSSE(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
+	requestID := reqID24()
+	sw := newSSEWriter(w, "text/event-stream")
+
+	resp, vErr := c.vc.CompleteChat(ctx, model, geminiPayload)
+	if vErr != nil {
+		ve := toVertexError(vErr)
+		c.writeStreamError(sw.write, ve, requestID, model)
+		return
+	}
+
+	oai := c.respConv.ToOAI(resp, model)
+	c.oaiSinglePacketSSE(sw, oai, model, requestID)
+}
+
+func firstChoice(oai map[string]any) map[string]any {
 	choices, ok := oai["choices"].([]any)
 	if !ok || len(choices) == 0 {
-		return ""
+		return nil
 	}
 	choice, ok := choices[0].(map[string]any)
 	if !ok {
-		return ""
+		return nil
 	}
-	msg, ok := choice["message"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	if c, ok2 := msg["content"].(string); ok2 {
-		return c
-	}
-	return ""
+	return choice
 }

@@ -7,8 +7,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +14,7 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/netx"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
@@ -230,68 +229,8 @@ func (adm *AdminHandler) adminEnableNode(w http.ResponseWriter, r *http.Request)
 }
 
 func fetchRecaptchaTokenWithSess(ctx context.Context, sess *transport.Session) error {
-	const (
-		recaptchaBase = "https://www.google.com"
-		siteKey       = "6LdCjtspAAAAAMcV4TGdWLJqRTEk1TfpdLqEnKdj"
-		recaptchaCo   = "aHR0cHM6Ly9jb25zb2xlLmNsb3VkLmdvb2dsZS5jb206NDQz"
-		recaptchaHl   = "zh-CN"
-		recaptchaV    = "jdMmXeCQEkPbnFDy9T04NbgJ"
-		recaptchaVh   = "6581054572"
-		randomCharset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	)
-	var (
-		tokenRe = regexp.MustCompile(`id="recaptcha-token"[^>]*value="([^"]+)"`)
-		rrespRe = regexp.MustCompile(`rresp","(.*?)"`)
-	)
-
-	b := make([]byte, 10)
-	for i := range b {
-		b[i] = randomCharset[time.Now().UnixNano()%int64(len(randomCharset))]
-	}
-	cb := string(b)
-
-	anchorURL := fmt.Sprintf(
-		"%s/recaptcha/enterprise/anchor?ar=1&k=%s&co=%s&hl=%s&v=%s&size=invisible&anchor-ms=20000&execute-ms=15000&cb=%s",
-		recaptchaBase, siteKey, recaptchaCo, recaptchaHl, recaptchaV, cb,
-	)
-
-	_, anchorBody, err := sess.DoAndRead(ctx, "GET", anchorURL, transport.AnchorHeaders(), nil)
-	if err != nil {
-		return fmt.Errorf("GET anchor 失败: %w", err)
-	}
-	m := tokenRe.FindSubmatch(anchorBody)
-	if m == nil {
-		return fmt.Errorf("从 anchor HTML 解析 recaptcha-token 失败")
-	}
-	baseToken := string(m[1])
-
-	form := url.Values{
-		"v":      {recaptchaV},
-		"reason": {"q"},
-		"k":      {siteKey},
-		"c":      {baseToken},
-		"co":     {recaptchaCo},
-		"hl":     {recaptchaHl},
-		"size":   {"invisible"},
-		"vh":     {recaptchaVh},
-		"chr":    {""},
-		"bg":     {""},
-	}
-	reloadURL := recaptchaBase + "/recaptcha/enterprise/reload?k=" + siteKey
-	header := transport.XHRHeaders(
-		"application/x-www-form-urlencoded;charset=UTF-8", "*/*",
-		recaptchaBase, anchorURL, "same-origin",
-	)
-
-	_, reloadBody, err := sess.DoAndRead(ctx, "POST", reloadURL, header, strings.NewReader(form.Encode()))
-	if err != nil {
-		return fmt.Errorf("POST reload 失败: %w", err)
-	}
-	rm := rrespRe.FindSubmatch(reloadBody)
-	if rm == nil {
-		return fmt.Errorf("从 reload 响应解析 rresp 失败")
-	}
-	return nil
+	_, err := recaptcha.FetchRecaptchaTokenWithSession(ctx, sess)
+	return err
 }
 
 func (adm *AdminHandler) adminDedupNodes(w http.ResponseWriter, _ *http.Request) {

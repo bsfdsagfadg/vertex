@@ -65,7 +65,7 @@ func (d dynamicConfig) ProxyURL() string                  { return Load().ProxyU
 func (d dynamicConfig) DebugPprof() bool                  { return Load().DebugPprof }
 func (d dynamicConfig) DebugMode() bool                   { return Load().DebugMode }
 func (d dynamicConfig) DropMaxTokens() bool               { return Load().DropMaxTokens }
-func (d dynamicConfig) AggregateStream() bool               { return Load().AggregateStream }
+func (d dynamicConfig) AggregateStream() bool             { return Load().AggregateStream }
 func (d dynamicConfig) MaxN() int                         { return Load().MaxN }
 func (d dynamicConfig) MaxRequestMB() int                 { return Load().MaxRequestMB }
 func (d dynamicConfig) RequestTimeoutSeconds() int        { return Load().RequestTimeoutSeconds }

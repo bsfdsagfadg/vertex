@@ -2,24 +2,22 @@ package api
 
 import "testing"
 
-// ---- stripFakePrefix：剥离 "假流式-" / "fake-" 前缀 ----
+// ---- stripFakePrefix：剥离 "假非流-" 前缀 ----
 
 func TestStripFakePrefix(t *testing.T) {
-	fakePrefixes := []string{"假流式-", "fake-"}
+	fakePrefixes := []string{"假非流-"}
 	cases := []struct {
 		name      string
 		in        string
 		wantModel string
 		wantFake  bool
 	}{
-		{"chinese prefix", "假流式-gemini-2.5-flash", "gemini-2.5-flash", true},
-		{"ascii prefix", "fake-gemini-2.5-pro", "gemini-2.5-pro", true},
-		{"ascii prefix short", "fake-x", "x", true},
+		{"chinese prefix", "假非流-gemini-2.5-flash", "gemini-2.5-flash", true},
 		{"no prefix passthrough", "gemini-2.5-flash", "gemini-2.5-flash", false},
 		{"empty passthrough", "", "", false},
-		{"prefix-like but not match", "fakegemini", "fakegemini", false},
-		{"chinese prefix only", "假流式-", "", true},
-		{"prefix inside name not stripped", "gemini-fake-thing", "gemini-fake-thing", false},
+		{"chinese prefix only", "假非流-", "", true},
+		{"old fake- prefix not recognized", "fake-gemini-2.5-pro", "fake-gemini-2.5-pro", false},
+		{"old 假流式- prefix not recognized", "假流式-gemini-2.5-flash", "假流式-gemini-2.5-flash", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

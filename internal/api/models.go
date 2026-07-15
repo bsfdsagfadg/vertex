@@ -4,7 +4,7 @@ import "strings"
 
 // 本文件实现模型清单端点所依赖的工具函数。
 
-// stripFakePrefix 检测并剥离假流式前缀，返回 (实际模型名, 是否假流式)。
+// stripFakePrefix 检测并剥离假非流前缀，返回 (实际模型名, 是否假非流)。
 func stripFakePrefix(model string, fakePrefixes []string) (string, bool) {
 	for _, p := range fakePrefixes {
 		if strings.HasPrefix(model, p) {

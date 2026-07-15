@@ -13,13 +13,13 @@ import (
 	"time"
 )
 
-// fakePrefixes 是假流式模型前缀（中文 + ASCII）。
-// 模型名以此开头表示"先完整非流式生成、再切片按 SSE 推"。
+// fakePrefixes 是假非流模型前缀。
+// 模型名以此开头表示"先完整非流式生成、再以单包 SSE 返回"。
 //
 //nolint:gochecknoglobals // Read-only prefix list
-var fakePrefixes = []string{"假流式-", "fake-"}
+var fakePrefixes = []string{"假非流-"}
 
-// FakePrefixes 返回假流式前缀列表（供 api 层剥离前缀复用，避免常量散落）。
+// FakePrefixes 返回假非流前缀列表（供 api 层剥离前缀复用，避免常量散落）。
 func FakePrefixes() []string { return fakePrefixes }
 
 // defaultModels 是 models.json 缺失/损坏时的回退清单。
@@ -117,14 +117,14 @@ func AliasMap() map[string]string {
 	return out
 }
 
-// ModelsWithFakeVariants 返回每个基础模型 + 其两个假流式前缀变体的完整清单
-// （result 里依次塞入 m、假流式-m、fake-m）。
-// /v1/models、/v1beta/models、单模型 404 校验都用它，以保证假流式变体名自洽。
+// ModelsWithFakeVariants 返回每个基础模型 + 其假非流前缀变体的完整清单
+// （result 里依次塞入 m、假非流-m）。
+// /v1/models、/v1beta/models、单模型 404 校验都用它，以保证假非流变体名自洽。
 func ModelsWithFakeVariants() []string {
 	base := loadModelsFile().Models
-	result := make([]string, 0, len(base)*3)
+	result := make([]string, 0, len(base)*2)
 	for _, m := range base {
-		result = append(result, m, fakePrefixes[0]+m, fakePrefixes[1]+m)
+		result = append(result, m, fakePrefixes[0]+m)
 	}
 	return result
 }

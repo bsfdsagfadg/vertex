@@ -27,6 +27,10 @@ type Session struct {
 }
 
 func (s *Session) Do(ctx context.Context, method, url string, header http.Header, body io.Reader) (*http.Response, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
@@ -37,22 +41,7 @@ func (s *Session) Do(ctx context.Context, method, url string, header http.Header
 		req.Header = header
 	}
 
-	type doResult struct {
-		resp *http.Response
-		err  error
-	}
-	ch := make(chan doResult, 1)
-	go func() {
-		resp, doErr := s.client.Do(req)
-		ch <- doResult{resp, doErr}
-	}()
-	select {
-	case <-ctx.Done():
-		s.client.CloseIdleConnections()
-		return nil, ctx.Err()
-	case r := <-ch:
-		return r.resp, r.err
-	}
+	return s.client.Do(req)
 }
 
 func (s *Session) DoAndRead(ctx context.Context, method, url string, header http.Header, body io.Reader) (int, []byte, error) {

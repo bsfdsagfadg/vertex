@@ -37,7 +37,7 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"max_spill_mb":      adm.cfg.MaxSpillMB(),
 		"max_request_mb":    adm.cfg.MaxRequestMB(),
 		"max_n":             adm.cfg.MaxN(),
-		"aggregate_stream":   adm.cfg.AggregateStream(),
+		"aggregate_stream":  adm.cfg.AggregateStream(),
 		"drop_max_tokens":   adm.cfg.DropMaxTokens(),
 		"telemetry_enabled": telEnabled,
 		"proxy_url":         adm.cfg.ProxyURL(), "parallel_pool_enabled": adm.cfg.ParallelPoolEnabled(), "parallel_pool_size": adm.cfg.ParallelPoolSize(), "active_node_uri": adm.cfg.ActiveNodeURI(),
