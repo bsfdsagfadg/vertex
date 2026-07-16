@@ -18,6 +18,12 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
+var (
+	testAllCancel context.CancelFunc
+	testAllMu     sync.Mutex
+	testAllGen    uint64
+)
+
 func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, _ *http.Request) {
 	list := nodes.LoadNodes()
 	var enabledCount, disabledCount int
@@ -69,7 +75,22 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 	log.Printf("[Admin] [TestAll] 开始触发全局并发测速（基于 recaptchaToken 耗时）")
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
+		testAllMu.Lock()
+		myGen := testAllGen + 1
+		testAllGen = myGen
+		if testAllCancel != nil {
+			testAllCancel()
+		}
+		testAllCancel = cancel
+		testAllMu.Unlock()
+		defer func() {
+			cancel()
+			testAllMu.Lock()
+			if testAllGen == myGen {
+				testAllCancel = nil
+			}
+			testAllMu.Unlock()
+		}()
 
 		list := nodes.LoadNodes()
 		var enabledNodes []nodes.Node
@@ -158,6 +179,11 @@ func (adm *AdminHandler) adminTestTerminate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	nodes.TerminateTestProgress()
+	testAllMu.Lock()
+	if testAllCancel != nil {
+		testAllCancel()
+	}
+	testAllMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

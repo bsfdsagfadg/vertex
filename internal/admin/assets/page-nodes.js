@@ -310,6 +310,7 @@ async function addAndFetchSub() {
 }
 
 async function testAllNodes() {
+  if (testProgressTimer) return toast('已有批量测试正在进行中');
   const d = await API.nodes.list();
   const nodes = d.nodes || [];
   if (!nodes.length) return toast('无可测试节点');
