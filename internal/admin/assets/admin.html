@@ -124,12 +124,12 @@
           <div class="page-head">
             <div>
               <h2>代理与节点</h2>
-              <div class="hint">配置并发竞争请求池或锁定订阅节点。mihomo 已内嵌，无需占本地端口。</div>
+              <div class="hint">配置并发竞争请求池或锁定订阅节点。</div>
             </div>
           </div>
           <div class="grid grid-1">
             <div class="card glass">
-              <div class="field"><label for="globalProxy">全局外部代理 (SOCKS5/HTTP)</label>
+              <div class="field"><label for="globalProxy">全局前置代理 (SOCKS5/HTTP)</label>
                 <div class="toolbar m-0"><input id="globalProxy" placeholder="socks5://127.0.0.1:1080"><button
                     class="btn" onclick="saveGlobalProxy()">保存</button></div>
                 <div class="desc">配置后默认走该代理；如果未启用并发池且无锁定节点，将使用此代理。</div>
@@ -137,7 +137,7 @@
             </div>
             <div class="card glass">
               <div class="field field-mb-20px">
-                <div class="field-heading label-gold">文件优选导入 (V2RayN / Clash / Mihomo 优选节点)</div>
+                <div class="field-heading label-gold">文件优选导入 (V2RayN / Clash 优选节点)</div>
                 <div class="toolbar m-0 gap-8">
                   <label for="nodeImportFile" class="sr-only">选择节点导入文件</label><input type="file" id="nodeImportFile"
                     accept=".txt,.yaml,.yml,.json,.conf,.list" class="file-input">
@@ -145,17 +145,6 @@
                   <button class="btn danger" onclick="importFileNodes(true)">清空并替换</button>
                 </div>
                 <div class="desc">导入本地导出的节点配置文件 (.txt / .yaml)。支持以追加或覆盖形式批量配置节点。</div>
-              </div>
-
-              <div class="field field-mb-20px">
-                <div class="field-heading label-gold">导入旧版 nodes.json</div>
-                <div class="toolbar m-0 gap-8">
-                  <label for="nodeJsonImportFile" class="sr-only">选择 nodes.json 导入文件</label><input type="file"
-                    id="nodeJsonImportFile" accept=".json" class="file-input">
-                  <button class="btn ghost" onclick="importJsonNodes(false)">导入追加</button>
-                  <button class="btn danger" onclick="importJsonNodes(true)">清空并替换</button>
-                </div>
-                <div class="desc">导入旧版 nodes.json。支持以追加或覆盖形式批量配置节点。</div>
               </div>
 
               <div class="divider"></div>
@@ -166,8 +155,7 @@
               <div class="desc summary-text" id="nodesSummary">当前共 0 个节点</div>
               <div class="actions">
                 <button class="btn ghost" onclick="testAllNodes()">批量测试</button>
-                <button class="btn ghost" onclick="sortNodesByLatency()">按延迟顺序排序</button>
-                <button class="btn ghost" onclick="sortNodesByLatencyDesc()">按延迟降序排序</button>
+                <button class="btn ghost" id="btnSortByLatency" onclick="sortNodesByLatencyToggle()">按延迟升序排序</button>
                 <button class="btn ghost" onclick="dedupNodes()">一键去重</button>
                 <button class="btn ghost" onclick="exportNodes()">导出节点</button>
                 <button class="btn danger" onclick="deleteDisabledNodes()">删除禁用节点</button>

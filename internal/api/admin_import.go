@@ -153,32 +153,4 @@ func (adm *AdminHandler) adminImportNodes(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(newNodes)})
 }
 
-func (adm *AdminHandler) adminImportNodesJson(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Text    string `json:"text"`
-		Replace bool   `json:"replace"`
-	}
-	if !adm.decodeAdminBody(w, r, &body) {
-		return
-	}
-	log.Printf("[Admin] [ImportNodesJson] 收到旧版 nodes.json 导入请求, 替换模式: %v", body.Replace)
 
-	var d struct {
-		Nodes []nodes.Node `json:"nodes"`
-	}
-	if err := json.Unmarshal([]byte(body.Text), &d); err != nil {
-		writeJSON(w, http.StatusBadRequest, adminErr("JSON 解析失败: "+err.Error()))
-		return
-	}
-
-	if body.Replace {
-		log.Printf("[Admin] [ImportNodesJson] 替换模式，正在清除全部已有候选节点")
-		for _, cn := range nodes.LoadNodes() {
-			nodes.DeleteNode(cn.RawURI)
-		}
-	}
-
-	log.Printf("[Admin] [ImportNodesJson] 正在合并导入的新节点数量: %d", len(d.Nodes))
-	nodes.MergeNodes(d.Nodes)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(d.Nodes)})
-}

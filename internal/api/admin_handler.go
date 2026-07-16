@@ -87,9 +87,6 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 	case "/nodes/import":
 		adm.adminImportNodes(w, r)
 		return
-	case "/nodes/import-json":
-		adm.adminImportNodesJson(w, r)
-		return
 	case "/subscriptions/fetch":
 		adm.adminFetchSub(w, r)
 		return

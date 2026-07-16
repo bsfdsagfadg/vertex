@@ -39,7 +39,6 @@ const API = {
     dedup() { return API.raw('/api/admin/nodes/deduplicate', { method: 'POST' }); },
     deleteDisabled() { return API.raw('/api/admin/nodes/disabled', { method: 'DELETE' }); },
     import(text, replace) { return API.raw('/api/admin/nodes/import', { method: 'POST', body: JSON.stringify({ text, replace }) }); },
-    importJson(text, replace) { return API.raw('/api/admin/nodes/import-json', { method: 'POST', body: JSON.stringify({ text, replace }) }); },
     batchEnable(uris) { return API.raw('/api/admin/nodes/batch-enable', { method: 'POST', body: JSON.stringify({ uris }) }); },
     batchDisable(uris) { return API.raw('/api/admin/nodes/batch-disable', { method: 'POST', body: JSON.stringify({ uris }) }); },
     batchDelete(uris) { return API.raw('/api/admin/nodes/batch-delete', { method: 'POST', body: JSON.stringify({ uris }) }); },

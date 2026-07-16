@@ -16,6 +16,7 @@ var totalNodePages = 1;
 var cachedNodesList = [];
 window.selectedNodeURIs = window.selectedNodeURIs || new Set();
 var testProgressTimer = null;
+window.nodeSortDesc = localStorage.getItem('vproxy_node_sort_desc') === '1';
 
 function changeNodePage(p) {
   if (p < 1) p = 1;
@@ -76,6 +77,8 @@ async function loadNodes() {
       gpEl.value = (sd.settings || sd).proxy_url;
     }
   } catch (e) { }
+
+  updateSortBtnLabel();
 
   const d = await API.nodes.list();
   const nodes = d.nodes || [];
@@ -427,8 +430,19 @@ function startTestProgressPolling() {
 
 async function dedupNodes() { await API.nodes.dedup(); loadNodes(); toast('去重完成'); }
 async function deleteDisabledNodes() { await API.nodes.deleteDisabled(); loadNodes(); toast('清理完成'); }
-async function sortNodesByLatency() { await API.nodes.sort(false); await loadNodes(); toast('已按延迟顺序重排节点'); }
-async function sortNodesByLatencyDesc() { await API.nodes.sort(true); await loadNodes(); toast('已按延迟降序重排节点'); }
+function updateSortBtnLabel() {
+  const b = document.getElementById('btnSortByLatency');
+  if (b) b.textContent = window.nodeSortDesc ? '按延迟降序排序' : '按延迟升序排序';
+}
+async function sortNodesByLatencyToggle() {
+  const desc = window.nodeSortDesc;
+  await API.nodes.sort(desc);
+  window.nodeSortDesc = !desc;
+  localStorage.setItem('vproxy_node_sort_desc', window.nodeSortDesc ? '1' : '0');
+  updateSortBtnLabel();
+  await loadNodes();
+  toast(desc ? '已按延迟降序重排节点' : '已按延迟升序重排节点');
+}
 
 async function exportNodes() {
   try {
@@ -558,24 +572,4 @@ function importFileNodes(replace) {
   reader.readAsText(file);
 }
 
-function importJsonNodes(replace) {
-  const fileInput = document.getElementById('nodeJsonImportFile');
-  if (!fileInput.files.length) return toast('请先选择一个 nodes.json 配置文件');
-  const file = fileInput.files[0];
-  const reader = new FileReader();
-  toast('正在读取配置文件并解析...');
-  reader.onload = async function (e) {
-    const text = e.target.result;
-    try {
-      const res = await API.nodes.importJson(text, replace);
-      await loadNodes();
-      fileInput.value = '';
-      toast(replace ? '替换成功，导入了 ' + res.count + ' 个节点' : '导入成功，追加了 ' + res.count + ' 个节点');
-    } catch (err) {
-      toast('nodes.json 导入解析失败: ' + err.message);
-    }
-  };
-  reader.readAsText(file);
-}
-
-async function saveGlobalProxy() { await API.settings.put({ proxy_url: $('#globalProxy').value }); loadSettings(); toast('全局代理已保存'); }
+async function saveGlobalProxy() { await API.settings.put({ proxy_url: $('#globalProxy').value }); loadSettings(); toast('全局前置代理已保存'); }
