@@ -329,7 +329,7 @@ func (adm *AdminHandler) fetchSubscriptionText(ctx context.Context, rawURL strin
 		return strings.TrimSpace(string(data)), nil
 	}
 
-	proxyURI := firstNonEmpty(adm.cfg.ActiveNodeURI(), adm.cfg.ProxyURL())
+	proxyURI := adm.cfg.ProxyURL()
 	if proxyURI == "" || adm.vc == nil || adm.vc.Net() == nil {
 		return "", err
 	}

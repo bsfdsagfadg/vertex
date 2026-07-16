@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -36,10 +38,7 @@ func AddProxyCandidate(rawURI string) (ProxyCandidate, error) {
 		return ProxyCandidate{}, fmt.Errorf("不支持的代理协议: %s", parsed.Scheme)
 	}
 
-	name := ""
-	if idx := strings.LastIndex(rawURI, "#"); idx != -1 {
-		name = rawURI[idx+1:]
-	}
+	name := extractProxyCandidateName(rawURI)
 	if name == "" {
 		host := parsed.Hostname()
 		port := parsed.Port()
@@ -118,6 +117,40 @@ func UpdateProxyCandidateTest(rawURI string, ok bool, ms float64, errStr string)
 	}
 	InvalidateCache()
 	return nil
+}
+
+func extractProxyCandidateName(rawURI string) string {
+	if strings.HasPrefix(rawURI, "vmess://") {
+		b64Str := rawURI[8:]
+		if idx := strings.Index(b64Str, "?"); idx != -1 {
+			b64Str = b64Str[:idx]
+		}
+		if idx := strings.Index(b64Str, "#"); idx != -1 {
+			b64Str = b64Str[:idx]
+		}
+		b64Str = strings.ReplaceAll(strings.ReplaceAll(b64Str, "-", "+"), "_", "/")
+		if pad := len(b64Str) % 4; pad != 0 {
+			b64Str += strings.Repeat("=", 4-pad)
+		}
+		if b, err := base64.StdEncoding.DecodeString(b64Str); err == nil {
+			var d map[string]any
+			if err := json.Unmarshal(b, &d); err == nil {
+				if ps, ok := d["ps"].(string); ok && strings.TrimSpace(ps) != "" {
+					return strings.TrimSpace(ps)
+				}
+			}
+		}
+	}
+
+	if idx := strings.LastIndex(rawURI, "#"); idx != -1 {
+		escapedName := rawURI[idx+1:]
+		if dec, err := url.PathUnescape(escapedName); err == nil {
+			return strings.TrimSpace(dec)
+		}
+		return strings.TrimSpace(escapedName)
+	}
+
+	return ""
 }
 
 var supportedSchemes = map[string]bool{
