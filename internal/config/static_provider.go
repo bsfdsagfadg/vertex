@@ -10,6 +10,11 @@ func (s staticConfig) PortAPI() int                      { return s.c.PortAPI }
 func (s staticConfig) MaxRetries() int                   { return s.c.MaxRetries }
 func (s staticConfig) AdminPassword() string             { return s.c.AdminPassword }
 func (s staticConfig) ProxyURL() string                  { return s.c.ProxyURL }
+func (s staticConfig) ProxyURLCandidates() []ProxyCandidate {
+	out := make([]ProxyCandidate, len(s.c.ProxyURLCandidates))
+	copy(out, s.c.ProxyURLCandidates)
+	return out
+}
 func (s staticConfig) DebugPprof() bool                  { return s.c.DebugPprof }
 func (s staticConfig) DebugMode() bool                   { return s.c.DebugMode }
 func (s staticConfig) DropMaxTokens() bool               { return s.c.DropMaxTokens }

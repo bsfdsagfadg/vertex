@@ -110,6 +110,41 @@ func TestSseLine_NoHTMLEscape(t *testing.T) {
 	}
 }
 
+// TestConvertRealtimeChunk_RoleOnlyFirstOnce 验证 isFirst 语义：
+// 首个无错误 chunk 产出 role:assistant，后续 chunk 不产出 role 帧。
+// 即"先发空 metadata chunk、后发 content chunk"序列中 role 仅出现一次。
+func TestConvertRealtimeChunk_RoleOnlyFirstOnce(t *testing.T) {
+	// metadata chunk：无 candidates（类似空的 modelVersion / 中间 usage 帧）
+	metaChunk := map[string]any{"modelVersion": "gemini-2.0-flash"}
+	events := ConvertRealtimeChunk(metaChunk, "m", "r", true)
+	// 首帧应为 role 事件（即使无 content）
+	if len(events) != 1 {
+		t.Fatalf("metadata chunk 应产出 1 个 role 事件，got %d: %v", len(events), events)
+	}
+	if !strings.Contains(events[0], `"role":"assistant"`) {
+		t.Errorf("metadata chunk 产出的事件应含 role delta: %s", events[0])
+	}
+
+	// content chunk：isFirst=false，不应再产出 role 事件
+	contentChunk := map[string]any{"candidates": []any{
+		map[string]any{
+			"content":      map[string]any{"parts": []any{map[string]any{"text": "Hi"}}, "role": "model"},
+			"finishReason": "FINISH_REASON_UNSPECIFIED",
+		},
+	}}
+	events = ConvertRealtimeChunk(contentChunk, "m", "r", false)
+	// 只 content，无 role
+	if len(events) != 1 {
+		t.Fatalf("content chunk 应产出 1 个事件（无 role），got %d: %v", len(events), events)
+	}
+	if strings.Contains(events[0], `"role":"assistant"`) {
+		t.Errorf("非首帧不应产出 role delta: %s", events[0])
+	}
+	if !strings.Contains(events[0], `"content":"Hi"`) {
+		t.Errorf("content chunk 应含 content: %s", events[0])
+	}
+}
+
 // 工具调用流式：tool_calls delta 带 index 字段（_extract_parts for_stream=True）。
 func TestConvertRealtimeChunk_ToolCall(t *testing.T) {
 	chunk := map[string]any{"candidates": []any{map[string]any{

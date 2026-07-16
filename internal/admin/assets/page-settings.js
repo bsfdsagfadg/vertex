@@ -21,11 +21,6 @@ let curSettings = {};
 async function loadSettings() {
   const d = await API.settings.get(); curSettings = d.settings || d;
 
-  const gpEl = $('#globalProxy');
-  if (gpEl && curSettings.proxy_url !== undefined) {
-    gpEl.value = curSettings.proxy_url;
-  }
-
   const fld = (f) => {
     const v = curSettings[f.k];
     if (f.type === 'bool') return `<div class="field bool"><div class="min-w-0"><label for="set_${f.k}">${f.label}</label>${f.desc ? `<div class="desc mt-4px">${f.desc}</div>` : ''}</div><label class="toggle"><input type="checkbox" id="set_${f.k}" ${v ? 'checked' : ''}><span class="track"></span></label></div>`;

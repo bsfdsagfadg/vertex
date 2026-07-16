@@ -36,13 +36,13 @@
 如果你想从源码自行编译：
 
 ```bash
-go build -o vertex-proxy ./cmd/vproxy
-go build -o vertex-proxy.exe ./cmd/vproxy
+go build -tags with_utls -o vertex-proxy ./cmd/vproxy
+go build -tags with_utls -o vertex-proxy.exe ./cmd/vproxy
 ```
 
 交叉编译示例（例如在 macOS/Windows 上编译 Linux 适用版本）：
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags with_utls -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy
 ```
 
 ## ⚙️ 配置说明

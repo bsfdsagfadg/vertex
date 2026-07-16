@@ -72,10 +72,8 @@ async function loadNodes() {
     if (typeof curSettings !== 'undefined') {
       curSettings = sd.settings || sd;
     }
-    const gpEl = document.getElementById('globalProxy');
-    if (gpEl && (sd.settings || sd).proxy_url !== undefined) {
-      gpEl.value = (sd.settings || sd).proxy_url;
-    }
+    const settings = sd.settings || sd;
+    renderProxyNodes(settings.proxy_url_candidates || [], settings.proxy_url || '');
   } catch (e) { }
 
   updateSortBtnLabel();
@@ -572,4 +570,169 @@ function importFileNodes(replace) {
   reader.readAsText(file);
 }
 
-async function saveGlobalProxy() { await API.settings.put({ proxy_url: $('#globalProxy').value }); loadSettings(); toast('全局前置代理已保存'); }
+// ─── 前置代理候选列表 ───
+
+async function importProxyNode() {
+  const uri = $('#globalProxy').value.trim();
+  if (!uri) return toast('请先输入代理 URI');
+  try {
+    const res = await API.proxyNodes.import(uri);
+    $('#globalProxy').value = '';
+    await loadNodes();
+    toast('已导入前置代理: ' + (res.candidate.name || uri));
+  } catch (e) {
+    toast('导入失败: ' + e.message);
+  }
+}
+
+async function testProxyNode(uri) {
+  toast('正在测试前置代理...');
+  try {
+    const res = await API.proxyNodes.test(uri);
+    const msg = res.ok
+      ? '测试通过 ' + Math.round(res.elapsed_ms) + 'ms'
+      : '测试失败 ' + (res.error || '');
+    toast(msg);
+    await loadNodes();
+  } catch (e) {
+    toast('测试出错: ' + e.message);
+  }
+}
+
+async function enableProxyNode(uri) {
+  try {
+    await API.proxyNodes.enable(uri);
+    await loadNodes();
+    toast('已启用该前置代理');
+  } catch (e) {
+    toast('启用失败: ' + e.message);
+  }
+}
+
+async function disableProxyNode() {
+  try {
+    await API.proxyNodes.disable();
+    await loadNodes();
+    toast('已取消前置代理');
+  } catch (e) {
+    toast('操作失败: ' + e.message);
+  }
+}
+
+async function deleteProxyNode(uri) {
+  if (!confirm('确定删除该前置代理候选？')) return;
+  try {
+    await API.proxyNodes.delete(uri);
+    await loadNodes();
+    toast('已删除');
+  } catch (e) {
+    toast('删除失败: ' + e.message);
+  }
+}
+
+function renderProxyNodes(candidates, proxyUrl) {
+  const tbody = document.getElementById('proxyNodesBody');
+  const frag = document.createDocumentFragment();
+
+  if (!candidates || candidates.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.style.cssText = 'color:var(--text-dim);text-align:center;';
+    td.textContent = '暂无前置代理候选';
+    tr.appendChild(td);
+    frag.appendChild(tr);
+  } else {
+    for (const c of candidates) {
+      const tr = document.createElement('tr');
+
+      const nameTd = document.createElement('td');
+      const nameDiv = document.createElement('div');
+      nameDiv.style.cssText = 'font-weight:600;font-size:13.5px;color:var(--text);';
+      nameDiv.textContent = c.name || c.raw_uri;
+      if (c.raw_uri === proxyUrl) {
+        const badge = document.createElement('span');
+        badge.className = 'pill on';
+        badge.style.cssText = 'font-size:10px;padding:2px 8px;margin-left:5px;';
+        badge.textContent = '启用中';
+        nameDiv.appendChild(badge);
+      }
+      nameTd.appendChild(nameDiv);
+      tr.appendChild(nameTd);
+
+      const typeTd = document.createElement('td');
+      const typeCode = document.createElement('code');
+      typeCode.textContent = (c.type || '').toUpperCase();
+      typeTd.appendChild(typeCode);
+      tr.appendChild(typeTd);
+
+      const statusTd = document.createElement('td');
+      if (c.last_test_ok) {
+        const pill = document.createElement('span');
+        pill.className = 'pill on';
+        pill.style.cssText = 'background:rgba(132,214,160,0.16);color:var(--green);';
+        const ms = c.last_test_ms ? Math.round(c.last_test_ms) + 'ms' : '';
+        pill.textContent = '测试通过 ' + ms;
+        statusTd.appendChild(pill);
+      } else if (c.last_test_at > 0) {
+        const pill = document.createElement('span');
+        pill.className = 'pill off';
+        pill.style.cssText = 'background:rgba(236,138,124,0.16);color:var(--red);margin-right:5px;';
+        pill.textContent = '测试失败';
+        statusTd.appendChild(pill);
+        if (c.last_test_error) {
+          const errSpan = document.createElement('div');
+          errSpan.style.cssText = 'font-size:11px;color:var(--red);margin-top:2px;';
+          errSpan.textContent = c.last_test_error;
+          statusTd.appendChild(errSpan);
+        }
+      } else {
+        const pill = document.createElement('span');
+        pill.className = 'pill off';
+        pill.style.cssText = 'background:rgba(195,182,164,0.15);color:var(--text-dim);';
+        pill.textContent = '未测试';
+        statusTd.appendChild(pill);
+      }
+      tr.appendChild(statusTd);
+
+      const actionTd = document.createElement('td');
+      actionTd.style.cssText = 'text-align:right;white-space:nowrap;';
+
+      const testBtn = document.createElement('button');
+      testBtn.className = 'btn ghost';
+      testBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;';
+      testBtn.textContent = '测试';
+      testBtn.onclick = function () { testProxyNode(c.raw_uri); };
+      actionTd.appendChild(testBtn);
+
+      if (c.raw_uri === proxyUrl) {
+        const disableBtn = document.createElement('button');
+        disableBtn.className = 'btn ghost';
+        disableBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;color:var(--gold);';
+        disableBtn.textContent = '取消启用';
+        disableBtn.onclick = function () { disableProxyNode(); };
+        actionTd.appendChild(disableBtn);
+      } else {
+        const enableBtn = document.createElement('button');
+        enableBtn.className = 'btn ghost';
+        enableBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;color:var(--green);';
+        enableBtn.textContent = '启用';
+        enableBtn.onclick = function () { enableProxyNode(c.raw_uri); };
+        actionTd.appendChild(enableBtn);
+      }
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn danger';
+      delBtn.style.cssText = 'padding:4px 10px;font-size:12px;';
+      delBtn.textContent = '删除';
+      delBtn.onclick = function () { deleteProxyNode(c.raw_uri); };
+      actionTd.appendChild(delBtn);
+
+      tr.appendChild(actionTd);
+      frag.appendChild(tr);
+    }
+  }
+
+  tbody.textContent = '';
+  tbody.appendChild(frag);
+}

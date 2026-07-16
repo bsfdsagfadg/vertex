@@ -141,7 +141,11 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 }
 
 func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
-	requestID := reqID24()
+	rid := vertex.RequestIDFromContext(ctx)
+	if rid == "" {
+		rid = reqID24()
+	}
+	sseID := reqID24()
 
 	flusher, canFlush := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -152,7 +156,7 @@ func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.Response
 
 	write := func(line string) bool {
 		if _, err := io.WriteString(w, line); err != nil {
-			log.Printf("[Server] [Stream] 请求ID=%s 客户端已主动断开连接", requestID)
+			log.Printf("[Server] [Stream] 请求ID=%s 客户端已主动断开连接", rid)
 			return false
 		}
 		if canFlush {
@@ -161,24 +165,22 @@ func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.Response
 		return true
 	}
 
-	isFirst := true
 	hasFinish := false
 	gotContent := false
 	streamErrWritten := false
 	startTime := time.Now()
+	observer := newStreamObserver(startTime)
+	isFirst := true
 
 	c.vc.StreamChat(ctx, model, geminiPayload, func(ch vertex.StreamChunk) bool {
-		if isFirst && ch.Err == nil {
-			log.Printf("[Server] [Stream] 请求ID=%s 首字响应耗时: %.2fs", requestID, time.Since(startTime).Seconds())
-			cli.UpdateReqState(requestID, "💬 流式打字", "\033[36m", "正在输出...")
-		}
 		if ch.Err != nil {
-			c.writeStreamError(write, ch.Err, requestID, model)
+			c.writeStreamError(write, ch.Err, rid, model)
 			streamErrWritten = true
 			return false
 		}
-		events := c.respConv.StreamToSSE(ch.Data, model, requestID, isFirst)
+		events := c.respConv.StreamToSSE(ch.Data, model, sseID, isFirst)
 		isFirst = false
+		observer.observe(ctx, ch, events)
 		for _, ev := range events {
 			if strings.Contains(ev, `"finish_reason"`) && !strings.Contains(ev, `"finish_reason":null`) {
 				hasFinish = true
@@ -205,11 +207,11 @@ func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.Response
 
 	if !gotContent && !streamErrWritten {
 		ee := vertex.NewEmptyResponseError("Upstream returned empty response (no content)")
-		c.writeStreamError(write, ee, requestID, model)
+		c.writeStreamError(write, ee, rid, model)
 		return
 	}
 	if !hasFinish {
-		base := streamChunkBase(model, requestID)
+		base := streamChunkBase(model, sseID)
 		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "length"}}
 		writeSilent(sseEvent(base))
 	}

@@ -135,6 +135,8 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 
 	gotChunk := false
 	hasFinish := false
+	startTime := time.Now()
+	observer := newStreamObserver(startTime)
 	g.vc.StreamChat(requestCtx, actualModel, body, func(ch vertex.StreamChunk) bool {
 		if ch.Err != nil {
 			if isSafetyBlock(ch.Err) {
@@ -147,6 +149,9 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 			return false
 		}
 		gotChunk = true
+		if hasGeminiValidOutput(ch.Data) {
+			observer.markTriggered(requestCtx)
+		}
 		if fr := cleanGeminiFinishReason(ch.Data); fr != "" {
 			hasFinish = true
 		}

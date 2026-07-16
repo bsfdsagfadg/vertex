@@ -59,10 +59,10 @@ build() {
 
     echo "    -> 使用 NDK 编译器: ${clang_cc}"
     CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" CC="${clang_cc}" \
-      go build -trimpath -ldflags="$LDFLAGS" -o "$stage/$bin" ./cmd/vproxy
+      go build -tags with_utls -trimpath -ldflags="$LDFLAGS" -o "$stage/$bin" ./cmd/vproxy
   else
     CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-      go build -trimpath -ldflags="$LDFLAGS" -o "$stage/$bin" ./cmd/vproxy
+      go build -tags with_utls -trimpath -ldflags="$LDFLAGS" -o "$stage/$bin" ./cmd/vproxy
   fi
 
   mkdir -p "$stage/config"

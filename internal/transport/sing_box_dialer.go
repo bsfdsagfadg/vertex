@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
@@ -16,28 +17,46 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 )
 
+type boxKey struct {
+	entry string
+	node  string
+}
+
+type boxCloser interface {
+	Close() error
+}
+
 type nodeBox struct {
-	box      *box.Box
+	box      boxCloser
 	outbound adapterOutbound
-	stopOnce sync.Once
+	closed   atomic.Bool
 }
 
 type singDialer struct {
-	cfg config.ConfigProvider
+	cfg        config.ConfigProvider
+	boxCache   map[boxKey]*nodeBox
+	cacheMu    sync.Mutex
+	lastEntry  string
+	boxBuilder func(uri string) (*nodeBox, error)
 }
 
 func NewSingDialer(cfg config.ConfigProvider) *singDialer {
-	return &singDialer{cfg: cfg}
+	d := &singDialer{
+		cfg:      cfg,
+		boxCache: make(map[boxKey]*nodeBox),
+	}
+	d.boxBuilder = d.newBoxForURI
+	return d
 }
 
 func (d *singDialer) CreateDialer(uri string, reqID string) (func(ctx context.Context, network, addr string) (net.Conn, error), func(), error) {
 	log.Printf("[Transport] 请求ID=%s 触发代理初始化: %s", reqID, nodes.GetNodeName(uri))
 
-	nb, err := d.newBoxForURI(uri)
+	nb, err := d.box(uri)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create node box: %w", err)
 	}
-	return makeBoxDialFunc(nb.outbound), func() { nb.stopOnce.Do(func() { nb.box.Close() }) }, nil
+	return makeBoxDialFunc(nb), func() {}, nil
 }
 
 type dialerOptionsSetter interface {
@@ -59,20 +78,18 @@ func (d *singDialer) newBoxForURI(uri string) (*nodeBox, error) {
 	var outbounds []option.Outbound
 
 	entryTag := ""
-	if entry := d.cfg.ProxyURL(); entry != "" &&
-		(strings.HasPrefix(entry, "socks5://") ||
-			strings.HasPrefix(entry, "socks5h://") ||
-			strings.HasPrefix(entry, "socks://") ||
-			strings.HasPrefix(entry, "http://") ||
-			strings.HasPrefix(entry, "https://")) {
-
-		entryOb, err := buildOutbound(entry)
-		if err != nil {
-			return nil, fmt.Errorf("build entry proxy: %w", err)
+	if entry := d.cfg.ProxyURL(); entry != "" {
+		if normalizeURI(entry) == normalizeURI(uri) {
+			log.Printf("[Transport] 前置代理 URI 与节点 URI 相同，跳过前置代理 entry-proxy 防止自引用")
+		} else {
+			entryOb, err := buildOutbound(entry)
+			if err != nil {
+				return nil, fmt.Errorf("全局前置代理构建失败: %w", err)
+			}
+			entryOb.Tag = "entry-proxy"
+			outbounds = append(outbounds, entryOb)
+			entryTag = "entry-proxy"
 		}
-		entryOb.Tag = "entry-proxy"
-		outbounds = append(outbounds, entryOb)
-		entryTag = "entry-proxy"
 	}
 
 	node, err := buildOutbound(uri)
@@ -112,14 +129,109 @@ func (d *singDialer) newBoxForURI(uri string) (*nodeBox, error) {
 	}, nil
 }
 
-func (d *singDialer) RemoveDialer(uri string) {}
+func normalizeURI(uri string) string {
+	uri = strings.TrimSpace(uri)
+	uri = strings.TrimRight(uri, "/")
+	return uri
+}
 
-func (d *singDialer) StopAll() {}
+func (d *singDialer) box(uri string) (*nodeBox, error) {
+	for {
+		entry := d.cfg.ProxyURL()
+		key := boxKey{entry: entry, node: uri}
 
-func makeBoxDialFunc(outbound adapterOutbound) func(ctx context.Context, network, addr string) (net.Conn, error) {
+		d.cacheMu.Lock()
+		if entry != d.lastEntry {
+			closers := d.flushCacheUnsafe()
+			d.lastEntry = entry
+			d.cacheMu.Unlock()
+			for _, c := range closers {
+				c.Close()
+			}
+			continue
+		}
+		if nb, ok := d.boxCache[key]; ok {
+			d.cacheMu.Unlock()
+			return nb, nil
+		}
+		d.cacheMu.Unlock()
+
+		nb, err := d.boxBuilder(uri)
+		if err != nil {
+			return nil, err
+		}
+
+		d.cacheMu.Lock()
+		currentEntry := d.cfg.ProxyURL()
+		if currentEntry != d.lastEntry {
+			closers := d.flushCacheUnsafe()
+			d.lastEntry = currentEntry
+			closers = append(closers, nb.box)
+			d.cacheMu.Unlock()
+			for _, c := range closers {
+				c.Close()
+			}
+			continue
+		}
+
+		currentKey := boxKey{entry: currentEntry, node: uri}
+		if existing, ok := d.boxCache[currentKey]; ok {
+			d.cacheMu.Unlock()
+			nb.box.Close()
+			return existing, nil
+		}
+		d.boxCache[currentKey] = nb
+		d.cacheMu.Unlock()
+		return nb, nil
+	}
+}
+
+func (d *singDialer) flushCacheUnsafe() []boxCloser {
+	var closers []boxCloser
+	for key, nb := range d.boxCache {
+		if !nb.closed.Load() {
+			closers = append(closers, nb.box)
+			nb.closed.Store(true)
+		}
+		delete(d.boxCache, key)
+	}
+	return closers
+}
+
+func (d *singDialer) RemoveDialer(uri string) {
+	d.cacheMu.Lock()
+	var closers []boxCloser
+	for key, nb := range d.boxCache {
+		if key.node == uri {
+			if !nb.closed.Load() {
+				closers = append(closers, nb.box)
+				nb.closed.Store(true)
+			}
+			delete(d.boxCache, key)
+		}
+	}
+	d.cacheMu.Unlock()
+	for _, c := range closers {
+		c.Close()
+	}
+}
+
+func (d *singDialer) StopAll() {
+	d.cacheMu.Lock()
+	closers := d.flushCacheUnsafe()
+	d.cacheMu.Unlock()
+	for _, c := range closers {
+		c.Close()
+	}
+}
+
+func makeBoxDialFunc(nb *nodeBox) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if nb.closed.Load() {
+			return nil, fmt.Errorf("node box closed")
+		}
 		destination := M.ParseSocksaddr(addr)
-		return outbound.DialContext(ctx, network, destination)
+		return nb.outbound.DialContext(ctx, network, destination)
 	}
 }
 

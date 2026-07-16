@@ -129,10 +129,27 @@
           </div>
           <div class="grid grid-1">
             <div class="card glass">
-              <div class="field"><label for="globalProxy">全局前置代理 (SOCKS5/HTTP)</label>
-                <div class="toolbar m-0"><input id="globalProxy" placeholder="socks5://127.0.0.1:1080"><button
-                    class="btn" onclick="saveGlobalProxy()">保存</button></div>
-                <div class="desc">配置后默认走该代理；如果未启用并发池且无锁定节点，将使用此代理。</div>
+              <div class="field"><label for="globalProxy">全局前置代理 (SOCKS5/HTTP/VLESS 等)</label>
+                <div class="toolbar m-0"><input id="globalProxy" placeholder="socks5://127.0.0.1:1080 或 vless://..."><button
+                    class="btn" onclick="importProxyNode()">导入</button></div>
+                <div class="desc">配置后默认走该代理；如果未启用并发池且无锁定节点，将使用此代理。导入后可在下方候选列表启用。</div>
+              </div>
+              <div class="divider"></div>
+              <div class="field m-0">
+                <div class="field-heading">前置代理候选列表</div>
+                <div class="table-wrap">
+<table class="proxy-candidates-table">
+                    <thead>
+                      <tr>
+                        <th>名称</th>
+                        <th>类型</th>
+                        <th>测试状态</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="proxyNodesBody"></tbody>
+                  </table>
+                </div>
               </div>
             </div>
             <div class="card glass">
@@ -187,7 +204,7 @@
                   onclick="selectAllNodesAcrossPages()">全选所有页共 <span id="crossPageSelectTotal">0</span> 个节点</button>
               </div>
               <div class="table-wrap">
-                <table>
+                <table class="nodes-table">
                   <thead>
                     <tr>
                       <th class="th-center"><label for="selectAllNodesCheckbox" class="sr-only">全选</label><input
