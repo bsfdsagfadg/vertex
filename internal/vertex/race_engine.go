@@ -112,9 +112,6 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 
 	if !cfg.ParallelPoolEnabled() || len(cands) == 0 {
 		proxy := cfg.ActiveNodeURI()
-		if proxy == "" {
-			proxy = cfg.ProxyURL()
-		}
 		log.Printf("[Vertex] [RunParallel] 降级为单节点运行: %s", nodes.GetNodeName(proxy))
 		return run(ctx, proxy)
 	}

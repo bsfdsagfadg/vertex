@@ -350,23 +350,20 @@ func (adm *AdminHandler) fetchSubscriptionText(ctx context.Context, rawURL strin
 		return "", errors.New("subscription url is empty")
 	}
 
-	data, err := fetchSubscriptionDataDirect(ctx, rawURL)
-	if err == nil {
-		return strings.TrimSpace(string(data)), nil
+	proxyURI := adm.cfg.ProxyURL()
+	if proxyURI != "" && adm.vc != nil && adm.vc.Net() != nil {
+		log.Printf("[Admin] [FetchSub] 经全局前置代理拉取订阅")
+		data, err := fetchSubscriptionDataViaProxy(ctx, adm.vc.Net(), rawURL)
+		if err == nil {
+			return strings.TrimSpace(string(data)), nil
+		}
+		log.Printf("[Admin] [FetchSub] 代理拉取失败 (%v)，回退直连", err)
 	}
 
-	proxyURI := adm.cfg.ProxyURL()
-	if proxyURI == "" || adm.vc == nil || adm.vc.Net() == nil {
+	data, err := fetchSubscriptionDataDirect(ctx, rawURL)
+	if err != nil {
 		return "", err
 	}
-
-	log.Printf("[Admin] [FetchSub] direct fetch failed, retry via proxy: %v", err)
-	data, proxyErr := fetchSubscriptionDataViaProxy(ctx, adm.vc.Net(), rawURL, proxyURI)
-	if proxyErr != nil {
-		return "", fmt.Errorf("direct fetch failed: %v; proxy retry failed: %w", err, proxyErr)
-	}
-
-	log.Printf("[Admin] [FetchSub] proxy retry succeeded")
 	return strings.TrimSpace(string(data)), nil
 }
 
@@ -398,12 +395,12 @@ func fetchSubscriptionDataDirect(ctx context.Context, rawURL string) ([]byte, er
 	return data, nil
 }
 
-func fetchSubscriptionDataViaProxy(ctx context.Context, netClient *transport.NetworkClient, rawURL string, proxyURI string) ([]byte, error) {
+func fetchSubscriptionDataViaProxy(ctx context.Context, netClient *transport.NetworkClient, rawURL string) ([]byte, error) {
 	if netClient == nil {
 		return nil, errors.New("network client unavailable")
 	}
 
-	sess, err := netClient.CreateSession(30, proxyURI, "admin-fetch-sub")
+	sess, err := netClient.CreateSession(30, "", "admin-fetch-sub")
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
 	}

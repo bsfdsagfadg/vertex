@@ -6,20 +6,15 @@ import (
 	"io"
 	"log"
 	"math/rand"
-	"strings"
 
 	http "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
 	"github.com/bogdanfinn/tls-client/profiles"
 )
 
-// Header 是 fhttp.Header 的别名，让 recaptcha/vertex 能构造请求头而不直接 import fhttp。
 type Header = http.Header
-
-// Response 是 fhttp.Response 的别名。
 type Response = http.Response
 
-// Session 封装一个独立的 tls-client，服务于单次逻辑请求。
 type Session struct {
 	client   tls_client.HttpClient
 	ProxyURI string
@@ -96,7 +91,11 @@ func NewNetworkClient(dialer ProxyDialer) *NetworkClient {
 	return &NetworkClient{dialer: dialer}
 }
 
-//nolint:gochecknoglobals // Read-only list of browser profiles
+func (c *NetworkClient) Dialer() ProxyDialer {
+	return c.dialer
+}
+
+//nolint:gochecknoglobals
 var browserProfiles = []profiles.ClientProfile{
 	profiles.Chrome_124, profiles.Chrome_131,
 }
@@ -105,29 +104,12 @@ func pickProfile() profiles.ClientProfile {
 	return browserProfiles[rand.Intn(len(browserProfiles))]
 }
 
-// injectProxy 统一处理网络代理挂载，如果代理初始化失败，返回 error
-// cleanup 返回的清理函数，需要调用方在不再使用连接时调用。
-func (c *NetworkClient) injectProxy(opts []tls_client.HttpClientOption, proxyURI string, reqID string) ([]tls_client.HttpClientOption, func(), error) {
-	if proxyURI == "" {
-		return opts, nil, nil
-	}
-	// 用户自定义的外部标准代理，直接使用 URL
-	if strings.HasPrefix(proxyURI, "http://") || strings.HasPrefix(proxyURI, "https://") || strings.HasPrefix(proxyURI, "socks5://") {
-		return append(opts, tls_client.WithProxyUrl(proxyURI)), nil, nil
-	}
-
-	// 订阅节点，获取并挂载内部 Dialer
-	dialCtx, cleanup, err := c.dialer.CreateDialer(proxyURI, reqID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("节点内部 Dialer 启动失败: %w", err)
-	}
-
-	opts = append(opts, tls_client.WithDialContext(dialCtx))
-	return opts, cleanup, nil
-}
-
-// CreateSession 创建一个新 Session：随机 Chrome 指纹 + 可选代理 + 独立 cookie jar。
-func (c *NetworkClient) CreateSession(timeoutSec int, proxyURI string, reqID string) (*Session, error) {
+// CreateSession 创建一个新 Session。
+//
+//   - secondHopURI 为空时：全局前置代理非空则经回环 SOCKS 第一跳，否则直连。
+//   - secondHopURI 非空时：创建临时第二跳 sing-box（有前置时 detour 经第一跳）。
+//     禁止对第二跳 URI 直接使用 WithProxyUrl 绕过第一跳。
+func (c *NetworkClient) CreateSession(timeoutSec int, secondHopURI string, reqID string) (*Session, error) {
 	prof := pickProfile()
 	log.Printf("[Transport] reqID: %s, Assigned TLS Profile: %s", reqID, prof.GetClientHelloStr())
 
@@ -137,11 +119,19 @@ func (c *NetworkClient) CreateSession(timeoutSec int, proxyURI string, reqID str
 		tls_client.WithCookieJar(tls_client.NewCookieJar()),
 	}
 
-	// 使用 injectProxy 挂载代理，失败则直接熔断，坚决不走静默直连！
 	var cleanup func()
 	var err error
-	opts, cleanup, err = c.injectProxy(opts, proxyURI, reqID)
+
+	if secondHopURI != "" {
+		opts, cleanup, err = c.injectSecondHopDialer(opts, secondHopURI, reqID)
+	} else {
+		opts, err = c.injectEntryProxy(opts)
+	}
+
 	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
 		return nil, err
 	}
 
@@ -153,5 +143,31 @@ func (c *NetworkClient) CreateSession(timeoutSec int, proxyURI string, reqID str
 		return nil, fmt.Errorf("error: %w", err)
 
 	}
-	return &Session{client: client, ProxyURI: proxyURI, cleanup: cleanup}, nil
+	return &Session{client: client, ProxyURI: secondHopURI, cleanup: cleanup}, nil
+}
+
+// injectEntryProxy 配置 tls-client 经回环 SOCKS 走全局前置代理。
+func (c *NetworkClient) injectEntryProxy(opts []tls_client.HttpClientOption) ([]tls_client.HttpClientOption, error) {
+	if c.dialer == nil {
+		return opts, nil
+	}
+	addr := c.dialer.EntryProxySocksAddr()
+	if addr == "" {
+		return opts, nil
+	}
+	proxyURL := "socks5://" + addr
+	return append(opts, tls_client.WithProxyUrl(proxyURL)), nil
+}
+
+// injectSecondHopDialer 配置 tls-client 通过临时第二跳 sing-box 拨号。
+// 第二跳 box 内部有前置时 detour 经回环 SOCKS。
+// 无论 URI 协议类型（VLESS/VMess/SS/HTTP/SOCKS等），统一使用 CreateDialer，
+// 禁止对任何第二跳 URI 直接使用 tls_client.WithProxyUrl 绕过第一跳。
+func (c *NetworkClient) injectSecondHopDialer(opts []tls_client.HttpClientOption, secondHopURI string, reqID string) ([]tls_client.HttpClientOption, func(), error) {
+	dialCtx, cleanup, err := c.dialer.CreateDialer(secondHopURI, reqID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("第二跳 Dialer 启动失败: %w", err)
+	}
+	opts = append(opts, tls_client.WithDialContext(dialCtx))
+	return opts, cleanup, nil
 }

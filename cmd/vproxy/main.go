@@ -25,7 +25,6 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/db"
 	"github.com/bsfdsagfadg/vertex/internal/logger"
-	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/spool"
 	"github.com/bsfdsagfadg/vertex/internal/telemetry"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
@@ -170,8 +169,13 @@ func main() {
 	spool.SetMaxSpillProvider(func() int64 { return int64(config.Load().MaxSpillMB) << 20 })
 
 	dialer := transport.NewSingDialer(cfg)
-	nodes.DeleteNodeCallback = dialer.RemoveDialer
 	netClient := transport.NewNetworkClient(dialer)
+
+	if proxyURL := cfg.ProxyURL(); proxyURL != "" {
+		if err := dialer.SyncEntryProxy(proxyURL); err != nil {
+			log.Fatalf("[vproxy] 全局前置代理预热失败: %v", err)
+		}
+	}
 
 	keys := api.NewAPIKeyManager()
 	keys.LoadKeys()
@@ -204,7 +208,11 @@ func main() {
 			if s == syscall.SIGHUP {
 				config.InvalidateCache()
 				config.InvalidateModelsCache()
-				log.Printf("[vproxy] 收到 SIGHUP：已清配置/模型缓存，下次读取即热重载")
+				log.Printf("[vproxy] 收到 SIGHUP：已清配置/模型缓存，执行热重载")
+				cfg := config.Load()
+				if err := dialer.SyncEntryProxy(cfg.ProxyURL); err != nil {
+					log.Printf("[vproxy] SIGHUP 前置代理同步失败: %v", err)
+				}
 				continue
 			}
 			log.Printf("[vproxy] 收到 %v：开始优雅关闭，排干在途请求（最长 %s）…", s, shutdownGrace)

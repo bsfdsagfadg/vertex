@@ -613,8 +613,18 @@ func (d *directDialer) CreateDialer(uri string, reqID string) (func(ctx context.
 	return dialer.DialContext, func() {}, nil
 }
 
-func (d *directDialer) RemoveDialer(uri string) {}
-func (d *directDialer) StopAll()                {}
+func (d *directDialer) StopAll()                      {}
+func (d *directDialer) EntryProxySocksAddr() string   { return "" }
+func (d *directDialer) SyncEntryProxy(uri string) error  { return nil }
+func (d *directDialer) ValidateEntryProxy(uri string) (io.Closer, string, error) {
+	return io.NopCloser(strings.NewReader("")), "", nil
+}
+func (d *directDialer) AdoptEntryProxy(uri string, candidate io.Closer, socksAddr string) error {
+	return nil
+}
+func (d *directDialer) TestEntryProxy(uri string) (func(ctx context.Context, network, addr string) (net.Conn, error), func(), error) {
+	return d.CreateDialer(uri, "test")
+}
 
 // newTestServerCustomMock 创建带自定义 mock upstream handler 的测试服务器。
 // 同时允许调用方修改 config 后再创建 VertexAIClient。

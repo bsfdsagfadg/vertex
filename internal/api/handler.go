@@ -12,6 +12,7 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 	"github.com/google/uuid"
 )
@@ -20,6 +21,13 @@ type handler struct {
 	vc   *vertex.VertexAIClient
 	keys *APIKeyManager
 	cfg  config.ConfigProvider
+}
+
+func (h *handler) dialer() transport.ProxyDialer {
+	if h.vc != nil && h.vc.Net() != nil {
+		return h.vc.Net().Dialer()
+	}
+	return nil
 }
 
 func (h *handler) decodeAdminBody(w http.ResponseWriter, r *http.Request, dst any) bool {

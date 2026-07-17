@@ -38,7 +38,7 @@ func (p *TokenPool) GetToken() (string, error) {
 	if p.fetch != nil {
 		return p.fetch("")
 	}
-	return FetchRecaptchaToken(p.net, p.cfg.ProxyURL(), p.cfg.DebugMode())
+	return FetchRecaptchaToken(p.net, "", p.cfg.DebugMode())
 }
 
 func (p *TokenPool) GetTokenWithProxy(proxyURI string) (string, error) {

@@ -95,7 +95,7 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 		yield(StreamChunk{Err: NewInternalError("create session: " + err.Error())})
 		return
 	}
-	defer sess.Close()
+	defer func() { sess.Close() }()
 
 	recaptchaToken := ""
 	isFirstAuth := true

@@ -2,18 +2,21 @@ package transport
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/sagernet/sing-box"
+	"github.com/sagernet/sing-box/include"
+	"github.com/sagernet/sing-box/option"
 	M "github.com/sagernet/sing/common/metadata"
 )
-
-// ─── fakes ───
 
 type fakeCloser struct {
 	closeCount atomic.Int64
@@ -41,7 +44,7 @@ func (e *fakeTimeoutError) Timeout() bool   { return true }
 func (e *fakeTimeoutError) Temporary() bool { return true }
 
 type fakeCfg struct {
-	proxyURL atomic.Value // string
+	proxyURL atomic.Value
 }
 
 func newFakeCfg(proxyURL string) *fakeCfg {
@@ -55,7 +58,6 @@ func (c *fakeCfg) ProxyURL() string {
 	return v
 }
 
-// ConfigProvider methods — all panic except ProxyURL
 func (c *fakeCfg) PortAPI() int                                { panic("unexpected") }
 func (c *fakeCfg) MaxRetries() int                             { panic("unexpected") }
 func (c *fakeCfg) AdminPassword() string                       { panic("unexpected") }
@@ -95,7 +97,7 @@ func (c *fakeCfg) ConfigPath() string                          { panic("unexpect
 
 type fakeBuilder struct {
 	count    atomic.Int64
-	preBuild func() // optional hook, called inside builder before returning
+	preBuild func()
 }
 
 func (b *fakeBuilder) build(uri string) (*nodeBox, error) {
@@ -109,295 +111,591 @@ func (b *fakeBuilder) build(uri string) (*nodeBox, error) {
 	}, nil
 }
 
-// ─── tests ───
-
-func TestBox_BasicBuildAndCache(t *testing.T) {
-	cfg := newFakeCfg("socks5://entry:1080")
+func TestCreateDialer_ReturnsUniqueBoxes(t *testing.T) {
+	cfg := newFakeCfg("")
 	builder := &fakeBuilder{}
 	d := &singDialer{
 		cfg:        cfg,
-		boxCache:   make(map[boxKey]*nodeBox),
+		entry:      &entryBoxManager{},
 		boxBuilder: builder.build,
 	}
 
-	nb, err := d.box("socks5://node:1080")
+	_, cleanup1, err := d.CreateDialer("socks5://node1:1080", "test-1")
 	if err != nil {
-		t.Fatalf("box: %v", err)
+		t.Fatalf("CreateDialer: %v", err)
 	}
-	if nb == nil {
-		t.Fatal("box returned nil")
-	}
-	if builder.count.Load() != 1 {
-		t.Fatalf("builder called %d times, want 1", builder.count.Load())
+	_, cleanup2, err := d.CreateDialer("socks5://node2:1080", "test-2")
+	if err != nil {
+		t.Fatalf("CreateDialer second: %v", err)
 	}
 
-	// second call should hit cache
-	nb2, err := d.box("socks5://node:1080")
-	if err != nil {
-		t.Fatalf("box second call: %v", err)
+	if builder.count.Load() != 2 {
+		t.Fatalf("builder called %d times, want 2 (each CreateDialer gets its own box)", builder.count.Load())
 	}
-	if nb != nb2 {
-		t.Fatal("second call returned different *nodeBox")
-	}
-	if builder.count.Load() != 1 {
-		t.Fatalf("builder should still be 1 after cache hit, got %d", builder.count.Load())
-	}
+
+	cleanup1()
+	cleanup2()
 }
 
-func TestBox_DedupUnderConcurrency(t *testing.T) {
-	cfg := newFakeCfg("socks5://entry:1080")
-	builder := &fakeBuilder{
-		preBuild: func() {
-			time.Sleep(2 * time.Millisecond)
+func TestCreateDialer_CleanupClosesBox(t *testing.T) {
+	fc := &fakeCloser{}
+	d := &singDialer{
+		cfg:   newFakeCfg(""),
+		entry: &entryBoxManager{},
+		boxBuilder: func(uri string) (*nodeBox, error) {
+			return &nodeBox{box: fc, outbound: fakeOutbound{}}, nil
 		},
 	}
-	d := &singDialer{
-		cfg:        cfg,
-		boxCache:   make(map[boxKey]*nodeBox),
-		boxBuilder: builder.build,
+
+	_, cleanup, err := d.CreateDialer("socks5://node:1080", "test")
+	if err != nil {
+		t.Fatalf("CreateDialer: %v", err)
 	}
 
-	const goroutines = 50
-	results := make(map[*nodeBox]int)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
+	cleanup()
 
-	for range goroutines {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			nb, err := d.box("socks5://node:1080")
-			if err != nil {
-				t.Errorf("box: %v", err)
-				return
-			}
-			mu.Lock()
-			results[nb]++
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-
-	// all goroutines returned the same *nodeBox
-	if len(results) != 1 {
-		t.Fatalf("expected 1 unique *nodeBox, got %d", len(results))
-	}
-	if results[nil] > 0 {
-		t.Fatal("some goroutines got nil *nodeBox")
-	}
-
-	d.cacheMu.Lock()
-	cacheLen := len(d.boxCache)
-	d.cacheMu.Unlock()
-	if cacheLen != 1 {
-		t.Fatalf("boxCache should have 1 entry, got %d", cacheLen)
-	}
-
-	// builder count should be > 1 when the sleep amplifies the race window
-	count := builder.count.Load()
-	if count < 2 {
-		t.Logf("note: builder called %d times (sleep may not have overlapped all goroutines)", count)
+	if fc.closeCount.Load() == 0 {
+		t.Fatal("cleanup should close the node box")
 	}
 }
 
-func TestBox_EntryChangeFlushes(t *testing.T) {
-	cfg := newFakeCfg("socks5://entry:1080")
+func TestCreateDialer_NoCache(t *testing.T) {
+	cfg := newFakeCfg("")
 	builder := &fakeBuilder{}
 	d := &singDialer{
 		cfg:        cfg,
-		boxCache:   make(map[boxKey]*nodeBox),
+		entry:      &entryBoxManager{},
 		boxBuilder: builder.build,
 	}
 
-	nb, err := d.box("socks5://node:1080")
-	if err != nil {
-		t.Fatalf("box: %v", err)
-	}
-	fc := nb.box.(*fakeCloser)
+	_, cleanup1, _ := d.CreateDialer("socks5://node:1080", "test-1")
+	_, cleanup2, _ := d.CreateDialer("socks5://node:1080", "test-2")
 
-	// change entry
-	cfg.proxyURL.Store("socks5://new-entry:1081")
-
-	nb2, err := d.box("socks5://node:1080")
-	if err != nil {
-		t.Fatalf("box after entry change: %v", err)
+	if builder.count.Load() != 2 {
+		t.Fatalf("builder called %d times, want 2 (no caching)", builder.count.Load())
 	}
 
-	if fc.closeCount.Load() != 1 {
-		t.Fatalf("old box closeCount=1 after flush, got %d", fc.closeCount.Load())
-	}
-	if nb == nb2 {
-		t.Fatal("entry change should produce a different *nodeBox")
-	}
-
-	d.cacheMu.Lock()
-	cacheLen := len(d.boxCache)
-	d.cacheMu.Unlock()
-	if cacheLen != 1 {
-		t.Fatalf("boxCache should have 1 entry, got %d", cacheLen)
-	}
-
-	fc2 := nb2.box.(*fakeCloser)
-	if fc2.closeCount.Load() != 0 {
-		t.Fatalf("new box should not be closed, got closeCount=%d", fc2.closeCount.Load())
-	}
+	cleanup1()
+	cleanup2()
 }
 
-func TestBox_PublishRaceEntryChanged(t *testing.T) {
-	cfg := newFakeCfg("socks5://entry:1080")
-
-	enterBuild := make(chan struct{})
-	proceed := make(chan struct{})
-
-	var once sync.Once
-	builder := &fakeBuilder{
-		preBuild: func() {
-			once.Do(func() {
-				enterBuild <- struct{}{}
-				<-proceed
-			})
+func TestCreateDialer_CleanupIdempotent(t *testing.T) {
+	fc := &fakeCloser{}
+	d := &singDialer{
+		cfg:   newFakeCfg(""),
+		entry: &entryBoxManager{},
+		boxBuilder: func(uri string) (*nodeBox, error) {
+			return &nodeBox{box: fc, outbound: fakeOutbound{}}, nil
 		},
 	}
 
-	d := &singDialer{
-		cfg:        cfg,
-		boxCache:   make(map[boxKey]*nodeBox),
-		boxBuilder: builder.build,
+	_, cleanup, err := d.CreateDialer("socks5://node:1080", "test")
+	if err != nil {
+		t.Fatalf("CreateDialer: %v", err)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	var nb1 *nodeBox
-	var err1 error
-
-	go func() {
-		defer wg.Done()
-		nb1, err1 = d.box("socks5://node:1080")
-	}()
-
-	<-enterBuild
-	// change entry while goroutine is building
-	cfg.proxyURL.Store("socks5://new-entry:1081")
-	close(proceed)
-
-	wg.Wait()
-
-	if err1 != nil {
-		t.Errorf("box error: %v", err1)
-	}
-	if nb1 == nil {
-		t.Fatal("box returned nil")
-	}
-
-	// after retry, cache should have the new entry
-	d.cacheMu.Lock()
-	_, hasNew := d.boxCache[boxKey{entry: "socks5://new-entry:1081", node: "socks5://node:1080"}]
-	_, hasOld := d.boxCache[boxKey{entry: "socks5://entry:1080", node: "socks5://node:1080"}]
-	d.cacheMu.Unlock()
-
-	if !hasNew {
-		t.Error("cache should contain the new entry after retry")
-	}
-	if hasOld {
-		t.Error("cache should NOT contain the old entry after retry")
-	}
-
-	// builder should have been called at least twice (once for each attempt)
-	if builder.count.Load() < 2 {
-		t.Errorf("builder should be called >= 2 times (retry), got %d", builder.count.Load())
-	}
+	cleanup()
+	cleanup()
 }
 
-func TestBox_BuilderError(t *testing.T) {
-	cfg := newFakeCfg("socks5://entry:1080")
-	errBuilder := func(uri string) (*nodeBox, error) {
-		return nil, assertAnError("build failed")
-	}
+func TestCreateDialer_BuilderError(t *testing.T) {
+	cfg := newFakeCfg("")
 	d := &singDialer{
-		cfg:        cfg,
-		boxCache:   make(map[boxKey]*nodeBox),
-		boxBuilder: errBuilder,
+		cfg:   cfg,
+		entry: &entryBoxManager{},
+		boxBuilder: func(uri string) (*nodeBox, error) {
+			return nil, errors.New("build failed")
+		},
 	}
 
-	_, err := d.box("socks5://node:1080")
+	_, _, err := d.CreateDialer("socks5://node:1080", "test")
 	if err == nil {
 		t.Fatal("expected error from builder, got nil")
 	}
 	if !strings.Contains(err.Error(), "build failed") {
 		t.Fatalf("unexpected error message: %v", err)
 	}
+}
 
-	d.cacheMu.Lock()
-	cacheLen := len(d.boxCache)
-	d.cacheMu.Unlock()
-	if cacheLen != 0 {
-		t.Fatalf("boxCache should be empty after builder error, got %d entries", cacheLen)
+func TestEntryProxyAddr_EmptyByDefault(t *testing.T) {
+	m := &entryBoxManager{}
+	if addr := m.Addr(); addr != "" {
+		t.Fatalf("expected empty addr before sync, got %q", addr)
 	}
 }
 
-type assertAnError string
-
-func (e assertAnError) Error() string { return string(e) }
-
-func TestBox_RemoveDialer_ClosesBox(t *testing.T) {
-	cfg := newFakeCfg("")
-	builder := &fakeBuilder{}
-	d := &singDialer{
-		cfg:        cfg,
-		boxCache:   make(map[boxKey]*nodeBox),
-		boxBuilder: builder.build,
-	}
-
-	nb, err := d.box("socks5://node:1080")
-	if err != nil {
-		t.Fatalf("box: %v", err)
-	}
-	fc := nb.box.(*fakeCloser)
-
-	d.RemoveDialer("socks5://node:1080")
-
-	if fc.closeCount.Load() != 1 {
-		t.Fatalf("box should be closed after RemoveDialer, closeCount=%d", fc.closeCount.Load())
-	}
-
-	d.cacheMu.Lock()
-	cacheLen := len(d.boxCache)
-	d.cacheMu.Unlock()
-	if cacheLen != 0 {
-		t.Fatalf("boxCache should be empty after RemoveDialer, got %d entries", cacheLen)
+func TestEntryProxySync_EmptyIsOK(t *testing.T) {
+	m := &entryBoxManager{}
+	if err := m.sync(""); err != nil {
+		t.Fatalf("sync empty should succeed: %v", err)
 	}
 }
 
-func TestBox_StopAll_ClosesAll(t *testing.T) {
-	cfg := newFakeCfg("")
-	builder := &fakeBuilder{}
-	d := &singDialer{
-		cfg:        cfg,
-		boxCache:   make(map[boxKey]*nodeBox),
-		boxBuilder: builder.build,
+func TestEntryProxySync_StoppedReturnsError(t *testing.T) {
+	m := &entryBoxManager{}
+	m.stop()
+	if err := m.sync("socks5://entry:1080"); err == nil {
+		t.Fatal("sync after stop should return error")
 	}
+}
 
-	uri1 := "socks5://node1:1080"
-	uri2 := "socks5://node2:1080"
-
-	nb1, _ := d.box(uri1)
-	nb2, _ := d.box(uri2)
-	fc1 := nb1.box.(*fakeCloser)
-	fc2 := nb2.box.(*fakeCloser)
+func TestStopAll_ClearsEntryProxy(t *testing.T) {
+	d := &singDialer{
+		cfg:   newFakeCfg(""),
+		entry: &entryBoxManager{},
+	}
+	d.entry.socksAddr = "127.0.0.1:11080"
+	d.entry.entryURI = "socks5://entry:1080"
 
 	d.StopAll()
 
-	if fc1.closeCount.Load() != 1 {
-		t.Fatalf("box1 should be closed after StopAll, closeCount=%d", fc1.closeCount.Load())
+	if d.entry.socksAddr != "" {
+		t.Fatal("socksAddr should be cleared after StopAll")
 	}
-	if fc2.closeCount.Load() != 1 {
-		t.Fatalf("box2 should be closed after StopAll, closeCount=%d", fc2.closeCount.Load())
+}
+
+func TestConcurrentCreateDialer(t *testing.T) {
+	cfg := newFakeCfg("")
+	d := &singDialer{
+		cfg:        cfg,
+		entry:      &entryBoxManager{},
+		boxBuilder: func(uri string) (*nodeBox, error) {
+			return &nodeBox{box: &fakeCloser{}, outbound: fakeOutbound{}}, nil
+		},
 	}
 
-	d.cacheMu.Lock()
-	cacheLen := len(d.boxCache)
-	d.cacheMu.Unlock()
-	if cacheLen != 0 {
-		t.Fatalf("boxCache should be empty after StopAll, got %d entries", cacheLen)
+	const goroutines = 20
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, cleanup, err := d.CreateDialer("socks5://node:1080", "concurrent")
+			if err != nil {
+				t.Errorf("CreateDialer: %v", err)
+				return
+			}
+			cleanup()
+		}()
+	}
+	wg.Wait()
+}
+
+func TestTestEntryProxy_Basic(t *testing.T) {
+	cfg := newFakeCfg("")
+	d := &singDialer{
+		cfg:        cfg,
+		entry:      &entryBoxManager{},
+		boxBuilder: func(uri string) (*nodeBox, error) {
+			return &nodeBox{box: &fakeCloser{}, outbound: fakeOutbound{}}, nil
+		},
+	}
+
+	_, cleanup, err := d.TestEntryProxy("socks5://candidate:1080")
+	if err != nil {
+		t.Fatalf("TestEntryProxy: %v", err)
+	}
+	cleanup()
+}
+
+func TestCreateSession_NilDialer_EmptySecondHop_Direct(t *testing.T) {
+	nc := NewNetworkClient(nil)
+	sess, err := nc.CreateSession(1, "", "t")
+	if err != nil {
+		t.Fatalf("CreateSession with nil dialer should succeed: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("CreateSession returned nil session")
+	}
+	sess.Close()
+}
+
+func TestCreateDialer_SecondHopEqualsEntry_UsesLoopback(t *testing.T) {
+	builderCount := atomic.Int64{}
+	entryURI := "socks5://entry:1080"
+
+	// Create a minimal entry box so that Addr() returns a non-empty address.
+	bareBox, err := box.New(box.Options{
+		Context: include.Context(context.Background()),
+		Options: option.Options{
+			Log: &option.LogOptions{Disabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create bare box: %v", err)
+	}
+	defer bareBox.Close()
+
+	d := &singDialer{
+		cfg:   newFakeCfg(""),
+		entry: &entryBoxManager{},
+		boxBuilder: func(uri string) (*nodeBox, error) {
+			builderCount.Add(1)
+			return &nodeBox{box: &fakeCloser{}, outbound: fakeOutbound{}}, nil
+		},
+	}
+	d.entry.mu.Lock()
+	d.entry.box = bareBox
+	d.entry.socksAddr = "127.0.0.1:9999"
+	d.entry.entryURI = normalizeURI(entryURI)
+	d.entry.mu.Unlock()
+
+	dialCtx, cleanup, err := d.CreateDialer(entryURI, "test")
+	if err != nil {
+		t.Fatalf("CreateDialer: %v", err)
+	}
+	if builderCount.Load() != 0 {
+		t.Fatalf("builder called %d times, want 0 (self-reference should skip builder)", builderCount.Load())
+	}
+	if dialCtx == nil {
+		t.Fatal("dialCtx should not be nil")
+	}
+
+	cleanup() // must not panic
+	cleanup() // must be idempotent
+}
+
+func TestEntryProxySync_FailureKeepsOld(t *testing.T) {
+	d := &singDialer{
+		cfg:   newFakeCfg(""),
+		entry: &entryBoxManager{},
+	}
+
+	// 预埋一个旧的常驻实例
+	bareBox, err := box.New(box.Options{
+		Context: include.Context(context.Background()),
+		Options: option.Options{
+			Log: &option.LogOptions{Disabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create bare box: %v", err)
+	}
+	defer bareBox.Close()
+
+	d.entry.mu.Lock()
+	d.entry.box = bareBox
+	d.entry.socksAddr = "127.0.0.1:9999"
+	d.entry.entryURI = "socks5://old:1080"
+	d.entry.mu.Unlock()
+
+	// sync with an invalid URI should fail
+	err = d.entry.sync("invalid://bad")
+	if err == nil {
+		t.Fatal("expected sync error for invalid URI")
+	}
+
+	// old resident should survive (not replaced, not cleared)
+	if addr := d.entry.Addr(); addr != "127.0.0.1:9999" {
+		t.Fatalf("Addr() = %q, want 127.0.0.1:9999 (old resident should survive)", addr)
+	}
+	if uri := d.entry.currentURI(); uri != "socks5://old:1080" {
+		t.Fatalf("currentURI() = %q, want socks5://old:1080", uri)
+	}
+}
+
+func TestEntryProxySync_ConcurrentEmptyDoesNotPanic(t *testing.T) {
+	m := &entryBoxManager{}
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = m.sync("")
+		}()
+	}
+	wg.Wait()
+	if addr := m.Addr(); addr != "" {
+		t.Fatalf("Addr() = %q, want empty", addr)
+	}
+}
+
+func TestEntryProxyAdopt_ClosesOldInstantly(t *testing.T) {
+	oldBox, err := box.New(box.Options{
+		Context: include.Context(context.Background()),
+		Options: option.Options{
+			Log: &option.LogOptions{Disabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create old box: %v", err)
+	}
+
+	newBox, err := box.New(box.Options{
+		Context: include.Context(context.Background()),
+		Options: option.Options{
+			Log: &option.LogOptions{Disabled: true},
+		},
+	})
+	if err != nil {
+		oldBox.Close()
+		t.Fatalf("create new box: %v", err)
+	}
+
+	m := &entryBoxManager{}
+	m.mu.Lock()
+	m.box = oldBox
+	m.socksAddr = "127.0.0.1:9999"
+	m.entryURI = "socks5://old:1080"
+	m.mu.Unlock()
+
+	oldRef := oldBox
+	if err := m.AdoptEntryProxy("socks5://new:1080", newBox, "127.0.0.1:10000"); err != nil {
+		t.Fatalf("AdoptEntryProxy: %v", err)
+	}
+
+	// old box should be closed
+	if err := oldRef.Close(); err == nil {
+		t.Error("old box should have been closed by Adopt")
+	}
+
+	// Addr should reflect new address
+	if addr := m.Addr(); addr != "127.0.0.1:10000" {
+		t.Fatalf("Addr() = %q, want 127.0.0.1:10000", addr)
+	}
+	if uri := m.currentURI(); uri != "socks5://new:1080" {
+		t.Fatalf("currentURI() = %q, want socks5://new:1080", uri)
+	}
+}
+
+func TestStartEntryBox_UsesEphemeralPort(t *testing.T) {
+	box, addr, err := startEntryBox("socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("startEntryBox: %v", err)
+	}
+	defer box.Close()
+
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q): %v", addr, err)
+	}
+	port, _ := strconv.Atoi(portStr)
+	if port <= 1024 {
+		t.Fatalf("port %d <= 1024, want > 1024 (ephemeral range)", port)
+	}
+	if port >= 11080 && port <= 11280 {
+		t.Fatalf("port %d is in the old fixed range (11080-11280), want ephemeral", port)
+	}
+}
+
+func TestEntryProxySync_ConcurrentDifferentURIs(t *testing.T) {
+	oldBox, err := box.New(box.Options{
+		Context: include.Context(context.Background()),
+		Options: option.Options{
+			Log: &option.LogOptions{Disabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create oldBox: %v", err)
+	}
+
+	m := &entryBoxManager{}
+	m.mu.Lock()
+	m.box = oldBox
+	m.socksAddr = "127.0.0.1:9999"
+	m.entryURI = "socks5://old:1080"
+	m.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for i := range 5 {
+		wg.Add(1)
+		uri := "socks5://box" + strconv.Itoa(i) + ":1080"
+		go func() {
+			defer wg.Done()
+			b, err := box.New(box.Options{
+				Context: include.Context(context.Background()),
+				Options: option.Options{
+					Log: &option.LogOptions{Disabled: true},
+				},
+			})
+			if err != nil {
+				t.Errorf("create candidate box: %v", err)
+				return
+			}
+			if err := m.AdoptEntryProxy(uri, b, "127.0.0.1:1000"+strconv.Itoa(i)); err != nil {
+				_ = b.Close()
+				t.Errorf("AdoptEntryProxy: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// oldBox should have been closed by one of the Adopt calls
+	if err := oldBox.Close(); err == nil {
+		t.Error("oldBox should have been closed by AdoptEntryProxy")
+	}
+
+	// at most one box should be the current resident
+	if m.box == nil {
+		t.Fatal("no resident box after concurrent Adopt")
+	}
+	if m.socksAddr == "" || m.entryURI == "" {
+		t.Fatal("resident state should be populated")
+	}
+}
+
+// countingDialer implements ProxyDialer and counts CreateDialer invocations.
+type countingDialer struct {
+	createCount atomic.Int64
+}
+
+func (d *countingDialer) CreateDialer(uri string, reqID string) (func(ctx context.Context, network, addr string) (net.Conn, error), func(), error) {
+	d.createCount.Add(1)
+	var dialer net.Dialer
+	return dialer.DialContext, func() {}, nil
+}
+
+
+func (d *countingDialer) StopAll()                           {}
+func (d *countingDialer) EntryProxySocksAddr() string        { return "" }
+func (d *countingDialer) SyncEntryProxy(uri string) error    { return nil }
+func (d *countingDialer) TestEntryProxy(uri string) (func(ctx context.Context, network, addr string) (net.Conn, error), func(), error) {
+	var dialer net.Dialer
+	return dialer.DialContext, func() {}, nil
+}
+func (d *countingDialer) ValidateEntryProxy(uri string) (io.Closer, string, error) {
+	return io.NopCloser(strings.NewReader("")), "", nil
+}
+func (d *countingDialer) AdoptEntryProxy(uri string, candidate io.Closer, socksAddr string) error {
+	return nil
+}
+
+func TestInjectSecondHop_AlwaysViaTempBox(t *testing.T) {
+	dialer := &countingDialer{}
+	nc := NewNetworkClient(dialer)
+
+	// secondHop non-empty → must call CreateDialer
+	sess, err := nc.CreateSession(10, "http://example.com:8080", "t")
+	if err != nil {
+		t.Fatalf("CreateSession with http second-hop: %v", err)
+	}
+	if dialer.createCount.Load() != 1 {
+		t.Fatalf("CreateDialer called %d times, want 1", dialer.createCount.Load())
+	}
+	sess.Close()
+
+	// secondHop empty → must NOT call CreateDialer
+	sess2, err := nc.CreateSession(10, "", "t2")
+	if err != nil {
+		t.Fatalf("CreateSession with empty second-hop: %v", err)
+	}
+	if dialer.createCount.Load() != 1 {
+		t.Fatalf("CreateDialer called %d times, want still 1 (empty second-hop should skip CreateDialer)", dialer.createCount.Load())
+	}
+	sess2.Close()
+}
+
+func TestTestEntryProxy_IsolatedFromResident(t *testing.T) {
+	// set up a resident entry box
+	residentBox, err := box.New(box.Options{
+		Context: include.Context(context.Background()),
+		Options: option.Options{
+			Log: &option.LogOptions{Disabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create resident box: %v", err)
+	}
+	defer residentBox.Close()
+
+	d := &singDialer{
+		cfg:   newFakeCfg(""),
+		entry: &entryBoxManager{},
+		boxBuilder: func(uri string) (*nodeBox, error) {
+			return &nodeBox{box: &fakeCloser{}, outbound: fakeOutbound{}}, nil
+		},
+	}
+	d.entry.mu.Lock()
+	d.entry.box = residentBox
+	d.entry.socksAddr = "127.0.0.1:9999"
+	d.entry.entryURI = "socks5://resident:1080"
+	d.entry.mu.Unlock()
+
+	originalAddr := d.entry.Addr()
+	originalURI := d.entry.currentURI()
+
+	// TestEntryProxy with a different URI should not affect resident
+	dialCtx, cleanup, err := d.TestEntryProxy("socks5://candidate:1080")
+	if err != nil {
+		t.Fatalf("TestEntryProxy: %v", err)
+	}
+	if dialCtx == nil {
+		t.Fatal("TestEntryProxy returned nil dialCtx")
+	}
+
+	// resident state unchanged
+	if addr := d.entry.Addr(); addr != originalAddr {
+		t.Fatalf("resident Addr changed: %q -> %q", originalAddr, addr)
+	}
+	if uri := d.entry.currentURI(); uri != originalURI {
+		t.Fatalf("resident currentURI changed: %q -> %q", originalURI, uri)
+	}
+
+	cleanup() // candidate cleanup should not close resident
+
+	// resident still alive — Close should succeed (first close)
+	if err := residentBox.Close(); err != nil {
+		t.Fatalf("resident box should still be alive, but Close returned: %v", err)
+	}
+	// second close should return os.ErrClosed (box.go guard)
+	if err := residentBox.Close(); err == nil {
+		t.Error("second Close should return error (already closed)")
+	}
+}
+
+// cleanupTracker 记录 cleanup 调用次数。
+type cleanupTracker struct {
+	count atomic.Int64
+}
+
+func TestCreateSession_RetryPattern_CloseRecreate(t *testing.T) {
+	ct := &cleanupTracker{}
+	dialer := &countingDialer{}
+	dialer.createCount.Store(0)
+
+	nc := NewNetworkClient(dialer)
+
+	// CreateSession overrides the cleanup for second-hop sessions,
+	// but the countingDialer returns a no-op cleanup. We simulate
+	// the 429-retry pattern: close → recreate → defer-close.
+	sess, err := nc.CreateSession(10, "socks5://node:1080", "retry-test")
+	if err != nil {
+		t.Fatalf("first CreateSession: %v", err)
+	}
+	// Attach a tracker to the session cleanup.
+	origCleanup := sess.cleanup
+	countCalled := func() {
+		ct.count.Add(1)
+		if origCleanup != nil {
+			origCleanup()
+		}
+	}
+	sess.cleanup = countCalled
+
+	// Simulate 429 close
+	sess.Close()
+	if ct.count.Load() != 1 {
+		t.Fatalf("cleanup called %d times after first Close, want 1", ct.count.Load())
+	}
+
+	// Recreate
+	sess2, err := nc.CreateSession(10, "socks5://node:1080", "retry-test")
+	if err != nil {
+		t.Fatalf("second CreateSession: %v", err)
+	}
+	// Attach tracker to new session
+	origCleanup2 := sess2.cleanup
+	countCalled2 := func() {
+		ct.count.Add(1)
+		if origCleanup2 != nil {
+			origCleanup2()
+		}
+	}
+	sess2.cleanup = countCalled2
+
+	// Simulate defer close (second session's cleanup)
+	sess2.Close()
+	if ct.count.Load() != 2 {
+		t.Fatalf("cleanup called %d times after both Close, want 2 (first session cleanup called once, second once)", ct.count.Load())
 	}
 }

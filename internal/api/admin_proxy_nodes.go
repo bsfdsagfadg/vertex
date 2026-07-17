@@ -59,10 +59,34 @@ func (adm *AdminHandler) adminEnableProxyNode(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, adminErr("该 URI 不在候选列表中，请先导入"))
 		return
 	}
-	if err := config.WriteSettings(map[string]any{"proxy_url": body.RawURI}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, adminErr("启用前置代理失败: "+err.Error()))
-		return
+
+	dialer := adm.dialer()
+	if dialer != nil {
+		candidate, addr, err := dialer.ValidateEntryProxy(body.RawURI)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, adminErr("前置代理验证失败: "+err.Error()))
+			return
+		}
+		oldProxy := adm.cfg.ProxyURL()
+		if err := config.WriteSettings(map[string]any{"proxy_url": body.RawURI}); err != nil {
+			candidate.Close()
+			writeJSON(w, http.StatusInternalServerError, adminErr("启用前置代理失败: "+err.Error()))
+			return
+		}
+		if err := dialer.AdoptEntryProxy(body.RawURI, candidate, addr); err != nil {
+			_ = candidate.Close()
+			_ = config.WriteSettings(map[string]any{"proxy_url": oldProxy})
+			log.Printf("[Admin] [EnableProxyNode] 采纳前置代理失败，已回滚: %v", err)
+			writeJSON(w, http.StatusInternalServerError, adminErr("采纳前置代理失败: "+err.Error()))
+			return
+		}
+	} else {
+		if err := config.WriteSettings(map[string]any{"proxy_url": body.RawURI}); err != nil {
+			writeJSON(w, http.StatusInternalServerError, adminErr("启用前置代理失败: "+err.Error()))
+			return
+		}
 	}
+
 	log.Printf("[Admin] [EnableProxyNode] 启用前置代理: %s", redactURI(body.RawURI))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -71,6 +95,11 @@ func (adm *AdminHandler) adminDisableProxyNode(w http.ResponseWriter, r *http.Re
 	if err := config.WriteSettings(map[string]any{"proxy_url": ""}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr("取消前置代理失败: "+err.Error()))
 		return
+	}
+	if dialer := adm.dialer(); dialer != nil {
+		if err := dialer.SyncEntryProxy(""); err != nil {
+			log.Printf("[Admin] [DisableProxyNode] 关闭前置代理失败: %v", err)
+		}
 	}
 	log.Printf("[Admin] [DisableProxyNode] 已取消前置代理")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -103,13 +132,31 @@ func isRetryable(err error) bool {
 }
 
 func (adm *AdminHandler) testNodeOnce(ctx context.Context, timeout int, uri string) (ok bool, statusCode int, err error) {
-	sess, err := adm.vc.Net().CreateSession(timeout, uri, "admin-test-proxy")
+	dialCtx, cleanup, err := adm.vc.Net().Dialer().TestEntryProxy(uri)
 	if err != nil {
 		return false, 0, err
 	}
-	defer sess.Close()
-	sc, _, doErr := sess.DoAndRead(ctx, http.MethodGet, "https://www.gstatic.com/generate_204", nil, nil)
-	return doErr == nil && sc == 204, sc, doErr
+	defer cleanup()
+
+	tr := &http.Transport{
+		DialContext: dialCtx,
+	}
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   time.Duration(timeout) * time.Second,
+	}
+	defer tr.CloseIdleConnections()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.gstatic.com/generate_204", nil)
+	if err != nil {
+		return false, 0, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, 0, err
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 204, resp.StatusCode, nil
 }
 
 func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Request) {
