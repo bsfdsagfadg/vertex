@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
@@ -167,7 +168,10 @@ func (m *entryBoxManager) stop() {
 	m.entryURI = ""
 }
 
-const entryMaxEphemeralAttempts = 10
+const (
+	entryMaxEphemeralAttempts = 10
+	secondHopDialTimeout      = 15 * time.Second
+)
 
 func startEntryBox(uri string) (*box.Box, string, error) {
 	entryOb, err := buildOutbound(uri)
@@ -388,8 +392,27 @@ func makeBoxDialFunc(nb *nodeBox) func(ctx context.Context, network, addr string
 		if nb.closed.Load() {
 			return nil, fmt.Errorf("node box closed")
 		}
+		dialCtx, cancel := context.WithTimeout(ctx, secondHopDialTimeout)
+		defer cancel()
 		destination := M.ParseSocksaddr(addr)
-		return nb.outbound.DialContext(ctx, network, destination)
+
+		type dialResult struct {
+			conn net.Conn
+			err  error
+		}
+		ch := make(chan dialResult, 1)
+		go func() {
+			conn, err := nb.outbound.DialContext(dialCtx, network, destination)
+			ch <- dialResult{conn, err}
+		}()
+
+		select {
+		case r := <-ch:
+			return r.conn, r.err
+		case <-dialCtx.Done():
+			nb.box.Close()
+			return nil, fmt.Errorf("dial timeout after %v", secondHopDialTimeout)
+		}
 	}
 }
 
@@ -403,9 +426,14 @@ func normalizeURI(uri string) string {
 // 用于自引用场景：第二跳 URI 与全局前置一致时，直接经回环 SOCKS 拨号。
 func socks5DialFunc(socksAddr string) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", socksAddr)
+		dialCtx, cancel := context.WithTimeout(ctx, secondHopDialTimeout)
+		defer cancel()
+		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", socksAddr)
 		if err != nil {
 			return nil, fmt.Errorf("socks5 dial to %s: %w", socksAddr, err)
+		}
+		if deadline, ok := dialCtx.Deadline(); ok {
+			conn.SetDeadline(deadline)
 		}
 
 		// SOCKS5 方法协商：无认证
