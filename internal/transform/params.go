@@ -1,8 +1,10 @@
 package transform
 
 import (
+	"log"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // reasoningEffortToThinkingLevel 把 OpenAI reasoning_effort 映射到 Gemini 3.x
@@ -153,8 +155,14 @@ func pixelsToTier(px int) string {
 	return ""
 }
 
-// ApplyImageConfig 原地把客户端分辨率/imageConfig 写入 geminiPayload.generationConfig.imageConfig.imageSize。
-func ApplyImageConfig(geminiPayload, body map[string]any) {
+// sizeDeprecationOnce 确保 size→imageSize 弃用日志只打印一次。
+//
+//nolint:gochecknoglobals // One-time deprecation warning
+var sizeDeprecationOnce sync.Once
+
+// ApplyImageConfig 原地把客户端分辨率/imageConfig 写入 geminiPayload.generationConfig.imageConfig。
+// model 用于按模型能力过滤不支持的档位/比例。
+func ApplyImageConfig(geminiPayload, body map[string]any, model string) {
 	var imageSize string
 	var passthrough map[string]any
 
@@ -171,18 +179,17 @@ func ApplyImageConfig(geminiPayload, body map[string]any) {
 				}
 			}
 		}
-	}
-
-	if passthrough == nil && imageSize == "" {
-		if v, ok := body["size"]; ok && v != nil {
-			if tier := normalizeImageSize(v); tier != "" {
-				imageSize = tier
+		_, hasSize := body["size"]
+		if imageSize == "" && !hasSize {
+			return
+		}
+		if imageSize == "" && hasSize {
+			if v, ok := body["size"]; ok && v != nil {
+				sizeDeprecationOnce.Do(func() {
+					log.Printf("[WARN] size=%q 映射已弃用，请改用 image_size 或配置 default_image_size 获得清晰度控制", toString(v))
+				})
 			}
 		}
-	}
-
-	if passthrough == nil && imageSize == "" {
-		return
 	}
 
 	genCfg, ok := geminiPayload["generationConfig"].(map[string]any)
@@ -193,12 +200,32 @@ func ApplyImageConfig(geminiPayload, body map[string]any) {
 
 	if passthrough != nil {
 		if existing, ok := genCfg["imageConfig"].(map[string]any); ok {
-			for k, v := range passthrough {
+			for k, v := range filterPassthroughByModel(passthrough, model) {
 				existing[k] = v
 			}
 		} else {
-			genCfg["imageConfig"] = copyMap(passthrough)
+			filtered := filterPassthroughByModel(passthrough, model)
+			if len(filtered) > 0 {
+				genCfg["imageConfig"] = filtered
+			}
 		}
+		return
+	}
+
+	// 按模型能力过滤 imageSize
+	if !ImageSizeAllowedFor(model, imageSize) {
+		imageSize = ""
+	}
+
+	// 从 size 推导 aspectRatio（不覆盖客户端已设值）
+	var aspectRatio string
+	if v, ok := body["size"]; ok && v != nil {
+		if ar := sizeToAspectRatio(toString(v)); ar != "" && aspectRatioAllowedFor(model, ar) {
+			aspectRatio = ar
+		}
+	}
+
+	if imageSize == "" && aspectRatio == "" {
 		return
 	}
 
@@ -207,5 +234,31 @@ func ApplyImageConfig(geminiPayload, body map[string]any) {
 		imgCfg = map[string]any{}
 		genCfg["imageConfig"] = imgCfg
 	}
-	imgCfg["imageSize"] = imageSize
+
+	if imageSize != "" {
+		imgCfg["imageSize"] = imageSize
+	}
+	if aspectRatio != "" {
+		if _, has := imgCfg["aspectRatio"]; !has {
+			imgCfg["aspectRatio"] = aspectRatio
+		}
+	}
+}
+
+// filterPassthroughByModel 按模型能力过滤 passthrough 中不支持的档位/比例键。
+func filterPassthroughByModel(passthrough map[string]any, model string) map[string]any {
+	filtered := copyMap(passthrough)
+	for k, v := range passthrough {
+		switch k {
+		case "imageSize", "image_size":
+			if s, _ := v.(string); s != "" && !ImageSizeAllowedFor(model, s) {
+				delete(filtered, k)
+			}
+		case "aspectRatio", "aspect_ratio":
+			if s, _ := v.(string); s != "" && !aspectRatioAllowedFor(model, s) {
+				delete(filtered, k)
+			}
+		}
+	}
+	return filtered
 }

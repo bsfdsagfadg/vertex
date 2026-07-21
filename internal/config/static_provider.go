@@ -45,5 +45,6 @@ func (s staticConfig) AliasMap() map[string]string       { return s.c.AliasMap()
 func (s staticConfig) ModelsWithFakeVariants() []string  { return s.c.ModelsWithFakeVariants() }
 func (s staticConfig) FakePrefixes() []string            { return s.c.FakePrefixes() }
 func (s staticConfig) ResolveModelName(s_ string) string { return s.c.ResolveModelName(s_) }
+func (s staticConfig) DefaultImageSize() string          { return s.c.DefaultImageSize }
 func (s staticConfig) ConfigDir() string                 { return s.c.ConfigDir() }
 func (s staticConfig) ConfigPath() string                { return s.c.ConfigPath() }

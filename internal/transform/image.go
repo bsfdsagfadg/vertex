@@ -1,8 +1,10 @@
 package transform
 
 import (
+	"log"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // 本文件实现 OpenAI Images API → Gemini 图片请求转换，及其辅助（追加 negative
@@ -20,11 +22,76 @@ var openaiImageModelAliases = map[string]bool{
 	"gpt-image-1": true, "dall-e-2": true, "dall-e-3": true,
 }
 
+// imageCapability 描述一个图模型支持的 imageSize 档位与 aspectRatio 集合。
+type imageCapability struct {
+	sizes  map[string]bool
+	ratios map[string]bool
+}
+
+// modelImageCapabilities 是已知图模型的能力矩阵（源自 Google 反代页调研）。
+// 未命中表项的模型按保守默认：sizes={1K}，ratios=空（让 ApplyImageConfig 走推导）。
+//
+//nolint:gochecknoglobals // Read-only capability table
+var modelImageCapabilities = map[string]imageCapability{
+	"gemini-3.1-flash-lite-image": {
+		sizes:  map[string]bool{"1K": true},
+		ratios: map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true},
+	},
+	"gemini-3.1-flash-image": {
+		sizes:  map[string]bool{"512": true, "1K": true, "2K": true, "4K": true},
+		ratios: map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true},
+	},
+	"gemini-3-pro-image": {
+		sizes:  map[string]bool{"1K": true, "2K": true, "4K": true},
+		ratios: map[string]bool{"1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "21:9": true},
+	},
+	"gemini-2.5-flash-image": {
+		sizes:  map[string]bool{"1K": true, "2K": true, "4K": true},
+		ratios: map[string]bool{"1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "21:9": true},
+	},
+}
+
+// unknownModelWarned 避免为同一未知模型重复打日志。
+//
+//nolint:gochecknoglobals // Once-per-model dedup
+var unknownModelWarned sync.Map
+
+// imageCapabilityFor 返回模型能力；未知模型 sizes 保守为仅 1K，ratios 默认全允许。
+func imageCapabilityFor(model string) imageCapability {
+	if c, ok := modelImageCapabilities[model]; ok {
+		return c
+	}
+	if _, loaded := unknownModelWarned.LoadOrStore(model, true); !loaded {
+		log.Printf("[Image] 未知图模型 %q，sizes 按保守默认（仅 1K）处理，ratios 全允许", model)
+	}
+	return imageCapability{sizes: map[string]bool{"1K": true}, ratios: imageAspectRatioSupported}
+}
+
+// ImageSizeAllowedFor 模型是否支持某档位。
+func ImageSizeAllowedFor(model, tier string) bool {
+	return imageCapabilityFor(model).sizes[tier]
+}
+
+// aspectRatioAllowedFor 模型是否支持某比例。
+func aspectRatioAllowedFor(model, ratio string) bool {
+	return imageCapabilityFor(model).ratios[ratio]
+}
+
+// ResolveImageSize 返回模型可用的 imageSize：优先使用配置值，不合法则回退到 1K。
+func ResolveImageSize(defaultSize, model string) string {
+	if ImageSizeAllowedFor(model, defaultSize) {
+		return defaultSize
+	}
+	return "1K"
+}
+
 // imageAspectRatioSupported 是 Gemini imageConfig.aspectRatio 接受的比例集合。
 //
 //nolint:gochecknoglobals // Read-only set
 var imageAspectRatioSupported = map[string]bool{
-	"1:1": true, "3:4": true, "4:3": true, "9:16": true, "16:9": true, "2:3": true, "3:2": true,
+	"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true,
+	"4:5": true, "5:4": true, "9:16": true, "16:9": true,
+	"1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true,
 }
 
 // InlineImage 是一张上传图片的 inlineData 结构（mimeType + base64 data）。

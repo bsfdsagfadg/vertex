@@ -81,7 +81,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	log.Printf("[Server] [ChatCompletions] 收到请求: 模型=%s, 真模型=%s, 流式=%v, n=%d", rawModel, actualModel, stream, n)
 
-	transform.ApplyImageConfig(geminiPayload, body)
+	transform.ApplyImageConfig(geminiPayload, body, actualModel)
 	if strings.Contains(strings.ToLower(model), "image") {
 		gc, ok := geminiPayload["generationConfig"].(map[string]any)
 		if !ok {
@@ -94,7 +94,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			gc["imageConfig"] = ic
 		}
 		if _, has := ic["imageSize"]; !has {
-			ic["imageSize"] = "1K"
+			ic["imageSize"] = transform.ResolveImageSize(c.cfg.DefaultImageSize(), actualModel)
 		}
 	}
 

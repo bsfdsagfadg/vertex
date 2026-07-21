@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -62,6 +63,9 @@ type AppConfig struct { //nolint:govet
 	FontColor       string   `json:"font_color"`
 	CustomBgPresets []string `json:"custom_bg_presets"`
 	AutoRefreshLogs *bool    `json:"auto_refresh_logs,omitempty"`
+
+	// 默认图档位（客户端不传 size 时的兜底值）
+	DefaultImageSize string `json:"default_image_size"`
 }
 
 func DefaultConfig() AppConfig {
@@ -83,6 +87,7 @@ func DefaultConfig() AppConfig {
 		FontColorType:             "adaptive",
 		FontColor:                 "#f6f1e9",
 		CustomBgPresets:           []string{},
+		DefaultImageSize:          "1K",
 	}
 }
 
@@ -169,6 +174,14 @@ func Load() AppConfig {
 				log.Printf("[Config] 警告: 并发数配置过高 (%d)，已强制限制为上限 20", cfg.ParallelPoolSize)
 				cfg.ParallelPoolSize = 20
 			}
+			if cfg.DefaultImageSize == "" {
+				cfg.DefaultImageSize = "1K"
+			} else if t := normalizeImageSizeTier(cfg.DefaultImageSize); t != "" {
+				cfg.DefaultImageSize = t
+			} else {
+				log.Printf("[Config] default_image_size 非法 (%q)，回退 1K", cfg.DefaultImageSize)
+				cfg.DefaultImageSize = "1K"
+			}
 			log.Printf("[Config] 成功加载配置文件 config.json")
 		}
 	} else if !os.IsNotExist(err) {
@@ -198,4 +211,14 @@ func (c AppConfig) GetAutoRefreshLogs() bool {
 		return true
 	}
 	return *c.AutoRefreshLogs
+}
+
+var allowedImageSizeTiers = map[string]bool{"512": true, "1K": true, "2K": true, "4K": true}
+
+func normalizeImageSizeTier(s string) string {
+	u := strings.ToUpper(strings.TrimSpace(s))
+	if allowedImageSizeTiers[u] {
+		return u
+	}
+	return ""
 }

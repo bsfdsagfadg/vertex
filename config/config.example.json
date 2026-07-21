@@ -8,5 +8,6 @@
   "parallel_pool_enabled": true,
   "sticky_node_priority": false,
   "parallel_pool_size": 15,
+  "default_image_size":"1K",
   "telemetry_enabled": false
 }

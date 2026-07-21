@@ -31,7 +31,7 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	model := getStr(body, "model", "")
+	model := transform.ResolveImageModel(getStr(body, "model", ""))
 	prompt := getStr(body, "prompt", "")
 	size := getStr(body, "size", "1024x1024")
 	respFmt := getStr(body, "response_format", "b64_json")
@@ -52,7 +52,7 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 	geminiPayload := map[string]any{
 		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": prompt}}}},
 	}
-	transform.ApplyImageConfig(geminiPayload, body)
+	transform.ApplyImageConfig(geminiPayload, body, model)
 	if !hasImageSize(geminiPayload) {
 		gc, _ := geminiPayload["generationConfig"].(map[string]any)
 		if gc == nil {
@@ -64,10 +64,7 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 			ic = map[string]any{}
 			gc["imageConfig"] = ic
 		}
-		ic["imageSize"] = "1K"
-		if size != "" {
-			gc["imageSize"] = size
-		}
+		ic["imageSize"] = transform.ResolveImageSize(img.cfg.DefaultImageSize(), model)
 	}
 
 	images, vErr := img.vc.CompleteChatImage(r.Context(), model, geminiPayload)

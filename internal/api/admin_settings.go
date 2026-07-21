@@ -25,6 +25,7 @@ var adminAllowedSettings = map[string]bool{
 	"custom_bg_presets":           true,
 	"debug_mode":                  true,
 	"auto_refresh_logs":           true,
+	"default_image_size":          true,
 }
 
 func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request) {
@@ -51,6 +52,7 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"custom_bg_presets":           adm.cfg.CustomBgPresets(),
 		"debug_mode":                  adm.cfg.DebugMode(),
 		"auto_refresh_logs":           adm.cfg.AutoRefreshLogs(),
+		"default_image_size":          adm.cfg.DefaultImageSize(),
 	}})
 }
 
