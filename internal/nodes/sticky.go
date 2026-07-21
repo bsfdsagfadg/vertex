@@ -1,11 +1,16 @@
 package nodes
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 type StickyNodePool struct { //nolint:govet
 	mu   sync.Mutex
-	pool map[string]bool
+	pool map[string]time.Time
 }
+
+const StaleTTL = 30 * time.Minute
 
 var globalStickyPool = NewStickyNodePool() //nolint:gochecknoglobals
 
@@ -15,14 +20,14 @@ func GetStickyPool() *StickyNodePool {
 
 func NewStickyNodePool() *StickyNodePool {
 	return &StickyNodePool{ //nolint:exhaustruct
-		pool: make(map[string]bool),
+		pool: make(map[string]time.Time),
 	}
 }
 
 func (p *StickyNodePool) Add(uri string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.pool[uri] = true
+	p.pool[uri] = time.Now()
 }
 
 func (p *StickyNodePool) Evict(uri string) {
@@ -45,7 +50,16 @@ func (p *StickyNodePool) AvailableCount() int {
 }
 
 func (p *StickyNodePool) StaleCount() int {
-	return 0
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cutoff := time.Now().Add(-StaleTTL)
+	count := 0
+	for _, addedAt := range p.pool {
+		if addedAt.Before(cutoff) {
+			count++
+		}
+	}
+	return count
 }
 
 func (p *StickyNodePool) List() []string {
@@ -56,4 +70,18 @@ func (p *StickyNodePool) List() []string {
 		uris = append(uris, uri)
 	}
 	return uris
+}
+
+func (p *StickyNodePool) EvictStale(maxAge time.Duration) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cutoff := time.Now().Add(-maxAge)
+	count := 0
+	for uri, addedAt := range p.pool {
+		if addedAt.Before(cutoff) {
+			delete(p.pool, uri)
+			count++
+		}
+	}
+	return count
 }

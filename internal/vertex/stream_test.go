@@ -1,10 +1,40 @@
 package vertex
 
 import (
+	"bytes"
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestScanStream_BufferHardLimit(t *testing.T) {
+	const hardLimit = 64 * 1024 * 1024
+
+	data := make([]byte, hardLimit+1024*1024)
+	data[0] = '{'
+	for i := 1; i < len(data); i++ {
+		data[i] = 'x'
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- scanStream(bytes.NewReader(data), func(obj map[string]any) (bool, error) {
+			return false, nil
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected error for oversized buffer, got nil")
+		} else if !strings.Contains(err.Error(), "hard buffer limit") {
+			t.Errorf("error should contain 'hard buffer limit', got: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("test timed out (possible OOM or hang)")
+	}
+}
 
 // collectStream 把 scanStream 跑到底，收集所有 emit 出来的 chunk，返回 (chunks, 终止错误)。
 // onObject 用 processStreamingObject 的真实逻辑，确保测的是端到端的流式提取 + finishReason 过滤。
@@ -372,6 +402,23 @@ func TestEmitAndCheckFinish(t *testing.T) {
 	stopByClient, done := emitAndCheckFinish(map[string]any{"candidates": []any{map[string]any{"finishReason": "FINISH_REASON_UNSPECIFIED"}}}, reject)
 	if !stopByClient || !done {
 		t.Error("客户端断开应 stopByClient=true done=true")
+	}
+}
+
+func BenchmarkScanStream(b *testing.B) {
+	var sb strings.Builder
+	for i := 0; i < 100; i++ {
+		sb.WriteString(wrap(`{"candidates":[{"content":{"parts":[{"text":"Hello world"}],"role":"model"},"finishReason":"STOP"}]}`))
+	}
+	input := sb.String()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		_ = scanStream(strings.NewReader(input), func(obj map[string]any) (bool, error) {
+			return true, nil
+		})
 	}
 }
 

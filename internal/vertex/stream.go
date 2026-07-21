@@ -320,12 +320,19 @@ func scanStream(body io.Reader, onObject func(map[string]any) (bool, error)) err
 	inString := false
 	escape := false
 
-	const maxBufferSize = 4 * 1024 * 1024
+	const (
+		maxBufferSize    = 4 * 1024 * 1024
+		hardMaxBufferSize = 64 * 1024 * 1024
+	)
 
 	for {
 		n, readErr := reader.Read(readBuf)
 		if n > 0 {
 			buffer = append(buffer, readBuf[:n]...)
+
+			if len(buffer) > hardMaxBufferSize {
+				return fmt.Errorf("scanStream: single object exceeds hard buffer limit of %d bytes", hardMaxBufferSize)
+			}
 
 			if len(buffer) > maxBufferSize && braceCount == 0 {
 				log.Printf("[DEBUG-scan] buffer exceeded %d bytes, resetting from scanPos=%d", maxBufferSize, scanPos)
@@ -379,9 +386,7 @@ func scanStream(body io.Reader, onObject func(map[string]any) (bool, error)) err
 				if endIdx != -1 {
 					jsonStr := buffer[startIdx : endIdx+1]
 					// 复制出对象后裁剪 buffer（drop 已消费前缀），重置扫描状态。
-					rest := make([]byte, len(buffer)-(endIdx+1))
-					copy(rest, buffer[endIdx+1:])
-					buffer = rest
+					buffer = buffer[endIdx+1:]
 					scanPos = 0
 
 					obj := parseJSONObject(jsonStr)

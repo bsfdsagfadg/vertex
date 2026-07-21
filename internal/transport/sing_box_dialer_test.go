@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/sagernet/sing-box"
@@ -58,6 +59,7 @@ func (c *fakeCfg) ProxyURL() string {
 	return v
 }
 
+func (c *fakeCfg) DefaultImageSize() string                    { return "1K" }
 func (c *fakeCfg) PortAPI() int                                { panic("unexpected") }
 func (c *fakeCfg) MaxRetries() int                             { panic("unexpected") }
 func (c *fakeCfg) AdminPassword() string                       { panic("unexpected") }
@@ -697,5 +699,64 @@ func TestCreateSession_RetryPattern_CloseRecreate(t *testing.T) {
 	sess2.Close()
 	if ct.count.Load() != 2 {
 		t.Fatalf("cleanup called %d times after both Close, want 2 (first session cleanup called once, second once)", ct.count.Load())
+	}
+}
+
+// hangOutbound 模拟黑洞节点：DialContext 忽略 ctx 取消，持续阻塞。
+type hangOutbound struct{}
+
+func (hangOutbound) DialContext(ctx context.Context, _ string, _ M.Socksaddr) (net.Conn, error) {
+	time.Sleep(2 * time.Second)
+	return nil, errors.New("unreachable")
+}
+
+func (hangOutbound) ListenPacket(ctx context.Context, _ M.Socksaddr) (net.PacketConn, error) {
+	return nil, errors.New("not implemented")
+}
+
+func TestMakeBoxDialFunc_TimeoutMarksClosed(t *testing.T) {
+	fc := &fakeCloser{}
+	nb := &nodeBox{
+		box:      fc,
+		outbound: hangOutbound{},
+	}
+	dial := makeBoxDialFunc(nb)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+
+	_, err := dial(ctx, "tcp", "1.2.3.4:443")
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("error should contain 'timeout', got: %v", err)
+	}
+
+	if !nb.closed.Load() {
+		t.Error("expected nb.closed to be true after timeout")
+	}
+
+	// Second dial should return "closed" error
+	_, err = dial(context.Background(), "tcp", "1.2.3.4:443")
+	if err == nil {
+		t.Fatal("expected error on second dial after close, got nil")
+	}
+	if !strings.Contains(err.Error(), "closed") {
+		t.Errorf("error should contain 'closed', got: %v", err)
+	}
+
+	// cleanup must not panic
+	cleanup := func() {
+		if !nb.closed.Load() {
+			nb.closed.Store(true)
+			_ = nb.box.Close()
+		}
+	}
+	cleanup()
+	cleanup()
+
+	if fc.closeCount.Load() == 0 {
+		t.Error("box.Close should have been called")
 	}
 }

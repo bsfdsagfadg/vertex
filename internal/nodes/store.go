@@ -881,6 +881,7 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 	if debugMode {
 		log.Printf("[Nodes] 选择并行节点 (需求: %d, 实际: %d)", k, len(selected))
 	}
+	globalStickyPool.EvictStale(StaleTTL)
 	return selected
 }
 

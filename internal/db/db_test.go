@@ -59,3 +59,39 @@ func TestInitDBAndMigrate(t *testing.T) {
 		t.Errorf("Expected success_count 10, got %d, error: %v", successCount, err)
 	}
 }
+
+func TestInitDB_ConnectionPoolLimits(t *testing.T) {
+	CloseDB()
+
+	tempDir, err := os.MkdirTemp("", "db_pool_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(tempDir)
+	}()
+
+	dbPath := filepath.Join(tempDir, "pool.db")
+
+	if errInit := InitDB(dbPath); errInit != nil {
+		t.Fatalf("Failed to InitDB: %v", errInit)
+	}
+	defer CloseDB()
+
+	stats := GlobalDB.Stats()
+
+	if stats.MaxOpenConnections <= 0 {
+		t.Fatalf("MaxOpenConnections=%d, want > 0 (connection pool limit not set)", stats.MaxOpenConnections)
+	}
+	if stats.MaxOpenConnections > 1 {
+		t.Fatalf("MaxOpenConnections=%d, want <= 1", stats.MaxOpenConnections)
+	}
+
+	if stats.OpenConnections <= 0 {
+		t.Errorf("OpenConnections=%d, want > 0 (connection should be established)", stats.OpenConnections)
+	}
+
+	if stats.Idle <= 0 {
+		t.Errorf("Idle=%d, want > 0 (idle connection should be present)", stats.Idle)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	_ "github.com/glebarez/go-sqlite"
 )
@@ -53,6 +54,10 @@ func InitDB(dbPath string) error {
 	}
 
 	GlobalDB = db
+
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	// Create tables
 	err = createTables(db)

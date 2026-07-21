@@ -410,6 +410,7 @@ func makeBoxDialFunc(nb *nodeBox) func(ctx context.Context, network, addr string
 		case r := <-ch:
 			return r.conn, r.err
 		case <-dialCtx.Done():
+			nb.closed.Store(true)
 			nb.box.Close()
 			return nil, fmt.Errorf("dial timeout after %v", secondHopDialTimeout)
 		}
