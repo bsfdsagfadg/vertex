@@ -16,14 +16,14 @@ func makeResult(parts []any) map[string]any {
 	}
 }
 
-// ---- extractImageResponse ----
+// ---- ExtractImageResponse ----
 
 func TestExtractImageResponseInlineData(t *testing.T) {
 	result := makeResult([]any{
 		map[string]any{"inlineData": map[string]any{"data": "AAAA", "mimeType": "image/png"}},
 		map[string]any{"inlineData": map[string]any{"data": "BBBB", "mimeType": "image/jpeg"}},
 	})
-	imgs := extractImageResponse(result)
+	imgs := ExtractImageResponse(result)
 	if len(imgs) != 2 {
 		t.Fatalf("应抽出 2 张图，实际 %d", len(imgs))
 	}
@@ -39,7 +39,7 @@ func TestExtractImageResponseInlineDataDefaultMime(t *testing.T) {
 	result := makeResult([]any{
 		map[string]any{"inlineData": map[string]any{"data": "CCCC"}}, // 无 mimeType
 	})
-	imgs := extractImageResponse(result)
+	imgs := ExtractImageResponse(result)
 	if len(imgs) != 1 || imgs[0].MimeType != "image/png" {
 		t.Fatalf("缺 mimeType 应默认 image/png，实际 %+v", imgs)
 	}
@@ -50,7 +50,7 @@ func TestExtractImageResponseInlineDataSkipsEmptyData(t *testing.T) {
 		map[string]any{"inlineData": map[string]any{"data": "", "mimeType": "image/png"}},
 		map[string]any{"inlineData": map[string]any{"data": "DDDD", "mimeType": "image/png"}},
 	})
-	imgs := extractImageResponse(result)
+	imgs := ExtractImageResponse(result)
 	if len(imgs) != 1 || imgs[0].B64JSON != "DDDD" {
 		t.Fatalf("空 data 段应跳过，实际 %+v", imgs)
 	}
@@ -62,7 +62,7 @@ func TestExtractImageResponseMarkdownFallback(t *testing.T) {
 	result := makeResult([]any{
 		map[string]any{"text": md},
 	})
-	imgs := extractImageResponse(result)
+	imgs := ExtractImageResponse(result)
 	if len(imgs) != 1 {
 		t.Fatalf("markdown 退化应抽 1 张，实际 %d", len(imgs))
 	}
@@ -75,21 +75,21 @@ func TestExtractImageResponseNoImage(t *testing.T) {
 	result := makeResult([]any{
 		map[string]any{"text": "just plain text, no image"},
 	})
-	if imgs := extractImageResponse(result); len(imgs) != 0 {
+	if imgs := ExtractImageResponse(result); len(imgs) != 0 {
 		t.Errorf("无图应返回空，实际 %+v", imgs)
 	}
 }
 
 func TestExtractImageResponseEmptyCandidates(t *testing.T) {
-	if imgs := extractImageResponse(map[string]any{}); len(imgs) != 0 {
+	if imgs := ExtractImageResponse(map[string]any{}); len(imgs) != 0 {
 		t.Errorf("空响应应返回空，实际 %+v", imgs)
 	}
-	if imgs := extractImageResponse(map[string]any{"candidates": []any{}}); len(imgs) != 0 {
+	if imgs := ExtractImageResponse(map[string]any{"candidates": []any{}}); len(imgs) != 0 {
 		t.Errorf("空 candidates 应返回空，实际 %+v", imgs)
 	}
 }
 
-// ---- extractAudioResponse：多段拼接守护回归（不能只取首段）----
+// ---- ExtractAudioResponse：多段拼接守护回归（不能只取首段）----
 
 func TestExtractAudioResponseConcatenatesAllSegments(t *testing.T) {
 	// 三段 audio/L16，原始字节分别 3 / 4 / 5 字节。
@@ -104,7 +104,7 @@ func TestExtractAudioResponseConcatenatesAllSegments(t *testing.T) {
 		map[string]any{"inlineData": map[string]any{"data": enc(seg3), "mimeType": "audio/L16;rate=24000"}},
 	})
 
-	audio := extractAudioResponse(result)
+	audio := ExtractAudioResponse(result)
 	if audio.Data == "" {
 		t.Fatalf("应返回拼接音频")
 	}
@@ -136,7 +136,7 @@ func TestExtractAudioResponseMimeFromFirstValid(t *testing.T) {
 		map[string]any{"inlineData": map[string]any{"data": enc([]byte{1, 2})}}, // 无 mimeType
 		map[string]any{"inlineData": map[string]any{"data": enc([]byte{3, 4}), "mimeType": "audio/wav"}},
 	})
-	audio := extractAudioResponse(result)
+	audio := ExtractAudioResponse(result)
 	if audio.MimeType != "audio/L16;rate=24000" {
 		t.Errorf("首个有效段无 mime 时应默认 audio/L16;rate=24000，实际 %q", audio.MimeType)
 	}
@@ -152,7 +152,7 @@ func TestExtractAudioResponseSkipsNonAudio(t *testing.T) {
 		map[string]any{"inlineData": map[string]any{"data": enc([]byte{1, 2, 3}), "mimeType": "image/png"}}, // 跳过
 		map[string]any{"inlineData": map[string]any{"data": enc([]byte{4, 5}), "mimeType": "audio/L16"}},
 	})
-	audio := extractAudioResponse(result)
+	audio := ExtractAudioResponse(result)
 	decoded, _ := base64.StdEncoding.DecodeString(audio.Data)
 	if len(decoded) != 2 {
 		t.Errorf("非 audio/* 段应跳过，应只拼 2 字节，实际 %d", len(decoded))
@@ -166,7 +166,7 @@ func TestExtractAudioResponseEmpty(t *testing.T) {
 	result := makeResult([]any{
 		map[string]any{"text": "no audio here"},
 	})
-	audio := extractAudioResponse(result)
+	audio := ExtractAudioResponse(result)
 	if audio.Data != "" || audio.MimeType != "" {
 		t.Errorf("无音频应返回空 AudioData，实际 %+v", audio)
 	}

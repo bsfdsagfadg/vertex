@@ -83,23 +83,17 @@ func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (
 }
 
 func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, model string) {
-	actualModel, _ := stripFakePrefix(model, g.cfg.FakePrefixes())
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
 	}
-	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {
-		body = reqObj
-	}
 	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.RequestTimeoutSeconds())*time.Second)
 	defer cancel()
 
-	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
-	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
+	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s", model)
 
-	resp, vErr := g.vc.CompleteChat(requestCtx, actualModel, body)
-	if vErr != nil {
-		ve := toVertexError(vErr)
+	resp, ve := g.coreGenerate(requestCtx, model, body)
+	if ve != nil {
 		if isSafetyBlock(ve) {
 			writeJSON(w, http.StatusOK, geminiSafetyResponse(ve))
 			return
@@ -107,29 +101,35 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, ve.Code, vertexErrorToGemini(ve))
 		return
 	}
-	cleanGeminiFinishReason(resp)
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *http.Request, model string) {
-	actualModel, useFake := stripFakePrefix(model, g.cfg.FakePrefixes())
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
 	}
-	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {
-		body = reqObj
-	}
 	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.RequestTimeoutSeconds())*time.Second)
 	defer cancel()
 
-	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
-	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 假非流=%v, 聚合流=%v", model, actualModel, useFake, g.cfg.AggregateStream())
+	_, useFake := stripFakePrefix(model, g.cfg.FakePrefixes())
+	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 假非流=%v, 聚合流=%v", model, useFake, g.cfg.AggregateStream())
 
 	sw := newSSEWriter(w, "text/event-stream")
 
 	if useFake || g.cfg.AggregateStream() {
-		g.geminiFakeStream(requestCtx, sw, actualModel, body)
+		resp, ve := g.coreGenerate(requestCtx, model, body)
+		if ve != nil {
+			if isSafetyBlock(ve) {
+				_ = sw.write(g.geminiSSE(geminiSafetyChunk(ve)))
+				return
+			}
+			_ = sw.write(g.geminiSSE(map[string]any{"error": map[string]any{
+				"code": ve.Code, "message": vertex.FriendlyErrorMessage(ve), "status": geminiStatusOf(ve),
+			}}))
+			return
+		}
+		_ = sw.write(g.geminiSSE(resp))
 		return
 	}
 
@@ -137,25 +137,29 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	hasFinish := false
 	startTime := time.Now()
 	observer := newStreamObserver(startTime)
-	g.vc.StreamChat(requestCtx, actualModel, body, func(ch vertex.StreamChunk) bool {
-		if ch.Err != nil {
-			if isSafetyBlock(ch.Err) {
-				_ = sw.write(g.geminiSSE(geminiSafetyChunk(ch.Err)))
+	g.coreStreamGenerate(requestCtx, model, body, func(data map[string]any, err *vertex.VertexError) bool {
+		if err != nil {
+			if isSafetyBlock(err) {
+				_ = sw.write(g.geminiSSE(geminiSafetyChunk(err)))
 			} else {
 				_ = sw.write(g.geminiSSE(map[string]any{"error": map[string]any{
-					"code": ch.Err.Code, "message": vertex.FriendlyErrorMessage(ch.Err), "status": geminiStatusOf(ch.Err),
+					"code": err.Code, "message": vertex.FriendlyErrorMessage(err), "status": geminiStatusOf(err),
 				}}))
 			}
 			return false
 		}
 		gotChunk = true
-		if hasGeminiValidOutput(ch.Data) {
+		if hasGeminiValidOutput(data) {
 			observer.markTriggered(requestCtx)
 		}
-		if fr := cleanGeminiFinishReason(ch.Data); fr != "" {
-			hasFinish = true
+		if cands, _ := data["candidates"].([]any); len(cands) > 0 {
+			if c, ok := cands[0].(map[string]any); ok {
+				if fr, _ := c["finishReason"].(string); fr != "" {
+					hasFinish = true
+				}
+			}
 		}
-		return sw.write(g.geminiSSE(ch.Data))
+		return sw.write(g.geminiSSE(data))
 	})
 
 	if !gotChunk {
@@ -175,25 +179,6 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 			}},
 		}))
 	}
-}
-
-func (g *GeminiHandler) geminiFakeStream(ctx context.Context, sw *sseWriter, model string, body map[string]any) {
-	resp, vErr := g.vc.CompleteChat(ctx, model, body)
-	if vErr != nil {
-		ve := toVertexError(vErr)
-		if isSafetyBlock(ve) {
-			_ = sw.write(g.geminiSSE(geminiSafetyChunk(ve)))
-			return
-		}
-		_ = sw.write(g.geminiSSE(map[string]any{"error": map[string]any{
-			"code": ve.Code, "message": vertex.FriendlyErrorMessage(ve), "status": geminiStatusOf(ve),
-		}}))
-		return
-	}
-
-	// 假非流/聚合流：完整响应单包发送（无 [DONE]）。
-	cleanGeminiFinishReason(resp)
-	sw.write(g.geminiSSE(resp))
 }
 
 func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request, model string) {
@@ -328,3 +313,5 @@ func geminiSafetyChunk(e *vertex.VertexError) map[string]any {
 		},
 	}
 }
+
+

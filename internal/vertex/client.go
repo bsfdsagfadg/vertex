@@ -74,6 +74,7 @@ func (c *VertexAIClient) getBatchGraphqlURL() string {
 
 const largePayloadThreshold = 1 << 20 // 1MB
 
+// Deprecated: 请使用并行 coreGenerate 调用。
 func (c *VertexAIClient) CompleteChatN(ctx context.Context, model string, geminiPayload map[string]any, n int) ([]map[string]any, error) {
 	if n > 1 {
 		if b, err := json.Marshal(geminiPayload); err == nil && len(b) > largePayloadThreshold {

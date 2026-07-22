@@ -18,30 +18,32 @@ type AudioData struct {
 	MimeType string
 }
 
+// Deprecated: 请使用 coreGenerate + ExtractImageResponse。
 // CompleteChatImage 走标准非流式请求，再从响应抽取图片数据。
 func (c *VertexAIClient) CompleteChatImage(ctx context.Context, model string, geminiPayload map[string]any) ([]ImageData, error) {
 	result, err := c.CompleteChat(ctx, model, geminiPayload)
 	if err != nil {
 		return nil, err
 	}
-	return extractImageResponse(result), nil
+	return ExtractImageResponse(result), nil
 }
 
+// Deprecated: 请使用 coreGenerate + ExtractAudioResponse。
 // CompleteChatAudio 走标准非流式请求，再从响应抽取（拼接）音频数据。
 func (c *VertexAIClient) CompleteChatAudio(ctx context.Context, model string, geminiPayload map[string]any) (AudioData, error) {
 	result, err := c.CompleteChat(ctx, model, geminiPayload)
 	if err != nil {
 		return AudioData{}, err
 	}
-	return extractAudioResponse(result), nil
+	return ExtractAudioResponse(result), nil
 }
 
-// extractImageResponse 从完整 Gemini 响应抽取图片。
+// ExtractImageResponse 从完整 Gemini 响应抽取图片。
 //
 // ① 优先 inlineData：每个带 data 的 inlineData → {b64_json, mime_type}。
 // ② 退化：若全文以 "![Generated Image](data:" 开头，则从 markdown 抠出 base64。
 // 无图返回空切片（路由层据此返 502）。
-func extractImageResponse(result map[string]any) []ImageData {
+func ExtractImageResponse(result map[string]any) []ImageData {
 	allParts := firstCandidateParts(result)
 
 	var fullText strings.Builder
@@ -94,11 +96,11 @@ func extractImageResponse(result map[string]any) []ImageData {
 	return nil
 }
 
-// extractAudioResponse 从完整 Gemini 响应抽取并拼接 TTS 音频。
+// ExtractAudioResponse 从完整 Gemini 响应抽取并拼接 TTS 音频。
 //
 // Gemini TTS 把整段音频切成多段 inlineData（每段一小块 L16 PCM），必须把所有音频段的
 // 原始字节按序拼接，否则只取第一段会被截断成几十毫秒（血泪教训）。返回拼接后整段的 base64 + mime。
-func extractAudioResponse(result map[string]any) AudioData {
+func ExtractAudioResponse(result map[string]any) AudioData {
 	allParts := firstCandidateParts(result)
 
 	var raw []byte

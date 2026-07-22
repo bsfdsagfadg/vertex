@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"mime"
@@ -12,9 +13,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/transform"
+	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
 type ImageHandler struct {
@@ -36,7 +39,15 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 	size := getStr(body, "size", "1024x1024")
 	respFmt := getStr(body, "response_format", "b64_json")
 
-	log.Printf("[Server] [ImageGenerations] 收到请求: 模型=%s, 尺寸=%s, 格式=%s", model, size, respFmt)
+	n, nErr := resolveN(body["n"], 8)
+	if nErr != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
+			"message": nErr, "type": "invalid_request_error", "code": 400, "param": "n",
+		}})
+		return
+	}
+
+	log.Printf("[Server] [ImageGenerations] 收到请求: 模型=%s, 尺寸=%s, 格式=%s, n=%d", model, size, respFmt, n)
 
 	if model == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
@@ -67,25 +78,7 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 		ic["imageSize"] = transform.ResolveImageSize(img.cfg.DefaultImageSize(), model)
 	}
 
-	images, vErr := img.vc.CompleteChatImage(r.Context(), model, geminiPayload)
-	if vErr != nil {
-		ve := toVertexError(vErr)
-		writeJSON(w, ve.Code, vertexErrorToOAI(ve))
-		return
-	}
-
-	data := make([]any, 0, len(images))
-	for _, img := range images {
-		if img.B64JSON == "" {
-			continue
-		}
-		if respFmt == "url" {
-			data = append(data, map[string]any{"url": "data:image/png;base64," + img.B64JSON})
-		} else {
-			data = append(data, map[string]any{"b64_json": img.B64JSON})
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": data})
+	img.runOAIImageRequest(r.Context(), w, model, geminiPayload, n, respFmt)
 }
 
 func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request) {
@@ -170,38 +163,68 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 
 func (img *ImageHandler) runOAIImageRequest(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any, n int, responseFormat string) {
 	wantURL := responseFormat == "url"
-	items := make([]any, 0, n)
+
+	type rResult struct {
+		images []vertex.ImageData
+		err    *vertex.VertexError
+	}
+	results := make([]rResult, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
 	for i := 0; i < n; i++ {
-		log.Printf("[Server] [runOAIImageRequest] 开始获取图片 (第 %d/%d 张)", i+1, n)
-		images, vErr := img.vc.CompleteChatImage(ctx, model, geminiPayload)
-		if vErr != nil {
-			ve := toVertexError(vErr)
-			writeJSON(w, ve.Code, vertexErrorToOAI(ve))
+		go func(idx int) {
+			defer wg.Done()
+			defer func() {
+				if rec := recover(); rec != nil {
+					results[idx] = rResult{err: vertex.NewInternalError(fmt.Sprintf("candidate panic: %v", rec))}
+				}
+			}()
+			log.Printf("[Server] [runOAIImageRequest] 开始获取图片 (第 %d/%d 张)", idx+1, n)
+			resp, ve := img.coreGenerate(ctx, model, geminiPayload)
+			if ve != nil {
+				results[idx] = rResult{err: ve}
+				return
+			}
+			results[idx] = rResult{images: vertex.ExtractImageResponse(resp)}
+		}(i)
+	}
+	wg.Wait()
+
+	var allImages []vertex.ImageData
+	var firstErr *vertex.VertexError
+	for _, r := range results {
+		if r.err != nil {
+			if firstErr == nil {
+				firstErr = r.err
+			}
+			continue
+		}
+		allImages = append(allImages, r.images...)
+	}
+	if len(allImages) == 0 {
+		if firstErr != nil {
+			writeJSON(w, firstErr.Code, vertexErrorToOAI(firstErr))
 			return
 		}
-		for _, img := range images {
-			if img.B64JSON == "" {
-				continue
-			}
-			if wantURL {
-				mimeType := img.MimeType
-				if mimeType == "" {
-					mimeType = "image/png"
-				}
-				items = append(items, map[string]any{"url": "data:" + mimeType + ";base64," + img.B64JSON})
-			} else {
-				items = append(items, map[string]any{"b64_json": img.B64JSON})
-			}
-		}
-		if len(items) >= n {
-			break
-		}
-	}
-
-	if len(items) == 0 {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{
 			"message": "上游未返回图片数据 (no image returned)", "type": "server_error", "code": 502}})
 		return
+	}
+
+	items := make([]any, 0, len(allImages))
+	for _, imgData := range allImages {
+		if imgData.B64JSON == "" {
+			continue
+		}
+		if wantURL {
+			mimeType := imgData.MimeType
+			if mimeType == "" {
+				mimeType = "image/png"
+			}
+			items = append(items, map[string]any{"url": "data:" + mimeType + ";base64," + imgData.B64JSON})
+		} else {
+			items = append(items, map[string]any{"b64_json": imgData.B64JSON})
+		}
 	}
 	if len(items) > n {
 		items = items[:n]

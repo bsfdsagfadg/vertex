@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/cli"
@@ -99,34 +101,74 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	if aggregateStream || (stream && useFake) {
-		c.oaiSingleStreamSSE(requestCtx, w, model, geminiPayload)
+		requestID := reqID24()
+		sw := newSSEWriter(w, "text/event-stream")
+		resp, ve := c.coreGenerate(requestCtx, rawModel, geminiPayload)
+		if ve != nil {
+			c.writeStreamError(sw.write, ve, requestID, model)
+			return
+		}
+		oai := c.respConv.ToOAI(resp, model)
+		c.oaiSinglePacketSSE(sw, oai, model, requestID)
 		return
 	}
 
 	if stream {
-		c.streamChatCompletions(requestCtx, w, model, geminiPayload)
+		c.streamChatCompletionsCore(requestCtx, w, model, geminiPayload)
 		return
 	}
 
 	if n > 1 {
-		responses, vErr := c.vc.CompleteChatN(requestCtx, model, geminiPayload, n)
-		if vErr != nil {
-			ve := toVertexError(vErr)
-			if isSafetyBlock(ve) {
-				log.Printf("[Vertex] 请求被 Google 安全审查拦截, 请求ID=%s, 原因: %s", vertex.RequestIDFromContext(r.Context()), ve.Status)
+		type coreResult struct {
+			resp map[string]any
+			err  *vertex.VertexError
+		}
+		results := make([]coreResult, n)
+		var wg sync.WaitGroup
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func(idx int) {
+				defer wg.Done()
+				defer func() {
+					if rec := recover(); rec != nil {
+						results[idx] = coreResult{err: vertex.NewInternalError(fmt.Sprintf("candidate panic: %v", rec))}
+					}
+				}()
+				r, ve := c.coreGenerate(requestCtx, rawModel, geminiPayload)
+				results[idx] = coreResult{resp: r, err: ve}
+			}(i)
+		}
+		wg.Wait()
+
+		var ok []map[string]any
+		var firstErr *vertex.VertexError
+		for _, r := range results {
+			if r.err != nil {
+				if firstErr == nil {
+					firstErr = r.err
+				}
+				continue
+			}
+			ok = append(ok, r.resp)
+		}
+		if len(ok) == 0 {
+			if firstErr == nil {
+				firstErr = vertex.NewInternalError("All candidates failed")
+			}
+			if isSafetyBlock(firstErr) {
+				log.Printf("[Vertex] 请求被 Google 安全审查拦截, 请求ID=%s, 原因: %s", vertex.RequestIDFromContext(r.Context()), firstErr.Status)
 				writeJSON(w, http.StatusOK, oaiSafetyResponse(model))
 				return
 			}
-			writeJSON(w, ve.Code, vertexErrorToOAI(ve))
+			writeJSON(w, firstErr.Code, vertexErrorToOAI(firstErr))
 			return
 		}
-		writeJSON(w, http.StatusOK, c.respConv.AggregateN(responses, model))
+		writeJSON(w, http.StatusOK, c.respConv.AggregateN(ok, model))
 		return
 	}
 
-	geminiResp, vErr := c.vc.CompleteChat(requestCtx, model, geminiPayload)
-	if vErr != nil {
-		ve := toVertexError(vErr)
+	geminiResp, ve := c.coreGenerate(requestCtx, rawModel, geminiPayload)
+	if ve != nil {
 		if isSafetyBlock(ve) {
 			log.Printf("[Vertex] 请求被 Google 安全审查拦截, 请求ID=%s, 原因: %s", vertex.RequestIDFromContext(r.Context()), ve.Status)
 			writeJSON(w, http.StatusOK, oaiSafetyResponse(model))
@@ -140,7 +182,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, oaiResp)
 }
 
-func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
+func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
 	rid := vertex.RequestIDFromContext(ctx)
 	if rid == "" {
 		rid = reqID24()
@@ -172,15 +214,15 @@ func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.Response
 	observer := newStreamObserver(startTime)
 	isFirst := true
 
-	c.vc.StreamChat(ctx, model, geminiPayload, func(ch vertex.StreamChunk) bool {
-		if ch.Err != nil {
-			c.writeStreamError(write, ch.Err, rid, model)
+	c.coreStreamGenerate(ctx, model, geminiPayload, func(data map[string]any, err *vertex.VertexError) bool {
+		if err != nil {
+			c.writeStreamError(write, err, rid, model)
 			streamErrWritten = true
 			return false
 		}
-		events := c.respConv.StreamToSSE(ch.Data, model, sseID, isFirst)
+		events := c.respConv.StreamToSSE(data, model, sseID, isFirst)
 		isFirst = false
-		observer.observe(ctx, ch, events)
+		observer.observe(ctx, vertex.StreamChunk{Data: data}, events)
 		for _, ev := range events {
 			if strings.Contains(ev, `"finish_reason"`) && !strings.Contains(ev, `"finish_reason":null`) {
 				hasFinish = true
@@ -272,21 +314,6 @@ func (c *ChatHandler) oaiSinglePacketSSE(sw *sseWriter, oai map[string]any, mode
 	}
 	_ = sw.write(sseEvent(base))
 	_ = sw.write("data: [DONE]\n\n")
-}
-
-func (c *ChatHandler) oaiSingleStreamSSE(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
-	requestID := reqID24()
-	sw := newSSEWriter(w, "text/event-stream")
-
-	resp, vErr := c.vc.CompleteChat(ctx, model, geminiPayload)
-	if vErr != nil {
-		ve := toVertexError(vErr)
-		c.writeStreamError(sw.write, ve, requestID, model)
-		return
-	}
-
-	oai := c.respConv.ToOAI(resp, model)
-	c.oaiSinglePacketSSE(sw, oai, model, requestID)
 }
 
 func firstChoice(oai map[string]any) map[string]any {

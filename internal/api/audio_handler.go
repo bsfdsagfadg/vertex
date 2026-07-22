@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
 type AudioHandler struct {
@@ -86,13 +88,13 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 
 	geminiPayload := ttsBuildGeminiPayload(text, voice, body["speed"])
 
-	audio, vErr := a.vc.CompleteChatAudio(r.Context(), actualModel, geminiPayload)
-	if vErr != nil {
-		ve := toVertexError(vErr)
+	resp, ve := a.coreGenerate(r.Context(), actualModel, geminiPayload)
+	if ve != nil {
 		writeJSON(w, ve.Code, vertexErrorToOAI(ve))
 		return
 	}
 
+	audio := vertex.ExtractAudioResponse(resp)
 	if audio.Data == "" {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{
 			"message": "上游未返回音频数据 (no audio returned)", "type": "server_error", "code": 502}})
