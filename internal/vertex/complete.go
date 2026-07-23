@@ -57,6 +57,9 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, g
 	}
 
 	if _, hasSafety := geminiPayload["safetySettings"]; candidateFinish(resp) == "SAFETY" && !hasSafety {
+		if ctx.Err() != nil {
+			return nil, context.Canceled
+		}
 		retryPayload := shallowCopy(geminiPayload)
 		retryPayload["safetySettings"] = defaultSafetySettings
 		return c.runSingleCandidate(ctx, model, retryPayload, proxyURI)

@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -19,7 +20,7 @@ func TestScanStream_BufferHardLimit(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- scanStream(bytes.NewReader(data), func(obj map[string]any) (bool, error) {
+		done <- scanStream(context.Background(), bytes.NewReader(data), func(obj map[string]any) (bool, error) {
 			return false, nil
 		})
 	}()
@@ -44,7 +45,7 @@ func collectStream(t *testing.T, raw string) (emitted []map[string]any, stopped 
 		emitted = append(emitted, ch)
 		return true
 	}
-	scanErr = scanStream(strings.NewReader(raw), func(obj map[string]any) (bool, error) {
+	scanErr = scanStream(context.Background(), strings.NewReader(raw), func(obj map[string]any) (bool, error) {
 		stop, err := processStreamingObject(obj, emit)
 		if stop {
 			stopped = true
@@ -125,7 +126,7 @@ func TestScanStream_SplitAcrossReads(t *testing.T) {
 	raw := wrap(`{"candidates":[{"content":{"parts":[{"text":"split me"}],"role":"model"},"finishReason":"STOP"}]}`)
 	// 逐字节投喂（最极端的分片），状态机必须能正确续扫。
 	emitted := []map[string]any{}
-	err := scanStream(&splitReader{data: []byte(raw), chunk: 1}, func(obj map[string]any) (bool, error) {
+	err := scanStream(context.Background(), &splitReader{data: []byte(raw), chunk: 1}, func(obj map[string]any) (bool, error) {
 		stop, err := processStreamingObject(obj, func(ch map[string]any) bool {
 			emitted = append(emitted, ch)
 			return true
@@ -380,28 +381,21 @@ func TestEmitAndCheckFinish(t *testing.T) {
 	noop := func(map[string]any) bool { return true }
 
 	// UNSPECIFIED → 不 done。
-	_, done := emitAndCheckFinish(map[string]any{"candidates": []any{map[string]any{"finishReason": "FINISH_REASON_UNSPECIFIED"}}}, noop)
+	done := emitAndCheckFinish(map[string]any{"candidates": []any{map[string]any{"finishReason": "FINISH_REASON_UNSPECIFIED"}}}, noop)
 	if done {
 		t.Error("UNSPECIFIED 不应结束流（红线⑤）")
 	}
 
 	// 空 finishReason → 不 done。
-	_, done = emitAndCheckFinish(map[string]any{"candidates": []any{map[string]any{}}}, noop)
+	done = emitAndCheckFinish(map[string]any{"candidates": []any{map[string]any{}}}, noop)
 	if done {
 		t.Error("空 finishReason 不应结束流")
 	}
 
 	// STOP → done。
-	_, done = emitAndCheckFinish(map[string]any{"candidates": []any{map[string]any{"finishReason": "STOP"}}}, noop)
+	done = emitAndCheckFinish(map[string]any{"candidates": []any{map[string]any{"finishReason": "STOP"}}}, noop)
 	if !done {
 		t.Error("STOP 应结束流")
-	}
-
-	// 客户端断开（emit 返回 false）→ stopByClient + done。
-	reject := func(map[string]any) bool { return false }
-	stopByClient, done := emitAndCheckFinish(map[string]any{"candidates": []any{map[string]any{"finishReason": "FINISH_REASON_UNSPECIFIED"}}}, reject)
-	if !stopByClient || !done {
-		t.Error("客户端断开应 stopByClient=true done=true")
 	}
 }
 
@@ -416,7 +410,7 @@ func BenchmarkScanStream(b *testing.B) {
 	b.ResetTimer()
 
 	for range b.N {
-		_ = scanStream(strings.NewReader(input), func(obj map[string]any) (bool, error) {
+		_ = scanStream(context.Background(), strings.NewReader(input), func(obj map[string]any) (bool, error) {
 			return true, nil
 		})
 	}

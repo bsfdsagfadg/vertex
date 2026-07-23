@@ -189,6 +189,9 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 	}
 	sseID := reqID24()
 
+	streamCtx, streamCancel := context.WithCancel(ctx)
+	defer streamCancel()
+
 	flusher, canFlush := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -199,7 +202,7 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 	write := func(line string) bool {
 		if _, err := io.WriteString(w, line); err != nil {
 			log.Printf("[Server] [Stream] 请求ID=%s 客户端已主动断开连接", rid)
-			return false
+			streamCancel()
 		}
 		if canFlush {
 			flusher.Flush()
@@ -214,7 +217,7 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 	observer := newStreamObserver(startTime)
 	isFirst := true
 
-	c.coreStreamGenerate(ctx, model, geminiPayload, func(data map[string]any, err *vertex.VertexError) bool {
+	c.coreStreamGenerate(streamCtx, model, geminiPayload, func(data map[string]any, err *vertex.VertexError) bool {
 		if err != nil {
 			c.writeStreamError(write, err, rid, model)
 			streamErrWritten = true
@@ -230,9 +233,7 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 			if strings.Contains(ev, `"content":`) || strings.Contains(ev, `"tool_calls":`) || strings.Contains(ev, `"reasoning_content":`) {
 				gotContent = true
 			}
-			if !write(ev) {
-				return false
-			}
+			write(ev)
 		}
 		return true
 	})

@@ -81,6 +81,11 @@ func (c *VertexAIClient) StreamChat(ctx context.Context, model string, geminiPay
 }
 
 func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model string, geminiPayload map[string]any, proxyURI string, yield func(StreamChunk) bool) {
+	if ctx.Err() != nil {
+		yield(StreamChunk{Err: NewContextError(ctx.Err())})
+		return
+	}
+
 	cfg := c.cfg
 	maxRetries := cfg.MaxRetries()
 	if cfg.ParallelPoolEnabled() && !cfg.ParallelPoolRetryEnabled() {
@@ -226,7 +231,7 @@ retryLoop:
 // executeStreamingAttempt 执行单次流式请求：发请求 → 增量扫描 JSON → 提取 chunk → 过滤 finishReason。
 //
 // emit 回调把清洗后的 Gemini chunk 推给上层；
-// emit 返回 false（客户端断开）时扫描正常停止、返回 nil（StreamChat 据 chunkCount>0 收尾，不重试）。
+// emit 始终返回 true；客户端断开由 ctx 取消触发 read 报错，scanStream 干净结束。
 // ctx 绑定 to 上游流连接：ctx 取消时 Body.Read 报错，scanStream 干净结束（返回 nil，不 panic）。
 func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *transport.Session, model string, geminiPayload map[string]any, recaptchaToken string, _ bool, emit func(map[string]any) bool) error {
 	reqID := RequestIDFromContext(ctx)
@@ -254,6 +259,18 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		return fmt.Errorf("upstream request: %w", err)
 	}
 	defer sr.Close() // 排干 → close，防串流。
+
+	// ═══ 唯一中断调度点 ═══
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			sr.Body.Close()
+		case <-done:
+		}
+	}()
+	// ══════════════════════
 
 	// HTTP 错误：读完 error body 后按状态映射（与非流式 executeCompleteRequest 一致）。
 	if sr.StatusCode != 200 {
@@ -283,7 +300,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	}
 
 	// 增量扫描上游流，逐个完整 JSON 对象提取 chunk。
-	scanErr := scanStream(sr.Body, func(obj map[string]any) (stop bool, err error) {
+	scanErr := scanStream(ctx, sr.Body, func(obj map[string]any) (stop bool, err error) {
 		// 从单个上游对象提取（可能多个）chunk，逐个 emit；命中真实 finishReason 即结束。
 		return processStreamingObject(obj, emit)
 	})
@@ -307,9 +324,9 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 // 跨网络 chunk 维护 scanPos/braceCount/inString/escape 状态，下个 chunk 从上次扫到的位置
 // 续扫，而非每来一个 chunk 都从 startIdx 重扫整个 buffer（旧逻辑 O(n²）。逐字节逻辑等价。
 //
-// onObject 返回 (stop, err)：stop=true（命中真实 finishReason / 客户端断开）即正常结束扫描；
+// onObject 返回 (stop, err)：stop=true（命中真实 finishReason）即正常结束扫描；客户端断开由 ctx.Err() 路径处理；
 // err 非 nil 即中断并上抛（上游错误）。
-func scanStream(body io.Reader, onObject func(map[string]any) (bool, error)) error {
+func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]any) (bool, error)) error {
 	reader := bufio.NewReader(body)
 	readBuf := make([]byte, 16*1024)
 
@@ -409,6 +426,9 @@ func scanStream(body io.Reader, onObject func(map[string]any) (bool, error)) err
 		}
 
 		if readErr != nil {
+			if ctx.Err() != nil {
+				return context.Canceled
+			}
 			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
 				return fmt.Errorf("error: %w", readErr)
 
@@ -432,7 +452,7 @@ func parseJSONObject(b []byte) map[string]any {
 //
 // 先识别 results 内的错误（"Failed to verify action" → AuthenticationError 触发重试），
 // 再 unwrap data.ui.streamGenerateContentAnonymous，最后 _extract_chunk 清洗后 emit。
-// 返回 (stop, err)：emit 出真实 finishReason 或客户端断开即 stop=true（结束扫描）；上游错误即 err 非 nil。
+// 返回 (stop, err)：emit 出真实 finishReason 即 stop=true（结束扫描）；客户端断开由 ctx.Err() 路径处理；上游错误即 err 非 nil。
 func processStreamingObject(obj map[string]any, emit func(map[string]any) bool) (bool, error) {
 	results, _ := obj["results"].([]any)
 	for _, rRaw := range results {
@@ -485,7 +505,7 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool) 
 								}
 							}
 							if chunk := extractChunk(item); chunk != nil {
-								if _, done := emitAndCheckFinish(chunk, emit); done {
+								if done := emitAndCheckFinish(chunk, emit); done {
 									return true, nil
 								}
 							}
@@ -499,7 +519,7 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool) 
 		}
 
 		if chunk := extractChunk(data); chunk != nil {
-			if _, done := emitAndCheckFinish(chunk, emit); done {
+			if done := emitAndCheckFinish(chunk, emit); done {
 				return true, nil
 			}
 		}
@@ -512,18 +532,14 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool) 
 // finishReason 过滤（红线⑤）：emit 后取 chunk 的 candidates[0].finishReason，
 // **仅当非空且 != FINISH_REASON_UNSPECIFIED 才主动结束流**。
 // 返回 (stopByClient, done)：done=true 表示应停止扫描；stopByClient 区分是客户端断开还是正常 finish。
-func emitAndCheckFinish(chunk map[string]any, emit func(map[string]any) bool) (stopByClient bool, done bool) {
-	if !emit(chunk) {
-		// 客户端断开 / 上层要求停止。
-		log.Printf("[Stream] 客户端主动断开，导致流结束")
-		return true, true
-	}
+func emitAndCheckFinish(chunk map[string]any, emit func(map[string]any) bool) (done bool) {
+	emit(chunk)
 	fr := chunkFinishReason(chunk)
 	if fr != "" && fr != finishReasonUnspecified {
 		// 真实 finishReason：主动结束（避免上游不关连接挂到 180s）。
-		return false, true
+		return true
 	}
-	return false, false
+	return false
 }
 
 // chunkFinishReason 取 chunk 的 candidates[0].finishReason。
