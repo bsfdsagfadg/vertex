@@ -84,6 +84,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	log.Printf("[Server] [ChatCompletions] 收到请求: 模型=%s, 真模型=%s, 流式=%v, n=%d", rawModel, actualModel, stream, n)
 
 	transform.ApplyImageConfig(geminiPayload, body, actualModel)
+	transform.ApplyDefaultThinking(geminiPayload, c.cfg.DefaultThinkingLevel(), actualModel)
 	if strings.Contains(strings.ToLower(model), "image") {
 		gc, ok := geminiPayload["generationConfig"].(map[string]any)
 		if !ok {

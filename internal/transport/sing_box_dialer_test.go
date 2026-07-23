@@ -60,6 +60,7 @@ func (c *fakeCfg) ProxyURL() string {
 }
 
 func (c *fakeCfg) DefaultImageSize() string                    { return "1K" }
+func (c *fakeCfg) DefaultThinkingLevel() string                { return "自动" }
 func (c *fakeCfg) PortAPI() int                                { panic("unexpected") }
 func (c *fakeCfg) MaxRetries() int                             { panic("unexpected") }
 func (c *fakeCfg) AdminPassword() string                       { panic("unexpected") }

@@ -66,6 +66,9 @@ type AppConfig struct { //nolint:govet
 
 	// 默认图档位（客户端不传 size 时的兜底值）
 	DefaultImageSize string `json:"default_image_size"`
+
+	// 默认思考等级（客户端不传 reasoning_effort/thinking 时的兜底值）
+	DefaultThinkingLevel string `json:"default_thinking_level"`
 }
 
 func DefaultConfig() AppConfig {
@@ -88,6 +91,7 @@ func DefaultConfig() AppConfig {
 		FontColor:                 "#f6f1e9",
 		CustomBgPresets:           []string{},
 		DefaultImageSize:          "1K",
+		DefaultThinkingLevel:      "自动",
 	}
 }
 
@@ -182,6 +186,14 @@ func Load() AppConfig {
 				log.Printf("[Config] default_image_size 非法 (%q)，回退 1K", cfg.DefaultImageSize)
 				cfg.DefaultImageSize = "1K"
 			}
+			if cfg.DefaultThinkingLevel == "" {
+				cfg.DefaultThinkingLevel = "自动"
+			} else if t := normalizeThinkingLevel(cfg.DefaultThinkingLevel); t != "" {
+				cfg.DefaultThinkingLevel = t
+			} else {
+				log.Printf("[Config] default_thinking_level 非法 (%q)，回退 自动", cfg.DefaultThinkingLevel)
+				cfg.DefaultThinkingLevel = "自动"
+			}
 			log.Printf("[Config] 成功加载配置文件 config.json")
 		}
 	} else if !os.IsNotExist(err) {
@@ -219,6 +231,18 @@ func normalizeImageSizeTier(s string) string {
 	u := strings.ToUpper(strings.TrimSpace(s))
 	if allowedImageSizeTiers[u] {
 		return u
+	}
+	return ""
+}
+
+var allowedThinkingLevels = map[string]bool{
+	"自动": true, "最低": true, "低": true, "中": true, "高": true,
+}
+
+func normalizeThinkingLevel(s string) string {
+	s = strings.TrimSpace(s)
+	if allowedThinkingLevels[s] {
+		return s
 	}
 	return ""
 }

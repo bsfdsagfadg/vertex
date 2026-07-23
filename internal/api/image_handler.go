@@ -64,6 +64,7 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": prompt}}}},
 	}
 	transform.ApplyImageConfig(geminiPayload, body, model)
+	transform.ApplyDefaultThinking(geminiPayload, img.cfg.DefaultThinkingLevel(), model)
 	if !hasImageSize(geminiPayload) {
 		gc, _ := geminiPayload["generationConfig"].(map[string]any)
 		if gc == nil {

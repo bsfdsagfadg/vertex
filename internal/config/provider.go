@@ -49,6 +49,7 @@ type ConfigProvider interface {
 	ConfigPath() string
 
 	DefaultImageSize() string
+	DefaultThinkingLevel() string
 }
 
 type ConfigWriter interface {
@@ -119,6 +120,7 @@ func (d dynamicConfig) ModelsWithFakeVariants() []string { return Load().ModelsW
 func (d dynamicConfig) FakePrefixes() []string           { return Load().FakePrefixes() }
 func (d dynamicConfig) ResolveModelName(s string) string { return Load().ResolveModelName(s) }
 func (d dynamicConfig) AutoRefreshLogs() bool            { return Load().GetAutoRefreshLogs() }
-func (d dynamicConfig) DefaultImageSize() string { return Load().DefaultImageSize }
+func (d dynamicConfig) DefaultImageSize() string      { return Load().DefaultImageSize }
+func (d dynamicConfig) DefaultThinkingLevel() string { return Load().DefaultThinkingLevel }
 func (d dynamicConfig) ConfigDir() string                { return Load().ConfigDir() }
 func (d dynamicConfig) ConfigPath() string               { return Load().ConfigPath() }
