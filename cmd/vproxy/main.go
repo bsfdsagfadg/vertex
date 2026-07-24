@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	_ "time/tzdata"
@@ -200,7 +201,31 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	shutdownDone := make(chan struct{})
+	shutdownCh := make(chan struct{})
+	var shutdownOnce sync.Once
+
+	shutdownFn := func(signalName string) {
+		if signalName != "" {
+			log.Printf("[vproxy] 收到 %s：关闭 TUI + 排干在途请求（最长 %s）…", signalName, shutdownGrace)
+		} else {
+			log.Printf("[vproxy] TUI 交互关闭，排干在途请求（最长 %s）…", shutdownGrace)
+		}
+		cli.StopTUI()
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		if err := httpServer.Shutdown(ctx); err != nil {
+			log.Printf("[vproxy] 优雅关闭超时/出错：%v（强制结束）", err)
+		}
+		cancel()
+		dialer.StopAll()
+		telemetry.Stop()
+		_ = dailyLogger.Close()
+	}
+
+	go func() {
+		<-cli.TUIDone()
+		shutdownOnce.Do(func() { shutdownFn(""); close(shutdownCh) })
+	}()
+
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -215,18 +240,15 @@ func main() {
 				}
 				continue
 			}
-			log.Printf("[vproxy] 收到 %v：开始优雅关闭，排干在途请求（最长 %s）…", s, shutdownGrace)
-			ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
-			if err := httpServer.Shutdown(ctx); err != nil {
-				log.Printf("[vproxy] 优雅关闭超时/出错：%v（强制结束）", err)
-			}
-			cancel()
-			dialer.StopAll()
-			telemetry.Stop()
-			_ = dailyLogger.Close()
-			close(shutdownDone)
+			shutdownOnce.Do(func() { shutdownFn(s.String()); close(shutdownCh) })
 			return
 		}
+	}()
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		<-shutdownCh
+		close(shutdownDone)
 	}()
 
 	poolStr := "关闭"
