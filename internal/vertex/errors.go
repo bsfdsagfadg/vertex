@@ -34,7 +34,7 @@ type VertexError struct { //nolint:govet
 	Details          map[string]any
 	UpstreamResponse string
 	RetryAfter       int   // 仅 ratelimit 用，0 表示未设
-	cause            error // 仅 NewContextError 设置；供 errors.Is 穿透 context 错误
+	cause            error // 供 errors.Is 穿透底层 cause；所有构造器通过参数或 WithCause 设置
 }
 
 // Error 实现 error 接口。
@@ -43,12 +43,22 @@ func (e *VertexError) Error() string { return e.Message }
 // Unwrap 让 errors.Is(err, context.DeadlineExceeded) 能穿透 VertexError。
 func (e *VertexError) Unwrap() error { return e.cause }
 
-// IsRetryable 判定是否可重试：408/429/5xx 可重试；认证错误（按 Kind 判，不看 code）也可重试。
+// WithCause 设置 cause 并返回自身，用于构造器链式保留原始错误。
+func (e *VertexError) WithCause(cause error) *VertexError {
+	e.cause = cause
+	return e
+}
+
+// IsRetryable 判定是否可重试：408/429/5xx 可重试；网络抖动（Kind=="network"）可重试；
+// 认证错误（按 Kind 判，不看 code）也可重试。
 // context 错误（cause 链含 Canceled/DeadlineExceeded）不可重试——这是防御性兜底；
 // 正常路径中这些错误在 stream.go 的 retry 循环和 RunRace 的 Fix 3 中被提前拦截。
 func (e *VertexError) IsRetryable() bool {
 	if errors.Is(e.cause, context.Canceled) || errors.Is(e.cause, context.DeadlineExceeded) {
 		return false
+	}
+	if e.Kind == "network" {
+		return true
 	}
 	switch e.Code {
 	case 408, 429, 500, 502, 503, 504:
@@ -60,33 +70,33 @@ func (e *VertexError) IsRetryable() bool {
 // ---- 构造器（默认 code/status 对应各错误类）----
 
 // NewAuthenticationError 认证错误（recaptcha/token 过期）。code=502（见类型注释）。
-func NewAuthenticationError(msg string) *VertexError {
-	return &VertexError{Message: msg, Code: 502, Status: StatusUnauthenticated, Kind: "auth"} //nolint:exhaustruct
+func NewAuthenticationError(msg string, cause error) *VertexError {
+	return &VertexError{Message: msg, Code: 502, Status: StatusUnauthenticated, Kind: "auth", cause: cause} //nolint:exhaustruct
 }
 
 // NewPermissionDeniedError 权限拒绝（403）。
-func NewPermissionDeniedError(msg string) *VertexError {
-	return &VertexError{Message: msg, Code: 403, Status: StatusPermissionDenied, Kind: "permission"} //nolint:exhaustruct
+func NewPermissionDeniedError(msg string, cause error) *VertexError {
+	return &VertexError{Message: msg, Code: 403, Status: StatusPermissionDenied, Kind: "permission", cause: cause} //nolint:exhaustruct
 }
 
 // NewInvalidArgumentError 参数错误（400）。
-func NewInvalidArgumentError(msg string) *VertexError {
-	return &VertexError{Message: msg, Code: 400, Status: StatusInvalidArgument, Kind: "invalid"}
+func NewInvalidArgumentError(msg string, cause error) *VertexError {
+	return &VertexError{Message: msg, Code: 400, Status: StatusInvalidArgument, Kind: "invalid", cause: cause}
 }
 
 // NewNotFoundError 资源不存在（404）。
-func NewNotFoundError(msg string) *VertexError {
-	return &VertexError{Message: msg, Code: 404, Status: StatusNotFound, Kind: "notfound"}
+func NewNotFoundError(msg string, cause error) *VertexError {
+	return &VertexError{Message: msg, Code: 404, Status: StatusNotFound, Kind: "notfound", cause: cause}
 }
 
 // NewRateLimitError 限流/资源耗尽（429）。
-func NewRateLimitError(msg string, retryAfter int) *VertexError {
-	return &VertexError{Message: msg, Code: 429, Status: StatusResourceExhausted, Kind: "ratelimit", RetryAfter: retryAfter}
+func NewRateLimitError(msg string, retryAfter int, cause error) *VertexError {
+	return &VertexError{Message: msg, Code: 429, Status: StatusResourceExhausted, Kind: "ratelimit", RetryAfter: retryAfter, cause: cause}
 }
 
 // NewInternalError 内部错误（500）。
-func NewInternalError(msg string) *VertexError {
-	return &VertexError{Message: msg, Code: 500, Status: StatusInternal, Kind: "internal"}
+func NewInternalError(msg string, cause error) *VertexError {
+	return &VertexError{Message: msg, Code: 500, Status: StatusInternal, Kind: "internal", cause: cause}
 }
 
 // NewContextError 包装 context.Canceled/DeadlineExceeded，保留 cause 以供 errors.Is 透传。
@@ -96,13 +106,25 @@ func NewContextError(err error) *VertexError {
 }
 
 // NewEmptyResponseError 上游空响应（502）。
-func NewEmptyResponseError(msg string) *VertexError {
-	return &VertexError{Message: msg, Code: 502, Status: StatusInternal, Kind: "empty"}
+func NewEmptyResponseError(msg string, cause error) *VertexError {
+	return &VertexError{Message: msg, Code: 502, Status: StatusInternal, Kind: "empty", cause: cause}
+}
+
+// NewNetworkError 包装网络抖动错误（连接超时、DNS 失败、TCP Reset 等）。
+// Code=502 避免上游网关误判；Kind="network" 触发 IsRetryable 持续重试。
+func NewNetworkError(err error) *VertexError {
+	return &VertexError{Message: err.Error(), Code: 502, Status: StatusUnavailable, Kind: "network", cause: err}
+}
+
+// NewSafetyError 包装 Google 安全审查拦截响应。
+// Code=400，Status 为安全相关状态（如 "SAFETY"），Kind="safety"。
+func NewSafetyError(msg, status string, cause error) *VertexError {
+	return &VertexError{Message: msg, Code: 400, Status: status, Kind: "safety", cause: cause}
 }
 
 // NewUnavailableError 服务不可用（503）。
-func NewUnavailableError(msg string) *VertexError {
-	return &VertexError{Message: msg, Code: 503, Status: StatusUnavailable, Kind: "unavailable"}
+func NewUnavailableError(msg string, cause error) *VertexError {
+	return &VertexError{Message: msg, Code: 503, Status: StatusUnavailable, Kind: "unavailable", cause: cause}
 }
 
 // raiseForStatus 根据 HTTP/gRPC 状态创建对应错误。
@@ -110,17 +132,17 @@ func raiseForStatus(code int, status, message string, details map[string]any, up
 	var e *VertexError
 	switch {
 	case status == StatusResourceExhausted || code == 8 || code == 429:
-		e = NewRateLimitError(message, 0)
+		e = NewRateLimitError(message, 0, nil)
 	case status == StatusUnauthenticated || code == 16 || code == 401:
-		e = NewAuthenticationError(message)
+		e = NewAuthenticationError(message, nil)
 	case status == StatusPermissionDenied || code == 7 || code == 403:
-		e = NewPermissionDeniedError(message)
+		e = NewPermissionDeniedError(message, nil)
 	case status == StatusInvalidArgument || code == 3 || code == 400:
-		e = NewInvalidArgumentError(message)
+		e = NewInvalidArgumentError(message, nil)
 	case status == StatusNotFound || code == 5 || code == 404:
-		e = NewNotFoundError(message)
+		e = NewNotFoundError(message, nil)
 	case status == StatusUnavailable || code == 14 || code == 503:
-		e = NewUnavailableError(message)
+		e = NewUnavailableError(message, nil)
 	case code >= 400 && code < 500:
 		e = &VertexError{Message: message, Code: code, Status: status, Kind: "client"}
 	default:
@@ -159,7 +181,11 @@ func parseErrorResponse(data any) *VertexError {
 	case map[string]any:
 		// 1. 嵌套 error 字段（标准 Google API）
 		if errObj, ok := v["error"].(map[string]any); ok {
-			return raiseForStatus(
+			// 安全审查拦截：error.message == "SAFETY" 或 finishReason 为 SAFETY
+			if msg, _ := errObj["message"].(string); strings.ToUpper(msg) == "SAFETY" {
+			return NewSafetyError(msg, "SAFETY", nil)
+		}
+		return raiseForStatus(
 				toInt(errObj["code"], 500), toStr(errObj["status"]),
 				toStrOr(errObj["message"], "Unknown error"), toMap(errObj["details"]), marshalStr(v),
 			)
@@ -172,10 +198,26 @@ func parseErrorResponse(data any) *VertexError {
 				code := toInt(firstNonNil(extStatus["code"], first["code"]), 500)
 				status := toStr(firstNonNil(extStatus["status"], first["status"]))
 				message := toStrOr(firstNonNil(extStatus["message"], first["message"]), "Unknown error")
+				// 安全审查拦截：finishReason 为 SAFETY
+				if fr := toStr(firstNonNil(extStatus["finishReason"], first["finishReason"])); strings.ToUpper(fr) == "SAFETY" {
+					return NewSafetyError(message, status, nil)
+				}
 				return raiseForStatus(code, status, message, toMap(first["details"]), marshalStr(v))
 			}
 		}
 		// 3. 扁平格式
+		// 安全审查拦截：finishReason、blockReason、promptFeedback.blockReason
+		if fr := toStr(v["finishReason"]); strings.ToUpper(fr) == "SAFETY" {
+			return NewSafetyError(toStrOr(v["message"], "Blocked by safety"), strings.ToUpper(fr), nil)
+		}
+		if br := toStr(v["blockReason"]); strings.ToUpper(br) != "" {
+			return NewSafetyError(toStrOr(v["message"], "Blocked by safety"), strings.ToUpper(br), nil)
+		}
+		if pf, ok := v["promptFeedback"].(map[string]any); ok {
+			if br := toStr(pf["blockReason"]); strings.ToUpper(br) != "" {
+				return NewSafetyError(toStrOr(pf["blockReasonMessage"], "Blocked by safety"), strings.ToUpper(br), nil)
+			}
+		}
 		if _, hasCode := v["code"]; hasCode {
 			return raiseForStatus(toInt(v["code"], 500), toStr(v["status"]), toStrOr(v["message"], "Unknown error"), toMap(v["details"]), marshalStr(v))
 		}
@@ -183,7 +225,11 @@ func parseErrorResponse(data any) *VertexError {
 			return raiseForStatus(toInt(v["code"], 500), toStr(v["status"]), toStrOr(v["message"], "Unknown error"), toMap(v["details"]), marshalStr(v))
 		}
 		if _, hasMsg := v["message"]; hasMsg {
-			return raiseForStatus(toInt(v["code"], 500), toStr(v["status"]), toStrOr(v["message"], "Unknown error"), toMap(v["details"]), marshalStr(v))
+			msg := toStr(v["message"])
+			if strings.ToUpper(msg) == "SAFETY" {
+				return NewSafetyError(msg, "SAFETY", nil)
+			}
+			return raiseForStatus(toInt(v["code"], 500), toStr(v["status"]), msg, toMap(v["details"]), marshalStr(v))
 		}
 		return nil
 	default:

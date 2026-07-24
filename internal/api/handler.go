@@ -5,6 +5,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -182,21 +183,22 @@ func withUpstreamDetail(friendly string, e *vertex.VertexError) string {
 }
 
 func toVertexError(err error) *vertex.VertexError {
-	if ve, ok := err.(*vertex.VertexError); ok {
+	var ve *vertex.VertexError
+	if errors.As(err, &ve) {
 		return ve
 	}
-	return vertex.NewInternalError(err.Error())
+	return vertex.NewInternalError(err.Error(), nil)
 }
 
 func isSafetyBlock(e *vertex.VertexError) bool {
-	msg := strings.ToLower(e.Message)
-	status := strings.ToLower(e.Status)
-	for _, k := range []string{"safety", "block_reason", "content_filter", "finish_reason_safety"} {
-		if strings.Contains(msg, k) || strings.Contains(status, k) {
-			return true
-		}
+	if e == nil {
+		return false
 	}
-	return false
+	if e.Kind == "safety" {
+		return true
+	}
+	status := strings.ToUpper(e.Status)
+	return status == "SAFETY" || status == "BLOCKED_REASON_SAFETY"
 }
 
 func oaiSafetyResponse(model string) map[string]any {

@@ -47,7 +47,7 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, g
 		return nil, firstErr
 	}
 	if len(chunks) == 0 {
-		return nil, NewEmptyResponseError("Upstream returned no data")
+		return nil, NewEmptyResponseError("Upstream returned no data", nil)
 	}
 
 	result := collectChunksToParseResult(chunks)
@@ -70,7 +70,7 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, g
 
 func pickBestResult(results []candidateResult) (map[string]any, error) {
 	if len(results) == 0 {
-		return nil, NewInternalError("no viable candidate results")
+		return nil, NewInternalError("no viable candidate results", nil)
 	}
 	sort.Slice(results, func(i, j int) bool {
 		fi := candidateFinish(results[i].resp)
@@ -88,7 +88,7 @@ func pickBestResult(results []candidateResult) (map[string]any, error) {
 			return r.resp, nil
 		}
 	}
-	return nil, NewInternalError("no viable candidate results")
+	return nil, NewInternalError("no viable candidate results", nil)
 }
 
 func hasViableResponse(resp map[string]any) bool {

@@ -97,7 +97,7 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 	reqID := RequestIDFromContext(ctx)
 	sess, err := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
 	if err != nil {
-		yield(StreamChunk{Err: NewInternalError("create session: " + err.Error())})
+		yield(StreamChunk{Err: NewInternalError("create session: " + err.Error(), nil)})
 		return
 	}
 	defer func() { sess.Close() }()
@@ -116,7 +116,7 @@ retryLoop:
 		}
 		if recaptchaToken == "" {
 			if attempt == maxRetries {
-				lastError = NewAuthenticationError("Could not fetch recaptcha token.")
+				lastError = NewAuthenticationError("Could not fetch recaptcha token.", nil)
 				break retryLoop
 			}
 			attempt++
@@ -185,7 +185,7 @@ retryLoop:
 			sess.Close()
 			newSess, e := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
 			if e != nil {
-				yield(StreamChunk{Err: NewInternalError("recreate session: " + e.Error())})
+				yield(StreamChunk{Err: NewInternalError("recreate session: " + e.Error(), nil)})
 				return
 			}
 			sess = newSess
@@ -217,7 +217,7 @@ retryLoop:
 
 		default:
 			// 【关键改动】：直接终止未知原生错误，移除了多余的 attempt 重新入圈重试。
-			lastError = NewInternalError(attemptErr.Error())
+			lastError = NewInternalError(attemptErr.Error(), nil)
 			break retryLoop
 		}
 	}
@@ -242,12 +242,12 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	// 缓冲存活到本函数返回（整个流消费完）后由 defer Close 删除临时文件。
 	buf, err := spool.EncodeJSON(newBody)
 	if err != nil {
-		return NewInternalError("marshal payload: " + err.Error())
+		return NewInternalError("marshal payload: " + err.Error(), nil)
 	}
 	defer func() { _ = buf.Close() }()
 	reader, err := buf.Reader()
 	if err != nil {
-		return NewInternalError("spool reader: " + err.Error())
+		return NewInternalError("spool reader: " + err.Error(), nil)
 	}
 	header := transport.XHRHeaders(
 		"application/json", "*/*",
@@ -256,7 +256,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 
 	sr, err := sess.DoStream(ctx, "POST", c.getBatchGraphqlURL(), header, reader)
 	if err != nil {
-		return fmt.Errorf("upstream request: %w", err)
+		return classifyNetworkError(err)
 	}
 	defer sr.Close() // 排干 → close，防串流。
 
@@ -290,7 +290,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		if sr.StatusCode == 401 || sr.StatusCode == 403 ||
 			strings.Contains(errText, "Failed to verify action") ||
 			strings.Contains(errText, "The caller does not have permission") {
-			return NewAuthenticationError("Authentication/Recaptcha failed: " + errText)
+			return NewAuthenticationError("Authentication/Recaptcha failed: " + errText, nil)
 		}
 		if parsed := parseErrorResponse(errText); parsed != nil {
 			parsed.UpstreamResponse = errText
@@ -315,7 +315,11 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		return scanErr
 	}
 
-	return scanErr
+	if scanErr != nil {
+		return classifyNetworkError(scanErr)
+	}
+
+	return nil
 }
 
 // scanStream 跨 chunk 增量扫描花括号配对，逐个完整 JSON 对象回调 onObject（O(n)）。
@@ -471,7 +475,7 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool) 
 			}
 			if strings.Contains(errMsg, "Failed to verify action") ||
 				strings.Contains(errMsg, "The caller does not have permission") {
-				return false, NewAuthenticationError(errMsg)
+				return false, NewAuthenticationError(errMsg, nil)
 			}
 			if parsed := parseErrorResponse(map[string]any{"errors": errs}); parsed != nil {
 				return false, parsed

@@ -229,7 +229,7 @@ func TestRunRace_CompleteChat_HardErrorDoesNotBlockSTOP(t *testing.T) {
 		order := atomic.AddInt32(&callOrder, 1)
 		if order == 1 {
 			// 第一个候选：不可重试硬错误（403）。
-			return nil, NewPermissionDeniedError("forbidden")
+			return nil, NewPermissionDeniedError("forbidden", nil)
 		}
 		return map[string]any{
 			"candidates": []any{map[string]any{"finishReason": "STOP"}},
@@ -357,7 +357,7 @@ func TestRunRace_Streaming_FailFastOnHardError(t *testing.T) {
 
 	run := func(ctx context.Context, uri string) (<-chan StreamChunk, error) {
 		atomic.AddInt32(&launchCount, 1)
-		return nil, NewPermissionDeniedError("forbidden")
+		return nil, NewPermissionDeniedError("forbidden", nil)
 	}
 
 	_, err := RunRace[<-chan StreamChunk](ctx, cfg, run, WithFailFastOnHardError[<-chan StreamChunk]())

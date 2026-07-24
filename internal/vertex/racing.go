@@ -49,7 +49,7 @@ func StreamParallel(ctx context.Context, cfg config.ConfigProvider,
 		if ok {
 			yield(StreamChunk{Err: vertexErr})
 		} else {
-			yield(StreamChunk{Err: NewInternalError(err.Error())})
+			yield(StreamChunk{Err: NewInternalError(err.Error(), nil)})
 		}
 		return
 	}

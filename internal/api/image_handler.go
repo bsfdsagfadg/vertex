@@ -177,7 +177,7 @@ func (img *ImageHandler) runOAIImageRequest(ctx context.Context, w http.Response
 			defer wg.Done()
 			defer func() {
 				if rec := recover(); rec != nil {
-					results[idx] = rResult{err: vertex.NewInternalError(fmt.Sprintf("candidate panic: %v", rec))}
+					results[idx] = rResult{err: vertex.NewInternalError(fmt.Sprintf("candidate panic: %v", rec), nil)}
 				}
 			}()
 			log.Printf("[Server] [runOAIImageRequest] 开始获取图片 (第 %d/%d 张)", idx+1, n)

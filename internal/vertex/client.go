@@ -3,9 +3,11 @@ package vertex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -95,7 +97,7 @@ func (c *VertexAIClient) CompleteChatN(ctx context.Context, model string, gemini
 			defer wg.Done()
 			defer func() {
 				if rec := recover(); rec != nil {
-					results[idx] = res{err: NewInternalError(fmt.Sprintf("candidate panic: %v", rec))} //nolint:exhaustruct
+					results[idx] = res{err: NewInternalError(fmt.Sprintf("candidate panic: %v", rec), nil)} //nolint:exhaustruct
 				}
 			}()
 			r, err := c.CompleteChat(ctx, model, geminiPayload)
@@ -117,7 +119,7 @@ func (c *VertexAIClient) CompleteChatN(ctx context.Context, model string, gemini
 	}
 	if len(ok) == 0 {
 		if firstErr == nil {
-			firstErr = NewInternalError("All candidates failed")
+			firstErr = NewInternalError("All candidates failed", nil)
 		}
 		return nil, firstErr
 	}
@@ -139,7 +141,7 @@ func (c *VertexAIClient) completeChatNSerial(ctx context.Context, model string, 
 	}
 	if len(ok) == 0 {
 		if firstErr == nil {
-			firstErr = NewInternalError("All candidates failed")
+			firstErr = NewInternalError("All candidates failed", nil)
 		}
 		return nil, firstErr
 	}
@@ -149,10 +151,10 @@ func (c *VertexAIClient) completeChatNSerial(ctx context.Context, model string, 
 func (c *VertexAIClient) buildCompleteResponse(r *ParseResult) (map[string]any, error) {
 	if len(r.Parts) == 0 {
 		if r.HasError {
-			return nil, NewInternalError("upstream parse error: " + r.ErrorMessage)
+			return nil, NewInternalError("upstream parse error: "+r.ErrorMessage, nil)
 		}
 		if len(r.PromptFeedback) == 0 {
-			return nil, NewEmptyResponseError("Upstream returned empty response (no content)")
+			return nil, NewEmptyResponseError("Upstream returned empty response (no content)", nil)
 		}
 	}
 
@@ -285,10 +287,36 @@ func shallowCopy(m map[string]any) map[string]any {
 }
 
 func asVertexError(err error) *VertexError {
-	if ve, ok := err.(*VertexError); ok {
+	var ve *VertexError
+	if errors.As(err, &ve) {
 		return ve
 	}
 	return nil
+}
+
+// classifyNetworkError 将网络原生 error 统一包装为 *VertexError。
+//
+// 返回的 VertexError 保留原始 cause，供 errors.Is/As 穿透。
+// 若 err 已是 *VertexError，直接返回避免双重包装。
+func classifyNetworkError(err error) *VertexError {
+	if err == nil {
+		return nil
+	}
+	var ve *VertexError
+	if errors.As(err, &ve) {
+		return ve
+	}
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return NewContextError(err)
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return NewNetworkError(err)
+	}
+
+	return NewInternalError(err.Error(), err)
 }
 
 func setIfPresent(m map[string]any, key string, v any) {

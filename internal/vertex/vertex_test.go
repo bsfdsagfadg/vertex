@@ -1,6 +1,10 @@
 package vertex
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net"
 	"testing"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
@@ -23,7 +27,7 @@ func TestParseErrorResponse(t *testing.T) {
 }
 
 func TestAuthError502(t *testing.T) {
-	e := NewAuthenticationError("x")
+	e := NewAuthenticationError("x", nil)
 	if e.Code != 502 {
 		t.Errorf("auth code=%d, want 502（红线：避免网关误判禁用渠道）", e.Code)
 	}
@@ -65,6 +69,140 @@ func TestBuildRequestPayload(t *testing.T) {
 	}
 	if vars["model"] != "gemini-3.1-flash" {
 		t.Errorf("model=%v", vars["model"])
+	}
+}
+
+func TestNewNetworkError(t *testing.T) {
+	originalErr := &net.DNSError{Err: "host not found", Name: "example.com", IsTimeout: false}
+	e := NewNetworkError(originalErr)
+	if e.Code != 502 {
+		t.Errorf("Code=%d, want 502", e.Code)
+	}
+	if e.Kind != "network" {
+		t.Errorf("Kind=%s, want network", e.Kind)
+	}
+	if !e.IsRetryable() {
+		t.Error("network error should be retryable")
+	}
+	if !errors.Is(e, originalErr) {
+		t.Error("errors.Is should penetrate to original net.Error via cause")
+	}
+}
+
+func TestNewNetworkError_IsRetryable(t *testing.T) {
+	e := NewNetworkError(io.EOF)
+	if !e.IsRetryable() {
+		t.Error("network error IsRetryable should return true")
+	}
+}
+
+func TestNewSafetyError(t *testing.T) {
+	e := NewSafetyError("Blocked by safety", "SAFETY", nil)
+	if e.Code != 400 {
+		t.Errorf("Code=%d, want 400", e.Code)
+	}
+	if e.Kind != "safety" {
+		t.Errorf("Kind=%s, want safety", e.Kind)
+	}
+	if e.Status != "SAFETY" {
+		t.Errorf("Status=%s, want SAFETY", e.Status)
+	}
+}
+
+func TestWithCause(t *testing.T) {
+	original := errors.New("root cause")
+	e := NewInternalError("wrapper", nil).WithCause(original)
+	if !errors.Is(e, original) {
+		t.Error("WithCause should allow errors.Is to penetrate to original cause")
+	}
+}
+
+func TestIsRetryableNetwork(t *testing.T) {
+	e := NewNetworkError(io.EOF)
+	if !e.IsRetryable() {
+		t.Error("Kind==network should be retryable")
+	}
+
+	// context cancellation overrides retryability
+	ctxErr := NewContextError(context.Canceled)
+	if ctxErr.IsRetryable() {
+		t.Error("context.Canceled should not be retryable")
+	}
+}
+
+func TestParseErrorResponseSafety(t *testing.T) {
+	// Nested error with SAFETY message
+	e := parseErrorResponse(map[string]any{
+		"error": map[string]any{
+			"code":    float64(400),
+			"message": "SAFETY",
+			"status":  "INVALID_ARGUMENT",
+		},
+	})
+	if e == nil || e.Kind != "safety" {
+		t.Errorf("expected safety error, got %v", e)
+	}
+
+	// Flat format with finishReason=SAFETY
+	e2 := parseErrorResponse(map[string]any{
+		"finishReason": "SAFETY",
+		"message":      "Blocked",
+	})
+	if e2 == nil || e2.Kind != "safety" {
+		t.Errorf("expected safety error from finishReason, got %v", e2)
+	}
+
+	// Flat format with promptFeedback.blockReason
+	e3 := parseErrorResponse(map[string]any{
+		"promptFeedback": map[string]any{
+			"blockReason":        "SAFETY",
+			"blockReasonMessage": "Content blocked",
+		},
+	})
+	if e3 == nil || e3.Kind != "safety" {
+		t.Errorf("expected safety error from promptFeedback, got %v", e3)
+	}
+
+	// Plain text containing "safety" should NOT produce safety error
+	e4 := parseErrorResponse(map[string]any{
+		"code":    float64(400),
+		"message": "This is a safety test message",
+		"status":  "INVALID_ARGUMENT",
+	})
+	if e4 != nil && e4.Kind == "safety" {
+		t.Error("plain message containing 'safety' should not match as safety error")
+	}
+}
+
+func TestClassifyNetworkError(t *testing.T) {
+	// Already a VertexError → passthrough
+	orig := NewAuthenticationError("test", nil)
+	got := classifyNetworkError(orig)
+	if got != orig {
+		t.Error("classifyNetworkError should return same pointer for existing VertexError")
+	}
+
+	// context canceled → NewContextError
+	ctxErr := classifyNetworkError(context.Canceled)
+	if ctxErr == nil || ctxErr.Kind != "internal" {
+		t.Error("context.Canceled should become internal Kind")
+	}
+
+	// net.Error timeout → network error
+	timeoutErr := &net.DNSError{Err: "timeout", Name: "test", IsTimeout: true}
+	netErr := classifyNetworkError(timeoutErr)
+	if netErr == nil || netErr.Kind != "network" {
+		t.Errorf("net.Error should become network error, got Kind=%s", netErr.Kind)
+	}
+
+	// plain error → internal with cause
+	plainErr := errors.New("something went wrong")
+	internalErr := classifyNetworkError(plainErr)
+	if internalErr == nil || internalErr.Kind != "internal" {
+		t.Errorf("plain error should become internal, got Kind=%s", internalErr.Kind)
+	}
+	if !errors.Is(internalErr, plainErr) {
+		t.Error("classifyNetworkError should preserve cause for plain errors")
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
 func TestResolveN(t *testing.T) {
@@ -40,6 +42,42 @@ func TestResolveN(t *testing.T) {
 				t.Errorf("n=%d, want %d", n, c.wantN)
 			}
 		})
+	}
+}
+
+func TestIsSafetyBlock_PlainTextSafety(t *testing.T) {
+	e := vertex.NewInvalidArgumentError("This is a safety test message", nil)
+	if isSafetyBlock(e) {
+		t.Error("普通 400 错误包含单词 'safety' 不应被判定为 safety block")
+	}
+}
+
+func TestIsSafetyBlock_KindSafety(t *testing.T) {
+	e := vertex.NewSafetyError("Blocked", "SAFETY", nil)
+	if !isSafetyBlock(e) {
+		t.Error("Kind==safety 的错误应被判定为 safety block")
+	}
+}
+
+func TestIsSafetyBlock_StatusSafety(t *testing.T) {
+	e := vertex.NewInvalidArgumentError("Blocked by content filter", nil)
+	e.Status = "SAFETY"
+	if !isSafetyBlock(e) {
+		t.Error("Status==SAFETY 的错误应被判定为 safety block")
+	}
+}
+
+func TestIsSafetyBlock_StatusBlockedReasonSafety(t *testing.T) {
+	e := vertex.NewInvalidArgumentError("Blocked", nil)
+	e.Status = "BLOCKED_REASON_SAFETY"
+	if !isSafetyBlock(e) {
+		t.Error("Status==BLOCKED_REASON_SAFETY 应被判定为 safety block")
+	}
+}
+
+func TestIsSafetyBlock_Nil(t *testing.T) {
+	if isSafetyBlock(nil) {
+		t.Error("nil 不应被判定为 safety block")
 	}
 }
 

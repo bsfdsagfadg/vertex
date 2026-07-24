@@ -132,7 +132,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 				defer wg.Done()
 				defer func() {
 					if rec := recover(); rec != nil {
-						results[idx] = coreResult{err: vertex.NewInternalError(fmt.Sprintf("candidate panic: %v", rec))}
+						results[idx] = coreResult{err: vertex.NewInternalError(fmt.Sprintf("candidate panic: %v", rec), nil)}
 					}
 				}()
 				r, ve := c.coreGenerate(requestCtx, rawModel, geminiPayload)
@@ -154,7 +154,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 		if len(ok) == 0 {
 			if firstErr == nil {
-				firstErr = vertex.NewInternalError("All candidates failed")
+				firstErr = vertex.NewInternalError("All candidates failed", nil)
 			}
 			if isSafetyBlock(firstErr) {
 				log.Printf("[Vertex] 请求被 Google 安全审查拦截, 请求ID=%s, 原因: %s", vertex.RequestIDFromContext(r.Context()), firstErr.Status)
@@ -249,8 +249,11 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 		return true
 	}
 
-	if !gotContent && !streamErrWritten {
-		ee := vertex.NewEmptyResponseError("Upstream returned empty response (no content)")
+	if streamErrWritten {
+		return
+	}
+	if !gotContent {
+		ee := vertex.NewEmptyResponseError("Upstream returned empty response (no content)", nil)
 		c.writeStreamError(write, ee, rid, model)
 		return
 	}

@@ -135,6 +135,7 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 
 	gotChunk := false
 	hasFinish := false
+	streamErrWritten := false
 	startTime := time.Now()
 	observer := newStreamObserver(startTime)
 	g.coreStreamGenerate(requestCtx, model, body, func(data map[string]any, err *vertex.VertexError) bool {
@@ -146,6 +147,7 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 					"code": err.Code, "message": vertex.FriendlyErrorMessage(err), "status": geminiStatusOf(err),
 				}}))
 			}
+			streamErrWritten = true
 			return false
 		}
 		gotChunk = true
@@ -162,6 +164,9 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 		return sw.write(g.geminiSSE(data))
 	})
 
+	if streamErrWritten {
+		return
+	}
 	if !gotChunk {
 		_ = sw.write(g.geminiSSE(map[string]any{
 			"error": map[string]any{
