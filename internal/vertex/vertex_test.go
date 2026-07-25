@@ -130,6 +130,34 @@ func TestIsRetryableNetwork(t *testing.T) {
 	}
 }
 
+func TestIsGlobalHardError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *VertexError
+		want bool
+	}{
+		// 全局硬错误：应返回 true
+		{"invalid 400", NewInvalidArgumentError("bad request", nil), true},
+		{"notfound 404", NewNotFoundError("model not found", nil), true},
+		{"safety", NewSafetyError("Blocked", "SAFETY", nil), true},
+		// 节点级错误：应返回 false
+		{"permission 403", NewPermissionDeniedError("forbidden", nil), false},
+		{"auth 502", NewAuthenticationError("auth failed", nil), false},
+		{"network", NewNetworkError(io.EOF), false},
+		{"ratelimit 429", NewRateLimitError("too many", 0, nil), false},
+		{"internal 500", NewInternalError("server error", nil), false},
+		{"unavailable 503", NewUnavailableError("unavailable", nil), false},
+		{"empty 502", NewEmptyResponseError("empty", nil), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.IsGlobalHardError(); got != tt.want {
+				t.Errorf("IsGlobalHardError() = %v, want %v (Kind=%s)", got, tt.want, tt.err.Kind)
+			}
+		})
+	}
+}
+
 func TestParseErrorResponseSafety(t *testing.T) {
 	// Nested error with SAFETY message
 	e := parseErrorResponse(map[string]any{

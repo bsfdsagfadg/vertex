@@ -343,8 +343,74 @@ func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 	})
 }
 
-// TestRunRace_Streaming_FailFastOnHardError 验证流式首帧的不可重试错误快速终止：
-// 第一个候选返回硬错误后直接终止，不启动对冲节点。
+// TestRunRace_Streaming_PermissionDenied_NoFailFast 验证 403 不会触发 fail-fast：
+// Node 1 返回 403 PermissionDenied，Node 2 延迟后成功，竞速引擎应淘汰 Node 1 并返回 Node 2 结果。
+func TestRunRace_Streaming_PermissionDenied_NoFailFast(t *testing.T) {
+	setupRaceNodes(t, "uri1", "uri2")
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(raceTestConfig())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var launched sync.WaitGroup
+
+	run := func(ctx context.Context, uri string) (<-chan StreamChunk, error) {
+		if uri == "uri1" {
+			return nil, NewPermissionDeniedError("forbidden", nil)
+		}
+		launched.Add(1)
+		defer launched.Done()
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		ch := make(chan StreamChunk, 1)
+		ch <- StreamChunk{Data: map[string]any{"text": "success"}}
+		close(ch)
+		return ch, nil
+	}
+
+	result, err := RunRace(ctx, cfg, run, WithNoCancelOnSuccess[<-chan StreamChunk](), WithFailFastOnHardError[<-chan StreamChunk]())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	launched.Wait()
+	first := <-result
+	if first.Err != nil {
+		t.Fatalf("unexpected error chunk: %v", first.Err)
+	}
+}
+
+// TestRunRace_Streaming_GlobalHardError_FailFast 验证全局硬错误（invalid 400）仍触发 fail-fast：
+// Node 1 返回 400 InvalidArgument，应在对冲定时器触发前终止竞速，不启动 Node 2。
+func TestRunRace_Streaming_GlobalHardError_FailFast(t *testing.T) {
+	setupRaceNodes(t, "uri1", "uri2")
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(raceTestConfig())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var launchCount int32
+
+	run := func(ctx context.Context, uri string) (<-chan StreamChunk, error) {
+		atomic.AddInt32(&launchCount, 1)
+		return nil, NewInvalidArgumentError("invalid model name", nil)
+	}
+
+	_, err := RunRace(ctx, cfg, run, WithFailFastOnHardError[<-chan StreamChunk]())
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+	if count := atomic.LoadInt32(&launchCount); count > 1 {
+		t.Errorf("expected launchCount <= 1 (fail-fast on global hard error), got %d", count)
+	}
+}
+
+// TestRunRace_Streaming_FailFastOnHardError 验证流式首帧的全局硬错误快速终止：
+// 第一个候选返回 notfound 硬错误后直接终止，不启动对冲节点。
 func TestRunRace_Streaming_FailFastOnHardError(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2", "uri3")
 	defer nodes.ResetState()
@@ -357,7 +423,7 @@ func TestRunRace_Streaming_FailFastOnHardError(t *testing.T) {
 
 	run := func(ctx context.Context, uri string) (<-chan StreamChunk, error) {
 		atomic.AddInt32(&launchCount, 1)
-		return nil, NewPermissionDeniedError("forbidden", nil)
+		return nil, NewNotFoundError("model not found", nil)
 	}
 
 	_, err := RunRace[<-chan StreamChunk](ctx, cfg, run, WithFailFastOnHardError[<-chan StreamChunk]())
@@ -366,7 +432,7 @@ func TestRunRace_Streaming_FailFastOnHardError(t *testing.T) {
 		t.Error("expected error, got nil")
 	}
 	if count := atomic.LoadInt32(&launchCount); count > 1 {
-		t.Errorf("expected launchCount <= 1 (fail-fast), got %d", count)
+		t.Errorf("expected launchCount <= 1 (fail-fast on global hard error), got %d", count)
 	}
 }
 

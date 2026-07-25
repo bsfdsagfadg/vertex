@@ -115,15 +115,9 @@ retryLoop:
 			isFirstAuth = true
 		}
 		if recaptchaToken == "" {
-			if attempt == maxRetries {
-				lastError = NewAuthenticationError("Could not fetch recaptcha token.", nil)
-				break retryLoop
-			}
-			attempt++
-			if err := sleepCtx(ctx, time.Second); err != nil {
-				break retryLoop // ctx 取消：客户端已断开，停止重试
-			}
-			continue
+			nodes.RecordTest(proxyURI, false, 0, "Could not fetch recaptcha token")
+			lastError = NewAuthenticationError("Could not fetch recaptcha token for node", nil)
+			break retryLoop
 		}
 
 		// 单次流式尝试：把增量 yield 给上层，统计本次 attempt yield 的 chunk 数。

@@ -316,9 +316,9 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 						stickyPool.Evict(res.uri)
 					}
 
-					if rc.failFastOnHardError && ve != nil && !ve.IsRetryable() {
+					if rc.failFastOnHardError && ve != nil && ve.IsGlobalHardError() {
 						if cfg.DebugMode() {
-							log.Printf("[Racing] 节点 %s 触发不可重试的硬性错误，终止竞速", name)
+							log.Printf("[Racing] 节点 %s 触发请求级全局硬错误(%s)，终止竞速: %s", name, ve.Kind, ve.Message)
 						}
 						cancel()
 						return zero, res.err

@@ -67,6 +67,17 @@ func (e *VertexError) IsRetryable() bool {
 	return e.Kind == "auth"
 }
 
+// IsGlobalHardError 判定是否为请求级别的全局硬错误（所有节点去发都会必定失败，如参数错误/模型不存在/安全审查）。
+// 只有此类错误才应触发竞速引擎的 Fail-Fast 终止整场竞速。
+// 节点级异常（permission 403、auth 502、network、ratelimit 429）返回 false。
+func (e *VertexError) IsGlobalHardError() bool {
+	switch e.Kind {
+	case "invalid", "notfound", "safety":
+		return true
+	}
+	return false
+}
+
 // ---- 构造器（默认 code/status 对应各错误类）----
 
 // NewAuthenticationError 认证错误（recaptcha/token 过期）。code=502（见类型注释）。
