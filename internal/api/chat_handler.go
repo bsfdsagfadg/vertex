@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -106,6 +105,10 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		sw := newSSEWriter(w, "text/event-stream")
 		resp, ve := c.coreGenerate(requestCtx, rawModel, geminiPayload)
 		if ve != nil {
+			if !sw.hasWritten() {
+				writeJSON(w, ve.Code, vertexErrorToOAI(ve))
+				return
+			}
 			c.writeStreamError(sw.write, ve, requestID, model)
 			return
 		}
@@ -193,20 +196,13 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 	streamCtx, streamCancel := context.WithCancel(ctx)
 	defer streamCancel()
 
-	flusher, canFlush := w.(http.Flusher)
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
+	sw := newSSEWriter(w, "text/event-stream")
 
 	write := func(line string) bool {
-		if _, err := io.WriteString(w, line); err != nil {
+		if !sw.write(line) {
 			log.Printf("[Server] [Stream] 请求ID=%s 客户端已主动断开连接", rid)
 			streamCancel()
-		}
-		if canFlush {
-			flusher.Flush()
+			return false
 		}
 		return true
 	}
@@ -220,6 +216,11 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 
 	c.coreStreamGenerate(streamCtx, model, geminiPayload, func(data map[string]any, err *vertex.VertexError) bool {
 		if err != nil {
+			if !sw.hasWritten() {
+				writeJSON(w, err.Code, vertexErrorToOAI(err))
+				streamErrWritten = true
+				return false
+			}
 			c.writeStreamError(write, err, rid, model)
 			streamErrWritten = true
 			return false
@@ -240,13 +241,7 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 	})
 
 	writeSilent := func(line string) bool {
-		if _, err := io.WriteString(w, line); err != nil {
-			return false
-		}
-		if canFlush {
-			flusher.Flush()
-		}
-		return true
+		return sw.write(line)
 	}
 
 	if streamErrWritten {
@@ -254,6 +249,10 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 	}
 	if !gotContent {
 		ee := vertex.NewEmptyResponseError("Upstream returned empty response (no content)", nil)
+		if !sw.hasWritten() {
+			writeJSON(w, ee.Code, vertexErrorToOAI(ee))
+			return
+		}
 		c.writeStreamError(write, ee, rid, model)
 		return
 	}

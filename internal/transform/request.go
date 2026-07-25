@@ -278,19 +278,19 @@ func firstPresentRaw(m map[string]any, keys ...string) any {
 	return nil
 }
 
-// deepCopyAny 深拷贝 map/slice 结构。
-func deepCopyAny(v any) any {
+// DeepCopyAny 深拷贝 map/slice 结构。
+func DeepCopyAny(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, val := range x {
-			out[k] = deepCopyAny(val)
+			out[k] = DeepCopyAny(val)
 		}
 		return out
 	case []any:
 		out := make([]any, len(x))
 		for i, item := range x {
-			out[i] = deepCopyAny(item)
+			out[i] = DeepCopyAny(item)
 		}
 		return out
 	default:

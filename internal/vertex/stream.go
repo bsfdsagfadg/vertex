@@ -110,7 +110,7 @@ retryLoop:
 	for attempt <= maxRetries {
 		log.Printf("[Vertex] [StreamChat] 开始尝试 (Attempt %d/%d), 模型=%s, 请求ID=%s, 代理=%s", attempt, maxRetries, model, reqID, nodes.GetNodeName(proxyURI))
 		if recaptchaToken == "" {
-			tok, _ := c.pool.GetTokenWithProxy(proxyURI)
+			tok, _ := c.pool.GetTokenWithProxy(ctx, proxyURI)
 			recaptchaToken = tok
 			isFirstAuth = true
 		}

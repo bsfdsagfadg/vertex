@@ -3,6 +3,8 @@ package vertex
 import (
 	"context"
 	"sort"
+
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
 type candidateResult struct {
@@ -13,7 +15,8 @@ type candidateResult struct {
 
 func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, geminiPayload map[string]any) (map[string]any, error) {
 	run := func(ctx context.Context, proxyURI string) (map[string]any, error) {
-		return c.runSingleCandidate(ctx, model, geminiPayload, proxyURI)
+		payloadCopy := transform.DeepCopyAny(geminiPayload).(map[string]any)
+		return c.runSingleCandidate(ctx, model, payloadCopy, proxyURI)
 	}
 	return RunRace(ctx, c.cfg, run, WithWinningCheck(func(resp map[string]any) bool {
 		return candidateFinish(resp) == "STOP"

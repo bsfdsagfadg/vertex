@@ -120,6 +120,10 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	if useFake || g.cfg.AggregateStream() {
 		resp, ve := g.coreGenerate(requestCtx, model, body)
 		if ve != nil {
+			if !sw.hasWritten() {
+				writeJSON(w, ve.Code, vertexErrorToGemini(ve))
+				return
+			}
 			if isSafetyBlock(ve) {
 				_ = sw.write(g.geminiSSE(geminiSafetyChunk(ve)))
 				return
@@ -140,6 +144,11 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	observer := newStreamObserver(startTime)
 	g.coreStreamGenerate(requestCtx, model, body, func(data map[string]any, err *vertex.VertexError) bool {
 		if err != nil {
+			if !sw.hasWritten() {
+				writeJSON(w, err.Code, vertexErrorToGemini(err))
+				streamErrWritten = true
+				return false
+			}
 			if isSafetyBlock(err) {
 				_ = sw.write(g.geminiSSE(geminiSafetyChunk(err)))
 			} else {
@@ -168,11 +177,9 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 		return
 	}
 	if !gotChunk {
-		_ = sw.write(g.geminiSSE(map[string]any{
-			"error": map[string]any{
-				"code": 500, "message": "Upstream returned empty response (no content)", "status": "INTERNAL",
-			},
-		}))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{
+			"code": 500, "message": "Upstream returned empty response (no content)", "status": "INTERNAL",
+		}})
 		return
 	}
 	if !hasFinish {

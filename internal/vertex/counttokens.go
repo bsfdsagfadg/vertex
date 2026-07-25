@@ -1,62 +1,85 @@
 package vertex
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"log"
 	"strconv"
-	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
-// CountTokens 统计给定 contents 在指定模型下的 token 数（Vertex CountTokens）。
+// CountTokens 统计给定 contents 在指定模型下的 token 数（纯本地离线估算）。
 //
-// 走匿名 batchGraphql 的 CountTokens operation（独立 querySignature/operationName），
-// 单 session + 实时 recaptcha。失败/解析不到时返回 0（吞错），语义为"尽力计数"——
-// CountTokens 在上游不返数时不报错，给客户端一个 0。
+// 不再发起 HTTP BatchGraphQL 请求，改为根据字符类型和媒体 Part 估算：
+//   - ASCII 字符：0.25 token/字符（len(ascii) / 4）
+//   - 非 ASCII 字符（中文/Emoji/日韩文等）：1.5 token/字符（nonAsciiCount * 3 / 2）
+//   - 媒体/图片 Part（inlineData / fileData）：固定 1024 token
 //
-// querySignature 从 config（count_tokens_query_signature）读，缺省值=内置硬编码值。
+// 返回估算值，0 表示空 contents 或解析失败。
 func (c *VertexAIClient) CountTokens(ctx context.Context, model string, contents []any) int {
-	cfg := c.cfg
-
-	reqID := RequestIDFromContext(ctx)
-	sess, err := c.net.CreateSession(60, "", reqID)
-	if err != nil {
-		return 0
+	result := estimateTokens(contents)
+	if c.cfg.DebugMode() {
+		log.Printf("[Vertex] [CountTokens] 离线估算: 模型=%s, tokens=%d", model, result)
 	}
-	defer sess.Close()
-
-	token, _ := c.pool.GetToken()
-	if token == "" {
-		return 0
-	}
-
-	// 去掉 models/ 前缀以匹配上游示例（去 models/ 前缀）。
-	target := cfg.ResolveModelName(model)
-	target = strings.TrimPrefix(target, "models/")
-
-	payload := buildCountTokensPayload(target, contents, token, cfg)
-	bodyBytes, err := jsonx.Marshal(payload)
-	if err != nil {
-		log.Printf("[Vertex] [CountTokens] 序列化请求体失败: %v", err)
-		return 0
-	}
-
-	// CountTokens 的请求头与 chat 略有差异（referer 指向 multimodal、带 x-goog-authuser）。
-	// 逐字节保持既定 headers。
-	header := countTokensHeaders()
-
-	status, raw, err := sess.DoAndRead(ctx, "POST", c.getBatchGraphqlURL(), header, bytes.NewReader(bodyBytes))
-	if err != nil || status != 200 {
-		log.Printf("[Vertex] [CountTokens] 上游请求失败, status=%d, err=%v, resp=%s", status, err, string(raw))
-		return 0
-	}
-	return parseCountTokensResponse(string(raw))
+	return result
 }
+
+// estimateTokens 对 contents 进行纯本地 token 估算。
+func estimateTokens(contents []any) int {
+	total := 0
+	for _, c := range contents {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		parts, _ := cm["parts"].([]any)
+		total += estimatePartsTokens(parts)
+	}
+	return total
+}
+
+func estimatePartsTokens(parts []any) int {
+	total := 0
+	for _, p := range parts {
+		pm, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text, ok := pm["text"].(string); ok {
+			total += estimateTextTokens(text)
+		}
+		if _, ok := pm["inlineData"]; ok {
+			total += 1024
+		} else if _, ok := pm["fileData"]; ok {
+			total += 1024
+		}
+	}
+	return total
+}
+
+func estimateTextTokens(text string) int {
+	ascii := 0
+	nonAscii := 0
+	for _, r := range text {
+		if r <= 127 {
+			ascii++
+		} else {
+			nonAscii++
+		}
+	}
+	// ASCII: 0.25 token/char, 即每 4 字符 1 token
+	// 非 ASCII: 1.5 token/char, 即每字符 1.5 token (nonAscii + nonAscii/2)
+	return ascii/4 + nonAscii + nonAscii/2
+}
+
+// EstimateStringTokens 对外暴露的字符串估算函数（用于调试/测试）。
+func EstimateStringTokens(text string) int {
+	return estimateTextTokens(text)
+}
+
+// ---- 以下为向下兼容保留的旧 CountTokens HTTP 逻辑（不再被调用） ----
 
 // buildCountTokensPayload 构建 CountTokens 的 batchGraphql 请求体。
 func buildCountTokensPayload(model string, contents []any, recaptchaToken string, cfg config.ConfigProvider) map[string]any {
@@ -89,7 +112,7 @@ func buildCountTokensPayload(model string, contents []any, recaptchaToken string
 	}
 }
 
-// countTokensHeaders 构造 CountTokens 上游请求头（逐字节保持既定 headers）。
+// countTokensHeaders 构造 CountTokens 上游请求头。
 func countTokensHeaders() transport.Header {
 	h := transport.XHRHeaders(
 		"application/json", "*/*",
@@ -101,10 +124,7 @@ func countTokensHeaders() transport.Header {
 	return h
 }
 
-// parseCountTokensResponse 从 CountTokens 响应里抠 totalTokens。
-//
-// 上游可能是单对象或数组；逐层 results → data.ui.countTokensV2 / data.countTokensV2 / data.countTokens，
-// 命中 totalTokens 即返回。任何错误/缺字段返回 0。
+// parseCountTokensResponse 从 CountTokens 响应里抠 totalTokens（旧 HTTP 响应解析，保留用于测试）。
 func parseCountTokensResponse(raw string) int {
 	var parsed any
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
@@ -125,7 +145,6 @@ func parseCountTokensResponse(raw string) int {
 		if !ok {
 			continue
 		}
-		// entry 级别 errors → 跳过。
 		if _, hasErr := entry["errors"]; hasErr {
 			continue
 		}
@@ -179,3 +198,5 @@ func coerceTokenCount(v any) int {
 	}
 	return 0
 }
+
+

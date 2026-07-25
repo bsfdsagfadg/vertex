@@ -1,6 +1,8 @@
 package recaptcha
 
 import (
+	"context"
+
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
@@ -34,19 +36,19 @@ func (p *TokenPool) Stats() (size, fill int) {
 	return 0, 0
 }
 
-func (p *TokenPool) GetToken() (string, error) {
+func (p *TokenPool) GetToken(ctx context.Context) (string, error) {
 	if p.fetch != nil {
 		return p.fetch("")
 	}
-	return FetchRecaptchaToken(p.net, "", p.cfg.DebugMode())
+	return FetchRecaptchaToken(ctx, p.net, "", p.cfg.DebugMode())
 }
 
-func (p *TokenPool) GetTokenWithProxy(proxyURI string) (string, error) {
+func (p *TokenPool) GetTokenWithProxy(ctx context.Context, proxyURI string) (string, error) {
 	if p.fetch != nil {
 		return p.fetch(proxyURI)
 	}
 	if proxyURI == "" {
-		return p.GetToken()
+		return p.GetToken(ctx)
 	}
-	return FetchRecaptchaToken(p.net, proxyURI, p.cfg.DebugMode())
+	return FetchRecaptchaToken(ctx, p.net, proxyURI, p.cfg.DebugMode())
 }

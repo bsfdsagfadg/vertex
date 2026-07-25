@@ -556,9 +556,11 @@ func mergeContiguousRoles(contents any) any {
 		role, _ := cm["role"].(string)
 		prevRole, _ := prev["role"].(string)
 		if role == prevRole {
-			prevParts := asAnySlice(prev["parts"])
+			prevCopy := copyMap(prev)
+			prevParts := asAnySlice(prevCopy["parts"])
 			curParts := asAnySlice(cm["parts"])
-			prev["parts"] = append(prevParts, curParts...)
+			prevCopy["parts"] = append(prevParts, curParts...)
+			merged[len(merged)-1] = prevCopy
 		} else {
 			merged = append(merged, cm)
 		}

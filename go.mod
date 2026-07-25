@@ -8,7 +8,6 @@ require (
 	github.com/bogdanfinn/tls-client v1.15.1
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/glebarez/go-sqlite v1.22.0
-	github.com/google/uuid v1.6.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/sagernet/sing v0.8.11
 	github.com/sagernet/sing-box v1.13.14
@@ -63,6 +62,7 @@ require (
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/nftables v0.2.1-0.20240414091927-5e242ec57806 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/hdevalence/ed25519consensus v0.2.0 // indirect
 	github.com/insomniacslk/dhcp v0.0.0-20260220084031-5adc3eb26f91 // indirect

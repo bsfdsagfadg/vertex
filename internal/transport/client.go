@@ -97,7 +97,7 @@ func (c *NetworkClient) Dialer() ProxyDialer {
 
 //nolint:gochecknoglobals
 var browserProfiles = []profiles.ClientProfile{
-	profiles.Chrome_124, profiles.Chrome_131,
+	profiles.Chrome_144, profiles.Chrome_146,
 }
 
 func pickProfile() profiles.ClientProfile {

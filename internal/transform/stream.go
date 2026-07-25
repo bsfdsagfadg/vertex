@@ -1,19 +1,34 @@
 package transform
 
 import (
+	cryptorand "crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
-	"github.com/google/uuid"
 )
 
 // FinishReasonUnspecified 是匿名端点每帧携带的 protobuf 默认值。
 const FinishReasonUnspecified = "FINISH_REASON_UNSPECIFIED"
 
-// reqID 生成 uuid。
+var (
+	streamReqIDFallback atomic.Bool
+	streamReqIDCounter  atomic.Uint64
+)
+
+// reqID 生成 24 位十六进制 ID。
 func reqID() string {
-	return uuid.New().String()
+	if !streamReqIDFallback.Load() {
+		b := make([]byte, 12)
+		if _, err := cryptorand.Read(b); err == nil {
+			return hex.EncodeToString(b)
+		}
+		streamReqIDFallback.Store(true)
+	}
+	return fmt.Sprintf("%016x%08x", uint64(time.Now().UnixNano()), streamReqIDCounter.Add(1))
 }
 
 // sseLine 把对象序列化成一条 SSE 数据行。

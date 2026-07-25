@@ -41,7 +41,7 @@ func convertTools(body, geminiPayload map[string]any) (map[string]bool, error) {
 		}
 		if params, ok := f["parameters"].(map[string]any); ok && len(params) > 0 {
 			// 对 parameters 递归白名单清洗，剔除 Gemini 不支持的 schema 字段。
-			decl["parameters"] = cleanFunctionParameters(deepCopyAny(params))
+			decl["parameters"] = cleanFunctionParameters(DeepCopyAny(params))
 		} else {
 			// 缺省 parameters 时补默认空对象 schema，满足 Gemini functionDeclarations 要求。
 			decl["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}

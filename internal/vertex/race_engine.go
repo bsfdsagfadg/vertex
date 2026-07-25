@@ -77,6 +77,40 @@ type raceResult[T any] struct {
 	err error
 }
 
+// errorPriority 返回错误的优先级数值（越小优先级越高）。
+func errorPriority(err error) int {
+	var ve *VertexError
+	if errors.As(err, &ve) {
+		if ve.IsGlobalHardError() {
+			return 1
+		}
+		if ve.Kind == "ratelimit" || ve.Code == 429 {
+			return 2
+		}
+		if ve.Code >= 500 && ve.Code < 600 {
+			return 3
+		}
+	}
+	return 4
+}
+
+// pickBestError 从多个错误中挑选优先级最高（数值最小）的一个返回。
+// 若相同优先级，返回第一个遇到的。
+func pickBestError(errs []error) error {
+	if len(errs) == 0 {
+		return fmt.Errorf("all nodes failed")
+	}
+	best := errs[0]
+	bestPrio := errorPriority(best)
+	for _, e := range errs[1:] {
+		if p := errorPriority(e); p < bestPrio {
+			best = e
+			bestPrio = p
+		}
+	}
+	return best
+}
+
 // RunRace runs a hedge race across multiple candidate nodes.
 //
 // It handles:
@@ -133,7 +167,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		}
 	}()
 
-	resCh := make(chan raceResult[T], min(len(cands)+20, 30))
+	resCh := make(chan raceResult[T], len(cands))
 	var active int32
 	activeKeys := make(map[string]bool)
 	var mu sync.Mutex
@@ -195,6 +229,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 	}
 	defer timer.Stop()
 	var zero T
+	var failedErrors []error
 
 	for {
 		select {
@@ -304,6 +339,8 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 						log.Printf("[Racing] 节点 %s 失败: %s", name, res.err.Error())
 					}
 
+					failedErrors = append(failedErrors, res.err)
+
 					ve := asVertexError(res.err)
 					if ve != nil && ve.Kind == "ratelimit" {
 						if cfg.DebugMode() {
@@ -350,6 +387,9 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 						return rc.finalizeCollected(rc.collectedResults)
 					}
 					return rc.collectedResults[0].val, nil
+				}
+				if len(failedErrors) > 0 {
+					return zero, pickBestError(failedErrors)
 				}
 				if res.err != nil {
 					return zero, res.err

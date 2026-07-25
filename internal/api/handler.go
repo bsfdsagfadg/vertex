@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/cli"
@@ -17,7 +19,6 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
-	"github.com/google/uuid"
 )
 
 type handler struct {
@@ -131,20 +132,29 @@ func streamChunkBase(model, requestID string) map[string]any {
 
 func newSSEWriter(w http.ResponseWriter, contentType string) *sseWriter {
 	flusher, _ := w.(http.Flusher)
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	sw := &sseWriter{w: w}
+	sw := &sseWriter{w: w, contentType: contentType}
 	if flusher != nil {
 		sw.flush = flusher.Flush
 	}
 	return sw
 }
 
+var (
+	reqIDFallback atomic.Bool
+	reqIDCounter  atomic.Uint64
+)
+
+// reqID24 生成 24 位十六进制 ID（高并发优先使用 crypto/rand 避免 GC 压力，
+// 失败时降级为 UnixNano + 原子计数器组合）。
 func reqID24() string {
-	return uuid.New().String()
+	if !reqIDFallback.Load() {
+		b := make([]byte, 12)
+		if _, err := cryptorand.Read(b); err == nil {
+			return hex.EncodeToString(b)
+		}
+		reqIDFallback.Store(true)
+	}
+	return fmt.Sprintf("%016x%08x", uint64(time.Now().UnixNano()), reqIDCounter.Add(1))
 }
 
 func vertexErrorToOAI(e *vertex.VertexError) map[string]any {
