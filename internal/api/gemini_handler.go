@@ -10,6 +10,7 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
@@ -90,7 +91,27 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.RequestTimeoutSeconds())*time.Second)
 	defer cancel()
 
-	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s", model)
+	actualModel, _ := stripFakePrefix(model, g.cfg.FakePrefixes())
+	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
+
+	transform.ApplyImageConfig(body, nil, actualModel)
+	if strings.Contains(strings.ToLower(actualModel), "image") {
+		gc, gcOk := body["generationConfig"].(map[string]any)
+		if !gcOk {
+			gc = map[string]any{}
+			body["generationConfig"] = gc
+		}
+		ic, icOk := gc["imageConfig"].(map[string]any)
+		if !icOk {
+			ic = map[string]any{}
+			gc["imageConfig"] = ic
+		}
+		if _, has := ic["imageSize"]; !has {
+			ic["imageSize"] = transform.ResolveImageSize(g.cfg.DefaultImageSize(), actualModel)
+		}
+	}
+	transform.ApplyResponseModalities(body, g.cfg.DefaultResponseModalities(), actualModel)
+	transform.ApplyDefaultThinking(body, g.cfg.DefaultThinkingLevel(), actualModel)
 
 	resp, ve := g.coreGenerate(requestCtx, model, body)
 	if ve != nil {
@@ -112,8 +133,27 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.RequestTimeoutSeconds())*time.Second)
 	defer cancel()
 
-	_, useFake := stripFakePrefix(model, g.cfg.FakePrefixes())
-	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 假非流=%v, 聚合流=%v", model, useFake, g.cfg.AggregateStream())
+	actualModel, useFake := stripFakePrefix(model, g.cfg.FakePrefixes())
+	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 假非流=%v, 聚合流=%v", model, actualModel, useFake, g.cfg.AggregateStream())
+
+	transform.ApplyImageConfig(body, nil, actualModel)
+	if strings.Contains(strings.ToLower(actualModel), "image") {
+		gc, gcOk := body["generationConfig"].(map[string]any)
+		if !gcOk {
+			gc = map[string]any{}
+			body["generationConfig"] = gc
+		}
+		ic, icOk := gc["imageConfig"].(map[string]any)
+		if !icOk {
+			ic = map[string]any{}
+			gc["imageConfig"] = ic
+		}
+		if _, has := ic["imageSize"]; !has {
+			ic["imageSize"] = transform.ResolveImageSize(g.cfg.DefaultImageSize(), actualModel)
+		}
+	}
+	transform.ApplyResponseModalities(body, g.cfg.DefaultResponseModalities(), actualModel)
+	transform.ApplyDefaultThinking(body, g.cfg.DefaultThinkingLevel(), actualModel)
 
 	sw := newSSEWriter(w, "text/event-stream")
 

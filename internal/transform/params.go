@@ -160,6 +160,40 @@ func pixelsToTier(px int) string {
 //nolint:gochecknoglobals // One-time deprecation warning
 var sizeDeprecationOnce sync.Once
 
+// ApplyResponseModalities 处理 generationConfig.responseModalities。
+//
+// 仅对图像模型生效：若客户端已设置 responseModalities（非空）则跳过；
+// 否则根据 defaultModalities 注入默认值。
+// defaultModalities == "IMAGE_ONLY" 时注入 ["IMAGE"]，否则注入 ["TEXT", "IMAGE"]。
+func ApplyResponseModalities(geminiPayload map[string]any, defaultModalities, model string) {
+	if !strings.Contains(strings.ToLower(model), "image") {
+		return
+	}
+
+	genCfg, ok := geminiPayload["generationConfig"].(map[string]any)
+	if ok {
+		if rm, exists := genCfg["responseModalities"]; exists && rm != nil {
+			if arr, isArr := rm.([]any); isArr && len(arr) > 0 {
+				return
+			}
+			if arr, isStr := rm.([]string); isStr && len(arr) > 0 {
+				return
+			}
+		}
+	}
+
+	if !ok {
+		genCfg = map[string]any{}
+		geminiPayload["generationConfig"] = genCfg
+	}
+
+	if defaultModalities == "仅图片" {
+		genCfg["responseModalities"] = []any{"IMAGE"}
+	} else {
+		genCfg["responseModalities"] = []any{"TEXT", "IMAGE"}
+	}
+}
+
 // ApplyImageConfig 原地把客户端分辨率/imageConfig 写入 geminiPayload.generationConfig.imageConfig。
 // model 用于按模型能力过滤不支持的档位/比例。
 func ApplyImageConfig(geminiPayload, body map[string]any, model string) {

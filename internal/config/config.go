@@ -69,6 +69,12 @@ type AppConfig struct { //nolint:govet
 
 	// 默认思考等级（客户端不传 reasoning_effort/thinking 时的兜底值）
 	DefaultThinkingLevel string `json:"default_thinking_level"`
+
+	// 默认响应模态：TEXT_IMAGE（图片和文本，默认）或 IMAGE_ONLY（仅图片）
+	DefaultResponseModalities string `json:"default_response_modalities"`
+
+	// 流式包间空闲超时秒数（默认 20 秒），超过此时间无数据即判定超时
+	StreamIdleTimeoutSeconds int `json:"stream_idle_timeout_seconds"`
 }
 
 func DefaultConfig() AppConfig {
@@ -90,8 +96,10 @@ func DefaultConfig() AppConfig {
 		FontColorType:             "adaptive",
 		FontColor:                 "#f6f1e9",
 		CustomBgPresets:           []string{},
-		DefaultImageSize:          "1K",
-		DefaultThinkingLevel:      "自动",
+		DefaultImageSize:           "1K",
+		DefaultThinkingLevel:       "自动",
+		DefaultResponseModalities:  "图文",
+		StreamIdleTimeoutSeconds:   20,
 	}
 }
 
@@ -203,6 +211,14 @@ func Load() AppConfig {
 			} else {
 				log.Printf("[Config] default_thinking_level 非法 (%q)，回退 自动", cfg.DefaultThinkingLevel)
 				cfg.DefaultThinkingLevel = "自动"
+			}
+			if cfg.DefaultResponseModalities == "" {
+				cfg.DefaultResponseModalities = "图文"
+			} else if cfg.DefaultResponseModalities != "仅图片" {
+				cfg.DefaultResponseModalities = "图文"
+			}
+			if cfg.StreamIdleTimeoutSeconds <= 0 {
+				cfg.StreamIdleTimeoutSeconds = 20
 			}
 			log.Printf("[Config] 成功加载配置文件 config.json")
 		}

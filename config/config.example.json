@@ -8,7 +8,9 @@
   "parallel_pool_enabled": true,
   "sticky_node_priority": false,
   "parallel_pool_size": 15,
-  "default_image_size":"1K",
+  "default_image_size": "1K",
   "default_thinking_level": "自动",
+  "default_response_modalities": "图文",
+  "stream_idle_timeout_seconds": 20,
   "telemetry_enabled": false
 }

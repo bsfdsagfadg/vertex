@@ -25,8 +25,10 @@ var adminAllowedSettings = map[string]bool{
 	"custom_bg_presets":           true,
 	"debug_mode":                  true,
 	"auto_refresh_logs":           true,
-	"default_image_size":          true,
-	"default_thinking_level":      true,
+	"default_image_size":           true,
+	"default_thinking_level":       true,
+	"default_response_modalities": true,
+	"stream_idle_timeout_seconds":  true,
 }
 
 func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request) {
@@ -53,8 +55,10 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"custom_bg_presets":           adm.cfg.CustomBgPresets(),
 		"debug_mode":                  adm.cfg.DebugMode(),
 		"auto_refresh_logs":           adm.cfg.AutoRefreshLogs(),
-		"default_image_size":          adm.cfg.DefaultImageSize(),
-		"default_thinking_level":      adm.cfg.DefaultThinkingLevel(),
+		"default_image_size":           adm.cfg.DefaultImageSize(),
+		"default_thinking_level":       adm.cfg.DefaultThinkingLevel(),
+		"default_response_modalities": adm.cfg.DefaultResponseModalities(),
+		"stream_idle_timeout_seconds":  adm.cfg.StreamIdleTimeoutSeconds(),
 	}})
 }
 
@@ -77,7 +81,7 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 			continue
 		}
 		switch k {
-		case "max_retries", "max_spill_mb", "max_request_mb", "max_n", "parallel_pool_size":
+		case "max_retries", "max_spill_mb", "max_request_mb", "max_n", "parallel_pool_size", "stream_idle_timeout_seconds":
 			if f, ok := v.(float64); ok {
 				updates[k] = int(f)
 				continue

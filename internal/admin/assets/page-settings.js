@@ -15,6 +15,8 @@ const SETTINGS_FIELDS = [
 
   { k: 'default_image_size', label: '默认图片清晰度', type: 'select', group: 'core', opts: ['512', '1K', '2K', '4K'], desc: '图模型请求未指定清晰度时的默认档位（按模型能力自动降级）' },
   { k: 'default_thinking_level', label: '默认思考等级', type: 'select', group: 'core', opts: ['自动', '最低', '低', '中', '高'], desc: '文本/图模型请求未指定思考参数时的默认档位（按模型能力自动适配）' },
+  { k: 'default_response_modalities', label: '默认图片输出模态', type: 'select', group: 'core', opts: ['图文', '仅图片'], desc: '图模型未指定响应内容时的默认类型（图文 = 图片+文本，仅图片 = 仅纯图片）' },
+  { k: 'stream_idle_timeout_seconds', label: '流式包间空闲超时(秒)', type: 'number', group: 'core', min: 1, desc: '流式传输中连续无数据字节的超时时间（默认 20 秒），防止网络波动卡死' },
 
   // 🛡 Group: security (安全增强与模型策略)
   { k: 'drop_max_tokens', label: '移除 maxOutputTokens', type: 'bool', group: 'security', desc: '移除输出 token 上限，让模型自由输出' },

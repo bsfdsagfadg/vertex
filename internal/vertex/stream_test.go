@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -22,7 +23,7 @@ func TestScanStream_BufferHardLimit(t *testing.T) {
 	go func() {
 		done <- scanStream(context.Background(), bytes.NewReader(data), func(obj map[string]any) (bool, error) {
 			return false, nil
-		})
+		}, nil)
 	}()
 
 	select {
@@ -51,7 +52,7 @@ func collectStream(t *testing.T, raw string) (emitted []map[string]any, stopped 
 			stopped = true
 		}
 		return stop, err
-	})
+	}, nil)
 	return
 }
 
@@ -132,7 +133,7 @@ func TestScanStream_SplitAcrossReads(t *testing.T) {
 			return true
 		})
 		return stop, err
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("scan error: %v", err)
 	}
@@ -412,7 +413,99 @@ func BenchmarkScanStream(b *testing.B) {
 	for range b.N {
 		_ = scanStream(context.Background(), strings.NewReader(input), func(obj map[string]any) (bool, error) {
 			return true, nil
-		})
+		}, nil)
+	}
+}
+
+// TestScanStream_ResetIdleSignal 验证 scanStream 在读取到数据时通过 resetIdle 通道发送重置信号。
+func TestScanStream_ResetIdleSignal(t *testing.T) {
+	resetIdle := make(chan struct{}, 1)
+	data := wrap(`{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"STOP"}]}`)
+
+	err := scanStream(context.Background(), strings.NewReader(data), func(obj map[string]any) (bool, error) {
+		return true, nil
+	}, resetIdle)
+
+	if err != nil {
+		t.Fatalf("scanStream error: %v", err)
+	}
+	// 至少应该收到一次重置信号
+	select {
+	case <-resetIdle:
+		// 收到信号，正常
+	default:
+		t.Error("scanStream 应该通过 resetIdle 发送至少一次重置信号")
+	}
+}
+
+// TestIdleWatcher_TriggersOnTimeout 验证空闲 watcher 模式：
+// 当 resetIdle 在 timeout 时间内未收到信号时，触发 idleTriggered 并关闭 reader。
+func TestIdleWatcher_TriggersOnTimeout(t *testing.T) {
+	pr, pw := io.Pipe()
+
+	resetIdle := make(chan struct{}, 1)
+	var idleTriggered atomic.Bool
+	done := make(chan struct{})
+
+	idleTimeout := 200 * time.Millisecond
+
+	// ── 空闲 watcher goroutine（与 executeStreamingAttempt 中相同的逻辑）──
+	go func() {
+		timer := time.NewTimer(idleTimeout)
+		defer timer.Stop()
+		for {
+			select {
+			case <-resetIdle:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(idleTimeout)
+			case <-timer.C:
+				idleTriggered.Store(true)
+				pr.Close()
+				return
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// ── scanStream 消费 pipe ──
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go func() {
+		errCh <- scanStream(ctx, pr, func(obj map[string]any) (bool, error) {
+			return false, nil
+		}, resetIdle)
+	}()
+
+	// 先写入一帧有效数据（重置定时器）
+	initialData := `{"results":[{"data":{"candidates":[{"content":{"parts":[{"text":"ping"}],"role":"model"},"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}]}`
+	_, writeErr := pw.Write([]byte(initialData))
+	if writeErr != nil {
+		t.Fatalf("write initial data: %v", writeErr)
+	}
+
+	// 等待 idle timeout 触发
+	select {
+	case err := <-errCh:
+		pw.Close()
+		close(done)
+		if err != nil {
+			t.Errorf("scanStream 应从 body close 返回 nil, 得到 %v", err)
+		}
+		if !idleTriggered.Load() {
+			t.Error("idle watcher 应触发 idleTriggered")
+		}
+	case <-time.After(3 * time.Second):
+		pw.Close()
+		close(done)
+		t.Fatal("超时：idle watcher 未能在预期时间内触发")
 	}
 }
 

@@ -10,12 +10,17 @@ import (
 	"io"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/spool"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
+
+// ErrStreamIdleTimeout 是流式包间空闲超时哨兵错误。
+// 首包前触发会自动重试/故障转移；首包后触发向客户端推送超时 error chunk。
+var ErrStreamIdleTimeout = errors.New("stream idle timeout")
 
 // sessionTimeoutFromContext 从 context 的 deadline 推导 Session 的超时秒数。
 // 至少返回 1 秒（tls-client.WithTimeoutSeconds 只接受正秒），但 context 的 deadline
@@ -254,17 +259,38 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	}
 	defer sr.Close() // 排干 → close，防串流。
 
-	// ═══ 唯一中断调度点 ═══
+	// ═══ 唯一中断调度点 + 流式包间空闲超时监控 ═══
+	idleTimeout := time.Duration(cfg.StreamIdleTimeoutSeconds()) * time.Second
+	resetIdle := make(chan struct{}, 1)
+	var idleTriggered atomic.Bool
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
-		select {
-		case <-ctx.Done():
-			sr.Body.Close()
-		case <-done:
+		timer := time.NewTimer(idleTimeout)
+		defer timer.Stop()
+		for {
+			select {
+			case <-resetIdle:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(idleTimeout)
+			case <-timer.C:
+				idleTriggered.Store(true)
+				sr.Body.Close()
+				return
+			case <-ctx.Done():
+				sr.Body.Close()
+				return
+			case <-done:
+				return
+			}
 		}
 	}()
-	// ══════════════════════
+	// ═══════════════════════════════════════════
 
 	// HTTP 错误：读完 error body 后按状态映射（与非流式 executeCompleteRequest 一致）。
 	if sr.StatusCode != 200 {
@@ -297,12 +323,16 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	scanErr := scanStream(ctx, sr.Body, func(obj map[string]any) (stop bool, err error) {
 		// 从单个上游对象提取（可能多个）chunk，逐个 emit；命中真实 finishReason 即结束。
 		return processStreamingObject(obj, emit)
-	})
+	}, resetIdle)
 
 	if scanErr != nil && cfg.DebugMode() && !errors.Is(scanErr, context.Canceled) {
 		debugReq, _ := json.Marshal(newBody)
 		log.Printf("[DEBUG] [StreamChat] 扫描流数据报错! error: %v", scanErr)
 		log.Printf("[DEBUG] [StreamChat] 完整请求体: %s", string(debugReq))
+	}
+
+	if idleTriggered.Load() {
+		return NewNetworkError(ErrStreamIdleTimeout)
 	}
 
 	if errors.Is(scanErr, context.Canceled) {
@@ -324,7 +354,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 //
 // onObject 返回 (stop, err)：stop=true（命中真实 finishReason）即正常结束扫描；客户端断开由 ctx.Err() 路径处理；
 // err 非 nil 即中断并上抛（上游错误）。
-func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]any) (bool, error)) error {
+func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]any) (bool, error), resetIdle chan struct{}) error {
 	reader := bufio.NewReader(body)
 	readBuf := make([]byte, 16*1024)
 
@@ -343,6 +373,12 @@ func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]an
 	for {
 		n, readErr := reader.Read(readBuf)
 		if n > 0 {
+			if resetIdle != nil {
+				select {
+				case resetIdle <- struct{}{}:
+				default:
+				}
+			}
 			buffer = append(buffer, readBuf[:n]...)
 
 			if len(buffer) > hardMaxBufferSize {
