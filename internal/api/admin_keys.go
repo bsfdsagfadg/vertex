@@ -16,7 +16,12 @@ func (adm *AdminHandler) adminGetKeys(w http.ResponseWriter, _ *http.Request) {
 	}
 	out := make([]any, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, map[string]any{"name": e.Name, "key": e.Key, "key_masked": maskKey(e.Key)})
+		out = append(out, map[string]any{
+			"name":        e.Name,
+			"key":         e.Key,
+			"key_masked":  maskKey(e.Key),
+			"description": e.Description,
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
 }

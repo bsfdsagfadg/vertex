@@ -5,8 +5,10 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -120,6 +122,13 @@ func EnsureAdminPassword() {
 		return
 	}
 	bar := strings.Repeat("=", 60)
+	fmt.Fprintf(os.Stderr, "\n%s\n", bar)
+	fmt.Fprintf(os.Stderr, "[Admin] 首次启动，已自动生成管理员密码：\n")
+	fmt.Fprintf(os.Stderr, "[Admin]     密码: %s\n", pw)
+	fmt.Fprintf(os.Stderr, "[Admin]     访问: http://<host>:<port>/admin\n")
+	fmt.Fprintf(os.Stderr, "[Admin]     密码已写入 config/config.json，登录后可在面板修改\n")
+	fmt.Fprintf(os.Stderr, "%s\n\n", bar)
+
 	log.Printf("%s", bar)
 	log.Printf("[Admin] 首次启动，已自动生成管理员密码：")
 	log.Printf("[Admin]     密码: %s", pw)

@@ -169,6 +169,16 @@ func Load() AppConfig {
 		return *cached
 	}
 	cfg := DefaultConfig()
+	if _, statErr := os.Stat(configPath()); os.IsNotExist(statErr) {
+		examplePath := filepath.Join(filepath.Dir(configPath()), "config.example.json")
+		if exampleData, readErr := os.ReadFile(examplePath); readErr == nil {
+			if mkErr := os.MkdirAll(filepath.Dir(configPath()), 0o755); mkErr == nil {
+				if writeErr := os.WriteFile(configPath(), exampleData, 0o644); writeErr == nil {
+					log.Printf("[Config] 已从 config.example.json 创建初始配置")
+				}
+			}
+		}
+	}
 	if data, err := os.ReadFile(configPath()); err == nil {
 		if errUnm := json.Unmarshal(data, &cfg); errUnm != nil { //nolint:govet
 			log.Printf("[Config] 解析 config.json 失败: %v", err)
