@@ -241,7 +241,7 @@ func TestBuildCompleteResponse_Empty(t *testing.T) {
 	if err == nil {
 		t.Error("空响应应返回 EmptyResponseError")
 	}
-	if ve := asVertexError(err); ve == nil || ve.Kind != "empty" {
+	if ve := asVertexError(err); ve == nil || ve.Kind != "network" {
 		t.Errorf("err=%v, want empty", err)
 	}
 }

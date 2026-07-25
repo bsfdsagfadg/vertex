@@ -97,6 +97,8 @@ func (c *fakeCfg) FakePrefixes() []string                      { panic("unexpect
 func (c *fakeCfg) ResolveModelName(string) string              { panic("unexpected") }
 func (c *fakeCfg) ConfigDir() string                           { panic("unexpected") }
 func (c *fakeCfg) ConfigPath() string                          { panic("unexpected") }
+func (c *fakeCfg) DefaultResponseModalities() string           { return "图文" }
+func (c *fakeCfg) StreamIdleTimeoutSeconds() int               { return 30 }
 
 type fakeBuilder struct {
 	count    atomic.Int64

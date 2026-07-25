@@ -260,16 +260,27 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	defer sr.Close() // 排干 → close，防串流。
 
 	// ═══ 唯一中断调度点 + 流式包间空闲超时监控 ═══
-	idleTimeout := time.Duration(cfg.StreamIdleTimeoutSeconds()) * time.Second
+	preTimeout := time.Duration(max(cfg.StreamIdleTimeoutSeconds()*2, 40)) * time.Second
+	postTimeout := time.Duration(cfg.StreamIdleTimeoutSeconds()) * time.Second
+	firstPacketChan := make(chan struct{}, 1)
 	resetIdle := make(chan struct{}, 1)
 	var idleTriggered atomic.Bool
 	done := make(chan struct{})
-	defer close(done)
 	go func() {
-		timer := time.NewTimer(idleTimeout)
+		timer := time.NewTimer(preTimeout)
+		hasReceivedFirstPacket := false
 		defer timer.Stop()
 		for {
 			select {
+			case <-firstPacketChan:
+				hasReceivedFirstPacket = true
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(postTimeout)
 			case <-resetIdle:
 				if !timer.Stop() {
 					select {
@@ -277,8 +288,17 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 					default:
 					}
 				}
-				timer.Reset(idleTimeout)
+				if hasReceivedFirstPacket {
+					timer.Reset(postTimeout)
+				} else {
+					timer.Reset(preTimeout)
+				}
 			case <-timer.C:
+				select {
+				case <-done:
+					return
+				default:
+				}
 				idleTriggered.Store(true)
 				sr.Body.Close()
 				return
@@ -323,7 +343,14 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	scanErr := scanStream(ctx, sr.Body, func(obj map[string]any) (stop bool, err error) {
 		// 从单个上游对象提取（可能多个）chunk，逐个 emit；命中真实 finishReason 即结束。
 		return processStreamingObject(obj, emit)
-	}, resetIdle)
+	}, resetIdle, func() {
+		select {
+		case firstPacketChan <- struct{}{}:
+		default:
+		}
+	})
+
+	close(done)
 
 	if scanErr != nil && cfg.DebugMode() && !errors.Is(scanErr, context.Canceled) {
 		debugReq, _ := json.Marshal(newBody)
@@ -354,7 +381,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 //
 // onObject 返回 (stop, err)：stop=true（命中真实 finishReason）即正常结束扫描；客户端断开由 ctx.Err() 路径处理；
 // err 非 nil 即中断并上抛（上游错误）。
-func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]any) (bool, error), resetIdle chan struct{}) error {
+func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]any) (bool, error), resetIdle chan struct{}, onFirstPacket func()) error {
 	reader := bufio.NewReader(body)
 	readBuf := make([]byte, 16*1024)
 
@@ -365,6 +392,8 @@ func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]an
 	inString := false
 	escape := false
 
+	var hasSignaledFirst bool
+
 	const (
 		maxBufferSize    = 4 * 1024 * 1024
 		hardMaxBufferSize = 64 * 1024 * 1024
@@ -373,6 +402,10 @@ func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]an
 	for {
 		n, readErr := reader.Read(readBuf)
 		if n > 0 {
+			if onFirstPacket != nil && !hasSignaledFirst {
+				hasSignaledFirst = true
+				onFirstPacket()
+			}
 			if resetIdle != nil {
 				select {
 				case resetIdle <- struct{}{}:

@@ -23,7 +23,7 @@ func TestScanStream_BufferHardLimit(t *testing.T) {
 	go func() {
 		done <- scanStream(context.Background(), bytes.NewReader(data), func(obj map[string]any) (bool, error) {
 			return false, nil
-		}, nil)
+		}, nil, nil)
 	}()
 
 	select {
@@ -52,7 +52,7 @@ func collectStream(t *testing.T, raw string) (emitted []map[string]any, stopped 
 			stopped = true
 		}
 		return stop, err
-	}, nil)
+	}, nil, nil)
 	return
 }
 
@@ -133,7 +133,7 @@ func TestScanStream_SplitAcrossReads(t *testing.T) {
 			return true
 		})
 		return stop, err
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("scan error: %v", err)
 	}
@@ -413,7 +413,7 @@ func BenchmarkScanStream(b *testing.B) {
 	for range b.N {
 		_ = scanStream(context.Background(), strings.NewReader(input), func(obj map[string]any) (bool, error) {
 			return true, nil
-		}, nil)
+		}, nil, nil)
 	}
 }
 
@@ -424,7 +424,7 @@ func TestScanStream_ResetIdleSignal(t *testing.T) {
 
 	err := scanStream(context.Background(), strings.NewReader(data), func(obj map[string]any) (bool, error) {
 		return true, nil
-	}, resetIdle)
+	}, resetIdle, nil)
 
 	if err != nil {
 		t.Fatalf("scanStream error: %v", err)
@@ -481,7 +481,7 @@ func TestIdleWatcher_TriggersOnTimeout(t *testing.T) {
 	go func() {
 		errCh <- scanStream(ctx, pr, func(obj map[string]any) (bool, error) {
 			return false, nil
-		}, resetIdle)
+		}, resetIdle, nil)
 	}()
 
 	// 先写入一帧有效数据（重置定时器）

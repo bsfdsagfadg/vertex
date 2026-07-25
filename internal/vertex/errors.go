@@ -118,7 +118,7 @@ func NewContextError(err error) *VertexError {
 
 // NewEmptyResponseError 上游空响应（502）。
 func NewEmptyResponseError(msg string, cause error) *VertexError {
-	return &VertexError{Message: msg, Code: 502, Status: StatusInternal, Kind: "empty", cause: cause}
+	return &VertexError{Message: msg, Code: 502, Status: StatusInternal, Kind: "network", cause: cause}
 }
 
 // NewNetworkError 包装网络抖动错误（连接超时、DNS 失败、TCP Reset 等）。
@@ -264,8 +264,6 @@ func FriendlyErrorMessage(e *VertexError) string {
 			return "请求格式错误，JSON 解析失败 (invalid JSON)"
 		}
 		return "请求参数有误，请检查请求内容 (invalid argument)"
-	case e.Kind == "empty":
-		return "上游返回空响应，请重试 (empty response)"
 	case e.Kind == "unavailable" || e.Code == 503:
 		return "服务暂时不可用，请稍后再试 (service unavailable)"
 	case e.Code == 502:
