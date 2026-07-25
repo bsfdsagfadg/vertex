@@ -40,12 +40,17 @@ go build -tags with_utls -o vertex-proxy ./cmd/vproxy
 go build -tags with_utls -o vertex-proxy.exe ./cmd/vproxy
 ```
 
-交叉编译示例（例如在 macOS/Windows 上编译 Linux 适用版本）：
+交叉编译示例：
 ```bash
-# 在 Linux/macOS 上编译 Linux AMD64 版本
+# 在 Linux/macOS 上编译 Linux AMD64 版本（服务器）
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags with_utls -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy
-# 在 Windows PowerShell 上编译 Linux ARM64 版本
-& { $env:CGO_ENABLED="0"; $env:GOOS="linux"; $env:GOARCH="arm64"; go build -tags with_utls -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy }
+# 在 Linux/macOS 上编译 Android ARM64 版本（Termux 手机）
+CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -tags with_utls -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy
+
+# 在 Windows PowerShell 上编译 Linux AMD64 版本（服务器）
+& { $env:CGO_ENABLED="0"; $env:GOOS="linux"; $env:GOARCH="amd64"; go build -tags with_utls -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy }
+# 在 Windows PowerShell 上编译 Android ARM64 版本（Termux 手机）
+& { $env:CGO_ENABLED="0"; $env:GOOS="android"; $env:GOARCH="arm64"; go build -tags with_utls -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy }
 ```
 
 ## ⚙️ 配置说明

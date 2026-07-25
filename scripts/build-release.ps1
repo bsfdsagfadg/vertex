@@ -26,12 +26,6 @@ if (Test-Path $OUT) {
     Remove-Item -Recurse -Force $OUT
 }
 New-Item -ItemType Directory -Force -Path $OUT | Out-Null
-
-# 默认设置 NDK 路径
-if ([string]::IsNullOrEmpty($env:ANDROID_NDK_HOME)) {
-    $env:ANDROID_NDK_HOME = "E:\android-ndk-r29"
-}
-
 function Build-Release {
     param (
         [string]$goos,
@@ -44,41 +38,13 @@ function Build-Release {
     $stage = Join-Path $OUT $pkg
     Write-Host "==> 编译 $goos/$goarch"
 
-    if ($goos -eq "android") {
-        if (-not $env:ANDROID_NDK_HOME) {
-            Write-Error "错误：未指定 ANDROID_NDK_HOME 环境变量！"
-            exit 1
-        }
-
-        # 假定在 Windows 下运行 PowerShell 脚本进行编译
-        $host_os = "windows-x86_64"
-        $ext = ".cmd"
-
-        $clang_cc = Join-Path $env:ANDROID_NDK_HOME "toolchains\llvm\prebuilt\$host_os\bin\aarch64-linux-android28-clang$ext"
-        if (-not (Test-Path $clang_cc)) {
-            Write-Error "错误：找不到 Android NDK 编译器：$clang_cc"
-            exit 1
-        }
-
-        Write-Host "    -> 使用 NDK 编译器: $clang_cc"
-        $env:CGO_ENABLED = "1"
-        $env:GOOS = $goos
-        $env:GOARCH = $goarch
-        $env:CC = $clang_cc
-        go build -trimpath -tags with_utls -ldflags="$LDFLAGS" -o (Join-Path $stage $bin) ./cmd/vproxy
-        Remove-Item Env:\CGO_ENABLED
-        Remove-Item Env:\GOOS
-        Remove-Item Env:\GOARCH
-        Remove-Item Env:\CC
-    } else {
-        $env:CGO_ENABLED = "0"
-        $env:GOOS = $goos
-        $env:GOARCH = $goarch
-        go build -trimpath -tags with_utls -ldflags="$LDFLAGS" -o (Join-Path $stage $bin) ./cmd/vproxy
-        Remove-Item Env:\CGO_ENABLED
-        Remove-Item Env:\GOOS
-        Remove-Item Env:\GOARCH
-    }
+    $env:CGO_ENABLED = "0"
+    $env:GOOS = $goos
+    $env:GOARCH = $goarch
+    go build -trimpath -tags with_utls -ldflags="$LDFLAGS" -o (Join-Path $stage $bin) ./cmd/vproxy
+    Remove-Item Env:\CGO_ENABLED
+    Remove-Item Env:\GOOS
+    Remove-Item Env:\GOARCH
 
     $configDir = Join-Path $stage "config"
     New-Item -ItemType Directory -Force -Path $configDir | Out-Null
@@ -114,13 +80,12 @@ function Build-Release {
 
 # Windows
 Build-Release -goos windows -goarch amd64 -bin vertex-proxy.exe -pkg vertex-proxy-windows-amd64 -files @("scripts\启动.bat", "scripts\setup.bat")
-Build-Release -goos windows -goarch 386   -bin vertex-proxy.exe -pkg vertex-proxy-windows-386   -files @("scripts\启动.bat", "scripts\setup.bat")
 
 # Linux
 Build-Release -goos linux -goarch amd64 -bin vertex-proxy -pkg vertex-proxy-linux-amd64 -files @("scripts\start.sh", "scripts\vertex-proxy.service", "scripts\setup.sh")
 Build-Release -goos linux -goarch 386   -bin vertex-proxy -pkg vertex-proxy-linux-386   -files @("scripts\start.sh", "scripts\vertex-proxy.service", "scripts\setup.sh")
 Build-Release -goos linux -goarch arm64 -bin vertex-proxy -pkg vertex-proxy-linux-arm64 -files @("scripts\start.sh", "scripts\vertex-proxy.service", "scripts\setup.sh")
-Build-Release -goos linux -goarch arm32 -bin vertex-proxy -pkg vertex-proxy-linux-arm32 -files @("scripts\start.sh", "scripts\vertex-proxy.service", "scripts\setup.sh")
+Build-Release -goos linux -goarch arm -bin vertex-proxy -pkg vertex-proxy-linux-arm -files @("scripts\start.sh", "scripts\vertex-proxy.service", "scripts\setup.sh")
 
 # Android
 Build-Release -goos android -goarch arm64 -bin vertex-proxy -pkg vertex-proxy-android-arm64 -files @("scripts\start.sh", "scripts\setup.sh")

@@ -82,11 +82,7 @@ echo [OK] config\api_keys.txt
 
 :: models.json（如果不存在）
 if not exist "%SCRIPT_DIR%config\models.json" (
-    if exist "%SCRIPT_DIR%config\config.example.json" (
-        copy "%SCRIPT_DIR%config\config.example.json" "%SCRIPT_DIR%config\models.json" >nul
-    ) else (
-        echo ["gemini-2.5-flash","gemini-2.5-pro","gemini-3-flash","gemini-3-pro","gemini-3.1-flash","gemini-3.1-pro","gemini-3.5-flash"] > "%SCRIPT_DIR%config\models.json"
-    )
+    echo ["gemini-2.5-flash","gemini-2.5-pro","gemini-3-flash","gemini-3-pro","gemini-3.1-flash","gemini-3.1-pro","gemini-3.5-flash"] > "%SCRIPT_DIR%config\models.json"
     echo [OK] config\models.json
 ) else (
     echo [=] config\models.json 已存在，跳过
