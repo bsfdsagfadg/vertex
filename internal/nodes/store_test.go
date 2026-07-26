@@ -329,12 +329,12 @@ func TestGetNodeTier(t *testing.T) {
 		t.Errorf("Expected sub-healthy node → tier 2, got %d", tier)
 	}
 
-	// Tier 1 recovery: set LastSubHealthyAt to 10s ago
+	// Tier 2 persists regardless of time: set LastSubHealthyAt to 10s ago
 	mu.Lock()
 	h2.LastSubHealthyAt = time.Now().Unix() - 10
 	mu.Unlock()
-	if tier := getNodeTier(Node{RawURI: "uri-h1", Name: "h1"}, h2); tier != 1 {
-		t.Errorf("Expected recovered node (10s ago) → tier 1, got %d", tier)
+	if tier := getNodeTier(Node{RawURI: "uri-h1", Name: "h1"}, h2); tier != 2 {
+		t.Errorf("Expected sub-healthy node (10s ago) → tier 2, got %d", tier)
 	}
 }
 
@@ -403,23 +403,180 @@ func TestSelectForParallel_SubHealthy5sRecovery(t *testing.T) {
 		t.Fatalf("expected 2 nodes, got %d", len(sel))
 	}
 
-	// Simulate n1's sub-healthy period expiring (> 5s ago)
+	// Verify n1 stays Tier 2 even after 10s (no automatic recovery)
 	mu.Lock()
 	if h := healthMap["uri1"]; h != nil {
 		h.LastSubHealthyAt = time.Now().Unix() - 10
 	}
 	mu.Unlock()
 
-	// Now both should be Tier 1
-	sel2 := SelectForParallel(2, 80, false, false)
-	if len(sel2) != 2 {
-		t.Fatalf("expected 2 nodes after recovery, got %d", len(sel2))
-	}
-	// Verify n1 is now Tier 1
+	// n1 should still be Tier 2 (LastSubHealthyAt > 0)
 	if h := healthMap["uri1"]; h != nil {
 		tier := getNodeTier(n1, h)
-		if tier != 1 {
-			t.Errorf("Expected n1 to recover to Tier 1, got Tier %d", tier)
+		if tier != 2 {
+			t.Errorf("Expected n1 to stay Tier 2, got Tier %d", tier)
 		}
+	}
+	// SelectForParallel still works: n2 (Tier 1) + n1 (Tier 2 fallback)
+	sel2 := SelectForParallel(2, 80, false, false)
+	if len(sel2) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(sel2))
+	}
+}
+
+func TestSelectForParallel_LastSelectedAtSort(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	// 3 Tier 1 nodes, all InFlight=0, different LastSelectedAt
+	n1 := Node{RawURI: "uri-a", Name: "a"}
+	n2 := Node{RawURI: "uri-b", Name: "b"}
+	n3 := Node{RawURI: "uri-c", Name: "c"}
+	MergeNodes([]Node{n1, n2, n3})
+
+	// Create healthMap entries and set LastSelectedAt
+	mu.Lock()
+	healthMap["uri-a"] = &NodeHealth{LastSelectedAt: time.Now().Unix() - 100, InFlight: 0}
+	healthMap["uri-b"] = &NodeHealth{LastSelectedAt: time.Now().Unix() - 10, InFlight: 0}
+	healthMap["uri-c"] = &NodeHealth{LastSelectedAt: 0, InFlight: 0}
+	mu.Unlock()
+
+	// Control round-robin so sorted[0] is picked
+	// Sorted order: [uri-c(0), uri-a(now-100), uri-b(now-10)]
+	// With atomicRoundRobinIndex=2, offset=(2+1)%3=0 → picks sorted[0]=uri-c
+	atomic.StoreUint64(&atomicRoundRobinIndex, 2)
+	sel := SelectForParallel(1, 80, false, false)
+	if len(sel) != 1 {
+		t.Fatalf("expected 1 selected, got %d", len(sel))
+	}
+	if sel[0].RawURI != "uri-c" {
+		t.Errorf("Expected uri-c (LastSelectedAt=0) to be selected first, got %s", sel[0].RawURI)
+	}
+}
+
+func TestSelectForParallel_Phase3Protection(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	// Scenario A: fresh node available to replace recently used node
+	t.Run("fresh replacement available", func(t *testing.T) {
+		resetState()
+		n1 := Node{RawURI: "uri-a", Name: "a"}
+		n2 := Node{RawURI: "uri-b", Name: "b"}
+		n3 := Node{RawURI: "uri-c", Name: "c"}
+		n4 := Node{RawURI: "uri-d", Name: "d"}
+		n5 := Node{RawURI: "uri-e", Name: "e"}
+		MergeNodes([]Node{n1, n2, n3, n4, n5})
+
+		now := time.Now().Unix()
+		mu.Lock()
+		// Two fresh (never selected), three stale (recently selected)
+		healthMap["uri-a"] = &NodeHealth{LastSelectedAt: 0, InFlight: 0}
+		healthMap["uri-b"] = &NodeHealth{LastSelectedAt: 0, InFlight: 0}
+		healthMap["uri-c"] = &NodeHealth{LastSelectedAt: now - 1, InFlight: 0}
+		healthMap["uri-d"] = &NodeHealth{LastSelectedAt: now - 1, InFlight: 0}
+		healthMap["uri-e"] = &NodeHealth{LastSelectedAt: now - 1, InFlight: 0}
+		mu.Unlock()
+
+		// Sorted by inFlight→LastSelectedAt→URI: [uri-a(0), uri-b(0), uri-c(1), uri-d(1), uri-e(1)]
+		// Set offset to skip fresh nodes: need offset=2 → atomicRoundRobinIndex such that (idx+1)%5=2
+		atomic.StoreUint64(&atomicRoundRobinIndex, 1)
+		sel := SelectForParallel(3, 80, false, false)
+		if len(sel) != 3 {
+			t.Fatalf("expected 3 selected, got %d", len(sel))
+		}
+		// Phase 3 should replace uri-c and uri-d with uri-a and uri-b
+		// Final selected: [uri-a, uri-b, uri-e]
+		if sel[0].RawURI != "uri-a" {
+			t.Errorf("Expected sel[0]=uri-a (fresh), got %s", sel[0].RawURI)
+		}
+		if sel[1].RawURI != "uri-b" {
+			t.Errorf("Expected sel[1]=uri-b (fresh), got %s", sel[1].RawURI)
+		}
+		if sel[2].RawURI != "uri-e" {
+			t.Errorf("Expected sel[2]=uri-e (stale, no more fresh), got %s", sel[2].RawURI)
+		}
+	})
+
+	// Scenario B: all nodes within 5s, no fresh replacement → best-effort, no change
+	t.Run("no fresh replacement", func(t *testing.T) {
+		resetState()
+		n1 := Node{RawURI: "uri-a", Name: "a"}
+		n2 := Node{RawURI: "uri-b", Name: "b"}
+		n3 := Node{RawURI: "uri-c", Name: "c"}
+		MergeNodes([]Node{n1, n2, n3})
+
+		now := time.Now().Unix()
+		mu.Lock()
+		healthMap["uri-a"] = &NodeHealth{LastSelectedAt: now - 1, InFlight: 0}
+		healthMap["uri-b"] = &NodeHealth{LastSelectedAt: now - 1, InFlight: 0}
+		healthMap["uri-c"] = &NodeHealth{LastSelectedAt: now - 1, InFlight: 0}
+		mu.Unlock()
+
+		sel := SelectForParallel(3, 80, false, false)
+		if len(sel) != 3 {
+			t.Fatalf("expected 3 selected, got %d", len(sel))
+		}
+		// All 3 should still be present (best-effort, no replacement possible)
+		got := make(map[string]bool)
+		for _, s := range sel {
+			got[s.RawURI] = true
+		}
+		for _, uri := range []string{"uri-a", "uri-b", "uri-c"} {
+			if !got[uri] {
+				t.Errorf("Expected %s to be in selected set, but it was replaced", uri)
+			}
+		}
+	})
+
+	// Scenario C: protection expired (LastSelectedAt >= 5s ago)
+	t.Run("protection expired", func(t *testing.T) {
+		resetState()
+		n1 := Node{RawURI: "uri-a", Name: "a"}
+		n2 := Node{RawURI: "uri-b", Name: "b"}
+		n3 := Node{RawURI: "uri-c", Name: "c"}
+		MergeNodes([]Node{n1, n2, n3})
+
+		now := time.Now().Unix()
+		mu.Lock()
+		healthMap["uri-a"] = &NodeHealth{LastSelectedAt: now - 10, InFlight: 0}
+		healthMap["uri-b"] = &NodeHealth{LastSelectedAt: now - 10, InFlight: 0}
+		healthMap["uri-c"] = &NodeHealth{LastSelectedAt: now - 10, InFlight: 0}
+		mu.Unlock()
+
+		sel := SelectForParallel(3, 80, false, false)
+		if len(sel) != 3 {
+			t.Fatalf("expected 3 selected, got %d", len(sel))
+		}
+		// All nodes should be returned unchanged (protection expired)
+		got := make(map[string]bool)
+		for _, s := range sel {
+			got[s.RawURI] = true
+		}
+		for _, uri := range []string{"uri-a", "uri-b", "uri-c"} {
+			if !got[uri] {
+				t.Errorf("Expected %s to be in selected set, but it was replaced", uri)
+			}
+		}
+	})
+}
+
+func TestRecordRateLimit_CooldownUntil(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	RecordRateLimit("uri1", 30)
+	mu.Lock()
+	h := healthMap["uri1"]
+	mu.Unlock()
+	if h == nil {
+		t.Fatal("Expected health entry for uri1")
+	}
+	now := time.Now().Unix()
+	if h.CooldownUntil <= now {
+		t.Errorf("Expected CooldownUntil > now, got %d (now=%d)", h.CooldownUntil, now)
+	}
+	if h.CooldownUntil < now+28 || h.CooldownUntil > now+32 {
+		t.Errorf("Expected CooldownUntil ~ now+30, got %d (now=%d)", h.CooldownUntil, now)
 	}
 }

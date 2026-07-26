@@ -752,7 +752,7 @@ func RecordRateLimit(uri string, cooldownSec int) {
 	h.RateLimitCount++
 	h.LastTestError = "429 Rate Limit"
 	h.LastFailAt = now
-	h.CooldownUntil = 0
+	h.CooldownUntil = time.Now().Unix() + int64(cooldownSec)
 	updateSingleNodeHealthUnsafe(uri, h)
 }
 
@@ -760,7 +760,7 @@ func getNodeTier(n Node, h *NodeHealth) int {
 	if n.Disabled {
 		return 3
 	}
-	if h != nil && h.LastSubHealthyAt > 0 && (time.Now().Unix()-h.LastSubHealthyAt) < 5 {
+	if h != nil && h.LastSubHealthyAt > 0 {
 		return 2
 	}
 	return 1
@@ -798,10 +798,23 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 		}
 	}
 
-	// Sort Tier 1 by InFlight ascending, then by URI for deterministic round-robin grouping
+	// Sort Tier 1 by InFlight ascending, then by LastSelectedAt ascending (least recently used first), then by URI for deterministic round-robin grouping
 	sort.Slice(tier1, func(i, j int) bool {
 		if tier1[i].inFlight != tier1[j].inFlight {
 			return tier1[i].inFlight < tier1[j].inFlight
+		}
+		hi := healthMap[tier1[i].node.RawURI]
+		hj := healthMap[tier1[j].node.RawURI]
+		ti := int64(0)
+		if hi != nil {
+			ti = hi.LastSelectedAt
+		}
+		tj := int64(0)
+		if hj != nil {
+			tj = hj.LastSelectedAt
+		}
+		if ti != tj {
+			return ti < tj
 		}
 		return tier1[i].node.RawURI < tier1[j].node.RawURI
 	})
@@ -831,6 +844,17 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 			}
 			hi := healthMap[tier2[i].node.RawURI]
 			hj := healthMap[tier2[j].node.RawURI]
+			si := int64(0)
+			sj := int64(0)
+			if hi != nil {
+				si = hi.LastSelectedAt
+			}
+			if hj != nil {
+				sj = hj.LastSelectedAt
+			}
+			if si != sj {
+				return si < sj
+			}
 			ti := int64(0)
 			tj := int64(0)
 			if hi != nil {
@@ -846,6 +870,53 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 				break
 			}
 			selected = append(selected, c.node)
+		}
+	}
+
+	// Phase 3: 5 秒全局保护缓冲（尽力而为）
+	findFreshReplacement := func(selected []Node, tier1 []tierCandidate) *Node {
+		selectedSet := make(map[string]bool, len(selected))
+		for _, s := range selected {
+			selectedSet[s.RawURI] = true
+		}
+		var best *tierCandidate
+		for i := range tier1 {
+			tc := &tier1[i]
+			if selectedSet[tc.node.RawURI] {
+				continue
+			}
+			h := healthMap[tc.node.RawURI]
+			if h == nil {
+				if best == nil || tc.inFlight < best.inFlight {
+					best = tc
+				}
+				continue
+			}
+			if h.CooldownUntil > now {
+				continue
+			}
+			if h.LastSelectedAt == 0 || now-h.LastSelectedAt >= 5 {
+				if best == nil || tc.inFlight < best.inFlight {
+					best = tc
+				}
+			}
+		}
+		if best != nil {
+			return &best.node
+		}
+		return nil
+	}
+	for idx := range selected {
+		h := healthMap[selected[idx].RawURI]
+		if h == nil || h.LastSelectedAt == 0 {
+			continue
+		}
+		if now-h.LastSelectedAt >= 5 {
+			continue
+		}
+		replacement := findFreshReplacement(selected, tier1)
+		if replacement != nil {
+			selected[idx] = *replacement
 		}
 	}
 
