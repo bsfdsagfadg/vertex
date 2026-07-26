@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -381,9 +382,18 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 //
 // onObject 返回 (stop, err)：stop=true（命中真实 finishReason）即正常结束扫描；客户端断开由 ctx.Err() 路径处理；
 // err 非 nil 即中断并上抛（上游错误）。
+var scanBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 16*1024)
+		return &buf
+	},
+}
+
 func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]any) (bool, error), resetIdle chan struct{}, onFirstPacket func()) error {
 	reader := bufio.NewReader(body)
-	readBuf := make([]byte, 16*1024)
+	bufPtr := scanBufferPool.Get().(*[]byte)
+	defer scanBufferPool.Put(bufPtr)
+	readBuf := *bufPtr
 
 	var buffer []byte
 	scanPos := 0  // 已扫到的位置（buffer 内），下个网络 chunk 从这里续扫。
