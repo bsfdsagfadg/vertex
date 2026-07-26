@@ -140,8 +140,6 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		o(&rc)
 	}
 
-	stickyPool := nodes.GetStickyPool()
-
 	cands := nodes.SelectForParallel(cfg.ParallelPoolSize(), cfg.ParallelNodeTopK(), cfg.DebugMode(), cfg.StickyNodePriority())
 
 	if !cfg.ParallelPoolEnabled() || len(cands) == 0 {
@@ -184,14 +182,15 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		activeKeys[uri] = true
 		mu.Unlock()
 
+		nodes.IncInFlight(uri)
 		atomic.AddInt32(&active, 1)
-		// 每个候选获得一个从 ctxRace 派生的独立 context。
 		candCtx, candCancel := context.WithCancel(ctxRace)
 		mu.Lock()
 		candidateCancels[uri] = candCancel
 		mu.Unlock()
 
 		go func(u string) {
+			defer nodes.DecInFlight(u)
 			v, err := run(candCtx, u)
 			select {
 			case resCh <- raceResult[T]{u, v, err}:
@@ -258,75 +257,20 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 					cli.UpdateReqWinner(RequestIDFromContext(ctx), name)
 					cli.UpdateReqState(RequestIDFromContext(ctx), "🟢 数据传输", "\033[32m", "已建立连接")
 					nodes.RecordTest(res.uri, true, 50, "")
-					stickyPool.Add(res.uri)
 
 					returnedOnWinPath = true
 
-					// 立即取消所有落败候选。
 					for _, c := range cands {
 						if c.RawURI != res.uri {
 							cancelCandidate(c.RawURI)
 						}
 					}
 
-					if !rc.noCancelOnSuccess {
-						// 非流式：胜出即结束，不启动后台收集。
-						return res.val, nil
-					}
-
-					// 流式 WithNoCancelOnSuccess：启动后台收集，胜出候选继续。
-					// 收集所有已启动落败候选的结果，完成后主动退出。
-					// 使用 30 秒兜底超时，防止候选忽略 context 取消时 goroutine 泄漏。
-					collectCtx, collectCancel := context.WithTimeout(ctxRace, 30*time.Second)
-					go func() {
-						defer collectCancel()
-						defer func() {
-							if testHookCollectorDone != nil {
-								close(testHookCollectorDone)
-							}
-						}()
-						// 如果没有已启动但未报告的候选，直接退出。
-						if atomic.LoadInt32(&active) == 0 {
-							return
-						}
-						for {
-							select {
-							case bgRes, ok := <-resCh:
-								if !ok {
-									return
-								}
-								atomic.AddInt32(&active, -1)
-								// 忽略 context 取消/超时错误，不更新节点状态。
-								if bgRes.err == nil {
-									stickyPool.Add(bgRes.uri)
-									nodes.RecordTest(bgRes.uri, true, 50, "")
-								} else if !errors.Is(bgRes.err, context.Canceled) && !errors.Is(bgRes.err, context.DeadlineExceeded) {
-									ve := asVertexError(bgRes.err)
-									if ve != nil && ve.Kind == "ratelimit" {
-										nodes.RecordRateLimit(bgRes.uri, 30)
-									} else {
-										nodes.RecordTest(bgRes.uri, false, 0, bgRes.err.Error())
-									}
-									stickyPool.Evict(bgRes.uri)
-								}
-								if atomic.LoadInt32(&active) == 0 {
-									return
-								}
-							case <-ctxRace.Done():
-								return
-							case <-collectCtx.Done():
-								return
-							}
-						}
-					}()
-
 					return res.val, nil
 				}
 
-				// isWinningResult 返回 false：非 STOP 结果，收集。
 				rc.collectedResults = append(rc.collectedResults, res)
 				nodes.RecordTest(res.uri, true, 50, "")
-				stickyPool.Add(res.uri)
 
 				if nextIdx < len(cands) && ctxRace.Err() == nil {
 					launchNode(cands[nextIdx].RawURI)
@@ -347,10 +291,8 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 							log.Printf("[Racing] 节点 %s 触发 429 API 限制，进入 30 秒短时歇息", name)
 						}
 						nodes.RecordRateLimit(res.uri, 30)
-						stickyPool.Evict(res.uri)
 					} else {
 						nodes.RecordTest(res.uri, false, 0, res.err.Error())
-						stickyPool.Evict(res.uri)
 					}
 
 					if rc.failFastOnHardError && ve != nil && ve.IsGlobalHardError() {

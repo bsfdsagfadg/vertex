@@ -16,7 +16,6 @@ var adminAllowedSettings = map[string]bool{
 	"telemetry_enabled":           true,
 	"parallel_pool_delay_dynamic": true,
 	"active_node_uri":             true,
-	"sticky_node_priority":        true,
 	"parallel_pool_retry_enabled": true,
 	"background_image":            true,
 	"font_size":                   true,
@@ -46,7 +45,6 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"telemetry_enabled": telEnabled,
 		"proxy_url":         adm.cfg.ProxyURL(), "proxy_url_candidates": adm.cfg.ProxyURLCandidates(), "parallel_pool_enabled": adm.cfg.ParallelPoolEnabled(), "parallel_pool_size": adm.cfg.ParallelPoolSize(), "active_node_uri": adm.cfg.ActiveNodeURI(),
 		"parallel_pool_delay_dynamic": adm.cfg.ParallelPoolDelayDynamic(),
-		"sticky_node_priority":        adm.cfg.StickyNodePriority(),
 		"parallel_pool_retry_enabled": adm.cfg.ParallelPoolRetryEnabled(),
 		"background_image":            adm.cfg.BackgroundImage(),
 		"font_size":                   adm.cfg.FontSize(),
@@ -70,11 +68,6 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 		return
 	}
 	updates := map[string]any{}
-
-	// 面板依赖校验：禁用并发池时强制禁用粘性池
-	if ppEnabled, ok := body.Settings["parallel_pool_enabled"].(bool); ok && !ppEnabled {
-		body.Settings["sticky_node_priority"] = false
-	}
 
 	for k, v := range body.Settings {
 		if !adminAllowedSettings[k] {

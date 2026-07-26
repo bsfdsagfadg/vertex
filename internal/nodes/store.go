@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"math/rand"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/db"
@@ -37,15 +37,40 @@ type NodeHealth struct { //nolint:govet
 	RateLimitCount      int     `json:"rate_limit_count"`
 	RecentUseCount      int     `json:"recent_use_count"`
 	LastSelectedAt      int64   `json:"last_selected_at"`
+	InFlight            int32   `json:"-"`
+	LastSubHealthyAt    int64   `json:"last_sub_healthy_at"`
 }
 
 var (
-	mu                 sync.Mutex                     //nolint:gochecknoglobals
-	nodeList           []Node                         //nolint:gochecknoglobals
-	healthMap          = make(map[string]*NodeHealth) //nolint:gochecknoglobals
-	loaded             bool                           //nolint:gochecknoglobals
-	DeleteNodeCallback func(uri string)               //nolint:gochecknoglobals
+	mu                    sync.Mutex                     //nolint:gochecknoglobals
+	nodeList              []Node                         //nolint:gochecknoglobals
+	healthMap             = make(map[string]*NodeHealth) //nolint:gochecknoglobals
+	loaded                bool                           //nolint:gochecknoglobals
+	DeleteNodeCallback    func(uri string)               //nolint:gochecknoglobals
+	atomicRoundRobinIndex uint64                         //nolint:gochecknoglobals
 )
+
+func IncInFlight(uri string) {
+	mu.Lock()
+	ensureLoaded()
+	h, exists := healthMap[uri]
+	if !exists {
+		h = &NodeHealth{}
+		healthMap[uri] = h
+	}
+	mu.Unlock()
+	atomic.AddInt32(&h.InFlight, 1)
+}
+
+func DecInFlight(uri string) {
+	mu.Lock()
+	ensureLoaded()
+	h, exists := healthMap[uri]
+	mu.Unlock()
+	if exists {
+		atomic.AddInt32(&h.InFlight, -1)
+	}
+}
 
 func ResetState() {
 	mu.Lock()
@@ -571,6 +596,7 @@ func EnableNode(uri string) bool {
 			nodeList[i].Disabled = false
 			if h, exists := healthMap[uri]; exists {
 				h.CooldownUntil = 0
+				h.LastSubHealthyAt = 0
 				updateSingleNodeHealthUnsafe(uri, h)
 			}
 			updateSingleNodeDisabledUnsafe(uri, false)
@@ -684,6 +710,7 @@ func RecordTest(uri string, ok bool, ms float64, errStr string) {
 		h.SuccessCount++
 		h.ConsecutiveFailures = 0
 		h.LastSuccessAt = time.Now().Unix()
+		h.LastSubHealthyAt = 0
 		h.CooldownUntil = 0
 		h.Last429At = 0
 		h.RateLimitCount = 0
@@ -691,9 +718,16 @@ func RecordTest(uri string, ok bool, ms float64, errStr string) {
 		h.FailCount++
 		h.ConsecutiveFailures++
 		h.LastFailAt = time.Now().Unix()
-		failures := maxInt(1, h.ConsecutiveFailures)
-		cooldown := minInt(1800, 30*(1<<minInt(failures-1, 6)))
-		h.CooldownUntil = time.Now().Unix() + int64(cooldown)
+		h.CooldownUntil = 0
+
+		errLower := strings.ToLower(errStr)
+		if strings.Contains(errLower, "dial") || strings.Contains(errLower, "refused") ||
+			strings.Contains(errLower, "i/o timeout") || strings.Contains(errLower, "deadline exceeded") ||
+			strings.Contains(errLower, "connection") {
+			updateSingleNodeDisabledUnsafe(uri, true)
+		} else {
+			h.LastSubHealthyAt = time.Now().Unix()
+		}
 	}
 	updateSingleNodeHealthUnsafe(uri, h)
 }
@@ -702,7 +736,7 @@ func UpdateNodeTestResult(uri string, ok bool, ms float64, errStr string) {
 	RecordTest(uri, ok, ms, errStr)
 }
 
-// RecordRateLimit 记录 429 冷却并递增计次，使重复 429 节点自然降权
+// RecordRateLimit 记录 429 冷却并递增计次，使重复 429 节点进入 Tier 2 亚健康
 func RecordRateLimit(uri string, cooldownSec int) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -713,17 +747,28 @@ func RecordRateLimit(uri string, cooldownSec int) {
 		healthMap[uri] = h
 	}
 	now := time.Now().Unix()
-	h.CooldownUntil = now + int64(cooldownSec)
+	h.LastSubHealthyAt = now
 	h.Last429At = now
 	h.RateLimitCount++
 	h.LastTestError = "429 Rate Limit"
 	h.LastFailAt = now
+	h.CooldownUntil = 0
 	updateSingleNodeHealthUnsafe(uri, h)
 }
 
-type scoredNode struct {
-	node  Node
-	score float64
+func getNodeTier(n Node, h *NodeHealth) int {
+	if n.Disabled {
+		return 3
+	}
+	if h != nil && h.LastSubHealthyAt > 0 && (time.Now().Unix()-h.LastSubHealthyAt) < 5 {
+		return 2
+	}
+	return 1
+}
+
+type tierCandidate struct {
+	node     Node
+	inFlight int32
 }
 
 func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool) []Node {
@@ -732,143 +777,76 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 	ensureLoaded()
 	now := time.Now().Unix()
 
-	decayed := false
+	var tier1 []tierCandidate
+	var tier2 []tierCandidate
+
 	for _, n := range nodeList {
 		if n.Disabled {
 			continue
 		}
 		h := healthMap[n.RawURI]
+		tier := getNodeTier(n, h)
+		inFlight := int32(0)
 		if h != nil {
-			if h.SuccessCount > 1000 || h.FailCount > 200 || h.RecentUseCount > 500 {
-				h.SuccessCount /= 2
-				h.FailCount /= 2
-				h.RecentUseCount /= 2
-				decayed = true
-			}
+			inFlight = atomic.LoadInt32(&h.InFlight)
 		}
-	}
-	if decayed {
-		saveHealthUnsafe()
+		switch tier {
+		case 1:
+			tier1 = append(tier1, tierCandidate{n, inFlight})
+		case 2:
+			tier2 = append(tier2, tierCandidate{n, inFlight})
+		}
 	}
 
-	var scored []scoredNode
-	var cooldownNodes []scoredNode
-	for _, n := range nodeList {
-		if n.Disabled {
-			continue
+	// Sort Tier 1 by InFlight ascending, then by URI for deterministic round-robin grouping
+	sort.Slice(tier1, func(i, j int) bool {
+		if tier1[i].inFlight != tier1[j].inFlight {
+			return tier1[i].inFlight < tier1[j].inFlight
 		}
-		h := healthMap[n.RawURI]
-		if h != nil && h.CooldownUntil > now {
-			cooldownNodes = append(cooldownNodes, scoredNode{n, float64(h.CooldownUntil)})
-			continue
+		return tier1[i].node.RawURI < tier1[j].node.RawURI
+	})
+
+	var selected []Node
+	i := 0
+	for i < len(tier1) && len(selected) < k {
+		curInFlight := tier1[i].inFlight
+		j := i
+		for j < len(tier1) && tier1[j].inFlight == curInFlight {
+			j++
 		}
-		score := 100.0
-		if h != nil {
-			score += math.Min(float64(h.SuccessCount), 100) * 3
-			score -= math.Min(float64(h.FailCount), 100) * 4
-			score -= float64(h.ConsecutiveFailures) * 25
-			if h.LastTestMs > 0 {
-				score -= math.Min(h.LastTestMs/1000.0, 30.0)
-			}
-			lastSeen := maxInt64(h.LastSuccessAt, h.LastFailAt)
-			if lastSeen == 0 {
-				score += 20
-			} else if now-lastSeen > 3600 {
-				score += 10
-			}
-			score -= math.Min(float64(h.RateLimitCount), 10) * 5
-			score -= float64(h.RecentUseCount) * 2
-			if h.LastSelectedAt > 0 {
-				elapsed := now - h.LastSelectedAt
-				if elapsed > 600 {
-					score += math.Min(float64(elapsed)/60, 15)
-				}
-			}
-		} else {
-			score += 20
+		group := tier1[i:j]
+		offset := int(atomic.AddUint64(&atomicRoundRobinIndex, 1)) % len(group)
+		for l := 0; l < len(group) && len(selected) < k; l++ {
+			idx := (offset + l) % len(group)
+			selected = append(selected, group[idx].node)
 		}
-		if stickyBonusEnabled && globalStickyPool.IsSticky(n.RawURI) {
-			score += 15
-		}
-		scored = append(scored, scoredNode{n, math.Max(1.0, score)})
+		i = j
 	}
 
-	if len(scored) == 0 && len(cooldownNodes) > 0 {
-		sort.Slice(cooldownNodes, func(i, j int) bool {
-			hi := healthMap[cooldownNodes[i].node.RawURI]
-			hj := healthMap[cooldownNodes[j].node.RawURI]
-			li := int64(0)
-			lj := int64(0)
+	// Phase 2: Tier 2 fallback when Tier 1 is insufficient
+	if len(selected) < k {
+		sort.Slice(tier2, func(i, j int) bool {
+			if tier2[i].inFlight != tier2[j].inFlight {
+				return tier2[i].inFlight < tier2[j].inFlight
+			}
+			hi := healthMap[tier2[i].node.RawURI]
+			hj := healthMap[tier2[j].node.RawURI]
+			ti := int64(0)
+			tj := int64(0)
 			if hi != nil {
-				li = hi.Last429At
+				ti = hi.LastSubHealthyAt
 			}
 			if hj != nil {
-				lj = hj.Last429At
+				tj = hj.LastSubHealthyAt
 			}
-			if li != lj {
-				return li < lj
-			}
-			return cooldownNodes[i].score < cooldownNodes[j].score
+			return ti < tj
 		})
-		needed := k
-		if needed > len(cooldownNodes) {
-			needed = len(cooldownNodes)
-		}
-		selected := make([]Node, needed)
-		for i := 0; i < needed; i++ {
-			selected[i] = cooldownNodes[i].node
-			if h := healthMap[selected[i].RawURI]; h != nil {
-				h.LastSelectedAt = now
-				h.RecentUseCount++
-			}
-		}
-		if debugMode {
-			log.Printf("[Nodes] 所有节点冷却中，按 Last429At 兜底选择 %d 个", len(selected))
-		}
-		return selected
-	}
-
-	sort.Slice(scored, func(i, j int) bool { return scored[i].score > scored[j].score })
-	if len(scored) < k && len(cooldownNodes) > 0 {
-		sort.Slice(cooldownNodes, func(i, j int) bool { return cooldownNodes[i].score < cooldownNodes[j].score })
-		needed := k - len(scored)
-		if needed > len(cooldownNodes) {
-			needed = len(cooldownNodes)
-		}
-		scored = append(scored, cooldownNodes[:needed]...)
-	}
-	if topK <= 0 {
-		topK = 80
-	}
-	if len(scored) > topK {
-		scored = scored[:topK]
-	}
-	weights := make([]float64, len(scored))
-	totalWeight := 0.0
-	const tau = 40.0
-	for i, s := range scored {
-		w := math.Exp(s.score / tau)
-		if math.IsInf(w, 0) || math.IsNaN(w) {
-			w = 1.0
-		}
-		weights[i] = w
-		totalWeight += w
-	}
-	var selected []Node
-	for i := 0; i < k && len(scored) > 0; i++ {
-		r := rand.Float64() * totalWeight
-		idx := len(weights) - 1
-		for j, w := range weights {
-			r -= w
-			if r <= 0 {
-				idx = j
+		for _, c := range tier2 {
+			if len(selected) >= k {
 				break
 			}
+			selected = append(selected, c.node)
 		}
-		selected = append(selected, scored[idx].node)
-		totalWeight -= weights[idx]
-		weights = append(weights[:idx], weights[idx+1:]...)
-		scored = append(scored[:idx], scored[idx+1:]...)
 	}
 
 	for _, s := range selected {
@@ -881,7 +859,6 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 	if debugMode {
 		log.Printf("[Nodes] 选择并行节点 (需求: %d, 实际: %d)", k, len(selected))
 	}
-	globalStickyPool.EvictStale(StaleTTL)
 	return selected
 }
 

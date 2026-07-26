@@ -3,7 +3,9 @@ package nodes
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 )
@@ -161,10 +163,10 @@ func TestUpdateNodeTestResult(t *testing.T) {
 	}
 	nodes := LoadNodes()
 	if len(nodes) != 1 || nodes[0].Disabled {
-		t.Errorf("Expected node1 to NOT be disabled after failed test (cooldown replaces disable)")
+		t.Errorf("Expected node1 to NOT be disabled after soft failure (sub-healthy replaces disable)")
 	}
-	if h1 == nil || h1.CooldownUntil == 0 {
-		t.Errorf("Expected cooldown to be set after failed test")
+	if h1 == nil || h1.LastSubHealthyAt == 0 {
+		t.Errorf("Expected LastSubHealthyAt to be set after failed test")
 	}
 
 	// Test: succeed the node
@@ -174,8 +176,8 @@ func TestUpdateNodeTestResult(t *testing.T) {
 	if h2 == nil || h2.SuccessCount != 1 {
 		t.Errorf("Expected 1 success")
 	}
-	if h2 == nil || h2.CooldownUntil != 0 {
-		t.Errorf("Expected cooldown to be cleared after success")
+	if h2 == nil || h2.LastSubHealthyAt != 0 {
+		t.Errorf("Expected LastSubHealthyAt to be cleared after success")
 	}
 	nodes = LoadNodes()
 	if len(nodes) == 0 || nodes[0].Disabled {
@@ -273,7 +275,7 @@ func TestDedupNodesSemantic(t *testing.T) {
 	}
 }
 
-func TestSelectForParallelCooldownFallback(t *testing.T) {
+func TestSelectForParallel_SubHealthyFallback(t *testing.T) {
 	resetState()
 	defer resetState()
 
@@ -282,13 +284,142 @@ func TestSelectForParallelCooldownFallback(t *testing.T) {
 	n3 := Node{RawURI: "uri3", Name: "node3"}
 	MergeNodes([]Node{n1, n2, n3})
 
-	// Put n1 and n2 in cooldown, leave n3 normal
+	// Put n1 and n2 in sub-healthy via soft failure, leave n3 healthy
 	RecordTest("uri1", false, 0, "timeout")
 	RecordTest("uri2", false, 0, "timeout")
 
-	// Request 3 nodes, should get n3 + fallback from cooldown
+	// Request 3 nodes: should get n3 (Tier 1) + n1+n2 (Tier 2 fallback)
 	selected := SelectForParallel(3, 80, false, false)
 	if len(selected) != 3 {
-		t.Errorf("Expected 3 selected (1 normal + 2 cooldown), got %d", len(selected))
+		t.Errorf("Expected 3 selected (1 Tier1 + 2 Tier2), got %d", len(selected))
+	}
+}
+
+func TestGetNodeTier(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	// Tier 3: disabled node
+	nDisabled := Node{RawURI: "uri-dis", Name: "dis", Disabled: true}
+	if tier := getNodeTier(nDisabled, nil); tier != 3 {
+		t.Errorf("Expected disabled node → tier 3, got %d", tier)
+	}
+
+	// Tier 1: no health entry at all
+	nNoHealth := Node{RawURI: "uri-nohealth", Name: "nohealth"}
+	if tier := getNodeTier(nNoHealth, nil); tier != 1 {
+		t.Errorf("Expected node without health → tier 1, got %d", tier)
+	}
+
+	// Tier 1: healthy node with LastSubHealthyAt == 0
+	MergeNodes([]Node{{RawURI: "uri-h1", Name: "h1"}})
+	RecordTest("uri-h1", true, 50, "")
+	h1 := healthMap["uri-h1"]
+	if tier := getNodeTier(Node{RawURI: "uri-h1", Name: "h1"}, h1); tier != 1 {
+		t.Errorf("Expected healthy node → tier 1, got %d", tier)
+	}
+
+	// Tier 2: sub-healthy (LastSubHealthyAt set within 5s)
+	RecordTest("uri-h1", false, 0, "timeout")
+	h2 := healthMap["uri-h1"]
+	if h2.LastSubHealthyAt == 0 {
+		t.Fatal("Expected LastSubHealthyAt to be set")
+	}
+	if tier := getNodeTier(Node{RawURI: "uri-h1", Name: "h1"}, h2); tier != 2 {
+		t.Errorf("Expected sub-healthy node → tier 2, got %d", tier)
+	}
+
+	// Tier 1 recovery: set LastSubHealthyAt to 10s ago
+	mu.Lock()
+	h2.LastSubHealthyAt = time.Now().Unix() - 10
+	mu.Unlock()
+	if tier := getNodeTier(Node{RawURI: "uri-h1", Name: "h1"}, h2); tier != 1 {
+		t.Errorf("Expected recovered node (10s ago) → tier 1, got %d", tier)
+	}
+}
+
+func TestSelectForParallel_RoundRobin_InFlight(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	n1 := Node{RawURI: "uri1", Name: "a"}
+	n2 := Node{RawURI: "uri2", Name: "b"}
+	n3 := Node{RawURI: "uri3", Name: "c"}
+	MergeNodes([]Node{n1, n2, n3})
+
+	// All Tier 1, all InFlight=0: round-robin across calls
+	atomic.StoreUint64(&atomicRoundRobinIndex, 0)
+
+	got := make(map[string]int)
+	for call := 0; call < 6; call++ {
+		sel := SelectForParallel(1, 80, false, false)
+		if len(sel) != 1 {
+			t.Fatalf("call %d: expected 1 selected, got %d", call, len(sel))
+		}
+		got[sel[0].RawURI]++
+	}
+
+	// Over 6 calls with 3 nodes, each should be picked exactly 2 times
+	for _, uri := range []string{"uri1", "uri2", "uri3"} {
+		if got[uri] != 2 {
+			t.Errorf("Expected %s to be picked 2 times, got %d", uri, got[uri])
+		}
+	}
+
+	// Node with higher InFlight should be deprioritized
+	resetState()
+	MergeNodes([]Node{n1, n2, n3})
+	// Simulate uri1 having InFlight=2, others InFlight=0
+	mu.Lock()
+	healthMap["uri1"] = &NodeHealth{InFlight: 2}
+	healthMap["uri2"] = &NodeHealth{InFlight: 0}
+	healthMap["uri3"] = &NodeHealth{InFlight: 0}
+	mu.Unlock()
+
+	sel2 := SelectForParallel(1, 80, false, false)
+	if len(sel2) != 1 {
+		t.Fatalf("expected 1 selected, got %d", len(sel2))
+	}
+	if sel2[0].RawURI == "uri1" {
+		t.Errorf("Expected lower InFlight node to be preferred, but got uri1 (InFlight=2)")
+	}
+}
+
+func TestSelectForParallel_SubHealthy5sRecovery(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	n1 := Node{RawURI: "uri1", Name: "a"}
+	n2 := Node{RawURI: "uri2", Name: "b"}
+	MergeNodes([]Node{n1, n2})
+
+	// n1 soft-failed → Tier 2; n2 healthy → Tier 1
+	RecordTest("uri1", false, 0, "timeout")
+	RecordTest("uri2", true, 50, "")
+
+	// Request 2: should get n2 (Tier 1) + n1 (Tier 2 fallback)
+	sel := SelectForParallel(2, 80, false, false)
+	if len(sel) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(sel))
+	}
+
+	// Simulate n1's sub-healthy period expiring (> 5s ago)
+	mu.Lock()
+	if h := healthMap["uri1"]; h != nil {
+		h.LastSubHealthyAt = time.Now().Unix() - 10
+	}
+	mu.Unlock()
+
+	// Now both should be Tier 1
+	sel2 := SelectForParallel(2, 80, false, false)
+	if len(sel2) != 2 {
+		t.Fatalf("expected 2 nodes after recovery, got %d", len(sel2))
+	}
+	// Verify n1 is now Tier 1
+	if h := healthMap["uri1"]; h != nil {
+		tier := getNodeTier(n1, h)
+		if tier != 1 {
+			t.Errorf("Expected n1 to recover to Tier 1, got Tier %d", tier)
+		}
 	}
 }
