@@ -710,10 +710,14 @@ func RecordTest(uri string, ok bool, ms float64, errStr string) {
 		h.SuccessCount++
 		h.ConsecutiveFailures = 0
 		h.LastSuccessAt = time.Now().Unix()
+		wasSubHealthy := h.LastSubHealthyAt > 0
 		h.LastSubHealthyAt = 0
 		h.CooldownUntil = 0
 		h.Last429At = 0
 		h.RateLimitCount = 0
+		if wasSubHealthy {
+			log.Printf("[Health] 节点 %s 恢复为健康 (延迟: %.0fms)", uri, ms)
+		}
 	} else {
 		h.FailCount++
 		h.ConsecutiveFailures++
