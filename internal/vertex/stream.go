@@ -281,17 +281,15 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		"https://console.cloud.google.com", "https://console.cloud.google.com/", "cross-site",
 	)
 
-	sr, err := sess.DoStream(ctx, "POST", c.getBatchGraphqlURL(), header, reader)
-	if err != nil {
-		return classifyNetworkError(err)
-	}
-	defer sr.Close() // 排干 → close，防串流。
+	// ═══ 流式包间空闲超时监控（前置版：覆盖 DoStream 等待阶段） ═══
+	streamReqCtx, cancelStreamReq := context.WithCancel(ctx)
+	defer cancelStreamReq()
 
-	// ═══ 唯一中断调度点 + 流式包间空闲超时监控（原子时间戳无竞态版） ═══
 	preTimeout := time.Duration(max(cfg.StreamIdleTimeoutSeconds()*2, 40)) * time.Second
 	postTimeout := time.Duration(cfg.StreamIdleTimeoutSeconds()) * time.Second
 
 	var (
+		srRef              atomic.Pointer[transport.StreamResponse]
 		lastActiveUnixNano atomic.Int64
 		hasReceivedFirst   atomic.Bool
 		idleTriggered      atomic.Bool
@@ -323,12 +321,18 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 				if elapsed > timeout {
 					if idleTriggered.CompareAndSwap(false, true) {
 						log.Printf("[Vertex] [Stream] 触发流包间空闲超时 (已静默 %v > 阈值 %v), 切断连接, 请求ID=%s", elapsed.Round(time.Millisecond), timeout, reqID)
-						_ = sr.Body.Close()
+						cancelStreamReq()
+						if sr := srRef.Load(); sr != nil && sr.Body != nil {
+							_ = sr.Body.Close()
+						}
 					}
 					return
 				}
 			case <-ctx.Done():
-				_ = sr.Body.Close()
+				cancelStreamReq()
+				if sr := srRef.Load(); sr != nil && sr.Body != nil {
+					_ = sr.Body.Close()
+				}
 				return
 			case <-done:
 				return
@@ -336,6 +340,21 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		}
 	}()
 	// ═══════════════════════════════════════════════════════════════
+
+	sr, err := sess.DoStream(streamReqCtx, "POST", c.getBatchGraphqlURL(), header, reader)
+	if err != nil {
+		if idleTriggered.Load() {
+			return NewNetworkError(ErrStreamIdleTimeout)
+		}
+		return classifyNetworkError(err)
+	}
+
+	srRef.Store(sr)
+	if idleTriggered.Load() {
+		sr.Close()
+		return NewNetworkError(ErrStreamIdleTimeout)
+	}
+	defer sr.Close() // 排干 → close，防串流。
 
 	// HTTP 错误：读完 error body 后按状态映射（与非流式 executeCompleteRequest 一致）。
 	if sr.StatusCode != 200 {

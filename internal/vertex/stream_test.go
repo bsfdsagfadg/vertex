@@ -860,6 +860,64 @@ func TestExecuteStreamingAttempt_IdleTimeout(t *testing.T) {
 	}
 }
 
+// TestExecuteStreamingAttempt_IdleTimeout_InDoStream 验证 executeStreamingAttempt
+// 在 DoStream 阶段（等待 HTTP Response Header）卡定时，空闲超时监控能提前切断并返回 ErrStreamIdleTimeout。
+func TestExecuteStreamingAttempt_IdleTimeout_InDoStream(t *testing.T) {
+	testDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-testDone:
+		}
+	}))
+	defer func() {
+		close(testDone)
+		server.Close()
+	}()
+
+	origURL := batchGraphqlURL
+	batchGraphqlURL = server.URL + "/batchGraphql"
+	defer func() { batchGraphqlURL = origURL }()
+
+	cfg := config.DefaultConfig()
+	cfg.StreamIdleTimeoutSeconds = 1 // preTimeout = max(2, 40) = 40s
+	provider := config.StaticProvider(cfg)
+
+	netClient := transport.NewNetworkClient(nil)
+	vc := &VertexAIClient{
+		net:  netClient,
+		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
+			return "test-token", nil
+		}),
+		cfg: provider,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+
+	sess, err := netClient.CreateSession(180, "", "test-idle-dostream-hang")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	defer sess.Close()
+
+	var emitted []map[string]any
+	err = vc.executeStreamingAttempt(ctx, sess, "test-model", map[string]any{}, "test-token", true, func(ch map[string]any) bool {
+		emitted = append(emitted, ch)
+		return true
+	})
+
+	if err == nil {
+		t.Fatal("expected idle timeout error, got nil")
+	}
+	if !errors.Is(err, ErrStreamIdleTimeout) {
+		t.Errorf("expected ErrStreamIdleTimeout, got %v", err)
+	}
+	if len(emitted) != 0 {
+		t.Error("expected no chunks (timeout before any data received)")
+	}
+}
+
 // TestExecuteStreamingWithRetries_ClientCancel 验证传入已取消的 ctx 时干净退出。
 func TestExecuteStreamingWithRetries_ClientCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
