@@ -126,24 +126,40 @@ retryLoop:
 			break retryLoop
 		}
 
-		// 单次流式尝试：把增量 yield 给上层，统计本次 attempt yield 的 chunk 数。
-		chunkCount := 0
+		validChunkCount := 0
+		var pendingChunks []map[string]any
+
 		attemptErr := c.executeStreamingAttempt(ctx, sess, model, geminiPayload, recaptchaToken, isFirstAuth, func(ch map[string]any) bool {
-			chunkCount++
-			contentYielded = true
-			return yield(StreamChunk{Data: ch})
+			if isValidContentChunk(ch) {
+				for _, p := range pendingChunks {
+					if !yield(StreamChunk{Data: p}) {
+						return false
+					}
+				}
+				pendingChunks = nil
+				contentYielded = true
+				validChunkCount++
+				return yield(StreamChunk{Data: ch})
+			}
+			if contentYielded {
+				return yield(StreamChunk{Data: ch})
+			}
+			pendingChunks = append(pendingChunks, ch)
+			return true
 		})
 
 		if attemptErr == nil {
-			// 本次尝试无错误。若 0 chunk 且仍是首帧 → 认证重试（同 token 再打一次）。
-			if chunkCount == 0 && isFirstAuth {
-				isFirstAuth = false
-				if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
-					break retryLoop
+			if validChunkCount > 0 {
+				for _, p := range pendingChunks {
+					if !yield(StreamChunk{Data: p}) {
+						break
+					}
 				}
-				continue
+				pendingChunks = nil
+				return
 			}
-			return
+			pendingChunks = nil
+			attemptErr = NewEmptyResponseError("Upstream returned empty response (no content)", nil)
 		}
 
 		if errors.Is(attemptErr, context.Canceled) || errors.Is(attemptErr, context.DeadlineExceeded) {
@@ -157,7 +173,6 @@ retryLoop:
 			isVerifyFail := strings.Contains(ve.Message, "Failed to verify action") ||
 				strings.Contains(ve.Message, "The caller does not have permission")
 			if isFirstAuth && isVerifyFail {
-				// 首次认证重试：token 不清空，同一 token 再打一次（匿名端点首帧预期 verify-fail）。
 				isFirstAuth = false
 				if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
 					break retryLoop
@@ -181,7 +196,6 @@ retryLoop:
 				log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发 429 失败, 请求ID=%s, 代理=%s", attempt, maxRetries, model, reqID, nodes.GetNodeName(proxyURI))
 				break retryLoop
 			}
-			// 429：销毁旧 session 重建新的，换 token。
 			sess.Close()
 			newSess, e := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
 			if e != nil {
@@ -191,7 +205,6 @@ retryLoop:
 			sess = newSess
 			recaptchaToken = ""
 
-			// 避免过快重试 429 导致 token 浪费 and 节点持续封禁
 			wait := ve.RetryAfter
 			if wait <= 0 {
 				wait = min(10, 1+attempt)
@@ -202,9 +215,21 @@ retryLoop:
 				break retryLoop
 			}
 
+		case ve != nil && isEmptyResponseError(ve):
+			log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发空响应错误，准备重试, 请求ID=%s, 代理=%s", attempt, maxRetries, model, reqID, nodes.GetNodeName(proxyURI))
+			recaptchaToken = ""
+			isFirstAuth = true
+			lastError = ve
+			if contentYielded || attempt >= maxRetries {
+				break retryLoop
+			}
+			attempt++
+			if err := sleepCtx(ctx, backoff(attempt)); err != nil {
+				break retryLoop
+			}
+
 		case ve != nil:
 			lastError = ve
-			// 【关键改动】：如果是网络不通等内部错误，直接熔断并停止重试。
 			if ve.Kind == "internal" || !ve.IsRetryable() || contentYielded || attempt >= maxRetries {
 				log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发异常错误失败: [%s] %s, 请求ID=%s, 代理=%s", attempt, maxRetries, model, ve.Kind, ve.Message, reqID, nodes.GetNodeName(proxyURI))
 				break retryLoop
@@ -216,13 +241,11 @@ retryLoop:
 			}
 
 		default:
-			// 【关键改动】：直接终止未知原生错误，移除了多余的 attempt 重新入圈重试。
 			lastError = NewInternalError(attemptErr.Error(), nil)
 			break retryLoop
 		}
 	}
 
-	// 所有重试耗尽且没发出过任何内容 → yield 一个 error chunk（末尾 yield error dict）。
 	if !contentYielded && lastError != nil {
 		yield(StreamChunk{Err: lastError})
 	}
@@ -794,6 +817,61 @@ func cleanPart(part map[string]any) map[string]any {
 		}
 	}
 	return nil
+}
+
+// isValidContentChunk 检查 chunk 是否包含有效生成内容（text/thought/functionCall）
+// 或真实 finishReason，或安全拦截 blockReason。
+func isValidContentChunk(chunk map[string]any) bool {
+	cands, ok := chunk["candidates"].([]any)
+	if ok && len(cands) > 0 {
+		for _, cRaw := range cands {
+			cand, ok := cRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			content, ok := cand["content"].(map[string]any)
+			if !ok {
+				continue
+			}
+			parts, ok := content["parts"].([]any)
+			if !ok || len(parts) == 0 {
+				continue
+			}
+			for _, pRaw := range parts {
+				part, ok := pRaw.(map[string]any)
+				if !ok {
+					continue
+				}
+				if text, ok := part["text"].(string); ok && text != "" {
+					return true
+				}
+				if thought, ok := part["thought"].(string); ok && thought != "" {
+					return true
+				}
+				if fc, ok := part["functionCall"].(map[string]any); ok && fc != nil {
+					return true
+				}
+			}
+		}
+	}
+	if fr := chunkFinishReason(chunk); fr != "" && fr != finishReasonUnspecified {
+		return true
+	}
+	if pf, ok := chunk["promptFeedback"].(map[string]any); ok {
+		if br, _ := pf["blockReason"].(string); br != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// isEmptyResponseError 判断 error 是否为空响应错误（NewEmptyResponseError 构造）。
+func isEmptyResponseError(err error) bool {
+	var ve *VertexError
+	if errors.As(err, &ve) {
+		return ve.Code == 502 && ve.Kind == "network" && strings.Contains(ve.Message, "empty response")
+	}
+	return false
 }
 
 // extractTextRecursive 从嵌套结构中递归提取纯文本，防止无限递归（depth>20 截断）。

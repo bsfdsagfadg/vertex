@@ -3,6 +3,7 @@ package vertex
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"sync/atomic"
@@ -374,6 +375,110 @@ func TestChunkFinishReason(t *testing.T) {
 	}
 	if got := chunkFinishReason(map[string]any{}); got != "" {
 		t.Errorf("无 candidates 应返回空串, got %q", got)
+	}
+}
+
+// ── isValidContentChunk ──
+
+func TestIsValidContentChunk_TextContent(t *testing.T) {
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{
+			"content": map[string]any{"parts": []any{map[string]any{"text": "hello"}}, "role": "model"},
+		}},
+	}
+	if !isValidContentChunk(chunk) {
+		t.Error("text content chunk should be valid")
+	}
+}
+
+func TestIsValidContentChunk_ThoughtContent(t *testing.T) {
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{
+			"content": map[string]any{"parts": []any{map[string]any{"thought": "thinking...", "text": "hello"}}, "role": "model"},
+		}},
+	}
+	if !isValidContentChunk(chunk) {
+		t.Error("thought content chunk should be valid")
+	}
+}
+
+func TestIsValidContentChunk_FunctionCall(t *testing.T) {
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{
+			"content": map[string]any{"parts": []any{map[string]any{"functionCall": map[string]any{"name": "get_weather"}}}, "role": "model"},
+		}},
+	}
+	if !isValidContentChunk(chunk) {
+		t.Error("functionCall chunk should be valid")
+	}
+}
+
+func TestIsValidContentChunk_RealFinishReason(t *testing.T) {
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{"finishReason": "STOP"}},
+	}
+	if !isValidContentChunk(chunk) {
+		t.Error("STOP finishReason chunk should be valid")
+	}
+}
+
+func TestIsValidContentChunk_UnspecifiedFinishReason(t *testing.T) {
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{"finishReason": "FINISH_REASON_UNSPECIFIED"}},
+	}
+	if isValidContentChunk(chunk) {
+		t.Error("UNSPECIFIED finishReason should NOT be valid")
+	}
+}
+
+func TestIsValidContentChunk_BlockReason(t *testing.T) {
+	chunk := map[string]any{"promptFeedback": map[string]any{"blockReason": "SAFETY"}}
+	if !isValidContentChunk(chunk) {
+		t.Error("blockReason chunk should be valid")
+	}
+}
+
+func TestIsValidContentChunk_MetadataOnly(t *testing.T) {
+	chunk := map[string]any{"usageMetadata": map[string]any{"totalTokenCount": float64(5)}}
+	if isValidContentChunk(chunk) {
+		t.Error("metadata-only chunk should NOT be valid")
+	}
+}
+
+func TestIsValidContentChunk_EmptyCandidates(t *testing.T) {
+	chunk := map[string]any{"candidates": []any{}}
+	if isValidContentChunk(chunk) {
+		t.Error("empty candidates chunk should NOT be valid")
+	}
+}
+
+// ── isEmptyResponseError ──
+
+func TestIsEmptyResponseError_Positive(t *testing.T) {
+	err := NewEmptyResponseError("Upstream returned empty response (no content)", nil)
+	if !isEmptyResponseError(err) {
+		t.Error("NewEmptyResponseError should match isEmptyResponseError")
+	}
+}
+
+func TestIsEmptyResponseError_Negative(t *testing.T) {
+	err := NewNetworkError(fmt.Errorf("connection reset"))
+	if isEmptyResponseError(err) {
+		t.Error("NewNetworkError should NOT match isEmptyResponseError")
+	}
+}
+
+func TestIsEmptyResponseError_OtherVertexError(t *testing.T) {
+	err := NewAuthenticationError("token expired", nil)
+	if isEmptyResponseError(err) {
+		t.Error("auth error should NOT match isEmptyResponseError")
+	}
+}
+
+func TestIsEmptyResponseError_NonVertexError(t *testing.T) {
+	err := fmt.Errorf("some random error")
+	if isEmptyResponseError(err) {
+		t.Error("non-VertexError should NOT match isEmptyResponseError")
 	}
 }
 

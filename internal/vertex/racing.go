@@ -23,7 +23,7 @@ func StreamParallel(ctx context.Context, cfg config.ConfigProvider,
 		ch := op(ctx, uri)
 		first, ok := <-ch
 		if !ok {
-			return nil, fmt.Errorf("stream: %s closed immediately", nodes.GetNodeName(uri))
+			return nil, NewEmptyResponseError(fmt.Sprintf("stream: %s closed with no data", nodes.GetNodeName(uri)), nil)
 		}
 		if first.Err != nil {
 			return nil, first.Err

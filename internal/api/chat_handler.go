@@ -233,10 +233,10 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 			if strings.Contains(ev, `"finish_reason"`) && !strings.Contains(ev, `"finish_reason":null`) {
 				hasFinish = true
 			}
-			if strings.Contains(ev, `"content":`) || strings.Contains(ev, `"tool_calls":`) || strings.Contains(ev, `"reasoning_content":`) {
-				gotContent = true
-			}
 			write(ev)
+		}
+		if !gotContent && hasValidStreamOutput(events) {
+			gotContent = true
 		}
 		return true
 	})

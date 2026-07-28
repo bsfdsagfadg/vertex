@@ -409,6 +409,58 @@ func TestRunRace_Streaming_GlobalHardError_FailFast(t *testing.T) {
 	}
 }
 
+// TestStreamParallel_FailoverOnEmptyResponse 验证 StreamParallel 在节点 A 返回空流
+// （channel 无数据直接关闭）时能故障转移到节点 B。
+func TestStreamParallel_FailoverOnEmptyResponse(t *testing.T) {
+	setupRaceNodes(t, "uri1", "uri2")
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(raceTestConfig())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var data atomic.Value
+	data.Store("")
+
+	var launched sync.WaitGroup
+
+	op := func(ctx context.Context, uri string) <-chan StreamChunk {
+		ch := make(chan StreamChunk, 64)
+		go func() {
+			defer close(ch)
+			if uri == "uri1" {
+				// Node A：channel 直接关闭（空流），触发 wrappedOp 的 !ok 分支。
+				return
+			}
+			launched.Add(1)
+			defer launched.Done()
+			select {
+			case <-time.After(50 * time.Millisecond):
+			case <-ctx.Done():
+				return
+			}
+			ch <- StreamChunk{Data: map[string]any{"text": "node-b-success"}}
+		}()
+		return ch
+	}
+
+	var gotChunks []StreamChunk
+	yield := func(chunk StreamChunk) bool {
+		gotChunks = append(gotChunks, chunk)
+		return true
+	}
+
+	StreamParallel(ctx, cfg, op, yield)
+	launched.Wait()
+
+	if len(gotChunks) == 0 {
+		t.Fatal("expected at least one chunk from node B")
+	}
+	if gotChunks[0].Err != nil {
+		t.Fatalf("expected success chunk, got error: %v", gotChunks[0].Err)
+	}
+}
+
 // TestRunRace_Streaming_FailFastOnHardError 验证流式首帧的全局硬错误快速终止：
 // 第一个候选返回 notfound 硬错误后直接终止，不启动对冲节点。
 func TestRunRace_Streaming_FailFastOnHardError(t *testing.T) {

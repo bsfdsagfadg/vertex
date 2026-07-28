@@ -177,7 +177,7 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 		return
 	}
 
-	gotChunk := false
+	gotValidChunk := false
 	hasFinish := false
 	streamErrWritten := false
 	startTime := time.Now()
@@ -199,13 +199,14 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 			streamErrWritten = true
 			return false
 		}
-		gotChunk = true
 		if hasGeminiValidOutput(data) {
+			gotValidChunk = true
 			observer.markTriggered(requestCtx)
 		}
 		if cands, _ := data["candidates"].([]any); len(cands) > 0 {
 			if c, ok := cands[0].(map[string]any); ok {
-				if fr, _ := c["finishReason"].(string); fr != "" {
+				if fr, _ := c["finishReason"].(string); fr != "" && fr != "FINISH_REASON_UNSPECIFIED" {
+					gotValidChunk = true
 					hasFinish = true
 				}
 			}
@@ -216,10 +217,15 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	if streamErrWritten {
 		return
 	}
-	if !gotChunk {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{
-			"code": 500, "message": "Upstream returned empty response (no content)", "status": "INTERNAL",
-		}})
+	if !gotValidChunk {
+		ee := vertex.NewEmptyResponseError("Upstream returned empty response (no content)", nil)
+		if !sw.hasWritten() {
+			writeJSON(w, ee.Code, vertexErrorToGemini(ee))
+			return
+		}
+		_ = sw.write(g.geminiSSE(map[string]any{"error": map[string]any{
+			"code": ee.Code, "message": vertex.FriendlyErrorMessage(ee), "status": geminiStatusOf(ee),
+		}}))
 		return
 	}
 	if !hasFinish {
