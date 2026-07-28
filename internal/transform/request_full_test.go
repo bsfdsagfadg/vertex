@@ -530,7 +530,7 @@ func TestExtractParts_ImageAndCode(t *testing.T) {
 		map[string]any{"executableCode": map[string]any{"codeLanguage": "PYTHON", "code": "print(1)"}},
 		map[string]any{"codeExecutionResult": map[string]any{"output": "1"}},
 	}
-	text, tools, _ := ExtractParts(parts, false)
+	text, tools, _ := ExtractParts(parts, false, nil)
 	if tools != nil {
 		t.Error("无工具调用")
 	}

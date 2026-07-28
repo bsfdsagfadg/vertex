@@ -205,6 +205,46 @@ func TestMergeContentBlocks(t *testing.T) {
 	}
 }
 
+func TestMergeContentBlocks_ThoughtRetained(t *testing.T) {
+	// 纯思考块不被 cleanSimple/cleanPart 丢弃
+	merged := MergeContentBlocks([]map[string]any{
+		{"text": "thinking text", "thought": true},
+		{"text": "answer"},
+	})
+	if len(merged) != 2 {
+		t.Fatalf("merged len=%d, want 2（thought+text 应分开）", len(merged))
+	}
+	if merged[0]["text"] != "thinking text" {
+		t.Errorf("thought text=%q, want 'thinking text'", merged[0]["text"])
+	}
+	if merged[0]["thought"] != true {
+		t.Error("thought 标记应保留")
+	}
+	if merged[1]["text"] != "answer" {
+		t.Errorf("answer text=%q, want 'answer'", merged[1]["text"])
+	}
+}
+
+func TestMergeContentBlocks_ThoughtOnlyBlocks(t *testing.T) {
+	// 两个连续纯 thought block（无 text，仅 thought:true）各自保留不合并（m6）
+	merged := MergeContentBlocks([]map[string]any{
+		{"thought": true},
+		{"thought": true, "thoughtSignature": "sig1"},
+	})
+	if len(merged) != 2 {
+		t.Fatalf("merged len=%d, want 2（纯 thought block 不合并）", len(merged))
+	}
+	if merged[0]["thought"] != true {
+		t.Error("第一个 thought block 标记应保留")
+	}
+	if merged[1]["thought"] != true {
+		t.Error("第二个 thought block 标记应保留")
+	}
+	if merged[1]["thoughtSignature"] != "sig1" {
+		t.Error("第二个 thought block 的 thoughtSignature 应保留")
+	}
+}
+
 // TestConvertChatRequest_Full 测试 ConvertChatRequest 的完整转换：OpenAI 请求 → Gemini payload。
 func TestConvertChatRequest_Full(t *testing.T) {
 	cfg := config.StaticProvider(config.DefaultConfig())
@@ -391,7 +431,7 @@ func TestIntegrationConvertRealtimeChunk(t *testing.T) {
 				"finishReason": "FINISH_REASON_UNSPECIFIED",
 			},
 		}}
-		events := ConvertRealtimeChunk(chunk, "gemini-2.5-flash", "req-1", true)
+		events := ConvertRealtimeChunk(chunk, "gemini-2.5-flash", "req-1", true, nil)
 		if len(events) < 1 {
 			t.Fatal("no events")
 		}
@@ -410,7 +450,7 @@ func TestIntegrationConvertRealtimeChunk(t *testing.T) {
 				"promptTokenCount": float64(5), "candidatesTokenCount": float64(10), "totalTokenCount": float64(15),
 			},
 		}
-		events := ConvertRealtimeChunk(chunk, "m", "r", false)
+		events := ConvertRealtimeChunk(chunk, "m", "r", false, nil)
 		var hasFinish bool
 		for _, e := range events {
 			if strings.Contains(e, `"finish_reason":"stop"`) {
@@ -430,7 +470,7 @@ func TestIntegrationConvertRealtimeChunk(t *testing.T) {
 				"finishReason": "FINISH_REASON_UNSPECIFIED",
 			},
 		}}
-		events := ConvertRealtimeChunk(chunk, "m", "r", false)
+		events := ConvertRealtimeChunk(chunk, "m", "r", false, nil)
 		for _, e := range events {
 			if strings.Contains(e, `"finish_reason":"`) && !strings.Contains(e, `"finish_reason":null`) {
 				t.Errorf("UNSPECIFIED should not produce finish_reason: %s", e)
@@ -445,7 +485,7 @@ func TestIntegrationConvertRealtimeChunk(t *testing.T) {
 			}, "role": "model"},
 			"finishReason": "STOP",
 		}}}
-		events := ConvertRealtimeChunk(chunk, "m", "r", false)
+		events := ConvertRealtimeChunk(chunk, "m", "r", false, nil)
 		var hasToolCall bool
 		for _, e := range events {
 			if strings.Contains(e, `"tool_calls"`) {

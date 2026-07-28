@@ -18,7 +18,7 @@ func TestExtractParts_StreamingDirtyFunctionCall(t *testing.T) {
 		"functionCall":     map[string]any{"name": "get_weather", "args": map[string]any{"city": "北京"}},
 		"functionResponse": map[string]any{"name": "", "response": map[string]any{}},
 	}
-	_, tools, _ := ExtractParts([]any{part}, true)
+	_, tools, _ := ExtractParts([]any{part}, true, nil)
 	if len(tools) != 1 {
 		t.Fatalf("带 text:'' 的 functionCall 帧应识别为 1 个 tool_call，got %d", len(tools))
 	}
@@ -35,7 +35,7 @@ func TestExtractParts_StreamingDirtyInlineData(t *testing.T) {
 		"inlineData":   map[string]any{"mimeType": "image/png", "data": "iVBORw0KGgoAAAANS"},
 		"functionCall": map[string]any{"name": "", "args": map[string]any{}},
 	}
-	text, _, _ := ExtractParts([]any{part}, true)
+	text, _, _ := ExtractParts([]any{part}, true, nil)
 	if !strings.Contains(text, "data:image/png;base64,iVBORw0KGgoAAAANS") {
 		t.Errorf("带 text:'' 的生图帧应输出图片 markdown，got %q", text)
 	}
@@ -48,7 +48,7 @@ func TestExtractParts_StreamingDirtyThought(t *testing.T) {
 		"inlineData":   map[string]any{"mimeType": "", "data": ""},
 		"functionCall": map[string]any{"name": "", "args": map[string]any{}},
 	}
-	text, tools, reasoning := ExtractParts([]any{part}, true)
+	text, tools, reasoning := ExtractParts([]any{part}, true, nil)
 	if reasoning != "**Calling Weather Tool**" {
 		t.Errorf("思考帧应进 reasoning，got %q", reasoning)
 	}
@@ -59,7 +59,7 @@ func TestExtractParts_StreamingDirtyThought(t *testing.T) {
 
 func TestExtractParts_EmptyTextNotTreatedAsText(t *testing.T) {
 	part := map[string]any{"text": "", "functionCall": map[string]any{"name": "f", "args": map[string]any{}}}
-	text, tools, _ := ExtractParts([]any{part}, false)
+	text, tools, _ := ExtractParts([]any{part}, false, nil)
 	if text != "" {
 		t.Errorf("text:'' 不应产生文本，got %q", text)
 	}
@@ -70,18 +70,18 @@ func TestExtractParts_EmptyTextNotTreatedAsText(t *testing.T) {
 
 // 回归：干净 part 仍正常（非流式逐字节不变）。
 func TestExtractParts_CleanPartsUnchanged(t *testing.T) {
-	text, tools, _ := ExtractParts([]any{map[string]any{"text": "hello"}}, false)
+	text, tools, _ := ExtractParts([]any{map[string]any{"text": "hello"}}, false, nil)
 	if text != "hello" || tools != nil {
 		t.Errorf("干净文本 part 回归失败：text=%q tools=%v", text, tools)
 	}
-	_, tools2, _ := ExtractParts([]any{map[string]any{"functionCall": map[string]any{"name": "g", "args": map[string]any{}}}}, false)
+	_, tools2, _ := ExtractParts([]any{map[string]any{"functionCall": map[string]any{"name": "g", "args": map[string]any{}}}}, false, nil)
 	if len(tools2) != 1 {
 		t.Errorf("干净 functionCall part 回归失败")
 	}
 	text3, _, reasoning3 := ExtractParts([]any{
 		map[string]any{"text": "thinking", "thought": true},
 		map[string]any{"text": "answer"},
-	}, false)
+	}, false, nil)
 	if text3 != "answer" || reasoning3 != "thinking" {
 		t.Errorf("thought+text 回归失败：text=%q reasoning=%q", text3, reasoning3)
 	}

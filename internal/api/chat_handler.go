@@ -214,6 +214,7 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 	startTime := time.Now()
 	observer := newStreamObserver(startTime)
 	isFirst := true
+	toolCallTracker := transform.NewStreamToolCallTracker()
 
 	c.coreStreamGenerate(streamCtx, model, geminiPayload, func(data map[string]any, err *vertex.VertexError) bool {
 		if err != nil {
@@ -226,10 +227,13 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 			streamErrWritten = true
 			return false
 		}
-		events := c.respConv.StreamToSSE(data, model, sseID, isFirst)
+		events := c.respConv.StreamToSSE(data, model, sseID, isFirst, toolCallTracker)
 		isFirst = false
 		observer.observe(ctx, vertex.StreamChunk{Data: data}, events)
 		for _, ev := range events {
+			if ev == "" {
+				continue
+			}
 			if strings.Contains(ev, `"finish_reason"`) && !strings.Contains(ev, `"finish_reason":null`) {
 				hasFinish = true
 			}

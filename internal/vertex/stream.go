@@ -362,8 +362,9 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	}
 
 	// 增量扫描上游流，逐个完整 JSON 对象提取 chunk。
+	var seenFinish bool
 	scanErr := scanStream(ctx, sr.Body, func(obj map[string]any) (stop bool, err error) {
-		return processStreamingObject(obj, emit)
+		return processStreamingObject(obj, emit, &seenFinish)
 	}, touchActivity)
 
 	if scanErr != nil && cfg.DebugMode() && !errors.Is(scanErr, context.Canceled) {
@@ -496,6 +497,9 @@ func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]an
 						if stop {
 							return nil
 						}
+					} else {
+						log.Printf("[WARN-scanStream] 无法解析的 JSON 数据块 (前 200 字节): %s, raw_len: %d",
+							truncateStr(string(jsonStr), 200), len(jsonStr))
 					}
 					// jsonStr 解析失败（半截/畸形）静默跳过。
 				} else {
@@ -522,6 +526,7 @@ func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]an
 
 // parseJSONObject 把单个 JSON 对象字符串解析为 map，失败返回 nil（解析失败跳过）。
 func parseJSONObject(b []byte) map[string]any {
+	b = bytes.TrimSpace(b)
 	var obj map[string]any
 	if err := json.Unmarshal(b, &obj); err != nil {
 		return nil
@@ -529,12 +534,25 @@ func parseJSONObject(b []byte) map[string]any {
 	return obj
 }
 
+// truncateStr 截断字符串到 max 长度，用于日志输出避免巨型 payload 刷屏。
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
+}
+
 // processStreamingObject 从单个上游 JSON 对象提取增量 chunk。
 //
 // 先识别 results 内的错误（"Failed to verify action" → AuthenticationError 触发重试），
 // 再 unwrap data.ui.streamGenerateContentAnonymous，最后 _extract_chunk 清洗后 emit。
 // 返回 (stop, err)：emit 出真实 finishReason 即 stop=true（结束扫描）；客户端断开由 ctx.Err() 路径处理；上游错误即 err 非 nil。
-func processStreamingObject(obj map[string]any, emit func(map[string]any) bool) (bool, error) {
+// seenFinish 用于跨帧追踪 finishReason 已发出但 usageMetadata 延迟到达的情况。
+func processStreamingObject(obj map[string]any, emit func(map[string]any) bool, seenFinish ...*bool) (bool, error) {
+	var sf *bool
+	if len(seenFinish) > 0 {
+		sf = seenFinish[0]
+	}
 	results, _ := obj["results"].([]any)
 	for _, rRaw := range results {
 		result, ok := rRaw.(map[string]any)
@@ -559,6 +577,31 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool) 
 			}
 		}
 
+		// 如果上一帧已标记 finishReason（STOP）但缺少 usageMetadata，尝试在当前帧收集
+		if sf != nil && *sf {
+			if data, ok := result["data"].(map[string]any); ok {
+				if _, hasUM := data["usageMetadata"]; hasUM {
+					if chunk := extractChunk(data); chunk != nil {
+						_ = emit(chunk)
+					} else {
+						// 无 candidates 但直接有 usageMetadata 的纯元数据帧
+						metaChunk := map[string]any{}
+						for _, key := range []string{"usageMetadata", "modelVersion", "responseId", "promptFeedback", "createTime"} {
+							if v, ok := data[key]; ok && isTruthyAny(v) {
+								metaChunk[key] = v
+							}
+						}
+						if len(metaChunk) > 0 {
+							_ = emit(metaChunk)
+						}
+					}
+					return true, nil
+				}
+			}
+			// 未找到 usageMetadata 则继续等待（修复：不再无条件停止）
+			return false, nil
+		}
+
 		data, ok := result["data"].(map[string]any)
 		if !ok {
 			continue
@@ -577,17 +620,25 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool) 
 							outerMeta[key] = v
 						}
 					}
-					// 极少数情况 inner 是 list：逐项 extract+emit，本 result 处理完跳过下方。
+					// 极少数情况 inner 是 list（如多个 candidate）：逐项 extract+emit。
+// 注意：inner 各项是平级 candidates 而非连续帧，因此同一 list 内即使
+// 某一项触发 *sf=true，剩余项也会继续处理（不会进入上方 seenFinish 块）。
 					for _, itemRaw := range inner {
 						if item, ok := itemRaw.(map[string]any); ok {
+							// 浅拷贝避免修改原始 json 解析数据（C2 修复）
+							itemCopy := shallowCopy(item)
 							for k, v := range outerMeta {
-								if _, exists := item[k]; !exists {
-									item[k] = v
+								if _, exists := itemCopy[k]; !exists {
+									itemCopy[k] = v
 								}
 							}
-							if chunk := extractChunk(item); chunk != nil {
+							if chunk := extractChunk(itemCopy); chunk != nil {
 								if done := emitAndCheckFinish(chunk, emit); done {
-									return true, nil
+									if _, hasUsage := chunk["usageMetadata"]; hasUsage || sf == nil {
+										return true, nil
+									}
+									*sf = true
+									return false, nil
 								}
 							}
 						}
@@ -601,7 +652,11 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool) 
 
 		if chunk := extractChunk(data); chunk != nil {
 			if done := emitAndCheckFinish(chunk, emit); done {
-				return true, nil
+				if _, hasUsage := chunk["usageMetadata"]; hasUsage || sf == nil {
+					return true, nil
+				}
+				*sf = true
+				return false, nil
 			}
 		}
 	}
@@ -612,12 +667,11 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool) 
 //
 // finishReason 过滤（红线⑤）：emit 后取 chunk 的 candidates[0].finishReason，
 // **仅当非空且 != FINISH_REASON_UNSPECIFIED 才主动结束流**。
-// 返回 (stopByClient, done)：done=true 表示应停止扫描；stopByClient 区分是客户端断开还是正常 finish。
+// 返回 done=true 表示应停止扫描。
 func emitAndCheckFinish(chunk map[string]any, emit func(map[string]any) bool) (done bool) {
 	emit(chunk)
 	fr := chunkFinishReason(chunk)
 	if fr != "" && fr != finishReasonUnspecified {
-		// 真实 finishReason：主动结束（避免上游不关连接挂到 180s）。
 		return true
 	}
 	return false
@@ -749,12 +803,17 @@ func cleanPart(part map[string]any) map[string]any {
 		if !hasName && !hasArgs {
 			delete(cleaned, "functionCall")
 		} else if name, ok := fc["name"].(string); ok && name != "" {
-			if argStr, ok := fc["args"].(string); ok && argStr != "" {
-				var parsed any
-				if err := json.Unmarshal([]byte(argStr), &parsed); err == nil {
-					fc["args"] = parsed
+			if argStr, ok := fc["args"].(string); ok {
+				if argStr != "" {
+					var parsed any
+					if err := json.Unmarshal([]byte(argStr), &parsed); err == nil {
+						fc["args"] = parsed
+					}
+				} else {
+					fc["args"] = map[string]any{}
 				}
 			}
+			// args 已是 map[string]any 无需处理
 		}
 	}
 
@@ -788,7 +847,10 @@ func cleanPart(part map[string]any) map[string]any {
 		}
 	}
 
-	// 如果只剩 thought/thoughtSignature 等非内容标记，返回 nil
+	// 如果只剩 thought/thoughtSignature 等非内容标记，保留（不再返回 nil）
+	if len(cleaned) == 0 {
+		return nil
+	}
 	for k := range cleaned {
 		switch k {
 		case "thought", "thoughtSignature":
@@ -797,7 +859,7 @@ func cleanPart(part map[string]any) map[string]any {
 			return cleaned
 		}
 	}
-	return nil
+	return cleaned
 }
 
 // isValidContentChunk 检查 chunk 是否包含有效生成内容（text/thought/functionCall）
@@ -827,6 +889,9 @@ func isValidContentChunk(chunk map[string]any) bool {
 					return true
 				}
 				if thought, ok := part["thought"].(string); ok && thought != "" {
+					return true
+				}
+				if thought, ok := part["thought"].(bool); ok && thought {
 					return true
 				}
 				if fc, ok := part["functionCall"].(map[string]any); ok && fc != nil {

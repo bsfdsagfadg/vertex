@@ -10,7 +10,7 @@ func GeminiJSONToOAIJSON(geminiResp map[string]any, model string) map[string]any
 	parts := candidateParts(candidate)
 	finish, _ := candidate["finishReason"].(string)
 
-	text, toolCalls, reasoning := ExtractParts(parts, false)
+	text, toolCalls, reasoning := ExtractParts(parts, false, nil)
 
 	var oaiFinish string
 	if finish != "" {
@@ -61,7 +61,7 @@ func GeminiResponsesToOAIJSON(geminiResponses []map[string]any, model string) ma
 		candidate := firstCandidate(resp)
 		parts := candidateParts(candidate)
 		finish, _ := candidate["finishReason"].(string)
-		text, toolCalls, reasoning := ExtractParts(parts, false)
+		text, toolCalls, reasoning := ExtractParts(parts, false, nil)
 
 		var oaiFinish string
 		if finish != "" {

@@ -49,19 +49,23 @@ func TestScanStream_BufferHardLimit(t *testing.T) {
 
 // collectStream 把 scanStream 跑到底，收集所有 emit 出来的 chunk，返回 (chunks, 终止错误)。
 // onObject 用 processStreamingObject 的真实逻辑，确保测的是端到端的流式提取 + finishReason 过滤。
-func collectStream(t *testing.T, raw string) (emitted []map[string]any, stopped bool, scanErr error) {
+func collectStream(t *testing.T, raw string) (emitted []map[string]any, finished bool, scanErr error) {
 	t.Helper()
 	emit := func(ch map[string]any) bool {
 		emitted = append(emitted, ch)
 		return true
 	}
+	var seenFinish bool
 	scanErr = scanStream(context.Background(), strings.NewReader(raw), func(obj map[string]any) (bool, error) {
-		stop, err := processStreamingObject(obj, emit)
+		stop, err := processStreamingObject(obj, emit, &seenFinish)
 		if stop {
-			stopped = true
+			finished = true
 		}
 		return stop, err
 	}, nil)
+	if scanErr == nil && seenFinish {
+		finished = true
+	}
 	return
 }
 
@@ -174,7 +178,7 @@ func TestProcessStreamingObject_VerifyFailError(t *testing.T) {
 	obj := map[string]any{"results": []any{
 		map[string]any{"errors": []any{map[string]any{"message": "Failed to verify action"}}},
 	}}
-	_, err := processStreamingObject(obj, func(map[string]any) bool { return true })
+	_, err := processStreamingObject(obj, func(map[string]any) bool { return true }, nil)
 	if err == nil {
 		t.Fatal("expected AuthenticationError")
 	}
@@ -188,7 +192,7 @@ func TestProcessStreamingObject_RealError(t *testing.T) {
 	obj := map[string]any{"results": []any{
 		map[string]any{"errors": []any{map[string]any{"message": "Resource exhausted", "code": float64(429)}}},
 	}}
-	_, err := processStreamingObject(obj, func(map[string]any) bool { return true })
+	_, err := processStreamingObject(obj, func(map[string]any) bool { return true }, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -313,6 +317,31 @@ func TestCleanPart_FunctionCallStringArgs(t *testing.T) {
 	}
 }
 
+func TestCleanPart_FunctionCallEmptyArgs(t *testing.T) {
+	// args 为空字符串时应转为空 map（M1 修复）
+	part := map[string]any{
+		"functionCall": map[string]any{
+			"name": "no_args",
+			"args": "",
+		},
+	}
+	got := cleanPart(part)
+	if got == nil {
+		t.Fatal("expected non-nil part when name is present")
+	}
+	fc, ok := got["functionCall"].(map[string]any)
+	if !ok {
+		t.Fatal("expected functionCall in cleaned part")
+	}
+	args, ok := fc["args"].(map[string]any)
+	if !ok {
+		t.Fatalf("空 args 应转为 map[string]any{}, got %T", fc["args"])
+	}
+	if len(args) != 0 {
+		t.Errorf("空 args map 应为空，got %v", args)
+	}
+}
+
 func TestCleanPart_FunctionResponseStringResponse(t *testing.T) {
 	part := map[string]any{
 		"functionResponse": map[string]any{
@@ -340,6 +369,26 @@ func TestCleanPart_FunctionResponseStringResponse(t *testing.T) {
 	}
 }
 
+func TestCleanPart_FunctionResponseNonStringName(t *testing.T) {
+	// 非字符串 name（如缺失 key）不应 panic，应被 toStr 安全处理
+	part := map[string]any{
+		"functionResponse": map[string]any{
+			"response": map[string]any{"result": "ok"},
+		},
+	}
+	got := cleanPart(part)
+	if got == nil {
+		t.Fatal("expected non-nil part when response is present")
+	}
+	fr, ok := got["functionResponse"].(map[string]any)
+	if !ok {
+		t.Fatal("expected functionResponse in cleaned part")
+	}
+	if _, exists := fr["name"]; exists && fr["name"] != "" {
+		t.Errorf("name should be empty or absent when missing in input, got %v", fr["name"])
+	}
+}
+
 func TestCleanStreamParts_SkipsEmpty(t *testing.T) {
 	parts := []any{
 		map[string]any{"data": "text", "fileData": map[string]any{}, "text": "hi"},
@@ -352,6 +401,118 @@ func TestCleanStreamParts_SkipsEmpty(t *testing.T) {
 	p := cleaned[0].(map[string]any)
 	if p["text"] != "hi" {
 		t.Errorf("text=%q, want 'hi'", p["text"])
+	}
+}
+
+func TestCleanPart_ThoughtOnly(t *testing.T) {
+	// 纯思考块：仅 thought=true，无 text → 必须保留（不再返回 nil）
+	part := map[string]any{"thought": true}
+	got := cleanPart(part)
+	if got == nil {
+		t.Fatal("纯 thought part 不应返回 nil（漏洞1）")
+	}
+	if got["thought"] != true {
+		t.Errorf("thought 字段应保留，got %v", got)
+	}
+}
+
+func TestCleanPart_ThoughtSignatureOnly(t *testing.T) {
+	// 仅 thoughtSignature 存在，无 text → 必须保留
+	part := map[string]any{"thoughtSignature": "sig_abc123"}
+	got := cleanPart(part)
+	if got == nil {
+		t.Fatal("含 thoughtSignature 的 part 不应返回 nil（漏洞1）")
+	}
+	if got["thoughtSignature"] != "sig_abc123" {
+		t.Errorf("thoughtSignature 字段应保留，got %v", got)
+	}
+}
+
+func TestIsValidContentChunk_ThoughtBool(t *testing.T) {
+	// thought 为 bool(true) 时也应识别为有效内容（漏洞1类型断言）
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{
+			"content": map[string]any{"parts": []any{map[string]any{"thought": true}}, "role": "model"},
+		}},
+	}
+	if !isValidContentChunk(chunk) {
+		t.Error("thought:true 的 chunk 应 valid（漏洞1：type assertion trap）")
+	}
+}
+
+func TestScanStream_UsageMetadataDelayed(t *testing.T) {
+	// STOP 帧后 usageMetadata 单独延迟一个包到达：必须被收集，不应丢失
+	stopFrame := wrap(`{"candidates":[{"content":{"parts":[{"text":"done"}],"role":"model"},"finishReason":"STOP","index":0}]}`)
+	usageFrame := `{"results":[{"data":{"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":10,"totalTokenCount":15}}}]}`
+	raw := stopFrame + usageFrame
+	emitted, finished, err := collectStream(t, raw)
+	if err != nil {
+		t.Fatalf("scan error: %v", err)
+	}
+	if !finished {
+		t.Error("收到 STOP 应标记为 finished")
+	}
+	// 必须 emit 出 2 个 chunk：内容帧 + 元数据帧
+	if len(emitted) < 1 {
+		t.Fatalf("emitted=%d, want at least 1", len(emitted))
+	}
+	// 检查最后一帧是否包含 usageMetadata
+	last := emitted[len(emitted)-1]
+	if _, hasUsage := last["usageMetadata"]; !hasUsage {
+		t.Errorf("延迟的 usageMetadata 未收集，最后一帧=%v", last)
+	}
+}
+
+func TestScanStream_UsageMetadataDelayedSplitRead(t *testing.T) {
+	// 延迟 usage 在跨 bufio.Read 边界时才到达（C1 修复验证）
+	stopFrame := wrap(`{"candidates":[{"content":{"parts":[{"text":"done"}],"role":"model"},"finishReason":"STOP","index":0}]}`)
+	usageFrame := `{"results":[{"data":{"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":10,"totalTokenCount":15}}}]}`
+	raw := stopFrame + usageFrame
+
+	emitted := []map[string]any{}
+	var seenFinish bool
+	var finished bool
+	// 使用 splitReader 按 STOP 帧长度分块，确保两帧在不同 Read 调用中到达
+	err := scanStream(context.Background(), &splitReader{data: []byte(raw), chunk: len(stopFrame)}, func(obj map[string]any) (bool, error) {
+		stop, err := processStreamingObject(obj, func(ch map[string]any) bool {
+			emitted = append(emitted, ch)
+			return true
+		}, &seenFinish)
+		if stop {
+			finished = true
+		}
+		return stop, err
+	}, nil)
+	if err != nil {
+		t.Fatalf("scan error: %v", err)
+	}
+	if !finished {
+		t.Error("收到 STOP+usage 应标记为 finished")
+	}
+	if len(emitted) < 2 {
+		t.Fatalf("emitted=%d, want >= 2（内容帧+元数据帧跨读边界）", len(emitted))
+	}
+	last := emitted[len(emitted)-1]
+	if _, hasUsage := last["usageMetadata"]; !hasUsage {
+		t.Errorf("跨读边界的延迟 usageMetadata 未收集，最后一帧=%v", last)
+	}
+}
+
+func TestScanStream_UsageMetadataSameFrame(t *testing.T) {
+	// STOP 和 usageMetadata 同帧到达 → 正常 stop（不受延迟逻辑影响）
+	raw := wrap(`{"candidates":[{"content":{"parts":[{"text":"done"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":10,"totalTokenCount":15}}`)
+	emitted, finished, err := collectStream(t, raw)
+	if err != nil {
+		t.Fatalf("scan error: %v", err)
+	}
+	if !finished {
+		t.Error("收到 STOP 应标记为 finished")
+	}
+	if len(emitted) != 1 {
+		t.Fatalf("emitted=%d, want 1", len(emitted))
+	}
+	if _, hasUsage := emitted[0]["usageMetadata"]; !hasUsage {
+		t.Error("同帧 usageMetadata 应存在")
 	}
 }
 

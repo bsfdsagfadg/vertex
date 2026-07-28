@@ -133,5 +133,6 @@ func cleanSimple(part map[string]any) map[string]any {
 	if len(cleaned) == 0 {
 		return nil
 	}
+	// 如果仅剩 thought/thoughtSignature，保留（非流式合并时思考块不能被清空）
 	return cleaned
 }

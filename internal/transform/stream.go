@@ -4,6 +4,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -18,6 +19,50 @@ var (
 	streamReqIDFallback atomic.Bool
 	streamReqIDCounter  atomic.Uint64
 )
+
+// StreamToolCallTracker 跟踪流式工具调用 ID/Index，确保同一个 functionCall 在
+// 增量帧中 id 和 index 保持稳定（符合 OpenAI SSE 规范）。
+type StreamToolCallTracker struct {
+	entries   []toolCallEntry
+	nextIndex int
+}
+
+type toolCallEntry struct {
+	name   string
+	callID string
+	index  int
+}
+
+func NewStreamToolCallTracker() *StreamToolCallTracker {
+	return &StreamToolCallTracker{}
+}
+
+// ProcessFunctionCall 返回稳定 (index, callID, isNew)。首次遇到该 name 时生成
+// 新 ID 和 index；后续复用已有值。name 为空时始终按新调用处理。
+func (t *StreamToolCallTracker) ProcessFunctionCall(fcMap map[string]any) (int, string, bool) {
+	name, _ := fcMap["name"].(string)
+	if name != "" {
+		for _, entry := range t.entries {
+			if entry.name == name {
+				return entry.index, entry.callID, false
+			}
+		}
+	}
+	// 安全限制：防止空 name 或其他异常导致 entries 无限增长
+	if len(t.entries) > 64 {
+		t.entries = nil
+		t.nextIndex = 0
+	}
+	idx := t.nextIndex
+	t.nextIndex++
+	callID := "call_" + reqID()
+	t.entries = append(t.entries, toolCallEntry{
+		name:   name,
+		callID: callID,
+		index:  idx,
+	})
+	return idx, callID, true
+}
 
 // reqID 生成 24 位十六进制 ID。
 func reqID() string {
@@ -35,13 +80,15 @@ func reqID() string {
 func sseLine(obj map[string]any) string {
 	data, err := jsonx.Marshal(obj)
 	if err != nil {
-		return "data: {}\n\n"
+		log.Printf("[WARN] sseLine marshal failed: %v, obj=%v", err, obj)
+		return ""
 	}
 	return "data: " + string(data) + "\n\n"
 }
 
 // ConvertRealtimeChunk 把单个 Gemini 增量 dict 转为 OAI SSE 事件字符串列表。
-func ConvertRealtimeChunk(chunk map[string]any, model, requestID string, isFirst bool) []string {
+// tracker 为可选参数，传入时保证 tool_call 的 id/index 跨帧稳定。
+func ConvertRealtimeChunk(chunk map[string]any, model, requestID string, isFirst bool, tracker *StreamToolCallTracker) []string {
 	candidate := firstCandidate(chunk)
 	parts := candidateParts(candidate)
 	finish, _ := candidate["finishReason"].(string)
@@ -63,7 +110,7 @@ func ConvertRealtimeChunk(chunk map[string]any, model, requestID string, isFirst
 		events = append(events, sseLine(b))
 	}
 
-	text, toolCalls, reasoning := ExtractParts(parts, true)
+	text, toolCalls, reasoning := ExtractParts(parts, true, tracker)
 
 	if reasoning != "" {
 		b := base()
@@ -96,7 +143,8 @@ func ConvertRealtimeChunk(chunk map[string]any, model, requestID string, isFirst
 }
 
 // ExtractParts 从 Gemini parts 提取 (text_content, tool_calls, reasoning_content)。
-func ExtractParts(parts []any, forStream bool) (string, []any, string) {
+// tracker 为可选参数，传入时保证流式 tool_call 的 id/index 跨帧稳定。
+func ExtractParts(parts []any, forStream bool, tracker *StreamToolCallTracker) (string, []any, string) {
 	var texts []string
 	var thoughts []string
 	var toolCalls []any
@@ -118,9 +166,14 @@ func ExtractParts(parts []any, forStream bool) (string, []any, string) {
 				args = map[string]any{}
 			}
 			argBytes, _ := jsonx.Marshal(args)
+			index := len(toolCalls)
+			callID := "call_" + reqID()
+			if tracker != nil {
+				index, callID, _ = tracker.ProcessFunctionCall(fc)
+			}
 			tc := map[string]any{
-				"index": len(toolCalls),
-				"id":    "call_" + reqID(),
+				"index": index,
+				"id":    callID,
 				"type":  "function",
 				"function": map[string]any{
 					"name":      toString(fc["name"]),
@@ -138,6 +191,8 @@ func ExtractParts(parts []any, forStream bool) (string, []any, string) {
 			images = append(images, "\n![image](data:"+mime+";base64,"+data+")")
 		case isThought && hasText:
 			thoughts = append(thoughts, toString(part["text"]))
+		case isThought:
+			// 纯思考 part（无 text，仅 thought:true），不产生显式 reasoning_content
 		case hasText:
 			texts = append(texts, toString(part["text"]))
 		case hasKey(part, "executableCode"):
