@@ -82,7 +82,7 @@ func TestNodesLifecycle(t *testing.T) {
 	}
 
 	// Test SelectForParallel (uri1 is disabled, should only return uri2 if available)
-	selected := SelectForParallel(2, 80, false, false)
+	selected := SelectForParallel(2, false, false)
 	if len(selected) != 1 || selected[0].RawURI != "uri2" {
 		t.Errorf("Expected only uri2 to be selected, got %v", selected)
 	}
@@ -289,7 +289,7 @@ func TestSelectForParallel_SubHealthyFallback(t *testing.T) {
 	RecordTest("uri2", false, 0, "timeout")
 
 	// Request 3 nodes: should get n3 (Tier 1) + n1+n2 (Tier 2 fallback)
-	selected := SelectForParallel(3, 80, false, false)
+	selected := SelectForParallel(3, false, false)
 	if len(selected) != 3 {
 		t.Errorf("Expected 3 selected (1 Tier1 + 2 Tier2), got %d", len(selected))
 	}
@@ -352,7 +352,7 @@ func TestSelectForParallel_RoundRobin_InFlight(t *testing.T) {
 
 	got := make(map[string]int)
 	for call := 0; call < 6; call++ {
-		sel := SelectForParallel(1, 80, false, false)
+		sel := SelectForParallel(1, false, false)
 		if len(sel) != 1 {
 			t.Fatalf("call %d: expected 1 selected, got %d", call, len(sel))
 		}
@@ -376,7 +376,7 @@ func TestSelectForParallel_RoundRobin_InFlight(t *testing.T) {
 	healthMap["uri3"] = &NodeHealth{InFlight: 0}
 	mu.Unlock()
 
-	sel2 := SelectForParallel(1, 80, false, false)
+	sel2 := SelectForParallel(1, false, false)
 	if len(sel2) != 1 {
 		t.Fatalf("expected 1 selected, got %d", len(sel2))
 	}
@@ -398,7 +398,7 @@ func TestSelectForParallel_SubHealthy5sRecovery(t *testing.T) {
 	RecordTest("uri2", true, 50, "")
 
 	// Request 2: should get n2 (Tier 1) + n1 (Tier 2 fallback)
-	sel := SelectForParallel(2, 80, false, false)
+	sel := SelectForParallel(2, false, false)
 	if len(sel) != 2 {
 		t.Fatalf("expected 2 nodes, got %d", len(sel))
 	}
@@ -418,7 +418,7 @@ func TestSelectForParallel_SubHealthy5sRecovery(t *testing.T) {
 		}
 	}
 	// SelectForParallel still works: n2 (Tier 1) + n1 (Tier 2 fallback)
-	sel2 := SelectForParallel(2, 80, false, false)
+	sel2 := SelectForParallel(2, false, false)
 	if len(sel2) != 2 {
 		t.Fatalf("expected 2 nodes, got %d", len(sel2))
 	}
@@ -445,7 +445,7 @@ func TestSelectForParallel_LastSelectedAtSort(t *testing.T) {
 	// Sorted order: [uri-c(0), uri-a(now-100), uri-b(now-10)]
 	// With atomicRoundRobinIndex=2, offset=(2+1)%3=0 → picks sorted[0]=uri-c
 	atomic.StoreUint64(&atomicRoundRobinIndex, 2)
-	sel := SelectForParallel(1, 80, false, false)
+	sel := SelectForParallel(1, false, false)
 	if len(sel) != 1 {
 		t.Fatalf("expected 1 selected, got %d", len(sel))
 	}
@@ -481,7 +481,7 @@ func TestSelectForParallel_Phase3Protection(t *testing.T) {
 		// Sorted by inFlight→LastSelectedAt→URI: [uri-a(0), uri-b(0), uri-c(1), uri-d(1), uri-e(1)]
 		// Set offset to skip fresh nodes: need offset=2 → atomicRoundRobinIndex such that (idx+1)%5=2
 		atomic.StoreUint64(&atomicRoundRobinIndex, 1)
-		sel := SelectForParallel(3, 80, false, false)
+		sel := SelectForParallel(3, false, false)
 		if len(sel) != 3 {
 			t.Fatalf("expected 3 selected, got %d", len(sel))
 		}
@@ -513,7 +513,7 @@ func TestSelectForParallel_Phase3Protection(t *testing.T) {
 		healthMap["uri-c"] = &NodeHealth{LastSelectedAt: now - 1, InFlight: 0}
 		mu.Unlock()
 
-		sel := SelectForParallel(3, 80, false, false)
+		sel := SelectForParallel(3, false, false)
 		if len(sel) != 3 {
 			t.Fatalf("expected 3 selected, got %d", len(sel))
 		}
@@ -544,7 +544,7 @@ func TestSelectForParallel_Phase3Protection(t *testing.T) {
 		healthMap["uri-c"] = &NodeHealth{LastSelectedAt: now - 10, InFlight: 0}
 		mu.Unlock()
 
-		sel := SelectForParallel(3, 80, false, false)
+		sel := SelectForParallel(3, false, false)
 		if len(sel) != 3 {
 			t.Fatalf("expected 3 selected, got %d", len(sel))
 		}
@@ -578,5 +578,124 @@ func TestRecordRateLimit_CooldownUntil(t *testing.T) {
 	}
 	if h.CooldownUntil < now+28 || h.CooldownUntil > now+32 {
 		t.Errorf("Expected CooldownUntil ~ now+30, got %d (now=%d)", h.CooldownUntil, now)
+	}
+}
+
+func TestRecordTest_CooldownNotClearedOnFailure(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	n1 := Node{RawURI: "uri1", Name: "node1"}
+	MergeNodes([]Node{n1})
+
+	RecordRateLimit("uri1", 30)
+	mu.Lock()
+	h := healthMap["uri1"]
+	mu.Unlock()
+	if h == nil {
+		t.Fatal("Expected health entry")
+	}
+	cooldown := h.CooldownUntil
+	now := time.Now().Unix()
+	if cooldown <= now {
+		t.Fatalf("Expected CooldownUntil in the future after RecordRateLimit, got %d (now=%d)", cooldown, now)
+	}
+
+	RecordTest("uri1", false, 0, "timeout")
+
+	mu.Lock()
+	h2 := healthMap["uri1"]
+	mu.Unlock()
+	if h2 == nil {
+		t.Fatal("Expected health entry after RecordTest")
+	}
+	if h2.CooldownUntil != cooldown {
+		t.Errorf("RecordTest failure should NOT clear CooldownUntil: got %d, want %d", h2.CooldownUntil, cooldown)
+	}
+}
+
+func TestSelectForParallel_Tier2RoundRobin(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	n1 := Node{RawURI: "uri-a", Name: "a"}
+	n2 := Node{RawURI: "uri-b", Name: "b"}
+	n3 := Node{RawURI: "uri-c", Name: "c"}
+	MergeNodes([]Node{n1, n2, n3})
+
+	now := time.Now().Unix()
+	mu.Lock()
+	// All Tier 2: LastSubHealthyAt with different values → deterministic sort.
+	// Sort order (InFlight=0 → LastSelectedAt=0 → LastSubHealthyAt ASC): a(100), b(50), c(10)
+	healthMap["uri-a"] = &NodeHealth{LastSubHealthyAt: now - 100}
+	healthMap["uri-b"] = &NodeHealth{LastSubHealthyAt: now - 50}
+	healthMap["uri-c"] = &NodeHealth{LastSubHealthyAt: now - 10}
+	mu.Unlock()
+
+	// sorted = [uri-a, uri-b, uri-c]
+	// Starting from atomicRoundRobinIndex=0:
+	//   offset = (0+1)%3 = 1 → picks sorted[1] = uri-b
+	//   offset = (1+1)%3 = 2 → picks sorted[2] = uri-c
+	//   offset = (2+1)%3 = 0 → picks sorted[0] = uri-a
+	// Note: actual distribution may not be perfectly even because
+	// SelectForParallel updates LastSelectedAt on selected nodes,
+	// which shifts the sort order in subsequent calls.
+	atomic.StoreUint64(&atomicRoundRobinIndex, 0)
+
+	got := make(map[string]int)
+	for call := 0; call < 9; call++ {
+		sel := SelectForParallel(1, false, false)
+		if len(sel) != 1 {
+			t.Fatalf("call %d: expected 1 selected, got %d", call, len(sel))
+		}
+		got[sel[0].RawURI]++
+	}
+
+	for _, uri := range []string{"uri-a", "uri-b", "uri-c"} {
+		if got[uri] == 0 {
+			t.Errorf("%s was never selected — round-robin not working", uri)
+		}
+	}
+	for _, uri := range []string{"uri-a", "uri-b", "uri-c"} {
+		if got[uri] > 6 {
+			t.Errorf("%s selected %d/9 times — likely no round-robin", uri, got[uri])
+		}
+	}
+}
+
+func TestSelectForParallel_Tier2SkipsCooldown(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	n1 := Node{RawURI: "uri-a", Name: "a"}
+	n2 := Node{RawURI: "uri-b", Name: "b"}
+	n3 := Node{RawURI: "uri-c", Name: "c"}
+	MergeNodes([]Node{n1, n2, n3})
+
+	now := time.Now().Unix()
+	mu.Lock()
+	// All Tier 2. uri-a is in cooldown.
+	// Different LastSubHealthyAt to ensure deterministic sort: [uri-a, uri-b, uri-c]
+	healthMap["uri-a"] = &NodeHealth{LastSubHealthyAt: now - 100, CooldownUntil: now + 300}
+	healthMap["uri-b"] = &NodeHealth{LastSubHealthyAt: now - 50}
+	healthMap["uri-c"] = &NodeHealth{LastSubHealthyAt: now - 10}
+	mu.Unlock()
+
+	atomic.StoreUint64(&atomicRoundRobinIndex, 0)
+	// offset=(0+1)%3=1 → skips iterating [uri-b, uri-c]; uri-a in group but CooldownUntil>now
+	selected := SelectForParallel(2, false, false)
+	if len(selected) != 2 {
+		t.Errorf("Expected 2 nodes (skip cooldown), got %d", len(selected))
+	}
+	for _, s := range selected {
+		if s.RawURI == "uri-a" {
+			t.Errorf("uri-a should be skipped due to CooldownUntil > now, but it was selected")
+		}
+	}
+
+	// Requesting 3 with only 2 not in cooldown → get only 2
+	selected2 := SelectForParallel(3, false, false)
+	if len(selected2) != 2 {
+		t.Errorf("Expected 2 nodes even when k=3 (uri-a in cooldown), got %d", len(selected2))
 	}
 }

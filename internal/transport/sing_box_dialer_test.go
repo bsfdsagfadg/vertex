@@ -82,7 +82,6 @@ func (c *fakeCfg) ParallelPoolRetryEnabled() bool              { panic("unexpect
 func (c *fakeCfg) ParallelPoolSize() int                       { panic("unexpected") }
 func (c *fakeCfg) ParallelPoolDelayDynamic() bool              { panic("unexpected") }
 func (c *fakeCfg) ActiveNodeURI() string                       { panic("unexpected") }
-func (c *fakeCfg) ParallelNodeTopK() int                       { panic("unexpected") }
 func (c *fakeCfg) BackgroundImage() string                     { panic("unexpected") }
 func (c *fakeCfg) FontSize() string                            { panic("unexpected") }
 func (c *fakeCfg) FontColorType() string                       { panic("unexpected") }

@@ -28,7 +28,6 @@ type ConfigProvider interface {
 	ParallelPoolSize() int
 	ParallelPoolDelayDynamic() bool
 	ActiveNodeURI() string
-	ParallelNodeTopK() int
 
 	BackgroundImage() string
 	FontSize() string
@@ -97,7 +96,6 @@ func (d dynamicConfig) ParallelPoolRetryEnabled() bool { return Load().ParallelP
 func (d dynamicConfig) ParallelPoolSize() int          { return Load().ParallelPoolSize }
 func (d dynamicConfig) ParallelPoolDelayDynamic() bool { return Load().ParallelPoolDelayDynamic }
 func (d dynamicConfig) ActiveNodeURI() string          { return Load().ActiveNodeURI }
-func (d dynamicConfig) ParallelNodeTopK() int          { return Load().ParallelNodeTopK }
 func (d dynamicConfig) BackgroundImage() string        { return Load().BackgroundImage }
 func (d dynamicConfig) FontSize() string               { return Load().FontSize }
 func (d dynamicConfig) FontColorType() string          { return Load().FontColorType }

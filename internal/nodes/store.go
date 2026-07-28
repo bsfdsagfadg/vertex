@@ -722,7 +722,6 @@ func RecordTest(uri string, ok bool, ms float64, errStr string) {
 		h.FailCount++
 		h.ConsecutiveFailures++
 		h.LastFailAt = time.Now().Unix()
-		h.CooldownUntil = 0
 
 		errLower := strings.ToLower(errStr)
 		if strings.Contains(errLower, "dial") || strings.Contains(errLower, "refused") ||
@@ -775,7 +774,7 @@ type tierCandidate struct {
 	inFlight int32
 }
 
-func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool) []Node {
+func SelectForParallel(k int, debugMode bool, stickyBonusEnabled bool) []Node {
 	mu.Lock()
 	defer mu.Unlock()
 	ensureLoaded()
@@ -849,10 +848,10 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 			hi := healthMap[tier2[i].node.RawURI]
 			hj := healthMap[tier2[j].node.RawURI]
 			si := int64(0)
-			sj := int64(0)
 			if hi != nil {
 				si = hi.LastSelectedAt
 			}
+			sj := int64(0)
 			if hj != nil {
 				sj = hj.LastSelectedAt
 			}
@@ -869,11 +868,25 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 			}
 			return ti < tj
 		})
-		for _, c := range tier2 {
-			if len(selected) >= k {
-				break
+
+		i := 0
+		for i < len(tier2) && len(selected) < k {
+			curInFlight := tier2[i].inFlight
+			j := i
+			for j < len(tier2) && tier2[j].inFlight == curInFlight {
+				j++
 			}
-			selected = append(selected, c.node)
+			group := tier2[i:j]
+			offset := int(atomic.AddUint64(&atomicRoundRobinIndex, 1)) % len(group)
+			for l := 0; l < len(group) && len(selected) < k; l++ {
+				idx := (offset + l) % len(group)
+				h := healthMap[group[idx].node.RawURI]
+				if h != nil && h.CooldownUntil > now {
+					continue
+				}
+				selected = append(selected, group[idx].node)
+			}
+			i = j
 		}
 	}
 

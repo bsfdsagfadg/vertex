@@ -28,7 +28,6 @@ func raceTestConfig() config.AppConfig {
 		ParallelPoolEnabled:      true,
 		ParallelPoolSize:         3,
 		ParallelPoolDelayDynamic: true,
-		ParallelNodeTopK:         80,
 	}
 }
 
@@ -36,7 +35,6 @@ func raceTestConfigAllAtOnce() config.AppConfig {
 	return config.AppConfig{
 		ParallelPoolEnabled: true,
 		ParallelPoolSize:    3,
-		ParallelNodeTopK:    80,
 	}
 }
 
@@ -141,7 +139,6 @@ func TestRunRace_SuccessAfterHedge(t *testing.T) {
 		ParallelPoolEnabled:      true,
 		ParallelPoolSize:         3,
 		ParallelPoolDelayDynamic: false,
-		ParallelNodeTopK:         80,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -485,6 +482,34 @@ func TestRunRace_Streaming_FailFastOnHardError(t *testing.T) {
 	}
 	if count := atomic.LoadInt32(&launchCount); count > 1 {
 		t.Errorf("expected launchCount <= 1 (fail-fast on global hard error), got %d", count)
+	}
+}
+
+// TestRunRace_AuthErrorDisablesNode 验证 auth 错误分支：
+// RunRace 遇到 Kind == "auth" 的 VertexError 后，通过 BatchUpdateNodesDisabled
+// 将该节点在节点池中标记为禁用。
+func TestRunRace_AuthErrorDisablesNode(t *testing.T) {
+	setupRaceNodes(t, "uri1", "uri2")
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	run := func(ctx context.Context, uri string) (string, error) {
+		return "", NewAuthenticationError("test auth failure", nil)
+	}
+
+	_, err := RunRace[string](ctx, cfg, run)
+	if err == nil {
+		t.Error("expected error from RunRace, got nil")
+	}
+
+	ns := nodes.LoadNodes()
+	for _, n := range ns {
+		if !n.Disabled {
+			t.Errorf("Expected %s to be disabled after auth error, but Disabled=false", n.RawURI)
+		}
 	}
 }
 

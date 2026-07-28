@@ -82,7 +82,10 @@ func FetchRecaptchaToken(ctx context.Context, net *transport.NetworkClient, prox
 	if debugMode {
 		log.Printf("[Recaptcha] [节点: %s] 3次尝试后获取 reCAPTCHA token 失败, 耗时: %d ms", nodeName, elapsed.Milliseconds())
 	}
-	return "", nil
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	return "", fmt.Errorf("节点 %s 3次重试后仍无法获取 recaptcha token", nodeName)
 }
 
 // FetchRecaptchaTokenWithSession 在有 Session 的上下文中执行 anchor→reload 全流程。

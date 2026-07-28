@@ -49,7 +49,6 @@ type AppConfig struct { //nolint:govet
 	ParallelPoolRetryEnabled bool   `json:"parallel_pool_retry_enabled"`
 	ParallelPoolSize         int    `json:"parallel_pool_size"`
 	DebugPprof               bool   `json:"debug_pprof"`
-	ParallelNodeTopK         int    `json:"parallel_node_top_k"`
 	DebugMode                bool   `json:"debug_mode"`
 	ParallelPoolDelayDynamic bool   `json:"parallel_pool_delay_dynamic"`
 	// 匿名遥测：仅发送实例 ID + 版本 + 平台，不含任何用户/网络/隐私数据。
@@ -89,7 +88,6 @@ func DefaultConfig() AppConfig {
 		ParallelPoolEnabled:       true,
 		StickyNodePriority:        false,
 		ParallelPoolSize:          15, // 默认为 15 并发
-		ParallelNodeTopK:          80,
 		ParallelPoolDelayDynamic:  false, // 建议默认关闭动态对冲，改为稳定的秒级接力
 		BackgroundImage:           "url('background.jpg')",
 		FontSize:                  "14px",

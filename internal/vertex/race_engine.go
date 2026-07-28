@@ -140,7 +140,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		o(&rc)
 	}
 
-	cands := nodes.SelectForParallel(cfg.ParallelPoolSize(), cfg.ParallelNodeTopK(), cfg.DebugMode(), cfg.StickyNodePriority())
+	cands := nodes.SelectForParallel(cfg.ParallelPoolSize(), cfg.DebugMode(), cfg.StickyNodePriority())
 
 	if !cfg.ParallelPoolEnabled() || len(cands) == 0 {
 		proxy := cfg.ActiveNodeURI()
@@ -286,11 +286,20 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 					failedErrors = append(failedErrors, res.err)
 
 					ve := asVertexError(res.err)
-					if ve != nil && ve.Kind == "ratelimit" {
-						if cfg.DebugMode() {
-							log.Printf("[Racing] 节点 %s 触发 429 API 限制，进入 30 秒短时歇息", name)
+					if ve != nil {
+						switch ve.Kind {
+						case "ratelimit":
+							if cfg.DebugMode() {
+								log.Printf("[Racing] 节点 %s 触发 429 API 限制，进入 30 秒短时歇息", name)
+							}
+							nodes.RecordRateLimit(res.uri, 30)
+						case "auth":
+							log.Printf("[Racing] 节点 %s 触发认证失败 (502)，即将禁用", name)
+							nodes.RecordTest(res.uri, false, 0, res.err.Error())
+							nodes.BatchUpdateNodesDisabled([]string{res.uri}, true)
+						default:
+							nodes.RecordTest(res.uri, false, 0, res.err.Error())
 						}
-						nodes.RecordRateLimit(res.uri, 30)
 					} else {
 						nodes.RecordTest(res.uri, false, 0, res.err.Error())
 					}
