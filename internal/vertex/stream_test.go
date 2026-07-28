@@ -3,12 +3,20 @@ package vertex
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
 func TestScanStream_BufferHardLimit(t *testing.T) {
@@ -24,7 +32,7 @@ func TestScanStream_BufferHardLimit(t *testing.T) {
 	go func() {
 		done <- scanStream(context.Background(), bytes.NewReader(data), func(obj map[string]any) (bool, error) {
 			return false, nil
-		}, nil, nil)
+		}, nil)
 	}()
 
 	select {
@@ -53,7 +61,7 @@ func collectStream(t *testing.T, raw string) (emitted []map[string]any, stopped 
 			stopped = true
 		}
 		return stop, err
-	}, nil, nil)
+	}, nil)
 	return
 }
 
@@ -134,7 +142,7 @@ func TestScanStream_SplitAcrossReads(t *testing.T) {
 			return true
 		})
 		return stop, err
-	}, nil, nil)
+	}, nil)
 	if err != nil {
 		t.Fatalf("scan error: %v", err)
 	}
@@ -518,60 +526,63 @@ func BenchmarkScanStream(b *testing.B) {
 	for range b.N {
 		_ = scanStream(context.Background(), strings.NewReader(input), func(obj map[string]any) (bool, error) {
 			return true, nil
-		}, nil, nil)
+		}, nil)
 	}
 }
 
-// TestScanStream_ResetIdleSignal 验证 scanStream 在读取到数据时通过 resetIdle 通道发送重置信号。
-func TestScanStream_ResetIdleSignal(t *testing.T) {
-	resetIdle := make(chan struct{}, 1)
+// TestScanStream_TouchActivity 验证 scanStream 在读取到数据时调用 touchActivity。
+func TestScanStream_TouchActivity(t *testing.T) {
+	var callCount atomic.Int32
+	touchActivity := func() {
+		callCount.Add(1)
+	}
 	data := wrap(`{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"STOP"}]}`)
 
 	err := scanStream(context.Background(), strings.NewReader(data), func(obj map[string]any) (bool, error) {
 		return true, nil
-	}, resetIdle, nil)
+	}, touchActivity)
 
 	if err != nil {
 		t.Fatalf("scanStream error: %v", err)
 	}
-	// 至少应该收到一次重置信号
-	select {
-	case <-resetIdle:
-		// 收到信号，正常
-	default:
-		t.Error("scanStream 应该通过 resetIdle 发送至少一次重置信号")
+	if callCount.Load() == 0 {
+		t.Error("touchActivity should be called at least once")
 	}
 }
 
-// TestIdleWatcher_TriggersOnTimeout 验证空闲 watcher 模式：
-// 当 resetIdle 在 timeout 时间内未收到信号时，触发 idleTriggered 并关闭 reader。
+// TestIdleWatcher_TriggersOnTimeout 验证原子时间戳空闲 watcher 模式：
+// 当 touchActivity 在 timeout 时间内未被调用时，触发 idleTriggered 并关闭 reader。
 func TestIdleWatcher_TriggersOnTimeout(t *testing.T) {
 	pr, pw := io.Pipe()
 
-	resetIdle := make(chan struct{}, 1)
-	var idleTriggered atomic.Bool
+	var (
+		lastActiveUnixNano atomic.Int64
+		idleTriggered      atomic.Bool
+	)
+	lastActiveUnixNano.Store(time.Now().UnixNano())
 	done := make(chan struct{})
 
 	idleTimeout := 200 * time.Millisecond
 
-	// ── 空闲 watcher goroutine（与 executeStreamingAttempt 中相同的逻辑）──
+	touchActivity := func() {
+		lastActiveUnixNano.Store(time.Now().UnixNano())
+	}
+
+	// ── 空闲 watcher goroutine（原子时间戳 + Ticker 模式）──
 	go func() {
-		timer := time.NewTimer(idleTimeout)
-		defer timer.Stop()
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
 		for {
 			select {
-			case <-resetIdle:
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
+			case <-ticker.C:
+				last := time.Unix(0, lastActiveUnixNano.Load())
+				elapsed := time.Since(last)
+				if elapsed > idleTimeout {
+					if idleTriggered.CompareAndSwap(false, true) {
+						pr.Close()
 					}
+					return
 				}
-				timer.Reset(idleTimeout)
-			case <-timer.C:
-				idleTriggered.Store(true)
-				pr.Close()
-				return
 			case <-done:
 				return
 			}
@@ -586,10 +597,10 @@ func TestIdleWatcher_TriggersOnTimeout(t *testing.T) {
 	go func() {
 		errCh <- scanStream(ctx, pr, func(obj map[string]any) (bool, error) {
 			return false, nil
-		}, resetIdle, nil)
+		}, touchActivity)
 	}()
 
-	// 先写入一帧有效数据（重置定时器）
+	// 先写入一帧有效数据
 	initialData := `{"results":[{"data":{"candidates":[{"content":{"parts":[{"text":"ping"}],"role":"model"},"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}]}`
 	_, writeErr := pw.Write([]byte(initialData))
 	if writeErr != nil {
@@ -611,6 +622,116 @@ func TestIdleWatcher_TriggersOnTimeout(t *testing.T) {
 		pw.Close()
 		close(done)
 		t.Fatal("超时：idle watcher 未能在预期时间内触发")
+	}
+}
+
+// TestExecuteStreamingAttempt_IdleTimeout 验证 executeStreamingAttempt 在静默后触发空闲超时返回 ErrStreamIdleTimeout。
+func TestExecuteStreamingAttempt_IdleTimeout(t *testing.T) {
+	// ── mock 上游服务器：发送 1 帧后挂起 ──
+	var mu sync.Mutex
+	chunksWritten := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if chunksWritten > 0 {
+			mu.Unlock()
+			// 后续请求直接挂起等待断开
+			<-r.Context().Done()
+			return
+		}
+		chunksWritten++
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("response writer does not support Flusher")
+			return
+		}
+		firstChunk := `{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}}}]}`
+		_, _ = w.Write([]byte(firstChunk))
+		flusher.Flush()
+		// 挂起等待上下文取消（连接关闭）
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	origURL := batchGraphqlURL
+	batchGraphqlURL = server.URL + "/batchGraphql"
+	defer func() { batchGraphqlURL = origURL }()
+
+	cfg := config.DefaultConfig()
+	cfg.StreamIdleTimeoutSeconds = 1 // postTimeout = 1s
+	provider := config.StaticProvider(cfg)
+
+	netClient := transport.NewNetworkClient(nil)
+	vc := &VertexAIClient{
+		net:  netClient,
+		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
+			return "test-token", nil
+		}),
+		cfg: provider,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess, err := netClient.CreateSession(180, "", "test-idle-timeout")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	defer sess.Close()
+
+	var emitted []map[string]any
+	err = vc.executeStreamingAttempt(ctx, sess, "test-model", map[string]any{}, "test-token", true, func(ch map[string]any) bool {
+		emitted = append(emitted, ch)
+		return true
+	})
+
+	if err == nil {
+		t.Fatal("expected idle timeout error, got nil")
+	}
+	if !errors.Is(err, ErrStreamIdleTimeout) {
+		t.Errorf("expected ErrStreamIdleTimeout, got %v", err)
+	}
+	if len(emitted) == 0 {
+		t.Error("expected at least one chunk before idle timeout")
+	}
+}
+
+// TestExecuteStreamingWithRetries_ClientCancel 验证传入已取消的 ctx 时干净退出。
+func TestExecuteStreamingWithRetries_ClientCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 立即取消
+
+	cfg := config.DefaultConfig()
+	provider := config.StaticProvider(cfg)
+
+	netClient := transport.NewNetworkClient(nil)
+	vc := &VertexAIClient{
+		net:  netClient,
+		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
+			return "test-token", nil
+		}),
+		cfg: provider,
+	}
+
+	var gotErr *VertexError
+	yield := func(chunk StreamChunk) bool {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+		}
+		return false
+	}
+
+	// 不应 panic
+	vc.executeStreamingWithRetries(ctx, "test-model", map[string]any{}, "test-proxy", yield)
+
+	if gotErr == nil {
+		t.Fatal("expected context error, got nil")
+	}
+	if !errors.Is(gotErr, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", gotErr)
 	}
 }
 

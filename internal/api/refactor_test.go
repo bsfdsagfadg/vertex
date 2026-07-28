@@ -668,8 +668,16 @@ func newTestServerCustomMock(t *testing.T, mockHandler http.HandlerFunc, cfgMod 
 		t.Fatalf("init db: %v", err)
 	}
 
-	// ── mock upstream ──
-	mockUpstream := httptest.NewServer(http.HandlerFunc(mockHandler))
+	// ── mock upstream 使用可取消 BaseContext ──
+	// 当 handler 阻塞（如 upstream_hang 测试）时，cleanup 先取消 baseCtx，
+	// 使所有活跃 handler 的 r.Context().Done() 立即触发，避免 httptest.Server.Close()
+	// 因等待 handler 返回而长时间挂起。
+	mockUpstreamCtx, mockUpstreamCancel := context.WithCancel(context.Background())
+	mockUpstream := httptest.NewUnstartedServer(http.HandlerFunc(mockHandler))
+	mockUpstream.Config.BaseContext = func(net.Listener) context.Context {
+		return mockUpstreamCtx
+	}
+	mockUpstream.Start()
 	vertex.SetBatchGraphqlURL(mockUpstream.URL + "/batchGraphql?key=test&prettyPrint=false")
 
 	// ── token pool ──
@@ -697,6 +705,7 @@ func newTestServerCustomMock(t *testing.T, mockHandler http.HandlerFunc, cfgMod 
 
 	t.Cleanup(func() {
 		ts.Close()
+		mockUpstreamCancel()
 		mockUpstream.Close()
 		db.CloseDB()
 		config.InvalidateCache()

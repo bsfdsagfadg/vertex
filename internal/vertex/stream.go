@@ -163,6 +163,7 @@ retryLoop:
 		}
 
 		if errors.Is(attemptErr, context.Canceled) || errors.Is(attemptErr, context.DeadlineExceeded) {
+			log.Printf("[Vertex] [StreamChat] 客户端取消请求/上下文超时，停止重试: 请求ID=%s, 代理=%s, err=%v", reqID, nodes.GetNodeName(proxyURI), attemptErr)
 			lastError = NewContextError(attemptErr)
 			break retryLoop
 		}
@@ -283,58 +284,55 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	}
 	defer sr.Close() // 排干 → close，防串流。
 
-	// ═══ 唯一中断调度点 + 流式包间空闲超时监控 ═══
+	// ═══ 唯一中断调度点 + 流式包间空闲超时监控（原子时间戳无竞态版） ═══
 	preTimeout := time.Duration(max(cfg.StreamIdleTimeoutSeconds()*2, 40)) * time.Second
 	postTimeout := time.Duration(cfg.StreamIdleTimeoutSeconds()) * time.Second
-	firstPacketChan := make(chan struct{}, 1)
-	resetIdle := make(chan struct{}, 1)
-	var idleTriggered atomic.Bool
+
+	var (
+		lastActiveUnixNano atomic.Int64
+		hasReceivedFirst   atomic.Bool
+		idleTriggered      atomic.Bool
+	)
+	lastActiveUnixNano.Store(time.Now().UnixNano())
+
+	touchActivity := func() {
+		lastActiveUnixNano.Store(time.Now().UnixNano())
+		hasReceivedFirst.CompareAndSwap(false, true)
+	}
+
 	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		timer := time.NewTimer(preTimeout)
-		hasReceivedFirstPacket := false
-		defer timer.Stop()
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
 		for {
 			select {
-			case <-firstPacketChan:
-				hasReceivedFirstPacket = true
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
+			case <-ticker.C:
+				last := time.Unix(0, lastActiveUnixNano.Load())
+				elapsed := time.Since(last)
+
+				timeout := preTimeout
+				if hasReceivedFirst.Load() {
+					timeout = postTimeout
+				}
+
+				if elapsed > timeout {
+					if idleTriggered.CompareAndSwap(false, true) {
+						log.Printf("[Vertex] [Stream] 触发流包间空闲超时 (已静默 %v > 阈值 %v), 切断连接, 请求ID=%s", elapsed.Round(time.Millisecond), timeout, reqID)
+						_ = sr.Body.Close()
 					}
-				}
-				timer.Reset(postTimeout)
-			case <-resetIdle:
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				if hasReceivedFirstPacket {
-					timer.Reset(postTimeout)
-				} else {
-					timer.Reset(preTimeout)
-				}
-			case <-timer.C:
-				select {
-				case <-done:
 					return
-				default:
 				}
-				idleTriggered.Store(true)
-				sr.Body.Close()
-				return
 			case <-ctx.Done():
-				sr.Body.Close()
+				_ = sr.Body.Close()
 				return
 			case <-done:
 				return
 			}
 		}
 	}()
-	// ═══════════════════════════════════════════
+	// ═══════════════════════════════════════════════════════════════
 
 	// HTTP 错误：读完 error body 后按状态映射（与非流式 executeCompleteRequest 一致）。
 	if sr.StatusCode != 200 {
@@ -365,16 +363,8 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 
 	// 增量扫描上游流，逐个完整 JSON 对象提取 chunk。
 	scanErr := scanStream(ctx, sr.Body, func(obj map[string]any) (stop bool, err error) {
-		// 从单个上游对象提取（可能多个）chunk，逐个 emit；命中真实 finishReason 即结束。
 		return processStreamingObject(obj, emit)
-	}, resetIdle, func() {
-		select {
-		case firstPacketChan <- struct{}{}:
-		default:
-		}
-	})
-
-	close(done)
+	}, touchActivity)
 
 	if scanErr != nil && cfg.DebugMode() && !errors.Is(scanErr, context.Canceled) {
 		debugReq, _ := json.Marshal(newBody)
@@ -412,7 +402,7 @@ var scanBufferPool = sync.Pool{
 	},
 }
 
-func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]any) (bool, error), resetIdle chan struct{}, onFirstPacket func()) error {
+func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]any) (bool, error), touchActivity func()) error {
 	reader := bufio.NewReader(body)
 	bufPtr := scanBufferPool.Get().(*[]byte)
 	defer scanBufferPool.Put(bufPtr)
@@ -425,8 +415,6 @@ func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]an
 	inString := false
 	escape := false
 
-	var hasSignaledFirst bool
-
 	const (
 		maxBufferSize    = 4 * 1024 * 1024
 		hardMaxBufferSize = 64 * 1024 * 1024
@@ -435,15 +423,8 @@ func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]an
 	for {
 		n, readErr := reader.Read(readBuf)
 		if n > 0 {
-			if onFirstPacket != nil && !hasSignaledFirst {
-				hasSignaledFirst = true
-				onFirstPacket()
-			}
-			if resetIdle != nil {
-				select {
-				case resetIdle <- struct{}{}:
-				default:
-				}
+			if touchActivity != nil {
+				touchActivity()
 			}
 			buffer = append(buffer, readBuf[:n]...)
 
