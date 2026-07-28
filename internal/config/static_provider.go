@@ -27,7 +27,6 @@ func (s staticConfig) VertexAPIKey() string              { return s.c.VertexAPIK
 func (s staticConfig) CountTokensQuerySignature() string { return s.c.CountTokensQuerySignature }
 func (s staticConfig) SafetySettings() map[string]string { return s.c.SafetySettings }
 func (s staticConfig) ParallelPoolEnabled() bool         { return s.c.ParallelPoolEnabled }
-func (s staticConfig) StickyNodePriority() bool          { return s.c.StickyNodePriority }
 func (s staticConfig) ParallelPoolRetryEnabled() bool    { return s.c.ParallelPoolRetryEnabled }
 func (s staticConfig) ParallelPoolSize() int             { return s.c.ParallelPoolSize }
 func (s staticConfig) ParallelPoolDelayDynamic() bool    { return s.c.ParallelPoolDelayDynamic }

@@ -114,9 +114,7 @@ func pickBestError(errs []error) error {
 // RunRace runs a hedge race across multiple candidate nodes.
 //
 // It handles:
-//   - sticky pool acquisition (when enabled)
 //   - node selection via SelectForParallel
-//   - sticky pool filtering (enabled: exclude sticky URIs; disabled: prepend sticky URIs as priority)
 //   - fallback to single node when pool is disabled or no candidates
 //   - hedge timer with static/dynamic delay
 //   - per-candidate cancellation: each launched goroutine gets an independent cancelable
@@ -124,9 +122,7 @@ func pickBestError(errs []error) error {
 //   - result collection configurable via WithWinningCheck:
 //   - default (nil check): first nil-error result wins immediately
 //   - with check: fn returning true → immediate win; fn returning false → collect for later pick
-//   - background collection: when noCancelOnSuccess and winning check not used,
-//     remaining results still update sticky pool (30s timeout)
-//   - error classification: 429 → RecordRateLimit, others → RecordTest(ok=false)
+//   - result collection configurable via WithWinningCheck:
 //   - hard error (non-retryable) terminates the race early
 //   - context.Canceled/DeadlineExceeded errors are not counted as failures;
 //     when all active return context errors, the race terminates immediately
@@ -140,7 +136,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		o(&rc)
 	}
 
-	cands := nodes.SelectForParallel(cfg.ParallelPoolSize(), cfg.DebugMode(), cfg.StickyNodePriority())
+	cands := nodes.SelectForParallel(cfg.ParallelPoolSize(), cfg.DebugMode())
 
 	if !cfg.ParallelPoolEnabled() || len(cands) == 0 {
 		proxy := cfg.ActiveNodeURI()

@@ -45,7 +45,6 @@ type AppConfig struct { //nolint:govet
 	// 并发池与节点锁定配置
 	ActiveNodeURI            string `json:"active_node_uri"`
 	ParallelPoolEnabled      bool   `json:"parallel_pool_enabled"`
-	StickyNodePriority       bool   `json:"sticky_node_priority"`
 	ParallelPoolRetryEnabled bool   `json:"parallel_pool_retry_enabled"`
 	ParallelPoolSize         int    `json:"parallel_pool_size"`
 	DebugPprof               bool   `json:"debug_pprof"`
@@ -86,7 +85,6 @@ func DefaultConfig() AppConfig {
 		MaxSpillMB:                2048,
 		RequestTimeoutSeconds:     180,
 		ParallelPoolEnabled:       true,
-		StickyNodePriority:        false,
 		ParallelPoolSize:          15, // 默认为 15 并发
 		ParallelPoolDelayDynamic:  false, // 建议默认关闭动态对冲，改为稳定的秒级接力
 		BackgroundImage:           "url('background.jpg')",

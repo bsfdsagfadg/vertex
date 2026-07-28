@@ -46,6 +46,7 @@ type dialerOptionsSetter interface {
 func setOutboundDetour(o *option.Outbound, tag string) {
 	s, ok := o.Options.(dialerOptionsSetter)
 	if !ok {
+		log.Printf("[Transport] 警告: 出站协议 %q (tag=%q) 未实现 dialerOptionsSetter，无法设置 detour 前置代理，将绕过前置代理直连", o.Type, o.Tag)
 		return
 	}
 	opts := s.TakeDialerOptions()
@@ -413,9 +414,12 @@ func makeBoxDialFunc(nb *nodeBox) func(ctx context.Context, network, addr string
 			nb.closed.Store(true)
 			nb.box.Close()
 			go func() {
-				r := <-ch
-				if r.conn != nil {
-					_ = r.conn.Close()
+				select {
+				case r := <-ch:
+					if r.conn != nil {
+						_ = r.conn.Close()
+					}
+				case <-time.After(30 * time.Second):
 				}
 			}()
 			return nil, fmt.Errorf("dial timeout after %v", secondHopDialTimeout)

@@ -42,12 +42,13 @@ type NodeHealth struct { //nolint:govet
 }
 
 var (
-	mu                    sync.Mutex                     //nolint:gochecknoglobals
+	mu                    sync.RWMutex                   //nolint:gochecknoglobals
 	nodeList              []Node                         //nolint:gochecknoglobals
 	healthMap             = make(map[string]*NodeHealth) //nolint:gochecknoglobals
 	loaded                bool                           //nolint:gochecknoglobals
 	DeleteNodeCallback    func(uri string)               //nolint:gochecknoglobals
 	atomicRoundRobinIndex uint64                         //nolint:gochecknoglobals
+	nodeNameMap           = make(map[string]string)      //nolint:gochecknoglobals
 )
 
 func IncInFlight(uri string) {
@@ -77,6 +78,7 @@ func ResetState() {
 	defer mu.Unlock()
 	nodeList = nil
 	healthMap = make(map[string]*NodeHealth)
+	nodeNameMap = make(map[string]string)
 	loaded = false
 }
 
@@ -104,6 +106,7 @@ func ensureLoaded() {
 			}
 		}
 		nodeList = nodes
+		rebuildNodeNameMapUnsafe()
 	}
 
 	// Load health
@@ -337,6 +340,7 @@ func MergeNodes(newNodes []Node) {
 		}
 	}
 	pruneHealthUnsafe()
+	rebuildNodeNameMapUnsafe()
 	saveNodesUnsafe()
 }
 
@@ -351,7 +355,7 @@ func DeleteNode(uri string) {
 	}
 	nodeList = kept
 	delete(healthMap, uri)
-	globalStickyPool.Evict(uri)
+	rebuildNodeNameMapUnsafe()
 	saveNodesUnsafe()
 	saveHealthUnsafe()
 	cb := DeleteNodeCallback
@@ -380,10 +384,10 @@ func DedupNodes() int {
 			removed++
 			removedURIs = append(removedURIs, n.RawURI)
 			delete(healthMap, n.RawURI)
-			globalStickyPool.Evict(n.RawURI)
 		}
 	}
 	nodeList = kept
+	rebuildNodeNameMapUnsafe()
 	saveNodesUnsafe()
 	saveHealthUnsafe()
 	cb := DeleteNodeCallback
@@ -410,10 +414,10 @@ func DeleteDisabled() int {
 			removed++
 			removedURIs = append(removedURIs, n.RawURI)
 			delete(healthMap, n.RawURI)
-			globalStickyPool.Evict(n.RawURI)
 		}
 	}
-	nodeList = kept
+nodeList = kept
+	rebuildNodeNameMapUnsafe()
 	saveNodesUnsafe()
 	saveHealthUnsafe()
 	cb := DeleteNodeCallback
@@ -462,7 +466,6 @@ func BatchDeleteNodes(uris []string) {
 	for _, u := range uris {
 		targets[u] = true
 		delete(healthMap, u)
-		globalStickyPool.Evict(u)
 	}
 	var kept []Node
 	for _, n := range nodeList {
@@ -471,6 +474,7 @@ func BatchDeleteNodes(uris []string) {
 		}
 	}
 	nodeList = kept
+	rebuildNodeNameMapUnsafe()
 	saveNodesUnsafe()
 	saveHealthUnsafe()
 	cb := DeleteNodeCallback
@@ -574,14 +578,32 @@ func SortNodesByLatencyDesc() {
 	mu.Unlock()
 }
 
-func GetNodeName(uri string) string {
-	mu.Lock()
-	defer mu.Unlock()
-	ensureLoaded()
+func rebuildNodeNameMapUnsafe() {
+	m := make(map[string]string, len(nodeList))
 	for _, n := range nodeList {
-		if n.RawURI == uri {
-			return n.Name
+		m[n.RawURI] = n.Name
+	}
+	nodeNameMap = m
+}
+
+func GetNodeName(uri string) string {
+	mu.RLock()
+	if loaded {
+		name, ok := nodeNameMap[uri]
+		mu.RUnlock()
+		if ok {
+			return name
 		}
+		return "Unknown"
+	}
+	mu.RUnlock()
+
+	mu.Lock()
+	ensureLoaded()
+	name, ok := nodeNameMap[uri]
+	mu.Unlock()
+	if ok {
+		return name
 	}
 	return "Unknown"
 }
@@ -774,7 +796,7 @@ type tierCandidate struct {
 	inFlight int32
 }
 
-func SelectForParallel(k int, debugMode bool, stickyBonusEnabled bool) []Node {
+func SelectForParallel(k int, debugMode bool) []Node {
 	mu.Lock()
 	defer mu.Unlock()
 	ensureLoaded()

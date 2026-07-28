@@ -174,7 +174,7 @@ func main() {
 
 	if proxyURL := cfg.ProxyURL(); proxyURL != "" {
 		if err := dialer.SyncEntryProxy(proxyURL); err != nil {
-			log.Fatalf("[vproxy] 全局前置代理预热失败: %v", err)
+			log.Printf("[vproxy] 警告: 全局前置代理预热失败 (%v)，已降级为直连模式（请在 Web 管理面板核对 proxy_url）", err)
 		}
 	}
 

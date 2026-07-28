@@ -23,7 +23,6 @@ type ConfigProvider interface {
 	SafetySettings() map[string]string
 
 	ParallelPoolEnabled() bool
-	StickyNodePriority() bool
 	ParallelPoolRetryEnabled() bool
 	ParallelPoolSize() int
 	ParallelPoolDelayDynamic() bool
@@ -91,7 +90,6 @@ func (d dynamicConfig) SafetySettings() map[string]string {
 	return out
 }
 func (d dynamicConfig) ParallelPoolEnabled() bool      { return Load().ParallelPoolEnabled }
-func (d dynamicConfig) StickyNodePriority() bool       { return Load().StickyNodePriority }
 func (d dynamicConfig) ParallelPoolRetryEnabled() bool { return Load().ParallelPoolRetryEnabled }
 func (d dynamicConfig) ParallelPoolSize() int          { return Load().ParallelPoolSize }
 func (d dynamicConfig) ParallelPoolDelayDynamic() bool { return Load().ParallelPoolDelayDynamic }

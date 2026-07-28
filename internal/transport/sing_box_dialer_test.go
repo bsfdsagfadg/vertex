@@ -77,7 +77,6 @@ func (c *fakeCfg) VertexAPIKey() string                        { panic("unexpect
 func (c *fakeCfg) CountTokensQuerySignature() string           { panic("unexpected") }
 func (c *fakeCfg) SafetySettings() map[string]string           { panic("unexpected") }
 func (c *fakeCfg) ParallelPoolEnabled() bool                   { panic("unexpected") }
-func (c *fakeCfg) StickyNodePriority() bool                    { panic("unexpected") }
 func (c *fakeCfg) ParallelPoolRetryEnabled() bool              { panic("unexpected") }
 func (c *fakeCfg) ParallelPoolSize() int                       { panic("unexpected") }
 func (c *fakeCfg) ParallelPoolDelayDynamic() bool              { panic("unexpected") }

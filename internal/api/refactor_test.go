@@ -48,7 +48,6 @@ func newTestServer(t *testing.T) *testFixture {
 	cfg := config.DefaultConfig()
 	cfg.AdminPassword = "test-admin-pw"
 	cfg.ParallelPoolEnabled = false
-	cfg.StickyNodePriority = false
 	cfg.ProxyURL = ""
 	cfg.ActiveNodeURI = ""
 	cfg.MaxRetries = 0
@@ -638,7 +637,6 @@ func newTestServerCustomMock(t *testing.T, mockHandler http.HandlerFunc, cfgMod 
 	cfg := config.DefaultConfig()
 	cfg.AdminPassword = "test-admin-pw"
 	cfg.ParallelPoolEnabled = false
-	cfg.StickyNodePriority = false
 	cfg.ProxyURL = ""
 	cfg.ActiveNodeURI = ""
 	cfg.MaxRetries = 0
