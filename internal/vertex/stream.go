@@ -862,24 +862,8 @@ func cleanPart(part map[string]any) map[string]any {
 		}
 	}
 
-	// 支持代码块、代码执行结果透传
-	for _, key := range []string{"executableCode", "codeExecutionResult"} {
-		if v, ok := cleaned[key]; ok && isTruthyAny(v) {
-			return cleaned
-		}
-	}
-
-	// 如果只剩 thought/thoughtSignature 等非内容标记，保留（不再返回 nil）
 	if len(cleaned) == 0 {
 		return nil
-	}
-	for k := range cleaned {
-		switch k {
-		case "thought", "thoughtSignature":
-			continue
-		default:
-			return cleaned
-		}
 	}
 	return cleaned
 }
@@ -917,6 +901,18 @@ func isValidContentChunk(chunk map[string]any) bool {
 					return true
 				}
 				if fc, ok := part["functionCall"].(map[string]any); ok && fc != nil {
+					return true
+				}
+				if ec, ok := part["executableCode"].(map[string]any); ok && ec != nil {
+					return true
+				}
+				if cr, ok := part["codeExecutionResult"].(map[string]any); ok && cr != nil {
+					return true
+				}
+				if id, ok := part["inlineData"].(map[string]any); ok && id != nil {
+					return true
+				}
+				if fd, ok := part["fileData"].(map[string]any); ok && fd != nil {
 					return true
 				}
 			}

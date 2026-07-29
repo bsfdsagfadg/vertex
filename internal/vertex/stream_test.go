@@ -416,6 +416,50 @@ func TestCleanPart_ThoughtOnly(t *testing.T) {
 	}
 }
 
+func TestCleanPart_ExecutableCode(t *testing.T) {
+	part := map[string]any{"executableCode": map[string]any{"code": "print('hello')", "language": "python"}}
+	got := cleanPart(part)
+	if got == nil {
+		t.Fatal("executableCode part should NOT return nil")
+	}
+	if _, ok := got["executableCode"]; !ok {
+		t.Error("executableCode field should be preserved")
+	}
+}
+
+func TestCleanPart_CodeExecutionResult(t *testing.T) {
+	part := map[string]any{"codeExecutionResult": map[string]any{"output": "hello", "outcome": "OK"}}
+	got := cleanPart(part)
+	if got == nil {
+		t.Fatal("codeExecutionResult part should NOT return nil")
+	}
+	if _, ok := got["codeExecutionResult"]; !ok {
+		t.Error("codeExecutionResult field should be preserved")
+	}
+}
+
+func TestCleanPart_InlineData(t *testing.T) {
+	part := map[string]any{"inlineData": map[string]any{"data": "base64content", "mimeType": "image/png"}}
+	got := cleanPart(part)
+	if got == nil {
+		t.Fatal("inlineData part should NOT return nil")
+	}
+	if _, ok := got["inlineData"]; !ok {
+		t.Error("inlineData field should be preserved")
+	}
+}
+
+func TestCleanPart_FileData(t *testing.T) {
+	part := map[string]any{"fileData": map[string]any{"fileUri": "gs://bucket/file", "mimeType": "image/png"}}
+	got := cleanPart(part)
+	if got == nil {
+		t.Fatal("fileData part should NOT return nil")
+	}
+	if _, ok := got["fileData"]; !ok {
+		t.Error("fileData field should be preserved")
+	}
+}
+
 func TestCleanPart_ThoughtSignatureOnly(t *testing.T) {
 	// 仅 thoughtSignature 存在，无 text → 必须保留
 	part := map[string]any{"thoughtSignature": "sig_abc123"}
@@ -604,6 +648,50 @@ func TestIsValidContentChunk_BlockReason(t *testing.T) {
 	chunk := map[string]any{"promptFeedback": map[string]any{"blockReason": "SAFETY"}}
 	if !isValidContentChunk(chunk) {
 		t.Error("blockReason chunk should be valid")
+	}
+}
+
+func TestIsValidContentChunk_ExecutableCode(t *testing.T) {
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{
+			"content": map[string]any{"parts": []any{map[string]any{"executableCode": map[string]any{"code": "print('hello')"}}}, "role": "model"},
+		}},
+	}
+	if !isValidContentChunk(chunk) {
+		t.Error("executableCode chunk should be valid")
+	}
+}
+
+func TestIsValidContentChunk_CodeExecutionResult(t *testing.T) {
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{
+			"content": map[string]any{"parts": []any{map[string]any{"codeExecutionResult": map[string]any{"output": "hello"}}}, "role": "model"},
+		}},
+	}
+	if !isValidContentChunk(chunk) {
+		t.Error("codeExecutionResult chunk should be valid")
+	}
+}
+
+func TestIsValidContentChunk_InlineData(t *testing.T) {
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{
+			"content": map[string]any{"parts": []any{map[string]any{"inlineData": map[string]any{"data": "base64...", "mimeType": "image/png"}}}, "role": "model"},
+		}},
+	}
+	if !isValidContentChunk(chunk) {
+		t.Error("inlineData chunk should be valid")
+	}
+}
+
+func TestIsValidContentChunk_FileData(t *testing.T) {
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{
+			"content": map[string]any{"parts": []any{map[string]any{"fileData": map[string]any{"fileUri": "gs://bucket/file", "mimeType": "image/png"}}}, "role": "model"},
+		}},
+	}
+	if !isValidContentChunk(chunk) {
+		t.Error("fileData chunk should be valid")
 	}
 }
 

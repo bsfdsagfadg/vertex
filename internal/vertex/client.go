@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"net"
+	"sort"
 	"strings"
 	"time"
 
@@ -66,36 +67,56 @@ func (c *VertexAIClient) getBatchGraphqlURL() string {
 	return anonBaseURL + batchGraphqlPath + "?key=" + key + "&prettyPrint=false"
 }
 
+// candidateCollector 在 collectChunksToParseResult 内部使用，按 candidate index 分组收集流式 chunk 属性。
+type candidateCollector struct {
+	index             int
+	parts             []map[string]any
+	finishReason      string
+	finishMessage     any
+	safetyRatings     any
+	citationMetadata  any
+	groundingMetadata any
+	tokenCount        any
+	avgLogprobs       any
+	logprobsResult    any
+}
+
 func (c *VertexAIClient) buildCompleteResponse(r *ParseResult) (map[string]any, error) {
-	if len(r.Parts) == 0 {
-		if r.HasError {
-			return nil, NewInternalError("upstream parse error: "+r.ErrorMessage, nil)
+	if r.HasError {
+		return nil, NewInternalError("upstream parse error: "+r.ErrorMessage, nil)
+	}
+	resp := map[string]any{}
+
+	if len(r.Candidates) > 0 {
+		resp["candidates"] = toAnySlice(r.Candidates)
+	} else if len(r.Parts) > 0 {
+		candidate := map[string]any{
+			"index":   r.CandidateIndex,
+			"content": map[string]any{"parts": toAnySlice(r.Parts), "role": "model"},
 		}
+		if r.FinishReason != "" {
+			candidate["finishReason"] = strings.ToUpper(r.FinishReason)
+		}
+		setIfPresent(candidate, "finishMessage", r.FinishMessage)
+		setIfPresent(candidate, "safetyRatings", r.SafetyRatings)
+		setIfPresent(candidate, "citationMetadata", r.CitationMetadata)
+		setIfPresent(candidate, "groundingMetadata", r.GroundingMetadata)
+		setIfPresent(candidate, "tokenCount", r.TokenCount)
+		setIfPresent(candidate, "avgLogprobs", r.AvgLogprobs)
+		setIfPresent(candidate, "logprobsResult", r.LogprobsResult)
+		resp["candidates"] = []any{candidate}
+	} else {
 		if len(r.PromptFeedback) == 0 {
 			return nil, NewEmptyResponseError("Upstream returned empty response (no content)", nil)
 		}
+		allParts := []map[string]any{{"text": " "}}
+		candidate := map[string]any{
+			"index":   r.CandidateIndex,
+			"content": map[string]any{"parts": toAnySlice(allParts), "role": "model"},
+		}
+		resp["candidates"] = []any{candidate}
 	}
 
-	allParts := r.Parts
-	if len(allParts) == 0 {
-		allParts = []map[string]any{{"text": " "}}
-	}
-	candidate := map[string]any{
-		"index":   r.CandidateIndex,
-		"content": map[string]any{"parts": toAnySlice(allParts), "role": "model"},
-	}
-	if r.FinishReason != "" {
-		candidate["finishReason"] = strings.ToUpper(r.FinishReason)
-	}
-	setIfPresent(candidate, "finishMessage", r.FinishMessage)
-	setIfPresent(candidate, "safetyRatings", r.SafetyRatings)
-	setIfPresent(candidate, "citationMetadata", r.CitationMetadata)
-	setIfPresent(candidate, "groundingMetadata", r.GroundingMetadata)
-	setIfPresent(candidate, "tokenCount", r.TokenCount)
-	setIfPresent(candidate, "avgLogprobs", r.AvgLogprobs)
-	setIfPresent(candidate, "logprobsResult", r.LogprobsResult)
-
-	resp := map[string]any{"candidates": []any{candidate}}
 	setIfPresent(resp, "createTime", r.CreateTime)
 	setIfPresent(resp, "modelVersion", r.ModelVersion)
 	if len(r.PromptFeedback) > 0 {
@@ -111,52 +132,63 @@ func (c *VertexAIClient) buildCompleteResponse(r *ParseResult) (map[string]any, 
 
 // collectChunksToParseResult 把流式收集到的 chunk 列表合并为 ParseResult。
 //
-// chunks 是 extractChunk 的输出：每条含 candidates[0].content.parts（已清洗）、
+// chunks 是 extractChunk 的输出：每条含 candidates（全部候选，不再局限于 cands[0]）、
 // finishReason、usageMetadata、promptFeedback 等元数据。
-// parts 经 MergeContentBlocks 合并相邻 text 后写入 result。
+// 按 candidate index 分组聚合 parts，对各组独立执行 MergeContentBlocks，
+// 最终按 index 升序写入 ParseResult.Candidates，同时将首候选属性映射到顶层快捷字段。
 func collectChunksToParseResult(chunks []map[string]any) *ParseResult {
 	s := &ParseResult{
 		PromptFeedback: map[string]any{},
 		UsageMetadata:  map[string]any{},
 	}
-	var allParts []map[string]any
+	candidatesMap := map[int]*candidateCollector{}
 
 	for _, chunk := range chunks {
-		if cands, ok := chunk["candidates"].([]any); ok && len(cands) > 0 {
-			if c, ok := cands[0].(map[string]any); ok {
+		if cands, ok := chunk["candidates"].([]any); ok {
+			for _, cRaw := range cands {
+				c, ok := cRaw.(map[string]any)
+				if !ok {
+					continue
+				}
+				idx := 0
+				if v := c["index"]; v != nil {
+					idx = toInt(v, 0)
+				}
+				if _, exists := candidatesMap[idx]; !exists {
+					candidatesMap[idx] = &candidateCollector{index: idx}
+				}
+				cc := candidatesMap[idx]
+
 				if fr := c["finishReason"]; isTruthyAny(fr) {
-					s.FinishReason = toStr(fr)
+					cc.finishReason = toStr(fr)
 				}
 				if fm, ok := c["finishMessage"]; ok {
-					s.FinishMessage = fm
+					cc.finishMessage = fm
 				}
 				if v := c["safetyRatings"]; isTruthyAny(v) {
-					s.SafetyRatings = v
+					cc.safetyRatings = v
 				}
 				if v := c["citationMetadata"]; isTruthyAny(v) {
-					s.CitationMetadata = v
+					cc.citationMetadata = v
 				}
 				if v := c["groundingMetadata"]; isTruthyAny(v) {
-					s.GroundingMetadata = v
+					cc.groundingMetadata = v
 				}
 				if v, ok := c["tokenCount"]; ok {
-					s.TokenCount = v
+					cc.tokenCount = v
 				}
 				if v, ok := c["avgLogprobs"]; ok {
-					s.AvgLogprobs = v
+					cc.avgLogprobs = v
 				}
 				if v, ok := c["logprobsResult"]; ok {
-					s.LogprobsResult = v
-				}
-				if v := c["index"]; v != nil {
-					s.CandidateIndex = toInt(v, 0)
+					cc.logprobsResult = v
 				}
 
 				if content, ok := c["content"].(map[string]any); ok {
 					if parts, ok := content["parts"].([]any); ok {
 						for _, pRaw := range parts {
 							if p, ok := pRaw.(map[string]any); ok {
-								allParts = append(allParts, p)
+								cc.parts = append(cc.parts, p)
 							}
 						}
 					}
@@ -183,7 +215,54 @@ func collectChunksToParseResult(chunks []map[string]any) *ParseResult {
 		}
 	}
 
-	s.Parts = transform.MergeContentBlocks(allParts)
+	// 按 index 升序构建 candidates 切片
+	indices := make([]int, 0, len(candidatesMap))
+	for idx := range candidatesMap {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+
+	candidates := make([]map[string]any, 0, len(indices))
+	var firstMergedParts []map[string]any
+	for _, idx := range indices {
+		cc := candidatesMap[idx]
+		mergedParts := transform.MergeContentBlocks(cc.parts)
+		if firstMergedParts == nil {
+			firstMergedParts = mergedParts
+		}
+		candidate := map[string]any{
+			"index":   cc.index,
+			"content": map[string]any{"parts": toAnySlice(mergedParts), "role": "model"},
+		}
+		if cc.finishReason != "" {
+			candidate["finishReason"] = strings.ToUpper(cc.finishReason)
+		}
+		setIfPresent(candidate, "finishMessage", cc.finishMessage)
+		setIfPresent(candidate, "safetyRatings", cc.safetyRatings)
+		setIfPresent(candidate, "citationMetadata", cc.citationMetadata)
+		setIfPresent(candidate, "groundingMetadata", cc.groundingMetadata)
+		setIfPresent(candidate, "tokenCount", cc.tokenCount)
+		setIfPresent(candidate, "avgLogprobs", cc.avgLogprobs)
+		setIfPresent(candidate, "logprobsResult", cc.logprobsResult)
+		candidates = append(candidates, candidate)
+	}
+	s.Candidates = candidates
+
+	// 顶层快捷字段映射到首候选（index 最小者）
+	if len(candidates) > 0 {
+		firstCC := candidatesMap[indices[0]]
+		s.Parts = firstMergedParts
+		s.FinishReason = firstCC.finishReason
+		s.FinishMessage = firstCC.finishMessage
+		s.SafetyRatings = firstCC.safetyRatings
+		s.CitationMetadata = firstCC.citationMetadata
+		s.GroundingMetadata = firstCC.groundingMetadata
+		s.TokenCount = firstCC.tokenCount
+		s.AvgLogprobs = firstCC.avgLogprobs
+		s.LogprobsResult = firstCC.logprobsResult
+		s.CandidateIndex = firstCC.index
+	}
+
 	return s
 }
 

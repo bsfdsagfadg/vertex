@@ -25,6 +25,13 @@ type ParseResult struct { //nolint:govet
 	HasError          bool
 	ErrorMessage      string
 	ErrorObj          *VertexError
+
+	// Candidates 是按 index 分组合并后的完整候选列表。
+	// 每个元素是 Gemini candidate dict（含 index / content.parts / finishReason 等）。
+	// 当上游返回多候选（candidateCount>1）时，所有候选均保留于此。
+	// 顶层快捷字段（Parts、FinishReason 等）始终映射 Candidates[0]，
+	// 确保对单候选调用方零侵入。
+	Candidates []map[string]any
 }
 
 // ---- 小工具 ----

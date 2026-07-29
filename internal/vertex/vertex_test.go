@@ -245,3 +245,171 @@ func TestBuildCompleteResponse_Empty(t *testing.T) {
 		t.Errorf("err=%v, want empty", err)
 	}
 }
+
+func TestBuildCompleteResponse_MultiCandidate(t *testing.T) {
+	c := &VertexAIClient{}
+	// 构造包含两个候选（index 0 和 1）的 ParseResult
+	r := &ParseResult{
+		Candidates: []map[string]any{
+			{
+				"index":        0,
+				"content":      map[string]any{"parts": toAnySlice([]map[string]any{{"text": "hello from 0"}}), "role": "model"},
+				"finishReason": "STOP",
+			},
+			{
+				"index":        1,
+				"content":      map[string]any{"parts": toAnySlice([]map[string]any{{"text": "hello from 1"}}), "role": "model"},
+				"finishReason": "STOP",
+			},
+		},
+	}
+	resp, err := c.buildCompleteResponse(r)
+	if err != nil {
+		t.Fatalf("buildCompleteResponse error: %v", err)
+	}
+	cands, ok := resp["candidates"].([]any)
+	if !ok {
+		t.Fatal("candidates should be []any")
+	}
+	if len(cands) != 2 {
+		t.Fatalf("len(candidates)=%d, want 2", len(cands))
+	}
+	// 验证第一个候选
+	c0 := cands[0].(map[string]any)
+	if c0["index"] != 0 {
+		t.Errorf("candidate[0].index=%v, want 0", c0["index"])
+	}
+	content0, _ := c0["content"].(map[string]any)
+	parts0, _ := content0["parts"].([]any)
+	if len(parts0) != 1 {
+		t.Fatalf("candidate[0] parts len=%d", len(parts0))
+	}
+	if p0 := parts0[0].(map[string]any); p0["text"] != "hello from 0" {
+		t.Errorf("candidate[0] text=%q, want 'hello from 0'", p0["text"])
+	}
+	// 验证第二个候选
+	c1 := cands[1].(map[string]any)
+	if c1["index"] != 1 {
+		t.Errorf("candidate[1].index=%v, want 1", c1["index"])
+	}
+}
+
+func TestCollectChunksToParseResult_MultiCandidate(t *testing.T) {
+	chunks := []map[string]any{
+		{
+			"candidates": []any{
+				map[string]any{
+					"index":        0,
+					"content":      map[string]any{"parts": []any{map[string]any{"text": "part0-a"}}, "role": "model"},
+					"finishReason": "FINISH_REASON_UNSPECIFIED",
+				},
+				map[string]any{
+					"index":        1,
+					"content":      map[string]any{"parts": []any{map[string]any{"text": "part1-a"}}, "role": "model"},
+					"finishReason": "FINISH_REASON_UNSPECIFIED",
+				},
+			},
+		},
+		{
+			"candidates": []any{
+				map[string]any{
+					"index":        0,
+					"content":      map[string]any{"parts": []any{map[string]any{"text": " part0-b"}}, "role": "model"},
+					"finishReason": "STOP",
+				},
+				map[string]any{
+					"index":        1,
+					"content":      map[string]any{"parts": []any{map[string]any{"text": " part1-b"}}, "role": "model"},
+					"finishReason": "STOP",
+				},
+			},
+			"usageMetadata": map[string]any{"totalTokenCount": float64(10)},
+		},
+	}
+
+	result := collectChunksToParseResult(chunks)
+	if result == nil {
+		t.Fatal("collectChunksToParseResult returned nil")
+	}
+
+	// 验证顶层快捷字段（首候选 index=0）
+	if len(result.Parts) != 1 {
+		t.Fatalf("result.Parts len=%d, want 1", len(result.Parts))
+	}
+	if result.Parts[0]["text"] != "part0-a part0-b" {
+		t.Errorf("result.Parts[0].text=%q, want 'part0-a part0-b'", result.Parts[0]["text"])
+	}
+	if result.FinishReason != "STOP" {
+		t.Errorf("result.FinishReason=%q, want STOP", result.FinishReason)
+	}
+	if result.CandidateIndex != 0 {
+		t.Errorf("result.CandidateIndex=%d, want 0", result.CandidateIndex)
+	}
+	if result.UsageMetadata == nil || result.UsageMetadata["totalTokenCount"] != float64(10) {
+		t.Error("usageMetadata should be propagated")
+	}
+
+	// 验证完整 Candidates
+	if len(result.Candidates) != 2 {
+		t.Fatalf("result.Candidates len=%d, want 2", len(result.Candidates))
+	}
+	// index=0 候选
+	c0 := result.Candidates[0]
+	if c0["index"] != 0 {
+		t.Errorf("candidates[0].index=%v, want 0", c0["index"])
+	}
+	c0Content := c0["content"].(map[string]any)
+	c0Parts := c0Content["parts"].([]any)
+	if len(c0Parts) != 1 {
+		t.Fatalf("candidates[0] parts len=%d", len(c0Parts))
+	}
+	if p := c0Parts[0].(map[string]any); p["text"] != "part0-a part0-b" {
+		t.Errorf("candidates[0] text=%q, want 'part0-a part0-b'", p["text"])
+	}
+	if c0["finishReason"] != "STOP" {
+		t.Errorf("candidates[0].finishReason=%v, want STOP", c0["finishReason"])
+	}
+	// index=1 候选
+	c1 := result.Candidates[1]
+	if c1["index"] != 1 {
+		t.Errorf("candidates[1].index=%v, want 1", c1["index"])
+	}
+	c1Content := c1["content"].(map[string]any)
+	c1Parts := c1Content["parts"].([]any)
+	if len(c1Parts) != 1 {
+		t.Fatalf("candidates[1] parts len=%d", len(c1Parts))
+	}
+	if p := c1Parts[0].(map[string]any); p["text"] != "part1-a part1-b" {
+		t.Errorf("candidates[1] text=%q, want 'part1-a part1-b'", p["text"])
+	}
+	if c1["finishReason"] != "STOP" {
+		t.Errorf("candidates[1].finishReason=%v, want STOP", c1["finishReason"])
+	}
+}
+
+func TestCollectChunksToParseResult_SingleCandidate(t *testing.T) {
+	// 确保单候选场景行为不变
+	chunks := []map[string]any{
+		{
+			"candidates": []any{
+				map[string]any{
+					"index":   0,
+					"content": map[string]any{"parts": []any{map[string]any{"text": "hello"}}, "role": "model"},
+				},
+			},
+		},
+	}
+	result := collectChunksToParseResult(chunks)
+	if result == nil {
+		t.Fatal("collectChunksToParseResult returned nil")
+	}
+	if len(result.Parts) != 1 || result.Parts[0]["text"] != "hello" {
+		t.Errorf("single candidate parts mismatch: %v", result.Parts)
+	}
+	if len(result.Candidates) != 1 {
+		t.Fatalf("Candidates len=%d, want 1", len(result.Candidates))
+	}
+	if result.Candidates[0]["index"] != 0 {
+		t.Errorf("candidates[0].index=%v, want 0", result.Candidates[0]["index"])
+	}
+}
