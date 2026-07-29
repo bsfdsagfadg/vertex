@@ -513,4 +513,92 @@ func TestRunRace_AuthErrorDisablesNode(t *testing.T) {
 	}
 }
 
+func TestRunRace_PickBestError_Priority(t *testing.T) {
+	setupRaceNodes(t, "uri1", "uri2")
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(raceTestConfig())
+
+	t.Run("retryable_wins_over_nonretryable", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var callCount int32
+		run := func(ctx context.Context, uri string) (map[string]any, error) {
+			order := atomic.AddInt32(&callCount, 1)
+			if order == 1 {
+				return nil, NewEmptyResponseError("empty", nil)
+			}
+			return nil, NewInvalidArgumentError("bad request", nil)
+		}
+
+		_, err := RunRace[map[string]any](ctx, cfg, run)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+
+		var ve *VertexError
+		if !errors.As(err, &ve) {
+			t.Fatalf("expected *VertexError, got %T", err)
+		}
+		if !ve.IsRetryable() {
+			t.Errorf("expected retryable error when one exists, got Kind=%s Code=%d", ve.Kind, ve.Code)
+		}
+	})
+
+	t.Run("nonretryable_global_wins_over_other_nonretryable", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var callCount int32
+		run := func(ctx context.Context, uri string) (map[string]any, error) {
+			order := atomic.AddInt32(&callCount, 1)
+			if order == 1 {
+				return nil, NewInvalidArgumentError("bad request", nil)
+			}
+			return nil, NewPermissionDeniedError("forbidden", nil)
+		}
+
+		_, err := RunRace[map[string]any](ctx, cfg, run)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+
+		var ve *VertexError
+		if !errors.As(err, &ve) {
+			t.Fatalf("expected *VertexError, got %T", err)
+		}
+		if !ve.IsGlobalHardError() {
+			t.Errorf("expected GlobalHardError when all errors are non-retryable, got Kind=%s Code=%d", ve.Kind, ve.Code)
+		}
+	})
+
+	t.Run("ratelimit_wins_over_other_retryable", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var callCount int32
+		run := func(ctx context.Context, uri string) (map[string]any, error) {
+			order := atomic.AddInt32(&callCount, 1)
+			if order == 1 {
+				return nil, NewRateLimitError("too many", 0, nil)
+			}
+			return nil, NewEmptyResponseError("empty", nil)
+		}
+
+		_, err := RunRace[map[string]any](ctx, cfg, run)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+
+		var ve *VertexError
+		if !errors.As(err, &ve) {
+			t.Fatalf("expected *VertexError, got %T", err)
+		}
+		if ve.Kind != "ratelimit" && ve.Code != 429 {
+			t.Errorf("expected ratelimit error as highest priority retryable, got Kind=%s Code=%d", ve.Kind, ve.Code)
+		}
+	})
+}
+
 

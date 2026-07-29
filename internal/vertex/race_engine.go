@@ -81,20 +81,24 @@ type raceResult[T any] struct {
 }
 
 // errorPriority 返回错误的优先级数值（越小优先级越高）。
+// 核心原则：可重试错误优先级高于不可重试错误。
+// 当任意节点返回可重试错误时，客户端可据此判断应重试，
+// 而不是被不可重试错误直接中断。
 func errorPriority(err error) int {
 	var ve *VertexError
 	if errors.As(err, &ve) {
-		if ve.IsGlobalHardError() {
-			return 1
-		}
-		if ve.Kind == "ratelimit" || ve.Code == 429 {
+		if ve.IsRetryable() {
+			if ve.Kind == "ratelimit" || ve.Code == 429 {
+				return 1
+			}
 			return 2
 		}
-		if ve.Code >= 500 && ve.Code < 600 {
+		if ve.IsGlobalHardError() {
 			return 3
 		}
+		return 4
 	}
-	return 4
+	return 5
 }
 
 // pickBestError 从多个错误中挑选优先级最高（数值最小）的一个返回。
