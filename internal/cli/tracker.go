@@ -34,8 +34,6 @@ var (
 	//nolint:gochecknoglobals
 	programDone chan struct{}
 	//nolint:gochecknoglobals
-	pErr error
-	//nolint:gochecknoglobals
 	enabled atomic.Bool
 	//nolint:gochecknoglobals
 	additionalLogWriter io.Writer
@@ -85,7 +83,7 @@ func InitTracker(fileLogger io.Writer) {
 					log.Printf("[TUI] Bubble Tea 运行崩溃: %v", r)
 				}
 			}()
-			_, pErr = p.Run()
+			_, _ = p.Run()
 			close(programDone)
 		}()
 
@@ -112,10 +110,6 @@ func StopTUI() {
 
 func TUIDone() <-chan struct{} {
 	return programDone
-}
-
-func IsEnabled() bool {
-	return enabled.Load()
 }
 
 func StartReq(id string) {

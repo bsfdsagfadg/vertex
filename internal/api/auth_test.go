@@ -135,22 +135,11 @@ func TestLoadKeysAndValidate(t *testing.T) {
 	if !m.ValidateKey("  sk-alice-key  ") {
 		t.Errorf("ValidateKey 应 trim 输入后命中")
 	}
-	// 名称映射
-	if got := m.GetKeyName("sk-alice-key"); got != "alice" {
-		t.Errorf("GetKeyName(sk-alice-key)=%q，期望 alice", got)
-	}
-	if got := m.GetKeyName("sk-carol-key"); got != "carol" {
-		t.Errorf("GetKeyName(sk-carol-key)=%q（应 trim name），期望 carol", got)
-	}
-
 	// 无效/被跳过的
 	for _, k := range []string{"notskprefix", "sk-unknown", "", "onlyonefield"} {
 		if m.ValidateKey(k) {
 			t.Errorf("ValidateKey(%q) 应为 false", k)
 		}
-	}
-	if got := m.GetKeyName("sk-unknown"); got != "unknown" {
-		t.Errorf("未知 key 名称应为 unknown，实际 %q", got)
 	}
 }
 

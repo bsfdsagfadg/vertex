@@ -21,11 +21,6 @@ var (
 	maxSpillProvider func() int64
 )
 
-// SetMaxSpillBytes 设置磁盘溢出阈值（字节数）；0 或负数表示永不落盘。
-func SetMaxSpillBytes(limit int64) {
-	maxMemSize = limit
-}
-
 // SetMaxSpillProvider 注册一个动态提供 spill 阈值的函数（支持热重载）。
 // 非 nil 时优先于 SetMaxSpillBytes 的静态值。
 func SetMaxSpillProvider(fn func() int64) {

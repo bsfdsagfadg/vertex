@@ -23,35 +23,6 @@ func NormalizeBase64(data string) string {
 	return value
 }
 
-// FcNameTracker 按出现顺序追踪 functionCall 名称。
-type FcNameTracker struct {
-	names []string
-	idx   int
-}
-
-// NewFcNameTracker 过滤掉空名后构造追踪器。
-func NewFcNameTracker(names []string) *FcNameTracker {
-	filtered := make([]string, 0, len(names))
-	for _, n := range names {
-		if strings.TrimSpace(n) != "" {
-			filtered = append(filtered, n)
-		}
-	}
-	return &FcNameTracker{names: filtered}
-}
-
-// NextName 返回下一个未用的名称，用尽返回 ("", false)。
-func (t *FcNameTracker) NextName() (string, bool) {
-	if t.idx < len(t.names) {
-		name := strings.TrimSpace(t.names[t.idx])
-		t.idx++
-		if name != "" {
-			return name, true
-		}
-	}
-	return "", false
-}
-
 // cleanPartWithID 是 CleanPart 的 id 锚点版本。
 func cleanPartWithID(part map[string]any, functionCallNames []string, responseIndex int, callIDMap map[string]string) (map[string]any, bool) {
 	hasValid := false

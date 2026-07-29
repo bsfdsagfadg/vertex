@@ -82,16 +82,6 @@ func (m *APIKeyManager) ValidateKey(key string) bool {
 	return ok
 }
 
-// GetKeyName 返回密钥对应的显示名。
-func (m *APIKeyManager) GetKeyName(key string) string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if n, ok := m.keys[strings.TrimSpace(key)]; ok {
-		return n
-	}
-	return "unknown"
-}
-
 // Count 返回已加载的密钥数。
 func (m *APIKeyManager) Count() int {
 	m.mu.RLock()

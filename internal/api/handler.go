@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -251,15 +250,6 @@ func resolveN(raw any, maxN int) (int, string) {
 		return 0, "请求参数有误: n 超过上限 " + strconv.Itoa(maxN) + " (n exceeds maximum " + strconv.Itoa(maxN) + ")"
 	}
 	return n, ""
-}
-
-func randomDigits(n int) string {
-	const digits = "0123456789"
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = digits[rand.Intn(len(digits))]
-	}
-	return string(b)
 }
 
 func adminErr(msg string) map[string]any {

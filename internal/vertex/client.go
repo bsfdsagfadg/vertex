@@ -2,14 +2,10 @@ package vertex
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"log"
 	"math"
 	"net"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
@@ -59,10 +55,6 @@ func NewVertexAIClient(cfg config.ConfigProvider, net *transport.NetworkClient) 
 	}
 }
 
-func (c *VertexAIClient) StartTokenPool()                  { c.pool.Start() }
-func (c *VertexAIClient) StopTokenPool()                   { c.pool.Stop() }
-func (c *VertexAIClient) TokenPoolStats() (size, fill int) { return c.pool.Stats() }
-
 func (c *VertexAIClient) getBatchGraphqlURL() string {
 	if !strings.HasPrefix(batchGraphqlURL, anonBaseURL) {
 		return batchGraphqlURL
@@ -72,80 +64,6 @@ func (c *VertexAIClient) getBatchGraphqlURL() string {
 		key = anonAPIKey
 	}
 	return anonBaseURL + batchGraphqlPath + "?key=" + key + "&prettyPrint=false"
-}
-
-const largePayloadThreshold = 1 << 20 // 1MB
-
-// Deprecated: 请使用并行 coreGenerate 调用。
-func (c *VertexAIClient) CompleteChatN(ctx context.Context, model string, geminiPayload map[string]any, n int) ([]map[string]any, error) {
-	if n > 1 {
-		if b, err := json.Marshal(geminiPayload); err == nil && len(b) > largePayloadThreshold {
-			log.Printf("[Vertex] [CompleteChatN] 大 payload (%d bytes) 降级为串行", len(b))
-			return c.completeChatNSerial(ctx, model, geminiPayload, n)
-		}
-	}
-
-	type res struct {
-		resp map[string]any
-		err  error
-	}
-	results := make([]res, n)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func(idx int) {
-			defer wg.Done()
-			defer func() {
-				if rec := recover(); rec != nil {
-					results[idx] = res{err: NewInternalError(fmt.Sprintf("candidate panic: %v", rec), nil)} //nolint:exhaustruct
-				}
-			}()
-			r, err := c.CompleteChat(ctx, model, geminiPayload)
-			results[idx] = res{resp: r, err: err}
-		}(i)
-	}
-	wg.Wait()
-
-	var ok []map[string]any
-	var firstErr error
-	for _, r := range results {
-		if r.err != nil {
-			if firstErr == nil {
-				firstErr = r.err
-			}
-			continue
-		}
-		ok = append(ok, r.resp)
-	}
-	if len(ok) == 0 {
-		if firstErr == nil {
-			firstErr = NewInternalError("All candidates failed", nil)
-		}
-		return nil, firstErr
-	}
-	return ok, nil
-}
-
-func (c *VertexAIClient) completeChatNSerial(ctx context.Context, model string, geminiPayload map[string]any, n int) ([]map[string]any, error) {
-	var ok []map[string]any
-	var firstErr error
-	for i := 0; i < n; i++ {
-		r, err := c.CompleteChat(ctx, model, geminiPayload)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		ok = append(ok, r)
-	}
-	if len(ok) == 0 {
-		if firstErr == nil {
-			firstErr = NewInternalError("All candidates failed", nil)
-		}
-		return nil, firstErr
-	}
-	return ok, nil
 }
 
 func (c *VertexAIClient) buildCompleteResponse(r *ParseResult) (map[string]any, error) {

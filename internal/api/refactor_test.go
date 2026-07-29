@@ -140,11 +140,6 @@ func geminiRichResponseUnspecified() string {
 	return `{"candidates":[{"content":{"parts":[{"text":"Hello! "},{"text":"I'm thinking deeply","thought":true},{"functionCall":{"name":"get_weather","args":{"location":"Shanghai"}}},{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}}],"role":"model"},"finishReason":"FINISH_REASON_UNSPECIFIED"}],"usageMetadata":{"promptTokenCount":15,"candidatesTokenCount":42,"totalTokenCount":57,"thoughtsTokenCount":10}}`
 }
 
-// geminiStreamingChunk 构造一个 Gemini 流式 chunk。
-func geminiStreamingChunk(text, finishReason string) string {
-	return fmt.Sprintf(`{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"content":{"parts":[{"text":"%s"}],"role":"model"},"finishReason":"%s"}]}}}}}]}`, text, finishReason)
-}
-
 // ──────────────────────────────────────────────
 // 集成测试
 // ──────────────────────────────────────────────
@@ -724,29 +719,6 @@ func mockAlways429(t *testing.T) http.HandlerFunc {
 		w.WriteHeader(http.StatusTooManyRequests)
 		w.Write([]byte(`[{"results":[{"data":{"error":"rate limit"}}]}]`))
 	}
-}
-
-// mockSlowResponse 延迟指定时长后返回响应。
-func mockSlowResponse(t *testing.T, delay time.Duration, status int, body string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(delay)
-		w.WriteHeader(status)
-		w.Write([]byte(body))
-	}
-}
-
-// mockTracker 跟踪收到的请求数，并委托给内部 handler。
-type mockTracker struct {
-	mu       sync.Mutex
-	requests int
-	handler  func(t *testing.T) http.HandlerFunc
-}
-
-func (mt *mockTracker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	mt.mu.Lock()
-	mt.requests++
-	mt.mu.Unlock()
-	mt.handler(nil)(w, r)
 }
 
 // ──────────────────────────────────────────────

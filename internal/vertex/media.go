@@ -1,7 +1,6 @@
 package vertex
 
 import (
-	"context"
 	"encoding/base64"
 	"strings"
 )
@@ -16,26 +15,6 @@ type ImageData struct {
 type AudioData struct {
 	Data     string // 整段音频的 base64（多段 PCM 已拼接）
 	MimeType string
-}
-
-// Deprecated: 请使用 coreGenerate + ExtractImageResponse。
-// CompleteChatImage 走标准非流式请求，再从响应抽取图片数据。
-func (c *VertexAIClient) CompleteChatImage(ctx context.Context, model string, geminiPayload map[string]any) ([]ImageData, error) {
-	result, err := c.CompleteChat(ctx, model, geminiPayload)
-	if err != nil {
-		return nil, err
-	}
-	return ExtractImageResponse(result), nil
-}
-
-// Deprecated: 请使用 coreGenerate + ExtractAudioResponse。
-// CompleteChatAudio 走标准非流式请求，再从响应抽取（拼接）音频数据。
-func (c *VertexAIClient) CompleteChatAudio(ctx context.Context, model string, geminiPayload map[string]any) (AudioData, error) {
-	result, err := c.CompleteChat(ctx, model, geminiPayload)
-	if err != nil {
-		return AudioData{}, err
-	}
-	return ExtractAudioResponse(result), nil
 }
 
 // ExtractImageResponse 从完整 Gemini 响应抽取图片。
