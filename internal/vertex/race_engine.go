@@ -16,8 +16,8 @@ import (
 
 // raceConfig 是 RunRace 的可配置策略。
 type raceConfig[T any] struct {
-	noCancelOnSuccess   bool
-	failFastOnHardError bool
+	preserveRaceCtxOnWin bool // 仅控制 RunRace 返回时是否 cancel 主竞速 ctx；落败候选的关停由 cancelCandidate 独立完成，与此字段无关
+	failFastOnHardError  bool
 	// isWinningResult 决定某个成功结果是否可"立即胜出"。
 	// nil 表示首个无错误结果立即胜出（流式默认）。
 	// 非 nil：返回 true 即时胜出，false 表示结果被收集（CompleteChat 的非 STOP 结果）。
@@ -31,9 +31,12 @@ type raceConfig[T any] struct {
 
 type RaceOption[T any] func(*raceConfig[T])
 
-func WithNoCancelOnSuccess[T any]() RaceOption[T] {
+// WithPreserveRaceCtxOnWin 使 RaceCtx 在胜出路径上不被 cancel（默认 defer cancel() 总是执行）。
+// 此 flag 仅控制主竞速 context 的 defer cancel；落败候选的关停由 cancelCandidate 独立完成，与此选项无关。
+// 流式路径（StreamParallel）用此选项，使胜出后保留主 ctx 让胜出节点的流继续传完。
+func WithPreserveRaceCtxOnWin[T any]() RaceOption[T] {
 	return func(cfg *raceConfig[T]) {
-		cfg.noCancelOnSuccess = true
+		cfg.preserveRaceCtxOnWin = true
 	}
 }
 
@@ -154,9 +157,18 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 	cli.UpdateReqState(RequestIDFromContext(ctx), "⚡ 并发竞速", "\033[33m", fmt.Sprintf("并行节点: %d", len(cands)))
 
 	ctxRace, cancel := context.WithCancel(ctx)
+	// returnedOnWinPath 仅在本函数胜出路径（return res.val, nil 前）被置 true，
+	// 其余返回路径保持 false。
 	var returnedOnWinPath bool
 	defer func() {
-		if !returnedOnWinPath || !rc.noCancelOnSuccess {
+		// 非胜出路径返回 → 总是 cancel()；
+		// 胜出路径返回但 preserveRaceCtxOnWin=false → 仍 cancel()；
+		// 胜出路径返回且 preserveRaceCtxOnWin=true → 不 cancel，保留主 ctxRace
+		// 以让胜出节点那条流继续传完。
+		//
+		// 本 flag 只管主 ctxRace 的 defer cancel；落败候选始终由
+		// cancelCandidate 循环独立关停，与此 flag 无关。
+		if !returnedOnWinPath || !rc.preserveRaceCtxOnWin {
 			cancel()
 		}
 	}()

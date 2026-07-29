@@ -369,7 +369,7 @@ func TestRunRace_Streaming_PermissionDenied_NoFailFast(t *testing.T) {
 		return ch, nil
 	}
 
-	result, err := RunRace(ctx, cfg, run, WithNoCancelOnSuccess[<-chan StreamChunk](), WithFailFastOnHardError[<-chan StreamChunk]())
+	result, err := RunRace(ctx, cfg, run, WithPreserveRaceCtxOnWin[<-chan StreamChunk](), WithFailFastOnHardError[<-chan StreamChunk]())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
