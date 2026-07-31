@@ -187,8 +187,32 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 		c = handleInlineDataCase(c)
 		c = normalizeContents(c)
 		c = HandleBase64InContents(c)
+		modelName, _ := vars["model"].(string)
+		trailingFixActive := cfg.TrailingModelFixEnabled() &&
+			(strings.Contains(modelName, "gemini-3.5-flash-lite") ||
+				strings.Contains(modelName, "gemini-3.6-flash"))
+
+		if trailingFixActive {
+			c = normalizeFunctionResponseRoles(c)
+		}
+
 		c = mergeContiguousRoles(c)
 		c = filterEmptyContents(c)
+
+		if trailingFixActive {
+			if list, ok := c.([]any); ok && len(list) > 0 {
+				if last, ok := list[len(list)-1].(map[string]any); ok {
+					if endsWithModelTurn(last) {
+						list = append(list, map[string]any{
+							"role":  "user",
+							"parts": []any{map[string]any{"text": "继续"}},
+						})
+						c = list
+					}
+				}
+			}
+		}
+
 		c = EncodeThoughtSignature(c, 0)
 		vars["contents"] = c
 	}
@@ -533,6 +557,70 @@ func filterEmptyContents(contents any) any {
 		}
 	}
 	return filtered
+}
+
+// endsWithModelTurn 判断 content 是否会被上游视为 "以 model turn 结尾"。
+// Google 服务端按 part 类型判定：非 user 角色（system 除外，system 结尾不属模型回合），
+// 或 user 消息中含 functionResponse/functionCall part，均被视为模型回合未闭合。
+func endsWithModelTurn(content map[string]any) bool {
+	role, _ := content["role"].(string)
+	if !strings.EqualFold(role, "user") && !strings.EqualFold(role, "system") {
+		return true
+	}
+	parts, _ := content["parts"].([]any)
+	for _, p := range parts {
+		pm, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		if pm["functionResponse"] != nil || pm["functionCall"] != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeFunctionResponseRoles 将 contents 中纯 functionResponse 的 model role 修正为 function。
+// 必须在 mergeContiguousRoles 之前调用，否则相邻同 role 合并后无法单独特定 functionResponse。
+func normalizeFunctionResponseRoles(contents any) any {
+	list, ok := contents.([]any)
+	if !ok || len(list) == 0 {
+		return contents
+	}
+	result := make([]any, len(list))
+	for i, c := range list {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			result[i] = c
+			continue
+		}
+		role, _ := cm["role"].(string)
+		if role != "model" {
+			result[i] = c
+			continue
+		}
+		parts, _ := cm["parts"].([]any)
+		if len(parts) == 0 {
+			result[i] = c
+			continue
+		}
+		allFuncResp := true
+		for _, p := range parts {
+			pm, ok := p.(map[string]any)
+			if !ok || pm["functionResponse"] == nil {
+				allFuncResp = false
+				break
+			}
+		}
+		if !allFuncResp {
+			result[i] = c
+			continue
+		}
+		nc := copyMap(cm)
+		nc["role"] = "function"
+		result[i] = nc
+	}
+	return result
 }
 
 // mergeContiguousRoles 合并相邻同 role 的 content。

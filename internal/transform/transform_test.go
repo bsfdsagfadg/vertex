@@ -521,6 +521,242 @@ func TestBuildVertexVariables(t *testing.T) {
 	}
 }
 
+func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
+	// 场景1: toggle ON + 命中模型 + 纯 functionResponse → role 修正 + 追加
+	t.Run("命中模型+纯functionResponse→role修正+追加", func(t *testing.T) {
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		payload := map[string]any{
+			"contents": []any{
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "天气如何"}}},
+				map[string]any{"role": "model", "parts": []any{map[string]any{"functionCall": map[string]any{"name": "get_weather", "args": map[string]any{"city": "北京"}}}}},
+				map[string]any{"role": "model", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "get_weather", "response": map[string]any{"temp": 22}}}}},
+			},
+		}
+		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
+		contents := vars["contents"].([]any)
+		// 第3项 role→function，末尾含 functionResponse part → 视为 model turn 未闭合，追加 → 4 项
+		if len(contents) != 4 {
+			t.Fatalf("len(contents)=%d, want 4 (3项+追加)", len(contents))
+		}
+		third := contents[2].(map[string]any)
+		if third["role"] != "function" {
+			t.Errorf("third content role=%q, want function", third["role"])
+		}
+		last := contents[3].(map[string]any)
+		if last["role"] != "user" {
+			t.Errorf("last content role=%q, want user", last["role"])
+		}
+		lastParts := last["parts"].([]any)
+		if len(lastParts) != 1 {
+			t.Fatalf("last parts len=%d, want 1", len(lastParts))
+		}
+		if text, _ := lastParts[0].(map[string]any)["text"].(string); text != "继续" {
+			t.Errorf("last parts[0].text=%q, want 继续", text)
+		}
+	})
+
+	// 场景2: toggle ON + 命中模型 + 末尾 model → 无条件追加
+	t.Run("命中模型+末尾model→无条件追加", func(t *testing.T) {
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		payload := map[string]any{
+			"contents": []any{
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
+				map[string]any{"role": "model", "parts": []any{map[string]any{"text": "hello"}}},
+			},
+		}
+		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
+		contents := vars["contents"].([]any)
+		if len(contents) != 3 {
+			t.Fatalf("len(contents)=%d, want 3 (2项+追加)", len(contents))
+		}
+		last := contents[2].(map[string]any)
+		if last["role"] != "user" {
+			t.Errorf("last content role=%q, want user", last["role"])
+		}
+	})
+
+	// 场景3: toggle ON + 命中模型 + 末尾 user → 不追加（行为翻转）
+	t.Run("命中模型+末尾user→不追加", func(t *testing.T) {
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		payload := map[string]any{
+			"contents": []any{
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
+				map[string]any{"role": "model", "parts": []any{map[string]any{"text": "hello"}}},
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "继续"}}},
+			},
+		}
+		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
+		contents := vars["contents"].([]any)
+		// 末尾为 user → 条件不匹配，不追加
+		if len(contents) != 3 {
+			t.Fatalf("len(contents)=%d, want 3 (不追加)", len(contents))
+		}
+		last := contents[2].(map[string]any)
+		if last["role"] != "user" {
+			t.Errorf("last content role=%q, want user", last["role"])
+		}
+	})
+
+	// 场景4: toggle ON + 不命中模型 → 不做任何修改
+	t.Run("不命中模型→不做任何修改", func(t *testing.T) {
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		payload := map[string]any{
+			"contents": []any{
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
+				map[string]any{"role": "model", "parts": []any{map[string]any{"text": "hello"}}},
+			},
+		}
+		vars := BuildVertexVariables("gemini-2.5-flash", payload, cfg)
+		contents := vars["contents"].([]any)
+		if len(contents) != 2 {
+			t.Errorf("len(contents)=%d, want 2 (不做修改)", len(contents))
+		}
+	})
+
+	// 场景5: toggle OFF + 命中模型 → 不做任何修改
+	t.Run("开关关闭+命中模型→不做修改", func(t *testing.T) {
+		cfg := config.StaticProvider(config.DefaultConfig())
+		payload := map[string]any{
+			"contents": []any{
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
+				map[string]any{"role": "model", "parts": []any{map[string]any{"text": "hello"}}},
+			},
+		}
+		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
+		contents := vars["contents"].([]any)
+		if len(contents) != 2 {
+			t.Errorf("len(contents)=%d, want 2 (不做修改)", len(contents))
+		}
+	})
+
+	// 场景6: toggle ON + 版本后缀 → strings.Contains 仍命中，末尾 model → 条件追加
+	t.Run("版本后缀→模糊匹配命中", func(t *testing.T) {
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		payload := map[string]any{
+			"contents": []any{
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
+				map[string]any{"role": "model", "parts": []any{map[string]any{"text": "hello"}}},
+			},
+		}
+		vars := BuildVertexVariables("gemini-3.6-flash-001", payload, cfg)
+		contents := vars["contents"].([]any)
+		if len(contents) != 3 {
+			t.Errorf("len(contents)=%d, want 3 (末尾model→条件追加)", len(contents))
+		}
+	})
+
+	// 场景7: toggle ON + 空 contents → 不 panic
+	t.Run("空contents→不panic", func(t *testing.T) {
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		payload := map[string]any{
+			"contents": []any{},
+		}
+		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
+		contents := vars["contents"].([]any)
+		if len(contents) != 0 {
+			t.Errorf("len(contents)=%d, want 0", len(contents))
+		}
+	})
+
+	// 场景8: toggle ON + 命中模型 + 末尾 function → 追加
+	t.Run("命中模型+末尾function→追加", func(t *testing.T) {
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		payload := map[string]any{
+			"contents": []any{
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "天气如何"}}},
+				map[string]any{"role": "model", "parts": []any{map[string]any{"functionCall": map[string]any{"name": "get_weather"}}}},
+				map[string]any{"role": "function", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "get_weather", "response": map[string]any{"temp": 22}}}}},
+			},
+		}
+		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
+		contents := vars["contents"].([]any)
+		// 末尾 role="function" 但含 functionResponse part → 视为 model turn 未闭合，追加 → 4 项
+		if len(contents) != 4 {
+			t.Fatalf("len(contents)=%d, want 4 (3项+追加)", len(contents))
+		}
+		last := contents[3].(map[string]any)
+		if last["role"] != "user" {
+			t.Errorf("last content role=%q, want user", last["role"])
+		}
+	})
+
+	// 场景9: toggle ON + 混合 parts（text+functionResponse）末尾 role 仍为 model → 追加
+	t.Run("命中模型+混合parts末尾model→追加", func(t *testing.T) {
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		payload := map[string]any{
+			"contents": []any{
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
+				map[string]any{"role": "model", "parts": []any{
+					map[string]any{"text": "结果如下"},
+					map[string]any{"functionResponse": map[string]any{"name": "a", "response": map[string]any{"v": 1}}},
+				}},
+			},
+		}
+		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
+		contents := vars["contents"].([]any)
+		// 混合 parts 不被 normalizeFunctionResponseRoles 修正，role 仍为 model → 条件追加
+		if len(contents) != 3 {
+			t.Fatalf("len(contents)=%d, want 3 (2项+追加)", len(contents))
+		}
+		last := contents[2].(map[string]any)
+		if last["role"] != "user" {
+			t.Errorf("last content role=%q, want user", last["role"])
+		}
+	})
+
+	// 场景10: toggle ON + 真实 bug 复现（OpenCode"继续"场景，user/model 交替，与生产日志结构一致）→ 末尾 user 含 functionResponse → 追加
+	t.Run("命中模型+user含functionResponse→追加", func(t *testing.T) {
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		payload := map[string]any{
+			"contents": []any{
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "这里是 win环境"}}},
+				map[string]any{"role": "model", "parts": []any{map[string]any{"functionCall": map[string]any{"name": "glob", "args": map[string]any{"pattern": "**/*"}}}}},
+				map[string]any{"role": "user", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "glob", "response": map[string]any{"content": "a.txt"}}}}},
+				map[string]any{"role": "model", "parts": []any{map[string]any{"functionCall": map[string]any{"name": "read"}}}},
+				map[string]any{"role": "user", "parts": []any{
+					map[string]any{"functionResponse": map[string]any{"name": "read", "response": map[string]any{"content": "b.txt"}}},
+					map[string]any{"text": "继续"},
+				}},
+			},
+		}
+		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
+		contents := vars["contents"].([]any)
+		// 最后一条 role=user 但含 functionResponse part → 必须追加
+		if len(contents) != 6 {
+			t.Fatalf("len(contents)=%d, want 6 (5项+追加)", len(contents))
+		}
+		last := contents[5].(map[string]any)
+		if last["role"] != "user" {
+			t.Errorf("last content role=%q, want user", last["role"])
+		}
+		lastParts := last["parts"].([]any)
+		if len(lastParts) != 1 {
+			t.Fatalf("last parts len=%d, want 1 (纯文本)", len(lastParts))
+		}
+	})
+
+	// 场景11: toggle ON + 纯 functionResponse 结尾（路径A：中断后无用户文本）→ 追加
+	t.Run("命中模型+纯functionResponse末尾→追加", func(t *testing.T) {
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		payload := map[string]any{
+			"contents": []any{
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
+				map[string]any{"role": "model", "parts": []any{map[string]any{"functionCall": map[string]any{"name": "read"}}}},
+				map[string]any{"role": "user", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "read", "response": map[string]any{"content": "x"}}}}},
+			},
+		}
+		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
+		contents := vars["contents"].([]any)
+		if len(contents) != 4 {
+			t.Fatalf("len(contents)=%d, want 4 (3项+追加)", len(contents))
+		}
+		last := contents[3].(map[string]any)
+		if last["role"] != "user" {
+			t.Errorf("last content role=%q, want user", last["role"])
+		}
+	})
+}
+
 // TestMarshalRoundTrip 验证 ConvertChatRequest + BuildVertexVariables 的 JSON 可序列化。
 func TestMarshalRoundTrip(t *testing.T) {
 	cfg := config.StaticProvider(config.DefaultConfig())

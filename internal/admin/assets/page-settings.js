@@ -19,6 +19,7 @@ const SETTINGS_FIELDS = [
 
   // 🛡 Group: security (安全增强与模型策略)
   { k: 'drop_max_tokens', label: '移除 maxOutputTokens', type: 'bool', group: 'security', desc: '移除输出 token 上限，让模型自由输出' },
+  { k: 'trailing_model_fix_enabled', label: '新模型尾部身份兼容', type: 'bool', group: 'security' },
 ];
 
 let curSettings = {};

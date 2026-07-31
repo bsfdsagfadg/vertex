@@ -17,6 +17,7 @@ func (s staticConfig) ProxyURLCandidates() []ProxyCandidate {
 }
 func (s staticConfig) DebugPprof() bool                  { return s.c.DebugPprof }
 func (s staticConfig) DebugMode() bool                   { return s.c.DebugMode }
+func (s staticConfig) TrailingModelFixEnabled() bool     { return s.c.TrailingModelFixEnabled }
 func (s staticConfig) DropMaxTokens() bool               { return s.c.DropMaxTokens }
 func (s staticConfig) AggregateStream() bool             { return s.c.AggregateStream }
 func (s staticConfig) MaxN() int                         { return s.c.MaxN }

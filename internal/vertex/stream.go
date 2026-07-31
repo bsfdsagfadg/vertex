@@ -250,7 +250,10 @@ retryLoop:
 		}
 	}
 
-	if !contentYielded && lastError != nil {
+	if lastError != nil {
+		if contentYielded {
+			log.Printf("[Vertex] [StreamChat] 内容已输出后发生错误: [%s] %s, 请求ID=%s, 代理=%s", lastError.Kind, lastError.Message, reqID, nodes.GetNodeName(proxyURI))
+		}
 		yield(StreamChunk{Err: lastError})
 	}
 }
@@ -918,7 +921,7 @@ func isValidContentChunk(chunk map[string]any) bool {
 			}
 		}
 	}
-	if fr := chunkFinishReason(chunk); fr != "" && fr != finishReasonUnspecified {
+	if fr := chunkFinishReason(chunk); fr == "SAFETY" {
 		return true
 	}
 	if pf, ok := chunk["promptFeedback"].(map[string]any); ok {

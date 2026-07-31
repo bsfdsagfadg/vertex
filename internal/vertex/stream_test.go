@@ -626,12 +626,21 @@ func TestIsValidContentChunk_FunctionCall(t *testing.T) {
 	}
 }
 
-func TestIsValidContentChunk_RealFinishReason(t *testing.T) {
+func TestIsValidContentChunk_FinishReasonStopWithoutContent(t *testing.T) {
 	chunk := map[string]any{
 		"candidates": []any{map[string]any{"finishReason": "STOP"}},
 	}
+	if isValidContentChunk(chunk) {
+		t.Error("STOP finishReason without content should NOT be valid")
+	}
+}
+
+func TestIsValidContentChunk_FinishReasonSafety(t *testing.T) {
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{"finishReason": "SAFETY"}},
+	}
 	if !isValidContentChunk(chunk) {
-		t.Error("STOP finishReason chunk should be valid")
+		t.Error("SAFETY finishReason chunk should be valid")
 	}
 }
 

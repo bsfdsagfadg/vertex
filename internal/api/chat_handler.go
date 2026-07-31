@@ -209,7 +209,6 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 	}
 
 	hasFinish := false
-	gotContent := false
 	streamErrWritten := false
 	startTime := time.Now()
 	observer := newStreamObserver(startTime)
@@ -239,9 +238,6 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 			}
 			write(ev)
 		}
-		if !gotContent && hasValidStreamOutput(events) {
-			gotContent = true
-		}
 		return true
 	})
 
@@ -250,15 +246,6 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 	}
 
 	if streamErrWritten {
-		return
-	}
-	if !gotContent {
-		ee := vertex.NewEmptyResponseError("Upstream returned empty response (no content)", nil)
-		if !sw.hasWritten() {
-			writeJSON(w, ee.Code, vertexErrorToOAI(ee))
-			return
-		}
-		c.writeStreamError(write, ee, rid, model)
 		return
 	}
 	if !hasFinish {
