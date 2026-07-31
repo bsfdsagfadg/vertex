@@ -513,6 +513,90 @@ func TestRunRace_AuthErrorDisablesNode(t *testing.T) {
 	}
 }
 
+// TestRunRace_ContextCanceled_PreservesCollectedResultsAndFailedErrors 验证 Context 取消分支
+// 不得绕过终结评估逻辑（race_engine.go 第 346 行）：
+//   - 子测试 1：collectedResults 已含非即时胜出结果（MAX_TOKENS）时，后续节点返回 Context 取消错误，
+//     引擎应返回已收集的有效结果而非 Context 错误。
+//   - 子测试 2：failedErrors 已含 429 限流错误时，后续节点返回 Context 取消错误，
+//     引擎应通过 pickBestError 返回优先级最高（1）的 429 错误而非 Context 错误。
+func TestRunRace_ContextCanceled_PreservesCollectedResultsAndFailedErrors(t *testing.T) {
+	t.Run("PreservesCollectedResults", func(t *testing.T) {
+		setupRaceNodes(t, "uri1", "uri2")
+		defer nodes.ResetState()
+
+		cfg := config.StaticProvider(raceTestConfig())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// 竞速引擎按全局轮询索引挑选候选，首个启动的节点不确定（uri1/uri2 皆可），
+		// 因此按调用顺序而非 URI 决定行为：首个节点产出非即时胜出结果，次个节点返回 Context 取消错误。
+		var callOrder int32
+		run := func(ctx context.Context, uri string) (map[string]any, error) {
+			order := atomic.AddInt32(&callOrder, 1)
+			if order == 1 {
+				return map[string]any{
+					"candidates": []any{map[string]any{
+						"finishReason": "MAX_TOKENS",
+						"content":      map[string]any{"parts": []any{map[string]any{"text": "node1-answer"}}, "role": "model"},
+					}},
+				}, nil
+			}
+			return nil, NewContextError(context.Canceled)
+		}
+
+		result, err := RunRace(ctx, cfg, run, WithWinningCheck(func(resp map[string]any) bool {
+			return candidateFinish(resp) == "STOP"
+		}), WithCollectedFinalizer(func(results []raceResult[map[string]any]) (map[string]any, error) {
+			cr := make([]candidateResult, len(results))
+			for i, r := range results {
+				cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
+			}
+			return pickBestResult(cr)
+		}))
+
+		if err != nil {
+			t.Fatalf("expected nil error (collected result should win over context error), got: %v", err)
+		}
+		if finish := candidateFinish(result); finish != "MAX_TOKENS" {
+			t.Errorf("expected first node MAX_TOKENS result to be returned, got finishReason=%q", finish)
+		}
+		if count := atomic.LoadInt32(&callOrder); count != 2 {
+			t.Errorf("expected both candidates to launch, got %d", count)
+		}
+	})
+
+	t.Run("PreservesFailedErrors", func(t *testing.T) {
+		setupRaceNodes(t, "uri1", "uri2")
+		defer nodes.ResetState()
+
+		cfg := config.StaticProvider(raceTestConfig())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var callOrder int32
+		run := func(ctx context.Context, uri string) (map[string]any, error) {
+			order := atomic.AddInt32(&callOrder, 1)
+			if order == 1 {
+				return nil, NewRateLimitError("rate limited", 0, nil)
+			}
+			return nil, NewContextError(context.Canceled)
+		}
+
+		_, err := RunRace[map[string]any](ctx, cfg, run)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+
+		var ve *VertexError
+		if !errors.As(err, &ve) {
+			t.Fatalf("expected *VertexError, got %T", err)
+		}
+		if ve.Kind != "ratelimit" && ve.Code != 429 {
+			t.Errorf("expected highest-priority ratelimit (429) error, got Kind=%s Code=%d", ve.Kind, ve.Code)
+		}
+	})
+}
+
 func TestRunRace_PickBestError_Priority(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2")
 	defer nodes.ResetState()
@@ -600,5 +684,3 @@ func TestRunRace_PickBestError_Priority(t *testing.T) {
 		}
 	})
 }
-
-

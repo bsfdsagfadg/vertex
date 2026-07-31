@@ -336,7 +336,9 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 					if cfg.DebugMode() {
 						log.Printf("[Racing] 节点 %s 拨号取消", name)
 					}
-					if atomic.LoadInt32(&active) == 0 {
+					// 仅在尚未积累任何有效结果/错误时提前终止（保持“Context 错误不触发对冲”语义）；
+					// 若已有 collectedResults 或 failedErrors，则交由下方统一终结评估点按优先级收敛。
+					if atomic.LoadInt32(&active) == 0 && len(rc.collectedResults) == 0 && len(failedErrors) == 0 {
 						cancel()
 						return zero, res.err
 					}
