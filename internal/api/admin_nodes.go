@@ -18,6 +18,11 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
+const (
+	batchTestConcurrency    = 50
+	singleNodeTestTimeoutSec = 15
+)
+
 var (
 	testAllCancel context.CancelFunc
 	testAllMu     sync.Mutex
@@ -68,9 +73,32 @@ func (adm *AdminHandler) adminFetchSub(w http.ResponseWriter, r *http.Request) {
 }
 
 func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
+	if nodes.IsTestRunning() {
+		writeJSON(w, http.StatusConflict, adminErr("已有批量测试正在进行中，请先等待其结束或终止"))
+		return
+	}
 	log.Printf("[Admin] [TestAll] 开始触发全局并发测速（基于 recaptchaToken 耗时）")
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		list := nodes.LoadNodes()
+		var enabledNodes []nodes.Node
+		for _, n := range list {
+			if !n.Disabled {
+				enabledNodes = append(enabledNodes, n)
+			}
+		}
+		totalEnabled := len(enabledNodes)
+		if !nodes.StartTestProgress(totalEnabled) {
+			log.Printf("[Admin] [TestAll] 已有批量测试正在进行中，拒绝重复触发")
+			return
+		}
+		rounds := (totalEnabled + batchTestConcurrency - 1) / batchTestConcurrency
+		dynamicTimeout := time.Duration(rounds*2)*singleNodeTestTimeoutSec*time.Second + 2*time.Minute
+		if dynamicTimeout < 5*time.Minute {
+			dynamicTimeout = 5 * time.Minute
+		}
+		log.Printf("[Admin] [TestAll] 加载待测节点数: %d/%d, 并发数: %d, 全局超时时间: %v", totalEnabled, len(list), batchTestConcurrency, dynamicTimeout)
+
+		ctx, cancel := context.WithTimeout(context.Background(), dynamicTimeout)
 		testAllMu.Lock()
 		myGen := testAllGen + 1
 		testAllGen = myGen
@@ -88,18 +116,8 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 			testAllMu.Unlock()
 		}()
 
-		list := nodes.LoadNodes()
-		var enabledNodes []nodes.Node
-		for _, n := range list {
-			if !n.Disabled {
-				enabledNodes = append(enabledNodes, n)
-			}
-		}
-		log.Printf("[Admin] [TestAll] 加载到待测启用节点数: %d / %d", len(enabledNodes), len(list))
-		nodes.StartTestProgress(len(enabledNodes))
-
 		var wg sync.WaitGroup
-		sem := make(chan struct{}, 10)
+		sem := make(chan struct{}, batchTestConcurrency)
 
 		for _, n := range enabledNodes {
 			wg.Add(1)
@@ -121,11 +139,11 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 				start := time.Now()
 				log.Printf("[Admin] [TestAll] 开始测试节点: %s (%s)", node.Name, node.Type)
 
-				sess, err := adm.vc.Net().CreateSession(15, node.RawURI, "admin-test-all")
+				sess, err := adm.vc.Net().CreateSession(singleNodeTestTimeoutSec, node.RawURI, "admin-test-all")
 				var testErr error
 				if err == nil {
+					defer sess.Close()
 					testErr = fetchRecaptchaTokenWithSess(ctx, sess)
-					sess.Close()
 				} else {
 					testErr = err
 				}
