@@ -37,5 +37,8 @@ cmd/telemetry-server/
 config/state/
 config/migrated/
 
+# 运行时目录：管理员后台上传的自定义背景图（由程序自动创建，勿提交）
+/assets/
+
 # Logs
 logs/
