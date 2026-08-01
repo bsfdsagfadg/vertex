@@ -47,10 +47,11 @@ type AppConfig struct { //nolint:govet
 	ParallelPoolEnabled      bool   `json:"parallel_pool_enabled"`
 	ParallelPoolRetryEnabled bool   `json:"parallel_pool_retry_enabled"`
 	ParallelPoolSize         int    `json:"parallel_pool_size"`
-	DebugPprof               bool   `json:"debug_pprof"`
-	DebugMode                bool   `json:"debug_mode"`
-	TrailingModelFixEnabled  bool   `json:"trailing_model_fix_enabled"`
-	ParallelPoolDelayDynamic bool   `json:"parallel_pool_delay_dynamic"`
+	DebugPprof               bool     `json:"debug_pprof"`
+	DebugMode                bool     `json:"debug_mode"`
+	TrailingModelFixEnabled  bool     `json:"trailing_model_fix_enabled"`
+	TrailingFixModels        []string `json:"trailing_fix_models,omitempty"`
+	ParallelPoolDelayDynamic bool     `json:"parallel_pool_delay_dynamic"`
 	// 匿名遥测：仅发送实例 ID + 版本 + 平台，不含任何用户/网络/隐私数据。
 	// 用于了解软件的版本分布和活跃数。指针类型区分"未设置"和"显式 false"，未设置时默认开启。
 	TelemetryEnabled *bool `json:"telemetry_enabled,omitempty"`
@@ -97,6 +98,10 @@ func DefaultConfig() AppConfig {
 		DefaultThinkingLevel:       "自动",
 		DefaultResponseModalities:  "图文",
 		StreamIdleTimeoutSeconds:   30,
+		TrailingFixModels: []string{
+			"gemini-3.5-flash-lite",
+			"gemini-3.6-flash",
+		},
 	}
 }
 
@@ -217,6 +222,7 @@ func Load() AppConfig {
 			if cfg.StreamIdleTimeoutSeconds <= 0 {
 				cfg.StreamIdleTimeoutSeconds = 30
 			}
+			cfg.TrailingFixModels = normalizeTrailingFixModels(cfg.TrailingFixModels)
 			log.Printf("[Config] 成功加载配置文件 config.json")
 		}
 	} else if !os.IsNotExist(err) {
@@ -268,4 +274,20 @@ func normalizeThinkingLevel(s string) string {
 		return s
 	}
 	return ""
+}
+
+// normalizeTrailingFixModels 对尾部兼容模型清单逐项 TrimSpace、去空、去重。
+// 输入为 nil（JSON 缺失/显式 null）时返回空切片；显式空数组 [] 亦被尊重。
+func normalizeTrailingFixModels(list []string) []string {
+	seen := make(map[string]bool, len(list))
+	out := make([]string, 0, len(list))
+	for _, s := range list {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }

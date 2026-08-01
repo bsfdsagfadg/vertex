@@ -165,6 +165,20 @@ func hasRemotePrefix(url string) bool {
 		strings.HasPrefix(url, "gs://")
 }
 
+// matchTrailingFixModel 判断 model 是否命中尾部兼容清单（纯精确匹配，不做后缀扩展）。
+func matchTrailingFixModel(model string, entries []string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" || len(entries) == 0 {
+		return false
+	}
+	for _, e := range entries {
+		if model == strings.TrimSpace(e) {
+			return true
+		}
+	}
+	return false
+}
+
 // BuildVertexVariables 由 geminiPayload 构建发往上游的 variables。
 func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config.ConfigProvider) map[string]any {
 	vars := map[string]any{}
@@ -189,8 +203,7 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 		c = HandleBase64InContents(c)
 		modelName, _ := vars["model"].(string)
 		trailingFixActive := cfg.TrailingModelFixEnabled() &&
-			(strings.Contains(modelName, "gemini-3.5-flash-lite") ||
-				strings.Contains(modelName, "gemini-3.6-flash"))
+			matchTrailingFixModel(modelName, cfg.TrailingFixModels())
 
 		if trailingFixActive {
 			c = normalizeFunctionResponseRoles(c)

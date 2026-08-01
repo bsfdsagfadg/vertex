@@ -9,6 +9,7 @@ type ConfigProvider interface {
 	DebugPprof() bool
 	DebugMode() bool
 	TrailingModelFixEnabled() bool
+	TrailingFixModels() []string
 
 	DropMaxTokens() bool
 
@@ -75,6 +76,12 @@ func (d dynamicConfig) ProxyURLCandidates() []ProxyCandidate {
 func (d dynamicConfig) DebugPprof() bool                  { return Load().DebugPprof }
 func (d dynamicConfig) DebugMode() bool                   { return Load().DebugMode }
 func (d dynamicConfig) TrailingModelFixEnabled() bool     { return Load().TrailingModelFixEnabled }
+func (d dynamicConfig) TrailingFixModels() []string {
+	c := Load()
+	out := make([]string, len(c.TrailingFixModels))
+	copy(out, c.TrailingFixModels)
+	return out
+}
 func (d dynamicConfig) DropMaxTokens() bool               { return Load().DropMaxTokens }
 func (d dynamicConfig) AggregateStream() bool             { return Load().AggregateStream }
 func (d dynamicConfig) MaxN() int                         { return Load().MaxN }

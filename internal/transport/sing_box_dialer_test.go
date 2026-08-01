@@ -68,6 +68,7 @@ func (c *fakeCfg) ProxyURLCandidates() []config.ProxyCandidate { panic("unexpect
 func (c *fakeCfg) DebugPprof() bool                            { panic("unexpected") }
 func (c *fakeCfg) DebugMode() bool                             { panic("unexpected") }
 func (c *fakeCfg) TrailingModelFixEnabled() bool               { panic("unexpected") }
+func (c *fakeCfg) TrailingFixModels() []string                 { panic("unexpected") }
 func (c *fakeCfg) DropMaxTokens() bool                         { panic("unexpected") }
 func (c *fakeCfg) AggregateStream() bool                       { panic("unexpected") }
 func (c *fakeCfg) MaxN() int                                   { panic("unexpected") }

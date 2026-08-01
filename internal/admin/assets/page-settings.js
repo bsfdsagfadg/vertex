@@ -19,16 +19,69 @@ const SETTINGS_FIELDS = [
 
   // 🛡 Group: security (安全增强与模型策略)
   { k: 'drop_max_tokens', label: '移除 maxOutputTokens', type: 'bool', group: 'security', desc: '移除输出 token 上限，让模型自由输出' },
-  { k: 'trailing_model_fix_enabled', label: '新模型尾部身份兼容', type: 'bool', group: 'security' },
+  { k: 'trailing_model_fix_enabled', label: '尾部模型回合兼容', type: 'bool', group: 'security', desc: '开启后自动修复模型末尾回合未闭合问题（多轮续写与工具调用后追加“继续”），避免上游报错' },
+  { k: 'trailing_fix_models', label: '尾部兼容模型清单', type: 'model_select', group: 'security', desc: '在下拉菜单中勾选启用尾部兼容的模型（纯精确匹配，-001、-lite 等层级变体需各自勾选）。模型清单固定，新增模型时请更新模型清单' },
 ];
 
 let curSettings = {};
+const DEFAULT_TRAILING_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.6-flash'];
+
+// renderModelSelect 渲染挂在“尾部模型回合兼容”开关右侧的下拉勾选组件。
+// 面板列出系统已注册模型；配置中已有的非注册模型追加在列表尾部（带“已配置”标记，向后兼容不丢数据）。
+// 模型名经 esc()（utils.js）转义后拼入 HTML，防止配置文件中的特殊字符造成 HTML 注入。
+function renderModelSelect(f, sysModels) {
+  const raw = curSettings[f.k];
+  const selected = Array.isArray(raw) ? raw : DEFAULT_TRAILING_MODELS;
+  const extra = selected.filter(m => !sysModels.includes(m));
+  const all = sysModels.concat(extra);
+  const items = all.map(m => `
+    <label class="chk"><input type="checkbox" value="${esc(m)}" ${selected.includes(m) ? 'checked' : ''}>${esc(m)}${extra.includes(m) ? '<span class="model-dd-tag">已配置</span>' : ''}</label>`).join('');
+  return `<div class="model-dd" id="set_${f.k}_dd">
+    <button type="button" class="btn ghost model-dd-btn" id="set_${f.k}_dd_btn">已选 ${selected.length} 个模型 <span class="model-dd-caret">▾</span></button>
+    <div class="model-dd-panel hidden" id="set_${f.k}_dd_panel">
+      <div class="model-dd-tools">
+        <button type="button" class="link" data-act="all">全选</button>
+        <button type="button" class="link" data-act="none">清空</button>
+        <span class="model-dd-count" id="set_${f.k}_dd_count">已选 ${selected.length}</span>
+      </div>
+      <div class="model-dd-list">${items || '<div class="desc">系统暂无已注册模型</div>'}</div>
+      ${f.desc ? `<div class="desc">${f.desc}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+// collectModelSelect 收集下拉面板中勾选的模型（按 DOM 顺序 = 清单顺序）。
+function collectModelSelect(f) {
+  const panel = $('#set_' + f.k + '_dd_panel');
+  if (!panel) return [];
+  const out = [];
+  panel.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+    const v = cb.value.trim();
+    if (v && !out.includes(v)) out.push(v);
+  });
+  return out;
+}
+
 async function loadSettings() {
-  const d = await API.settings.get(); curSettings = d.settings || d;
+  const [d, modelsRes] = await Promise.all([
+    API.settings.get(),
+    API.models.get().catch(() => ({ models: [] })),
+  ]);
+  curSettings = d.settings || d;
+  const sysModels = modelsRes.models || [];
 
   const fld = (f) => {
+    if (f.type === 'model_select') return renderModelSelect(f, sysModels);
     const v = curSettings[f.k];
-    if (f.type === 'bool') return `<div class="field bool"><div class="min-w-0"><label for="set_${f.k}">${f.label}</label>${f.desc ? `<div class="desc mt-4px">${f.desc}</div>` : ''}</div><label class="toggle"><input type="checkbox" id="set_${f.k}" ${v ? 'checked' : ''}><span class="track"></span></label></div>`;
+    if (f.type === 'bool') {
+      const toggle = `<label class="toggle"><input type="checkbox" id="set_${f.k}" ${v ? 'checked' : ''}><span class="track"></span></label>`;
+      if (f.k === 'trailing_model_fix_enabled') {
+        const modelsField = SETTINGS_FIELDS.find(x => x.k === 'trailing_fix_models');
+        const head = `<div class="trailing-head"><label for="set_${f.k}">${f.label}</label>${renderModelSelect(modelsField, sysModels)}</div>`;
+        return `<div class="field bool trailing-fix"><div class="min-w-0">${head}${f.desc ? `<div class="desc mt-4px">${f.desc}</div>` : ''}</div>${toggle}</div>`;
+      }
+      return `<div class="field bool"><div class="min-w-0"><label for="set_${f.k}">${f.label}</label>${f.desc ? `<div class="desc mt-4px">${f.desc}</div>` : ''}</div>${toggle}</div>`;
+    }
     let input;
     if (f.type === 'select') input = `<select id="set_${f.k}">${f.opts.map(o => `<option ${o === v ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
     else input = `<input type="${f.type}" id="set_${f.k}" value="${v ?? ''}" ${f.max !== undefined ? `max="${f.max}" oninput="if(this.value!=='' && parseInt(this.value)>${f.max}) this.value='${f.max}'"` : ''} ${f.min !== undefined ? `min="${f.min}"` : ''}>`;
@@ -50,7 +103,7 @@ async function loadSettings() {
 
   let sectionsHtml = '';
   for (const [key, g] of Object.entries(groups)) {
-    const numFields = g.fields.filter(f => f.type !== 'bool');
+    const numFields = g.fields.filter(f => f.type !== 'bool' && f.type !== 'model_select');
     const boolFields = g.fields.filter(f => f.type === 'bool');
 
     let extraHtml = '';
@@ -112,11 +165,69 @@ async function loadSettings() {
     updateRetryDisabled();
     parallelEl.addEventListener('change', updateRetryDisabled);
   }
+
+  const trailingToggle = $('#set_trailing_model_fix_enabled');
+  const trailingDd = $('#set_trailing_fix_models_dd');
+  if (trailingToggle && trailingDd) {
+    const updateTrailingDisabled = () => {
+      const disabled = !trailingToggle.checked;
+      trailingDd.style.opacity = disabled ? '0.5' : '1';
+      trailingDd.style.pointerEvents = disabled ? 'none' : '';
+      if (disabled) {
+        const panel = $('#set_trailing_fix_models_dd_panel');
+        if (panel) panel.classList.add('hidden');
+      }
+    };
+    updateTrailingDisabled();
+    trailingToggle.addEventListener('change', updateTrailingDisabled);
+  }
+
+  const ddBtn = $('#set_trailing_fix_models_dd_btn');
+  const ddPanel = $('#set_trailing_fix_models_dd_panel');
+  if (ddBtn && ddPanel) {
+    const updateDdCount = () => {
+      const n = collectModelSelect({ k: 'trailing_fix_models' }).length;
+      const countEl = $('#set_trailing_fix_models_dd_count');
+      if (countEl) countEl.textContent = '已选 ' + n;
+      ddBtn.innerHTML = `已选 ${n} 个模型 <span class="model-dd-caret">▾</span>`;
+      window.hasUnsavedSettings = true;
+    };
+    ddBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      ddPanel.classList.toggle('hidden');
+    });
+    ddPanel.addEventListener('change', (e) => {
+      if (e.target.matches('input[type="checkbox"]')) updateDdCount();
+    });
+    ddPanel.querySelectorAll('button[data-act]').forEach(b => {
+      b.addEventListener('click', () => {
+        ddPanel.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = b.dataset.act === 'all'; });
+        updateDdCount();
+      });
+    });
+    if (!window._hasModelDdListener) {
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('.model-dd')) {
+          document.querySelectorAll('.model-dd-panel:not(.hidden)').forEach(p => p.classList.add('hidden'));
+        }
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          document.querySelectorAll('.model-dd-panel:not(.hidden)').forEach(p => p.classList.add('hidden'));
+        }
+      });
+      window._hasModelDdListener = true;
+    }
+  }
 }
 
 async function saveSettings() {
   const out = {};
   for (const f of SETTINGS_FIELDS) {
+    if (f.type === 'model_select') {
+      out[f.k] = collectModelSelect(f);
+      continue;
+    }
     const el = $('#set_' + f.k);
     if (!el) continue;
     if (f.type === 'bool') out[f.k] = el.checked;

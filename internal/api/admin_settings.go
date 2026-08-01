@@ -3,6 +3,7 @@ package api
 import (
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 )
@@ -24,6 +25,7 @@ var adminAllowedSettings = map[string]bool{
 	"custom_bg_presets":           true,
 	"debug_mode":                   true,
 	"trailing_model_fix_enabled":   true,
+	"trailing_fix_models":          true,
 	"auto_refresh_logs":            true,
 	"default_image_size":           true,
 	"default_thinking_level":       true,
@@ -54,6 +56,7 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"custom_bg_presets":           adm.cfg.CustomBgPresets(),
 		"debug_mode":                   adm.cfg.DebugMode(),
 		"trailing_model_fix_enabled":   adm.cfg.TrailingModelFixEnabled(),
+		"trailing_fix_models":          adm.cfg.TrailingFixModels(),
 		"auto_refresh_logs":            adm.cfg.AutoRefreshLogs(),
 		"default_image_size":           adm.cfg.DefaultImageSize(),
 		"default_thinking_level":       adm.cfg.DefaultThinkingLevel(),
@@ -81,6 +84,11 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 				updates[k] = int(f)
 				continue
 			}
+		case "trailing_fix_models":
+			if list, ok := v.([]any); ok {
+				updates[k] = normalizeTrailingFixModelsInput(list)
+			}
+			continue
 		}
 		updates[k] = v
 	}
@@ -154,6 +162,30 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// normalizeTrailingFixModelsInput 归一化管理后台提交的 trailing_fix_models：
+// 逐项转字符串、TrimSpace、去空、去重，顺序保持稳定。
+func normalizeTrailingFixModelsInput(list []any) []string {
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		s := strings.TrimSpace(valueToString(item))
+		if s == "" {
+			continue
+		}
+		dup := false
+		for _, e := range out {
+			if e == s {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 func (adm *AdminHandler) adminGetStats(w http.ResponseWriter, _ *http.Request) {

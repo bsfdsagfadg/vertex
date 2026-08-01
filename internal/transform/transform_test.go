@@ -521,10 +521,38 @@ func TestBuildVertexVariables(t *testing.T) {
 	}
 }
 
+// TestMatchTrailingFixModel 验证 matchTrailingFixModel 纯精确匹配语义：
+// 空格 trim、空值/空清单短路、版本/层级后缀与前缀误伤均不自动命中。
+func TestMatchTrailingFixModel(t *testing.T) {
+	cases := []struct {
+		name    string
+		model   string
+		entries []string
+		want    bool
+	}{
+		{"精确命中", "gemini-3.6-flash", []string{"gemini-3.6-flash"}, true},
+		{"版本后缀不命中", "gemini-3.6-flash-001", []string{"gemini-3.6-flash"}, false},
+		{"层级变体不命中", "gemini-3.6-flash-lite", []string{"gemini-3.6-flash"}, false},
+		{"前缀误伤屏蔽", "gemini-3.6-flashback", []string{"gemini-3.6-flash"}, false},
+		{"空模型名", "", []string{"gemini-3.6-flash"}, false},
+		{"空清单", "gemini-3.6-flash", nil, false},
+		{"带首尾空格命中", " gemini-3.6-flash ", []string{"gemini-3.6-flash"}, true},
+		{"清单项带空格命中", "gemini-3.6-flash", []string{" gemini-3.6-flash "}, true},
+		{"多条目第二项命中", "gemini-3.6-flash-lite", []string{"gemini-3.5-flash-lite", "gemini-3.6-flash-lite"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := matchTrailingFixModel(c.model, c.entries); got != c.want {
+				t.Errorf("matchTrailingFixModel(%q, %v)=%v, want %v", c.model, c.entries, got, c.want)
+			}
+		})
+	}
+}
+
 func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 	// 场景1: toggle ON + 命中模型 + 纯 functionResponse → role 修正 + 追加
 	t.Run("命中模型+纯functionResponse→role修正+追加", func(t *testing.T) {
-		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
 				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "天气如何"}}},
@@ -557,7 +585,7 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 
 	// 场景2: toggle ON + 命中模型 + 末尾 model → 无条件追加
 	t.Run("命中模型+末尾model→无条件追加", func(t *testing.T) {
-		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
 				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
@@ -577,7 +605,7 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 
 	// 场景3: toggle ON + 命中模型 + 末尾 user → 不追加（行为翻转）
 	t.Run("命中模型+末尾user→不追加", func(t *testing.T) {
-		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
 				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
@@ -599,7 +627,7 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 
 	// 场景4: toggle ON + 不命中模型 → 不做任何修改
 	t.Run("不命中模型→不做任何修改", func(t *testing.T) {
-		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
 				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
@@ -629,9 +657,9 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 		}
 	})
 
-	// 场景6: toggle ON + 版本后缀 → strings.Contains 仍命中，末尾 model → 条件追加
-	t.Run("版本后缀→模糊匹配命中", func(t *testing.T) {
-		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+	// 场景6: toggle ON + 版本后缀 → 纯精确匹配不命中 → 不追加
+	t.Run("版本后缀不自动命中→不追加", func(t *testing.T) {
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
 				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
@@ -640,14 +668,30 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 		}
 		vars := BuildVertexVariables("gemini-3.6-flash-001", payload, cfg)
 		contents := vars["contents"].([]any)
-		if len(contents) != 3 {
-			t.Errorf("len(contents)=%d, want 3 (末尾model→条件追加)", len(contents))
+		if len(contents) != 2 {
+			t.Errorf("len(contents)=%d, want 2 (纯精确匹配下版本后缀不自动命中→不追加)", len(contents))
+		}
+	})
+
+	// 场景6b: toggle ON + 不在清单中的模型 → 即使开关开启也不追加
+	t.Run("不在清单中的模型→不追加", func(t *testing.T) {
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
+		payload := map[string]any{
+			"contents": []any{
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
+				map[string]any{"role": "model", "parts": []any{map[string]any{"text": "hello"}}},
+			},
+		}
+		vars := BuildVertexVariables("gemini-1.5-pro", payload, cfg)
+		contents := vars["contents"].([]any)
+		if len(contents) != 2 {
+			t.Errorf("len(contents)=%d, want 2 (清单外模型不追加)", len(contents))
 		}
 	})
 
 	// 场景7: toggle ON + 空 contents → 不 panic
 	t.Run("空contents→不panic", func(t *testing.T) {
-		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{},
 		}
@@ -660,7 +704,7 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 
 	// 场景8: toggle ON + 命中模型 + 末尾 function → 追加
 	t.Run("命中模型+末尾function→追加", func(t *testing.T) {
-		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
 				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "天气如何"}}},
@@ -682,7 +726,7 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 
 	// 场景9: toggle ON + 混合 parts（text+functionResponse）末尾 role 仍为 model → 追加
 	t.Run("命中模型+混合parts末尾model→追加", func(t *testing.T) {
-		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
 				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
@@ -706,7 +750,7 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 
 	// 场景10: toggle ON + 真实 bug 复现（OpenCode"继续"场景，user/model 交替，与生产日志结构一致）→ 末尾 user 含 functionResponse → 追加
 	t.Run("命中模型+user含functionResponse→追加", func(t *testing.T) {
-		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
 				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "这里是 win环境"}}},
@@ -737,7 +781,7 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 
 	// 场景11: toggle ON + 纯 functionResponse 结尾（路径A：中断后无用户文本）→ 追加
 	t.Run("命中模型+纯functionResponse末尾→追加", func(t *testing.T) {
-		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true})
+		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
 				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
