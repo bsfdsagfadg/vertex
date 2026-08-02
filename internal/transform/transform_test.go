@@ -497,12 +497,103 @@ func TestConvertChatRequestGemini36TurnGuard(t *testing.T) {
 	}
 
 	contents, ok := payload["contents"].([]any)
+	if !ok || len(contents) != 2 {
+		t.Fatalf("pre-normalized contents=%#v, want 2 entries", payload["contents"])
+	}
+	vars := BuildVertexVariables("gemini-3.6-flash", payload, config.StaticProvider(cfg))
+	contents, ok = vars["contents"].([]any)
 	if !ok || len(contents) != 3 {
-		t.Fatalf("contents=%#v, want 3 entries", payload["contents"])
+		t.Fatalf("contents=%#v, want 3 entries", vars["contents"])
 	}
 	last, ok := contents[len(contents)-1].(map[string]any)
 	if !ok || last["role"] != "user" {
 		t.Fatalf("last content=%#v, want appended user turn", contents[len(contents)-1])
+	}
+}
+
+func TestBuildVertexVariablesTurnGuardUsesPartType(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ModelTurnGuardEnabled = true
+	provider := config.StaticProvider(cfg)
+
+	tests := []struct {
+		name       string
+		model      string
+		last       map[string]any
+		wantAppend bool
+	}{
+		{
+			name:       "function role",
+			model:      "gemini-3.6-flash",
+			last:       map[string]any{"role": "function", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "f", "response": map[string]any{}}}}},
+			wantAppend: true,
+		},
+		{
+			name:       "user function response",
+			model:      "gemini-3.6-flash",
+			last:       map[string]any{"role": "user", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "f", "response": map[string]any{}}}}},
+			wantAppend: true,
+		},
+		{
+			name:       "ordinary user text",
+			model:      "gemini-3.6-flash",
+			last:       map[string]any{"role": "user", "parts": []any{map[string]any{"text": "done"}}},
+			wantAppend: false,
+		},
+		{
+			name:       "local model switch off",
+			model:      "gemini-2.5-flash",
+			last:       map[string]any{"role": "model", "parts": []any{map[string]any{"text": "unfinished"}}},
+			wantAppend: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := map[string]any{"contents": []any{
+				map[string]any{"role": "user", "parts": []any{map[string]any{"text": "start"}}},
+				tc.last,
+			}}
+			vars := BuildVertexVariables(tc.model, payload, provider)
+			contents := vars["contents"].([]any)
+			last := contents[len(contents)-1].(map[string]any)
+			gotAppend := last["role"] == "user" && len(contents) == 3
+			if gotAppend != tc.wantAppend {
+				t.Fatalf("contents=%#v, appended=%v want %v", contents, gotAppend, tc.wantAppend)
+			}
+		})
+	}
+}
+
+func TestBuildVertexVariablesTurnGuardNormalizesModelFunctionResponse(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ModelTurnGuardEnabled = true
+	payload := map[string]any{"contents": []any{
+		map[string]any{"role": "model", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "f", "response": map[string]any{}}}}},
+	}}
+
+	vars := BuildVertexVariables("gemini-3.6-flash", payload, config.StaticProvider(cfg))
+	contents := vars["contents"].([]any)
+	if len(contents) != 2 {
+		t.Fatalf("contents=%#v, want normalized function turn plus trailing user", contents)
+	}
+	functionTurn := contents[0].(map[string]any)
+	if functionTurn["role"] != "function" {
+		t.Fatalf("functionResponse role=%#v, want function", functionTurn["role"])
+	}
+}
+
+func TestBuildVertexVariablesTurnGuardRespectsGlobalSwitch(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ModelTurnGuardEnabled = false
+	payload := map[string]any{"contents": []any{
+		map[string]any{"role": "model", "parts": []any{map[string]any{"text": "unfinished"}}},
+	}}
+
+	vars := BuildVertexVariables("gemini-3.6-flash", payload, config.StaticProvider(cfg))
+	contents := vars["contents"].([]any)
+	if len(contents) != 1 {
+		t.Fatalf("global switch off unexpectedly appended content: %#v", contents)
 	}
 }
 
@@ -608,7 +699,6 @@ func TestToNativeSchema_UnknownTypeFallsBackToSTRING(t *testing.T) {
 		t.Errorf("未知类型 'any' 应兜底为 STRING，实际: %v", native["type"])
 	}
 }
-
 
 // TestConvertToolsFormat_NumericConstraints 端到端验证工具参数数值约束转字符串。
 func TestConvertToolsFormat_NumericConstraints(t *testing.T) {
