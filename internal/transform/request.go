@@ -9,18 +9,20 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/config"
 )
 
-// safetyCategories 是默认安全设置覆盖的 5 个类别（缺省全 BLOCK_NONE）。
+// safetyCategories 是默认安全设置覆盖的 6 个类别（缺省全 BLOCK_NONE）。
 var safetyCategories = []string{ //nolint:gochecknoglobals
 	"HARM_CATEGORY_HARASSMENT",
 	"HARM_CATEGORY_HATE_SPEECH",
 	"HARM_CATEGORY_SEXUALLY_EXPLICIT",
 	"HARM_CATEGORY_DANGEROUS_CONTENT",
 	"HARM_CATEGORY_CIVIC_INTEGRITY",
+	"HARM_CATEGORY_JAILBREAK",
 }
 
 // supportedVarFields 是从 geminiPayload 透传进 variables 的字段（统一 camelCase）。
 var supportedVarFields = []string{ //nolint:gochecknoglobals
 	"contents", "tools", "toolConfig", "systemInstruction", "safetySettings", "generationConfig",
+	"cachedContent", "serviceTier", "store",
 }
 
 // ConvertChatRequest 将 OpenAI ChatCompletion 请求体转为 (model, geminiPayload)。

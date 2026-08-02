@@ -73,7 +73,7 @@ type AppConfig struct { //nolint:govet
 	// 默认响应模态：TEXT_IMAGE（图片和文本，默认）或 IMAGE_ONLY（仅图片）
 	DefaultResponseModalities string `json:"default_response_modalities"`
 
-	// 流式包间空闲超时秒数（默认 30 秒），超过此时间无数据即判定超时
+	// 流式包间空闲超时秒数（默认 20 秒），超过此时间无数据即判定超时
 	StreamIdleTimeoutSeconds int `json:"stream_idle_timeout_seconds"`
 }
 
@@ -97,7 +97,7 @@ func DefaultConfig() AppConfig {
 		DefaultImageSize:           "1K",
 		DefaultThinkingLevel:       "自动",
 		DefaultResponseModalities:  "图文",
-		StreamIdleTimeoutSeconds:   30,
+		StreamIdleTimeoutSeconds:   20,
 		TrailingFixModels: []string{
 			"gemini-3.5-flash-lite",
 			"gemini-3.6-flash",
@@ -220,7 +220,7 @@ func Load() AppConfig {
 				cfg.DefaultResponseModalities = "图文"
 			}
 			if cfg.StreamIdleTimeoutSeconds <= 0 {
-				cfg.StreamIdleTimeoutSeconds = 30
+				cfg.StreamIdleTimeoutSeconds = 20
 			}
 			cfg.TrailingFixModels = normalizeTrailingFixModels(cfg.TrailingFixModels)
 			log.Printf("[Config] 成功加载配置文件 config.json")

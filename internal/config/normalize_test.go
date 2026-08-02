@@ -36,8 +36,8 @@ func TestDefaultConfig_NewFields(t *testing.T) {
 	if cfg.DefaultResponseModalities != "图文" {
 		t.Errorf("DefaultResponseModalities=%q, want 图文", cfg.DefaultResponseModalities)
 	}
-	if cfg.StreamIdleTimeoutSeconds != 30 {
-		t.Errorf("StreamIdleTimeoutSeconds=%d, want 30", cfg.StreamIdleTimeoutSeconds)
+	if cfg.StreamIdleTimeoutSeconds != 20 {
+		t.Errorf("StreamIdleTimeoutSeconds=%d, want 20", cfg.StreamIdleTimeoutSeconds)
 	}
 }
 
@@ -82,10 +82,10 @@ func TestLoad_StreamIdleTimeoutSecondsNormalize(t *testing.T) {
 		input    int
 		expected int
 	}{
-		{"zero falls back to 30", 0, 30},
-		{"negative falls back to 30", -5, 30},
+		{"zero falls back to 20", 0, 20},
+		{"negative falls back to 20", -5, 20},
 		{"positive preserved", 30, 30},
-		{"default 30 preserved", 30, 30},
+		{"default 20 preserved", 20, 20},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

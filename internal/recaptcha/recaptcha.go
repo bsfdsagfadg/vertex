@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
@@ -20,16 +21,21 @@ import (
 
 // recaptcha 相关硬编码常量（逐字节保持既定常量）。
 const (
-	recaptchaBase = "https://www.google.com"
-	siteKey       = "6LdCjtspAAAAAMcV4TGdWLJqRTEk1TfpdLqEnKdj"
-	recaptchaCo   = "aHR0cHM6Ly9jb25zb2xlLmNsb3VkLmdvb2dsZS5jb206NDQz"
-	recaptchaHl   = "zh-CN"
-	recaptchaV    = "jdMmXeCQEkPbnFDy9T04NbgJ"
-	recaptchaVh   = "6581054572"
-	randomCharset = "abcdefghijklmnopqrstuvwxyz0123456789"
+	recaptchaBase      = "https://www.google.com"
+	siteKey            = "6LdCjtspAAAAAMcV4TGdWLJqRTEk1TfpdLqEnKdj"
+	recaptchaCo        = "aHR0cHM6Ly9jb25zb2xlLmNsb3VkLmdvb2dsZS5jb206NDQz"
+	recaptchaHl        = "zh-CN"
+	recaptchaVFallback = "jdMmXeCQEkPbnFDy9T04NbgJ"
+	recaptchaVh        = "6581054572"
+	randomCharset      = "abcdefghijklmnopqrstuvwxyz0123456789"
 )
 
 var (
+	versionMu sync.Mutex
+	cachedVer string
+	// 从 enterprise.js 提取 reCAPTCHA release 版本号（Google 定期滚动，不能硬编码）。
+	versionRe = regexp.MustCompile(`releases/([A-Za-z0-9_-]{20,})`)
+
 	// 从 anchor HTML 抠 base token。用正则而非 HTML 解析器（已实测可行、无需额外依赖）。
 	tokenRe = regexp.MustCompile(`id="recaptcha-token"[^>]*value="([^"]+)"`)
 	// 从 reload 响应抠最终 token。
@@ -42,6 +48,45 @@ func randomString(n int) string {
 		b[i] = randomCharset[rand.Intn(len(randomCharset))]
 	}
 	return string(b)
+}
+
+func fetchVersionFromSession(ctx context.Context, sess *transport.Session) (string, bool) {
+	jsURL := recaptchaBase + "/recaptcha/enterprise.js"
+	header := transport.XHRHeaders("", "*/*", recaptchaBase, recaptchaBase, "cross-site")
+	status, body, err := sess.DoAndRead(ctx, "GET", jsURL, header, nil)
+	if err != nil || status != 200 {
+		return "", false
+	}
+	m := versionRe.FindSubmatch(body)
+	if m == nil {
+		return "", false
+	}
+	return string(m[1]), true
+}
+
+func currentVersion(ctx context.Context, sess *transport.Session) (string, bool) {
+	versionMu.Lock()
+	if cachedVer != "" {
+		ver := cachedVer
+		versionMu.Unlock()
+		return ver, true
+	}
+	versionMu.Unlock()
+
+	ver, ok := fetchVersionFromSession(ctx, sess)
+	if ok {
+		versionMu.Lock()
+		cachedVer = ver
+		versionMu.Unlock()
+		return ver, true
+	}
+	return "", false
+}
+
+func invalidateVersion() {
+	versionMu.Lock()
+	defer versionMu.Unlock()
+	cachedVer = ""
 }
 
 // FetchRecaptchaToken 获取 Google reCAPTCHA token（隔离特征）。
@@ -92,10 +137,15 @@ func FetchRecaptchaToken(ctx context.Context, net *transport.NetworkClient, prox
 // 这是共享核心操作，生产路径和节点测速路径均调用。
 // 错误均为非 nil（网络失败、正则解析失败、reload 非 200），调用方按自身语义处理。
 func FetchRecaptchaTokenWithSession(ctx context.Context, sess *transport.Session) (string, error) {
+	ver, ok := currentVersion(ctx, sess)
+	if !ok {
+		ver = recaptchaVFallback // 动态拉取失败降级到硬编码（比硬失败更稳）
+	}
+
 	cb := randomString(10)
 	anchorURL := fmt.Sprintf(
 		"%s/recaptcha/enterprise/anchor?ar=1&k=%s&co=%s&hl=%s&v=%s&size=invisible&anchor-ms=20000&execute-ms=15000&cb=%s",
-		recaptchaBase, siteKey, recaptchaCo, recaptchaHl, recaptchaV, cb,
+		recaptchaBase, siteKey, recaptchaCo, recaptchaHl, ver, cb,
 	)
 
 	_, anchorBody, err := sess.DoAndRead(ctx, "GET", anchorURL, transport.AnchorHeaders(), nil)
@@ -114,7 +164,7 @@ func FetchRecaptchaTokenWithSession(ctx context.Context, sess *transport.Session
 	baseToken := string(m[1])
 
 	form := url.Values{
-		"v":      {recaptchaV},
+		"v":      {ver},
 		"reason": {"q"},
 		"k":      {siteKey},
 		"c":      {baseToken},
@@ -164,6 +214,7 @@ func fetchOnce(ctx context.Context, net *transport.NetworkClient, proxyURI strin
 
 	token, err := FetchRecaptchaTokenWithSession(ctx, sess)
 	if err != nil {
+		invalidateVersion()
 		return "", false
 	}
 	return token, true

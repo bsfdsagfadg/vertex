@@ -919,7 +919,7 @@ func TestExecuteStreamingAttempt_IdleTimeout(t *testing.T) {
 	defer func() { batchGraphqlURL = origURL }()
 
 	cfg := config.DefaultConfig()
-	cfg.StreamIdleTimeoutSeconds = 1 // postTimeout = 1s
+	cfg.StreamIdleTimeoutSeconds = 1 // postTimeout = max(1, 10) = 10s（包间下限生效）
 	provider := config.StaticProvider(cfg)
 
 	netClient := transport.NewNetworkClient(nil)
@@ -931,7 +931,7 @@ func TestExecuteStreamingAttempt_IdleTimeout(t *testing.T) {
 		cfg: provider,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	sess, err := netClient.CreateSession(180, "", "test-idle-timeout")
@@ -977,7 +977,7 @@ func TestExecuteStreamingAttempt_IdleTimeout_InDoStream(t *testing.T) {
 	defer func() { batchGraphqlURL = origURL }()
 
 	cfg := config.DefaultConfig()
-	cfg.StreamIdleTimeoutSeconds = 1 // preTimeout = max(2, 40) = 40s
+	cfg.StreamIdleTimeoutSeconds = 1 // preTimeout = max(2, 20) = 20s（首包下限生效）
 	provider := config.StaticProvider(cfg)
 
 	netClient := transport.NewNetworkClient(nil)

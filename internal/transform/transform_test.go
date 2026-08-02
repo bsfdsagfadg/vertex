@@ -114,8 +114,8 @@ func TestBuildVertexVariables_SafetyDefault(t *testing.T) {
 		t.Error("model")
 	}
 	ss, ok := vars["safetySettings"].([]any)
-	if !ok || len(ss) != 5 {
-		t.Errorf("safetySettings=%v, want 5 BLOCK_NONE", vars["safetySettings"])
+	if !ok || len(ss) != 6 {
+		t.Errorf("safetySettings=%v, want 6 BLOCK_NONE", vars["safetySettings"])
 	}
 	first := ss[0].(map[string]any)
 	if first["threshold"] != "BLOCK_NONE" {

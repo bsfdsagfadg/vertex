@@ -9,6 +9,7 @@ import (
 var toolKeys = map[string]bool{ //nolint:gochecknoglobals
 	"functionDeclarations": true, "googleSearch": true, "googleSearchRetrieval": true,
 	"codeExecution": true, "retrieval": true, "urlContext": true,
+	"computerUse": true, "mcpServer": true, "fileSearch": true, "googleMaps": true,
 }
 
 // convertTools 把 OpenAI tools（或 legacy functions）转为 functionDeclarations，写入

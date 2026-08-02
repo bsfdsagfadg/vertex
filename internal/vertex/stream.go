@@ -23,6 +23,15 @@ import (
 // 首包前触发会自动重试/故障转移；首包后触发向客户端推送超时 error chunk。
 var ErrStreamIdleTimeout = errors.New("stream idle timeout")
 
+// 流式包间空闲超时的防御性下限（对称防护）。
+// 正常值 pre=idle*2、post=idle；下限沿用同一 *2 联动关系：
+// post 下限 10s（容忍思考模型停顿+网络抖动，留余量防误杀），pre 下限 = post 下限 * 2 = 20s。
+// 仅兜住 idle<10 的极端激进配置；idle>=20 的正常用户完全不受影响。
+const (
+	minPostStreamTimeout = 10 * time.Second         // 包间防御性下限：容忍思考停顿，防零字节秒杀（新增对称防护）
+	minPreStreamTimeout  = 2 * minPostStreamTimeout // 首包前防御性下限：与 post 下限 *2 联动，单一原则
+)
+
 // sessionTimeoutFromContext 从 context 的 deadline 推导 Session 的超时秒数。
 // 至少返回 1 秒（tls-client.WithTimeoutSeconds 只接受正秒），但 context 的 deadline
 // 仍由 Session.Do 优先检查；该值仅用于构造传输层超时。
@@ -288,8 +297,8 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	streamReqCtx, cancelStreamReq := context.WithCancel(ctx)
 	defer cancelStreamReq()
 
-	preTimeout := time.Duration(max(cfg.StreamIdleTimeoutSeconds()*2, 40)) * time.Second
-	postTimeout := time.Duration(cfg.StreamIdleTimeoutSeconds()) * time.Second
+	preTimeout := max(time.Duration(cfg.StreamIdleTimeoutSeconds()*2)*time.Second, minPreStreamTimeout)
+	postTimeout := max(time.Duration(cfg.StreamIdleTimeoutSeconds())*time.Second, minPostStreamTimeout)
 
 	var (
 		srRef              atomic.Pointer[transport.StreamResponse]
