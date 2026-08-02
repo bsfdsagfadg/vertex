@@ -1,44 +1,75 @@
-// 本文件实现模型清单与别名映射的加载。
+// 本文件实现模型注册表与别名映射的加载。
 //
-// models.json 形如 {"models": [...], "alias_map": {"别名": "真名"}}。
-// 与 config.json 同目录解析（VPROXY_MODELS 环境变量可覆盖路径），带 60 秒内存缓存。
+// models.json v2 由 Go 内置注册表补齐，兼容旧版字符串数组并自动备份迁移。
 package config
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
 
+const modelsFileVersion = 2
+
 // fakePrefixes 是假流式模型前缀（中文 + ASCII）。
-// 模型名以此开头表示"先完整非流式生成、再切片按 SSE 推"。
 //
 //nolint:gochecknoglobals // Read-only prefix list
 var fakePrefixes = []string{"假流式-", "fake-"}
 
-// FakePrefixes 返回假流式前缀列表（供 api 层剥离前缀复用，避免常量散落）。
-func FakePrefixes() []string { return fakePrefixes }
+func FakePrefixes() []string { return append([]string(nil), fakePrefixes...) }
 
-// defaultModels 是 models.json 缺失/损坏时的回退清单。
-//
-//nolint:gochecknoglobals // Read-only default list
-var defaultModels = []string{
-	"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash-image",
-	"gemini-2.5-pro", "gemini-3-flash-preview", "gemini-3-pro-image",
-	"gemini-3.1-flash-lite", "gemini-3.1-flash-lite-image", "gemini-3.1-flash-image",
-	"gemini-3.1-flash-tts-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash",
-	"gemini-3.5-flash-lite", "gemini-3.6-flash", "imagen-3.0-capability",
-	"imagen-4.0-generate-001", "imagen-4.0-ultra-generate-001", "imagen-4.0-fast-generate-001",
-	"virtual-try-on-001", "lyria-002", "veo-2-generate-001",
-	"veo-3-generate-001", "veo-3-fast-generate-001",
+// ModelEntry 是 models.json v2 中的一条模型注册记录。
+type ModelEntry struct {
+	ID                 string `json:"id"`
+	Enabled            bool   `json:"enabled"`
+	FakeStreamEnabled  bool   `json:"fake_stream_enabled"`
+	TrailingFixEnabled bool   `json:"trailing_fix_enabled"`
 }
 
-// modelsFile 是 models.json 内容结构。
-type modelsFile struct { //nolint:govet
-	Models   []string          `json:"models"`
+// defaultModelRegistry 是模型 ID 和缺省能力的唯一内置来源。
+//
+//nolint:gochecknoglobals // Read-only default registry
+var defaultModelRegistry = []ModelEntry{
+	{ID: "gemini-2.5-flash", Enabled: true, FakeStreamEnabled: true},
+	{ID: "gemini-2.5-flash-lite", Enabled: true, FakeStreamEnabled: true},
+	{ID: "gemini-2.5-flash-image", Enabled: true, FakeStreamEnabled: true},
+	{ID: "gemini-2.5-pro", Enabled: true, FakeStreamEnabled: true},
+	{ID: "gemini-3-flash-preview", Enabled: true, FakeStreamEnabled: true},
+	{ID: "gemini-3-pro-image", Enabled: true, FakeStreamEnabled: true},
+	{ID: "gemini-3.1-flash-lite", Enabled: true, FakeStreamEnabled: true},
+	{ID: "gemini-3.1-flash-lite-image", Enabled: true, FakeStreamEnabled: true},
+	{ID: "gemini-3.1-flash-image", Enabled: true, FakeStreamEnabled: true},
+	{ID: "gemini-3.1-flash-tts-preview", Enabled: true, FakeStreamEnabled: true},
+	{ID: "gemini-3.1-pro-preview", Enabled: true, FakeStreamEnabled: true},
+	{ID: "gemini-3.5-flash", Enabled: true, FakeStreamEnabled: true},
+	{ID: "gemini-3.5-flash-lite", Enabled: true, FakeStreamEnabled: true, TrailingFixEnabled: true},
+	{ID: "gemini-3.6-flash", Enabled: true, FakeStreamEnabled: true, TrailingFixEnabled: true},
+	{ID: "imagen-3.0-capability", Enabled: true, FakeStreamEnabled: true},
+	{ID: "imagen-4.0-generate-001", Enabled: true, FakeStreamEnabled: true},
+	{ID: "imagen-4.0-ultra-generate-001", Enabled: true, FakeStreamEnabled: true},
+	{ID: "imagen-4.0-fast-generate-001", Enabled: true, FakeStreamEnabled: true},
+	{ID: "virtual-try-on-001", Enabled: true, FakeStreamEnabled: true},
+	{ID: "lyria-002", Enabled: true, FakeStreamEnabled: true},
+	{ID: "veo-2-generate-001", Enabled: true, FakeStreamEnabled: true},
+	{ID: "veo-3-generate-001", Enabled: true, FakeStreamEnabled: true},
+	{ID: "veo-3-fast-generate-001", Enabled: true, FakeStreamEnabled: true},
+}
+
+type modelsFile struct {
+	Version  int               `json:"version"`
+	Models   []ModelEntry      `json:"models"`
+	AliasMap map[string]string `json:"alias_map"`
+}
+
+type modelsEnvelope struct {
+	Version  int               `json:"version"`
+	Models   json.RawMessage   `json:"models"`
 	AliasMap map[string]string `json:"alias_map"`
 }
 
@@ -51,7 +82,14 @@ var (
 	modelsCacheTime time.Time
 )
 
-// InvalidateModelsCache 强制清除 models.json 缓存（SIGHUP 立即热重载用）。
+func cloneModelEntries(in []ModelEntry) []ModelEntry {
+	out := make([]ModelEntry, len(in))
+	copy(out, in)
+	return out
+}
+
+func DefaultModelRegistry() []ModelEntry { return cloneModelEntries(defaultModelRegistry) }
+
 func InvalidateModelsCache() {
 	modelsMu.Lock()
 	defer modelsMu.Unlock()
@@ -59,7 +97,6 @@ func InvalidateModelsCache() {
 	modelsCacheTime = time.Time{}
 }
 
-// modelsPath 解析 models.json 路径（环境变量 > exe 同级 config/ > 工作目录 config/）。
 func modelsPath() string {
 	if p := os.Getenv("VPROXY_MODELS"); p != "" {
 		return p
@@ -73,70 +110,163 @@ func modelsPath() string {
 	return filepath.Join("config", "models.json")
 }
 
-// loadModelsFile 读 models.json（带 60 秒缓存）；文件缺失/损坏退回默认清单 + 空别名表。
+func defaultEntryFor(id string) ModelEntry {
+	for _, entry := range defaultModelRegistry {
+		if entry.ID == id {
+			return entry
+		}
+	}
+	return ModelEntry{ID: id, Enabled: true, FakeStreamEnabled: true}
+}
+
+func decodeModelsFile(data []byte) (mf modelsFile, migrated bool, err error) {
+	mf = modelsFile{Version: modelsFileVersion, AliasMap: map[string]string{}}
+	trimmed := strings.TrimSpace(string(data))
+	if strings.HasPrefix(trimmed, "[") {
+		var ids []string
+		if err := json.Unmarshal(data, &ids); err != nil {
+			return mf, false, err
+		}
+		for _, id := range ids {
+			mf.Models = append(mf.Models, defaultEntryFor(strings.TrimSpace(id)))
+		}
+		return mf, true, nil
+	}
+
+	var env modelsEnvelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return mf, false, err
+	}
+	if env.AliasMap != nil {
+		mf.AliasMap = env.AliasMap
+	}
+
+	if env.Version >= modelsFileVersion {
+		if err := json.Unmarshal(env.Models, &mf.Models); err != nil {
+			return mf, false, err
+		}
+		return mf, false, nil
+	}
+
+	var ids []string
+	if err := json.Unmarshal(env.Models, &ids); err != nil {
+		return mf, false, fmt.Errorf("decode v1 models: %w", err)
+	}
+	for _, id := range ids {
+		mf.Models = append(mf.Models, defaultEntryFor(strings.TrimSpace(id)))
+	}
+	return mf, true, nil
+}
+
+func normalizeModelsFile(mf modelsFile) (modelsFile, int) {
+	out := modelsFile{Version: modelsFileVersion, Models: make([]ModelEntry, 0, len(mf.Models)), AliasMap: map[string]string{}}
+	seen := make(map[string]bool, len(mf.Models))
+	for _, entry := range mf.Models {
+		entry.ID = strings.TrimSpace(entry.ID)
+		if entry.ID == "" || seen[entry.ID] {
+			continue
+		}
+		seen[entry.ID] = true
+		out.Models = append(out.Models, entry)
+	}
+
+	for alias, target := range mf.AliasMap {
+		alias, target = strings.TrimSpace(alias), strings.TrimSpace(target)
+		if alias == "" || target == "" {
+			continue
+		}
+		out.AliasMap[alias] = target
+		if !seen[target] {
+			seen[target] = true
+			out.Models = append(out.Models, defaultEntryFor(target))
+			log.Printf("[Config] 别名 %q 的目标模型 %q 不在列表中，已按兼容默认补充", alias, target)
+		}
+	}
+
+	added := 0
+	for _, entry := range defaultModelRegistry {
+		if seen[entry.ID] {
+			continue
+		}
+		seen[entry.ID] = true
+		out.Models = append(out.Models, entry)
+		added++
+	}
+	return out, added
+}
+
+func backupV1Models(path string, data []byte) error {
+	backupPath := path + ".v1.bak"
+	f, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
 func loadModelsFile() *modelsFile {
 	modelsMu.Lock()
 	defer modelsMu.Unlock()
-
 	if cachedModels != nil && time.Since(modelsCacheTime) < cacheTTL {
 		return cachedModels
 	}
 
-	mf := &modelsFile{Models: defaultModels, AliasMap: map[string]string{}}
-	if data, err := os.ReadFile(modelsPath()); err == nil {
-		var parsed modelsFile
-		if errUnm := json.Unmarshal(data, &parsed); errUnm != nil { //nolint:govet
-			log.Printf("[Config] 解析 models.json 失败: %v", err)
-		} else if len(parsed.Models) > 0 {
-			if parsed.AliasMap != nil {
-				mf.AliasMap = parsed.AliasMap
-			}
-
-			// 合并升级：内置 defaultModels 里新增的模型（如 gemini-3.6-flash）
-			// 自动补齐，保留用户已有自定义列表，不做整体覆盖（避免丢失用户裁剪的模型）。
-			merged := append([]string{}, parsed.Models...)
-			added := 0
-			for _, dm := range defaultModels {
-				found := false
-				for _, pm := range merged {
-					if pm == dm {
-						found = true
-						break
-					}
+	path := modelsPath()
+	mf := modelsFile{Version: modelsFileVersion, Models: DefaultModelRegistry(), AliasMap: map[string]string{}}
+	if data, err := os.ReadFile(path); err == nil {
+		parsed, migrated, decodeErr := decodeModelsFile(data)
+		if decodeErr != nil {
+			log.Printf("[Config] 解析 models.json 失败，使用内置模型注册表: %v", decodeErr)
+		} else {
+			normalized, added := normalizeModelsFile(parsed)
+			mf = normalized
+			if migrated {
+				if backupErr := backupV1Models(path, data); backupErr != nil {
+					log.Printf("[Config] 备份 v1 models.json 失败，将继续使用内存迁移结果: %v", backupErr)
+				} else if writeErr := writeJSONFile(path, mf); writeErr != nil {
+					log.Printf("[Config] 自动迁移 models.json v2 失败，将继续使用内存迁移结果: %v", writeErr)
+				} else {
+					log.Printf("[Config] 已自动迁移 models.json v1 → v2")
 				}
-				if !found {
-					merged = append(merged, dm)
-					added++
+			} else if added > 0 {
+				if writeErr := writeJSONFile(path, mf); writeErr != nil {
+					log.Printf("[Config] 自动补充 %d 个内置模型失败: %v", added, writeErr)
+				} else {
+					log.Printf("[Config] 已按内置默认补充 %d 个缺失模型", added)
 				}
-			}
-			if added > 0 {
-				log.Printf("[Config] 检测到 models.json 缺少 %d 个新模型，已自动补充", added)
-				mf.Models = merged
-				if errWrite := writeJSONFile(modelsPath(), *mf); errWrite != nil {
-					log.Printf("[Config] 自动升级 models.json 失败: %v", errWrite)
-				}
-			} else {
-				mf.Models = parsed.Models
-				log.Printf("[Config] 成功加载模型配置文件 models.json (模型数: %d)", len(mf.Models))
 			}
 		}
 	} else if !os.IsNotExist(err) {
-		log.Printf("[Config] 读取 models.json 失败: %v", err)
+		log.Printf("[Config] 读取 models.json 失败，使用内置模型注册表: %v", err)
 	}
-	cachedModels = mf
+
+	cachedModels = &mf
 	modelsCacheTime = time.Now()
-	return mf
+	return cachedModels
 }
 
-// BaseModels 返回基础模型清单（不含假流式变体）。
+// ModelRegistry 返回全部模型（包含前端禁用项）。
+func ModelRegistry() []ModelEntry { return cloneModelEntries(loadModelsFile().Models) }
+
+// BaseModels 只返回启用的基础模型。
 func BaseModels() []string {
-	mf := loadModelsFile()
-	out := make([]string, len(mf.Models))
-	copy(out, mf.Models)
+	registry := loadModelsFile().Models
+	out := make([]string, 0, len(registry))
+	for _, entry := range registry {
+		if entry.Enabled {
+			out = append(out, entry.ID)
+		}
+	}
 	return out
 }
 
-// AliasMap 返回别名 → 真名的映射副本（供 admin 后台展示/编辑）。
 func AliasMap() map[string]string {
 	mf := loadModelsFile()
 	out := make(map[string]string, len(mf.AliasMap))
@@ -146,20 +276,30 @@ func AliasMap() map[string]string {
 	return out
 }
 
-// ModelsWithFakeVariants 返回每个基础模型 + 其两个假流式前缀变体的完整清单
-// （result 里依次塞入 m、假流式-m、fake-m）。
-// /v1/models、/v1beta/models、单模型 404 校验都用它，以保证假流式变体名自洽。
-func ModelsWithFakeVariants() []string {
-	base := loadModelsFile().Models
-	result := make([]string, 0, len(base)*3)
-	for _, m := range base {
-		result = append(result, m, fakePrefixes[0]+m, fakePrefixes[1]+m)
+func LookupModel(model string) (ModelEntry, bool) {
+	for _, entry := range loadModelsFile().Models {
+		if entry.ID == model {
+			return entry, true
+		}
+	}
+	return ModelEntry{}, false
+}
+
+func modelsWithFakeVariants(globalEnabled bool) []string {
+	registry := loadModelsFile().Models
+	result := make([]string, 0, len(registry)*3)
+	for _, entry := range registry {
+		if !entry.Enabled {
+			continue
+		}
+		result = append(result, entry.ID)
+		if globalEnabled && entry.FakeStreamEnabled {
+			result = append(result, fakePrefixes[0]+entry.ID, fakePrefixes[1]+entry.ID)
+		}
 	}
 	return result
 }
 
-// ResolveModelName 把模型名经 alias_map 重映射。
-// 命中别名返回真名，否则原样透传。
 func ResolveModelName(model string) string {
 	if real, ok := loadModelsFile().AliasMap[model]; ok {
 		return real
@@ -167,21 +307,30 @@ func ResolveModelName(model string) string {
 	return model
 }
 
-// WriteModels 把模型清单与别名映射写回 models.json（原子写）并清空缓存，使下次读取即生效。
-// 写盘 + 立即热重载。aliasMap 为 nil 时写空表。
-func WriteModels(models []string, aliasMap map[string]string) error {
-	if aliasMap == nil {
-		aliasMap = map[string]string{}
-	}
-	if err := writeJSONFile(modelsPath(), modelsFile{Models: models, AliasMap: aliasMap}); err != nil {
+func WriteModelRegistry(models []ModelEntry, aliasMap map[string]string) error {
+	normalized, _ := normalizeModelsFile(modelsFile{Version: modelsFileVersion, Models: models, AliasMap: aliasMap})
+	if err := writeJSONFile(modelsPath(), normalized); err != nil {
 		return err
 	}
 	InvalidateModelsCache()
 	return nil
 }
 
-func (c AppConfig) BaseModels() []string                 { return BaseModels() }
-func (c AppConfig) AliasMap() map[string]string          { return AliasMap() }
-func (c AppConfig) ModelsWithFakeVariants() []string     { return ModelsWithFakeVariants() }
-func (c AppConfig) FakePrefixes() []string               { return FakePrefixes() }
-func (c AppConfig) ResolveModelName(model string) string { return ResolveModelName(model) }
+// WriteModels 保留旧管理 API/测试兼容，字符串模型默认启用全部能力。
+func WriteModels(models []string, aliasMap map[string]string) error {
+	entries := make([]ModelEntry, 0, len(models))
+	for _, model := range models {
+		entries = append(entries, defaultEntryFor(strings.TrimSpace(model)))
+	}
+	return WriteModelRegistry(entries, aliasMap)
+}
+
+func (c AppConfig) BaseModels() []string        { return BaseModels() }
+func (c AppConfig) ModelRegistry() []ModelEntry { return ModelRegistry() }
+func (c AppConfig) AliasMap() map[string]string { return AliasMap() }
+func (c AppConfig) ModelsWithFakeVariants() []string {
+	return modelsWithFakeVariants(c.FakeStreamEnabled)
+}
+func (c AppConfig) FakePrefixes() []string                      { return FakePrefixes() }
+func (c AppConfig) ResolveModelName(model string) string        { return ResolveModelName(model) }
+func (c AppConfig) LookupModel(model string) (ModelEntry, bool) { return LookupModel(model) }

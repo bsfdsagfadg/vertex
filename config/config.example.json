@@ -2,6 +2,7 @@
   "admin_password": "",
   "drop_max_tokens": false,
   "aggregate_stream": false,
+  "fake_stream_enabled": true,
   "max_n": 8,
   "max_retries": 1,
   "parallel_pool_delay_dynamic": false,
