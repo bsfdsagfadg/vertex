@@ -1,8 +1,10 @@
 package transform
 
 import (
+	"log"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // 本文件实现 OpenAI Images API → Gemini 图片请求转换，及其辅助（追加 negative
@@ -20,11 +22,89 @@ var openaiImageModelAliases = map[string]bool{
 	"gpt-image-1": true, "dall-e-2": true, "dall-e-3": true,
 }
 
+type imageCapability struct {
+	sizes  map[string]bool
+	ratios map[string]bool
+}
+
+//nolint:gochecknoglobals // Read-only model capability table
+var modelImageCapabilities = map[string]imageCapability{
+	"gemini-3.1-flash-lite-image": {
+		sizes:  map[string]bool{"1K": true},
+		ratios: allImageRatios(),
+	},
+	"gemini-3.1-flash-image": {
+		sizes:  map[string]bool{"512": true, "1K": true, "2K": true, "4K": true},
+		ratios: allImageRatios(),
+	},
+	"gemini-3-pro-image": {
+		sizes:  map[string]bool{"1K": true, "2K": true, "4K": true},
+		ratios: standardImageRatios(),
+	},
+	"gemini-2.5-flash-image": {
+		sizes:  map[string]bool{"1K": true, "2K": true, "4K": true},
+		ratios: standardImageRatios(),
+	},
+}
+
+//nolint:gochecknoglobals // Once-per-model diagnostic deduplication
+var unknownImageModelWarned sync.Map
+
+func allImageRatios() map[string]bool {
+	return map[string]bool{
+		"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true,
+		"4:5": true, "5:4": true, "9:16": true, "16:9": true, "1:4": true, "4:1": true,
+		"1:8": true, "8:1": true, "21:9": true,
+	}
+}
+
+func standardImageRatios() map[string]bool {
+	return map[string]bool{
+		"1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true,
+		"4:5": true, "5:4": true, "9:16": true, "16:9": true, "21:9": true,
+	}
+}
+
+func imageCapabilityFor(model string) imageCapability {
+	if capability, ok := modelImageCapabilities[model]; ok {
+		return capability
+	}
+	if _, loaded := unknownImageModelWarned.LoadOrStore(model, true); !loaded {
+		log.Printf("[Image] 未知图模型 %q，清晰度按 1K、长宽比按通用集合处理", model)
+	}
+	return imageCapability{sizes: map[string]bool{"1K": true}, ratios: imageAspectRatioSupported}
+}
+
+func IsImageModel(model string) bool {
+	if _, ok := modelImageCapabilities[model]; ok {
+		return true
+	}
+	return strings.Contains(strings.ToLower(model), "image")
+}
+
+func ImageSizeAllowedFor(model, tier string) bool {
+	return imageCapabilityFor(model).sizes[strings.ToUpper(strings.TrimSpace(tier))]
+}
+
+func aspectRatioAllowedFor(model, ratio string) bool {
+	return imageCapabilityFor(model).ratios[strings.TrimSpace(ratio)]
+}
+
+func ResolveImageSize(defaultSize, model string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(defaultSize))
+	if ImageSizeAllowedFor(model, normalized) {
+		return normalized
+	}
+	return "1K"
+}
+
 // imageAspectRatioSupported 是 Gemini imageConfig.aspectRatio 接受的比例集合。
 //
 //nolint:gochecknoglobals // Read-only set
 var imageAspectRatioSupported = map[string]bool{
-	"1:1": true, "3:4": true, "4:3": true, "9:16": true, "16:9": true, "2:3": true, "3:2": true,
+	"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true,
+	"4:5": true, "5:4": true, "9:16": true, "16:9": true,
+	"1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true,
 }
 
 // InlineImage 是一张上传图片的 inlineData 结构（mimeType + base64 data）。
@@ -49,8 +129,7 @@ func ResolveImageModel(model string) string {
 //
 //   - prompt 经 buildImagePrompt 拼接尺寸/质量/风格/背景等自然语言约束。
 //   - images（编辑/变体的输入图）与 mask（编辑遮罩）以 inlineData 追加（base64 规范化）。
-//   - generationConfig.responseModalities=["TEXT","IMAGE"]；按 size 推 aspectRatio / imageSize
-//     （imageSize 仅 gemini-3 系列设置）。
+//   - 按模型能力从 size 推导 aspectRatio / imageSize；默认输出模态由调用方按配置补齐。
 func BuildImagePayload(model, prompt string, images []InlineImage, mask *InlineImage, size, quality, style, background, mode string) map[string]any {
 	promptText := buildImagePrompt(prompt, size, quality, style, background, mode, mask != nil)
 
@@ -69,12 +148,12 @@ func BuildImagePayload(model, prompt string, images []InlineImage, mask *InlineI
 		}})
 	}
 
-	genCfg := map[string]any{"responseModalities": []any{"TEXT", "IMAGE"}}
+	genCfg := map[string]any{}
 	imageConfig := map[string]any{}
-	if ar := sizeToAspectRatio(size); ar != "" {
+	if ar := sizeToAspectRatio(size); ar != "" && aspectRatioAllowedFor(model, ar) {
 		imageConfig["aspectRatio"] = ar
 	}
-	if is := sizeToImageSize(size); is != "" && strings.Contains(model, "gemini-3") {
+	if is := sizeToImageSize(size); is != "" && ImageSizeAllowedFor(model, is) {
 		imageConfig["imageSize"] = is
 	}
 	if len(imageConfig) > 0 {

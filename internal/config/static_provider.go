@@ -39,6 +39,8 @@ func (s staticConfig) FontColorType() string                    { return s.c.Fon
 func (s staticConfig) FontColor() string                        { return s.c.FontColor }
 func (s staticConfig) CustomBgPresets() []string                { return s.c.CustomBgPresets }
 func (s staticConfig) AutoRefreshLogs() bool                    { return s.c.GetAutoRefreshLogs() }
+func (s staticConfig) DefaultImageSize() string                 { return s.c.DefaultImageSize }
+func (s staticConfig) DefaultResponseModalities() string        { return s.c.DefaultResponseModalities }
 func (s staticConfig) TelemetryEnabled() *bool                  { return s.c.TelemetryEnabled }
 func (s staticConfig) BaseModels() []string                     { return s.c.BaseModels() }
 func (s staticConfig) ModelRegistry() []ModelEntry              { return s.c.ModelRegistry() }

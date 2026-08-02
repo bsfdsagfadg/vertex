@@ -65,3 +65,32 @@ func TestLoadNormalizesNegativeTimeouts(t *testing.T) {
 		t.Fatalf("负值规范化错误: request=%d race=%d idle=%d", cfg.RequestTimeout, cfg.RaceTimeout, cfg.StreamIdleTimeoutSeconds)
 	}
 }
+
+func TestLoadNormalizesImageDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("VPROXY_CONFIG", path)
+	t.Cleanup(InvalidateCache)
+	if err := os.WriteFile(path, []byte(`{"default_image_size":"8k","default_response_modalities":"文字","custom_field":"preserved"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateCache()
+
+	cfg := Load()
+	if cfg.DefaultImageSize != "1K" || cfg.DefaultResponseModalities != "图文" {
+		t.Fatalf("图像默认值规范化错误: size=%q modalities=%q", cfg.DefaultImageSize, cfg.DefaultResponseModalities)
+	}
+	raw := map[string]any{}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw["default_image_size"] != "1K" || raw["default_response_modalities"] != "图文" {
+		t.Fatalf("图像默认值未写回: %#v", raw)
+	}
+	if raw["custom_field"] != "preserved" {
+		t.Fatalf("未知字段未保留: %#v", raw)
+	}
+}

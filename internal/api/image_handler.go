@@ -31,18 +31,13 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	rawModel := getStr(body, "model", "")
+	rawModel := transform.ResolveImageModel(getStr(body, "model", ""))
 	prompt := getStr(body, "prompt", "")
 	size := getStr(body, "size", "1024x1024")
 	respFmt := getStr(body, "response_format", "b64_json")
 
 	log.Printf("[Server] [ImageGenerations] 收到请求: 模型=%s, 尺寸=%s, 格式=%s", rawModel, size, respFmt)
 
-	if rawModel == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-			"message": "缺少model字段", "type": "invalid_request_error", "code": nil}})
-		return
-	}
 	model, _, modelOK := resolveConfiguredModel(rawModel, img.cfg)
 	if !modelOK {
 		oaiModelNotFound(w, rawModel)
@@ -57,23 +52,8 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 	geminiPayload := map[string]any{
 		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": prompt}}}},
 	}
-	transform.ApplyImageConfig(geminiPayload, body)
-	if !hasImageSize(geminiPayload) {
-		gc, _ := geminiPayload["generationConfig"].(map[string]any)
-		if gc == nil {
-			gc = map[string]any{}
-			geminiPayload["generationConfig"] = gc
-		}
-		ic, _ := gc["imageConfig"].(map[string]any)
-		if ic == nil {
-			ic = map[string]any{}
-			gc["imageConfig"] = ic
-		}
-		ic["imageSize"] = "1K"
-		if size != "" {
-			gc["imageSize"] = size
-		}
-	}
+	transform.ApplyImageConfig(geminiPayload, body, model)
+	transform.ApplyImageDefaults(geminiPayload, model, img.cfg.DefaultImageSize(), img.cfg.DefaultResponseModalities())
 
 	images, vErr := img.vc.CompleteChatImage(r.Context(), model, geminiPayload)
 	if vErr != nil {
@@ -142,6 +122,7 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 	geminiPayload := transform.BuildImagePayload(model, prompt, images, mask,
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"),
 		formValue(r, "background"), "edit")
+	transform.ApplyImageDefaults(geminiPayload, model, img.cfg.DefaultImageSize(), img.cfg.DefaultResponseModalities())
 
 	img.runOAIImageRequest(r.Context(), w, model, geminiPayload, n, respFmt)
 }
@@ -182,6 +163,7 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 
 	geminiPayload := transform.BuildImagePayload(model, prompt, images, nil,
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"), "", "variation")
+	transform.ApplyImageDefaults(geminiPayload, model, img.cfg.DefaultImageSize(), img.cfg.DefaultResponseModalities())
 
 	img.runOAIImageRequest(r.Context(), w, model, geminiPayload, n, respFmt)
 }

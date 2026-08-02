@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -58,6 +59,9 @@ type AppConfig struct { //nolint:govet
 	FontColor       string   `json:"font_color"`
 	CustomBgPresets []string `json:"custom_bg_presets"`
 	AutoRefreshLogs *bool    `json:"auto_refresh_logs,omitempty"`
+
+	DefaultImageSize          string `json:"default_image_size"`
+	DefaultResponseModalities string `json:"default_response_modalities"`
 }
 
 func DefaultConfig() AppConfig {
@@ -84,6 +88,8 @@ func DefaultConfig() AppConfig {
 		FontColorType:             "adaptive",
 		FontColor:                 "#f6f1e9",
 		CustomBgPresets:           []string{},
+		DefaultImageSize:          "1K",
+		DefaultResponseModalities: "图文",
 	}
 }
 
@@ -199,6 +205,22 @@ func Load() AppConfig {
 				cfg.StreamIdleTimeoutSeconds = 30
 				needsSave = true
 			}
+			if normalized := normalizeImageSizeTier(cfg.DefaultImageSize); normalized == "" {
+				if cfg.DefaultImageSize != "" {
+					log.Printf("[Config] default_image_size 非法 (%q)，回退 1K", cfg.DefaultImageSize)
+				}
+				cfg.DefaultImageSize = "1K"
+				needsSave = true
+			} else {
+				cfg.DefaultImageSize = normalized
+			}
+			if cfg.DefaultResponseModalities != "图文" && cfg.DefaultResponseModalities != "仅图片" {
+				if cfg.DefaultResponseModalities != "" {
+					log.Printf("[Config] default_response_modalities 非法 (%q)，回退 图文", cfg.DefaultResponseModalities)
+				}
+				cfg.DefaultResponseModalities = "图文"
+				needsSave = true
+			}
 			// 拦截在文件读取配置时过高的并发数限制为 20
 			if cfg.ParallelPoolSize > 20 {
 				log.Printf("[Config] 警告: 并发数配置过高 (%d)，已限制为上限 20", cfg.ParallelPoolSize)
@@ -212,6 +234,8 @@ func Load() AppConfig {
 					"race_timeout":                cfg.RaceTimeout,
 					"stream_idle_timeout_seconds": cfg.StreamIdleTimeoutSeconds,
 					"parallel_pool_size":          cfg.ParallelPoolSize,
+					"default_image_size":          cfg.DefaultImageSize,
+					"default_response_modalities": cfg.DefaultResponseModalities,
 				}); errSave != nil {
 					log.Printf("[Config] 自动回写规范化配置失败: %v", errSave)
 				}
@@ -245,4 +269,14 @@ func (c AppConfig) GetAutoRefreshLogs() bool {
 		return true
 	}
 	return *c.AutoRefreshLogs
+}
+
+func normalizeImageSizeTier(value string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	switch normalized {
+	case "512", "1K", "2K", "4K":
+		return normalized
+	default:
+		return ""
+	}
 }

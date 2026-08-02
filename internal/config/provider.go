@@ -40,6 +40,8 @@ type ConfigProvider interface {
 	FontColor() string
 	CustomBgPresets() []string
 	AutoRefreshLogs() bool
+	DefaultImageSize() string
+	DefaultResponseModalities() string
 
 	TelemetryEnabled() *bool
 
@@ -124,5 +126,7 @@ func (d dynamicConfig) FakePrefixes() []string                  { return Load().
 func (d dynamicConfig) ResolveModelName(s string) string        { return Load().ResolveModelName(s) }
 func (d dynamicConfig) LookupModel(s string) (ModelEntry, bool) { return Load().LookupModel(s) }
 func (d dynamicConfig) AutoRefreshLogs() bool                   { return Load().GetAutoRefreshLogs() }
+func (d dynamicConfig) DefaultImageSize() string                { return Load().DefaultImageSize }
+func (d dynamicConfig) DefaultResponseModalities() string       { return Load().DefaultResponseModalities }
 func (d dynamicConfig) ConfigDir() string                       { return Load().ConfigDir() }
 func (d dynamicConfig) ConfigPath() string                      { return Load().ConfigPath() }

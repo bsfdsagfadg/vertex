@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
@@ -95,6 +96,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {
 		body = reqObj
 	}
+	transform.ApplyImageDefaults(body, actualModel, g.cfg.DefaultImageSize(), g.cfg.DefaultResponseModalities())
 	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
 
 	resp, vErr := g.vc.CompleteChat(r.Context(), actualModel, body)
@@ -125,6 +127,7 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {
 		body = reqObj
 	}
+	transform.ApplyImageDefaults(body, actualModel, g.cfg.DefaultImageSize(), g.cfg.DefaultResponseModalities())
 	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 假流式=%v", model, actualModel, useFake)
 
 	sw := newSSEWriter(w, "text/event-stream")

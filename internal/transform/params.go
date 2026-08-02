@@ -153,59 +153,123 @@ func pixelsToTier(px int) string {
 	return ""
 }
 
-// ApplyImageConfig 原地把客户端分辨率/imageConfig 写入 geminiPayload.generationConfig.imageConfig.imageSize。
-func ApplyImageConfig(geminiPayload, body map[string]any) {
+// ApplyImageConfig 原地把客户端分辨率/imageConfig 写入 geminiPayload.generationConfig.imageConfig。
+// model 用于过滤该模型不支持的清晰度档位和长宽比。
+func ApplyImageConfig(geminiPayload, body map[string]any, model string) {
 	var imageSize string
-	var passthrough map[string]any
+	var aspectRatio string
 
 	if raw, ok := body["imageConfig"].(map[string]any); ok && len(raw) > 0 {
-		passthrough = raw
-	}
-
-	if passthrough == nil {
-		for _, key := range []string{"image_size", "imageSize"} {
-			if v, ok := body[key]; ok && v != nil {
-				if tier := normalizeImageSize(v); tier != "" {
-					imageSize = tier
-					break
-				}
-			}
-		}
-	}
-
-	if passthrough == nil && imageSize == "" {
-		if v, ok := body["size"]; ok && v != nil {
-			if tier := normalizeImageSize(v); tier != "" {
-				imageSize = tier
-			}
-		}
-	}
-
-	if passthrough == nil && imageSize == "" {
+		mergeImageConfig(geminiPayload, filterImageConfig(raw, model))
 		return
 	}
 
-	genCfg, ok := geminiPayload["generationConfig"].(map[string]any)
+	for _, key := range []string{"image_size", "imageSize"} {
+		if v, ok := body[key]; ok && v != nil {
+			imageSize = normalizeImageSize(v)
+			break
+		}
+	}
+
+	if v, ok := body["size"]; ok && v != nil {
+		if imageSize == "" {
+			imageSize = sizeToImageSize(toString(v))
+		}
+		if ratio := sizeToAspectRatio(toString(v)); aspectRatioAllowedFor(model, ratio) {
+			aspectRatio = ratio
+		}
+	}
+
+	if imageSize != "" && !ImageSizeAllowedFor(model, imageSize) {
+		imageSize = ""
+	}
+	if imageSize == "" && aspectRatio == "" {
+		return
+	}
+
+	imageConfig := map[string]any{}
+	if imageSize != "" {
+		imageConfig["imageSize"] = imageSize
+	}
+	if aspectRatio != "" {
+		imageConfig["aspectRatio"] = aspectRatio
+	}
+	mergeImageConfig(geminiPayload, imageConfig)
+}
+
+func filterImageConfig(raw map[string]any, model string) map[string]any {
+	filtered := make(map[string]any, len(raw))
+	for key, value := range raw {
+		switch key {
+		case "imageSize", "image_size":
+			if tier := normalizeImageSize(value); ImageSizeAllowedFor(model, tier) {
+				filtered["imageSize"] = tier
+			}
+		case "aspectRatio", "aspect_ratio":
+			ratio := strings.TrimSpace(toString(value))
+			if aspectRatioAllowedFor(model, ratio) {
+				filtered["aspectRatio"] = ratio
+			}
+		default:
+			filtered[key] = value
+		}
+	}
+	return filtered
+}
+
+func mergeImageConfig(payload map[string]any, values map[string]any) {
+	if len(values) == 0 {
+		return
+	}
+	genCfg, ok := payload["generationConfig"].(map[string]any)
 	if !ok {
 		genCfg = map[string]any{}
-		geminiPayload["generationConfig"] = genCfg
+		payload["generationConfig"] = genCfg
 	}
+	imageConfig, ok := genCfg["imageConfig"].(map[string]any)
+	if !ok {
+		imageConfig = map[string]any{}
+		genCfg["imageConfig"] = imageConfig
+	}
+	for key, value := range values {
+		imageConfig[key] = value
+	}
+}
 
-	if passthrough != nil {
-		if existing, ok := genCfg["imageConfig"].(map[string]any); ok {
-			for k, v := range passthrough {
-				existing[k] = v
-			}
-		} else {
-			genCfg["imageConfig"] = copyMap(passthrough)
-		}
+// ApplyImageDefaults 仅对图模型补齐客户端没有显式指定的默认清晰度和输出模态。
+func ApplyImageDefaults(payload map[string]any, model, defaultSize, defaultModalities string) {
+	if !IsImageModel(model) {
 		return
 	}
-
-	imgCfg, ok := genCfg["imageConfig"].(map[string]any)
+	genCfg, ok := payload["generationConfig"].(map[string]any)
 	if !ok {
-		imgCfg = map[string]any{}
-		genCfg["imageConfig"] = imgCfg
+		genCfg = map[string]any{}
+		payload["generationConfig"] = genCfg
 	}
-	imgCfg["imageSize"] = imageSize
+	if !hasResponseModalities(genCfg["responseModalities"]) {
+		if defaultModalities == "仅图片" {
+			genCfg["responseModalities"] = []any{"IMAGE"}
+		} else {
+			genCfg["responseModalities"] = []any{"TEXT", "IMAGE"}
+		}
+	}
+	imageConfig, ok := genCfg["imageConfig"].(map[string]any)
+	if !ok {
+		imageConfig = map[string]any{}
+		genCfg["imageConfig"] = imageConfig
+	}
+	if size, _ := imageConfig["imageSize"].(string); strings.TrimSpace(size) == "" {
+		imageConfig["imageSize"] = ResolveImageSize(defaultSize, model)
+	}
+}
+
+func hasResponseModalities(value any) bool {
+	switch modalities := value.(type) {
+	case []any:
+		return len(modalities) > 0
+	case []string:
+		return len(modalities) > 0
+	default:
+		return false
+	}
 }

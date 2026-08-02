@@ -550,27 +550,85 @@ func TestExtractParts_ImageAndCode(t *testing.T) {
 func TestApplyImageConfig(t *testing.T) {
 	// image_size 档位
 	gp := map[string]any{}
-	ApplyImageConfig(gp, map[string]any{"image_size": "2K"})
+	ApplyImageConfig(gp, map[string]any{"image_size": "2K"}, "gemini-3.1-flash-image")
 	if gp["generationConfig"].(map[string]any)["imageConfig"].(map[string]any)["imageSize"] != "2K" {
 		t.Error("image_size=2K 未写入")
 	}
 	// 像素 → 档位
 	gp2 := map[string]any{}
-	ApplyImageConfig(gp2, map[string]any{"size": "2048x2048"})
+	ApplyImageConfig(gp2, map[string]any{"size": "2048x2048"}, "gemini-3.1-flash-image")
 	if gp2["generationConfig"].(map[string]any)["imageConfig"].(map[string]any)["imageSize"] != "2K" {
 		t.Error("2048px 应映射到 2K")
 	}
 	// imageConfig 顶层透传
 	gp3 := map[string]any{}
-	ApplyImageConfig(gp3, map[string]any{"imageConfig": map[string]any{"aspectRatio": "16:9"}})
+	ApplyImageConfig(gp3, map[string]any{"imageConfig": map[string]any{"aspectRatio": "16:9"}}, "gemini-3.1-flash-image")
 	if gp3["generationConfig"].(map[string]any)["imageConfig"].(map[string]any)["aspectRatio"] != "16:9" {
 		t.Error("imageConfig 透传失败")
 	}
 	// 不命中：不动 payload
 	gp4 := map[string]any{}
-	ApplyImageConfig(gp4, map[string]any{})
+	ApplyImageConfig(gp4, map[string]any{}, "gemini-3.1-flash-image")
 	if len(gp4) != 0 {
 		t.Errorf("无分辨率参数时不应改 payload: %v", gp4)
+	}
+
+	// 能力矩阵过滤不支持的档位。
+	gp5 := map[string]any{}
+	ApplyImageConfig(gp5, map[string]any{"image_size": "4K"}, "gemini-3.1-flash-lite-image")
+	if len(gp5) != 0 {
+		t.Errorf("flash-lite 不支持 4K，不应写入 payload: %v", gp5)
+	}
+
+	// OpenAI size 同时推导清晰度和长宽比。
+	gp6 := map[string]any{}
+	ApplyImageConfig(gp6, map[string]any{"size": "1536x1024"}, "gemini-3.1-flash-image")
+	ic6 := gp6["generationConfig"].(map[string]any)["imageConfig"].(map[string]any)
+	if ic6["imageSize"] != "2K" || ic6["aspectRatio"] != "3:2" {
+		t.Errorf("size 推导错误: %v", ic6)
+	}
+}
+
+func TestApplyImageDefaults(t *testing.T) {
+	payload := map[string]any{}
+	ApplyImageDefaults(payload, "gemini-3.1-flash-image", "4K", "仅图片")
+	gc := payload["generationConfig"].(map[string]any)
+	ic := gc["imageConfig"].(map[string]any)
+	if ic["imageSize"] != "4K" {
+		t.Fatalf("默认 imageSize=%v, want 4K", ic["imageSize"])
+	}
+	mods := gc["responseModalities"].([]any)
+	if len(mods) != 1 || mods[0] != "IMAGE" {
+		t.Fatalf("默认仅图片模态错误: %v", mods)
+	}
+
+	explicit := map[string]any{"generationConfig": map[string]any{
+		"responseModalities": []any{"TEXT"},
+		"imageConfig":        map[string]any{"imageSize": "2K"},
+	}}
+	ApplyImageDefaults(explicit, "gemini-3.1-flash-image", "4K", "仅图片")
+	explicitGC := explicit["generationConfig"].(map[string]any)
+	if explicitGC["imageConfig"].(map[string]any)["imageSize"] != "2K" {
+		t.Fatal("不应覆盖客户端显式 imageSize")
+	}
+	if explicitGC["responseModalities"].([]any)[0] != "TEXT" {
+		t.Fatal("不应覆盖客户端显式 responseModalities")
+	}
+
+	empty := map[string]any{"generationConfig": map[string]any{
+		"responseModalities": []any{},
+		"imageConfig":        map[string]any{"imageSize": ""},
+	}}
+	ApplyImageDefaults(empty, "gemini-3.1-flash-image", "2K", "图文")
+	emptyGC := empty["generationConfig"].(map[string]any)
+	if emptyGC["imageConfig"].(map[string]any)["imageSize"] != "2K" || len(emptyGC["responseModalities"].([]any)) != 2 {
+		t.Fatalf("空参数应按默认值补齐: %v", emptyGC)
+	}
+
+	textPayload := map[string]any{}
+	ApplyImageDefaults(textPayload, "gemini-3.6-flash", "4K", "仅图片")
+	if len(textPayload) != 0 {
+		t.Fatalf("文本模型不应注入图像默认值: %v", textPayload)
 	}
 }
 

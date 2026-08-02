@@ -81,22 +81,8 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	log.Printf("[Server] [ChatCompletions] 收到请求: 模型=%s, 真模型=%s, 流式=%v, n=%d", rawModel, actualModel, stream, n)
 
-	transform.ApplyImageConfig(geminiPayload, body)
-	if strings.Contains(strings.ToLower(model), "image") {
-		gc, ok := geminiPayload["generationConfig"].(map[string]any)
-		if !ok {
-			gc = map[string]any{}
-			geminiPayload["generationConfig"] = gc
-		}
-		ic, ok := gc["imageConfig"].(map[string]any)
-		if !ok {
-			ic = map[string]any{}
-			gc["imageConfig"] = ic
-		}
-		if _, has := ic["imageSize"]; !has {
-			ic["imageSize"] = "1K"
-		}
-	}
+	transform.ApplyImageConfig(geminiPayload, body, actualModel)
+	transform.ApplyImageDefaults(geminiPayload, actualModel, c.cfg.DefaultImageSize(), c.cfg.DefaultResponseModalities())
 
 	if aggregateStream {
 		c.oaiAggregateStream(r.Context(), w, model, geminiPayload)

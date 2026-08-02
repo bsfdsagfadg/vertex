@@ -3,6 +3,8 @@
   "drop_max_tokens": false,
   "aggregate_stream": false,
   "fake_stream_enabled": true,
+  "default_image_size": "1K",
+  "default_response_modalities": "图文",
   "max_n": 8,
   "max_retries": 1,
   "parallel_pool_delay_dynamic": false,

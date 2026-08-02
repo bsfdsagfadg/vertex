@@ -15,6 +15,8 @@ const SETTINGS_FIELDS = [
   { k: 'fake_stream_enabled', label: '假流式总开关', type: 'bool', group: 'core', desc: '控制所有模型的 fake-/假流式- 变体；可在模型页自定义。' },
   { k: 'model_turn_guard_enabled', label: '模型尾部修复', type: 'bool', group: 'core', desc: '对 gemini-3.6-flash / gemini-3.5-flash-lite 等新模型，自动在消息末尾追加空用户消息，修复“末尾不能是 model”校验报错。可在模型页自定义。' },
   { k: 'debug_mode', label: 'Debug 日志', type: 'bool', group: 'core', desc: '开启更详细的错误与负载调试日志' },
+  { k: 'default_image_size', label: '默认图片清晰度', type: 'select', group: 'core', opts: ['512', '1K', '2K', '4K'], desc: '图模型未指定清晰度时的默认档位；不支持的档位会按模型能力回退。' },
+  { k: 'default_response_modalities', label: '默认图片输出模态', type: 'select', group: 'core', opts: ['图文', '仅图片'], desc: '图模型未指定输出模态时，默认返回图文或仅图片。' },
 
   // 🛡 Group: security (安全增强与模型策略)
   { k: 'drop_max_tokens', label: '移除 maxOutputTokens', type: 'bool', group: 'security', desc: '移除输出 token 上限，让模型自由输出' },
