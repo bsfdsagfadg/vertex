@@ -326,7 +326,7 @@ func TestRunRaceRecoversCandidatePanic(t *testing.T) {
 	}
 }
 
-func TestRunRaceChoosesRetryableErrorAfterAllCandidatesFail(t *testing.T) {
+func TestRunRaceReturnsGlobalRequestError(t *testing.T) {
 	raceTestNodes(t)
 	_, err := RunRace(context.Background(), raceTestConfig(0), func(_ context.Context, uri string) (string, error) {
 		switch {
@@ -339,8 +339,8 @@ func TestRunRaceChoosesRetryableErrorAfterAllCandidatesFail(t *testing.T) {
 		}
 	})
 	var ve *VertexError
-	if !errors.As(err, &ve) || ve.Kind != "ratelimit" {
-		t.Fatalf("全部失败时应按优先级返回可重试的限流错误, got %v", err)
+	if !errors.As(err, &ve) || ve.Kind != "invalid" {
+		t.Fatalf("请求级参数错误应优先返回且不被节点限流掩盖, got %v", err)
 	}
 }
 

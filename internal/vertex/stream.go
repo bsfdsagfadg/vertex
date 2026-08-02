@@ -197,7 +197,7 @@ retryLoop:
 
 		case ve != nil:
 			lastError = ve
-			// 【关键改动】：如果是网络不通等内部错误，直接熔断并停止重试。
+			// 内部实现错误直接停止；明确分类的临时网络/上游错误按策略重试。
 			if ve.Kind == "internal" || !ve.IsRetryable() || contentYielded || attempt >= maxRetries {
 				log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发异常错误失败: [%s] %s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, ve.Kind, ve.Message, reqID, nodes.GetNodeName(proxyURI))
 				break retryLoop
@@ -216,11 +216,9 @@ retryLoop:
 	}
 
 	// 所有重试耗尽且没发出过任何内容 → yield 一个 error chunk（末尾 yield error dict）。
-	// 竞速超时（RaceTimeout 到点，ctx deadline）优先映射为 503 unavailable：可重试且语义准确，
-	// 避免被内层包装成 500 internal 后丢失“是超时淘汰”这一信息。
 	if !contentYielded && lastError != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			lastError = NewUnavailableError(fmt.Sprintf("节点竞速超时（%d 秒），已淘汰", cfg.RaceTimeout()))
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			lastError = NewContextError(ctxErr)
 		}
 		yield(StreamChunk{Err: lastError})
 	}
@@ -325,7 +323,10 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		if idleTriggered.Load() {
 			return NewUnavailableError("stream idle timeout before first byte")
 		}
-		return NewInternalError("upstream request: " + err.Error())
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return NewContextError(ctxErr)
+		}
+		return NewNetworkError(fmt.Errorf("upstream request: %w", err))
 	}
 
 	srRef.Store(sr)
@@ -350,16 +351,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 			log.Printf("[Vertex] [Stream] 收到 400 Bad Request, Variables Payload: %s", string(debugBody))
 		}
 
-		if sr.StatusCode == 401 || sr.StatusCode == 403 ||
-			strings.Contains(errText, "Failed to verify action") ||
-			strings.Contains(errText, "The caller does not have permission") {
-			return NewAuthenticationError("Authentication/Recaptcha failed: " + errText)
-		}
-		if parsed := parseErrorResponse(errText); parsed != nil {
-			parsed.UpstreamResponse = errText
-			return parsed
-		}
-		return raiseForStatus(sr.StatusCode, "", "Upstream Error: "+errText, nil, errText)
+		return classifyUpstreamHTTPError(sr.StatusCode, errText)
 	}
 
 	// 增量扫描上游流，逐个完整 JSON 对象提取 chunk。
@@ -381,11 +373,28 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		log.Printf("[DEBUG] [StreamChat] 完整请求体: %s", string(debugReq))
 	}
 
-	if errors.Is(scanErr, context.Canceled) {
+	if errors.Is(scanErr, context.Canceled) || errors.Is(scanErr, context.DeadlineExceeded) {
 		return scanErr
 	}
+	if scanErr != nil {
+		return NewNetworkError(fmt.Errorf("upstream stream: %w", scanErr))
+	}
+	return nil
+}
 
-	return scanErr
+func classifyUpstreamHTTPError(statusCode int, body string) *VertexError {
+	if statusCode == 401 || statusCode == 403 ||
+		strings.Contains(body, "Failed to verify action") ||
+		strings.Contains(body, "The caller does not have permission") {
+		return NewAuthenticationError("Authentication/Recaptcha failed: " + body)
+	}
+	if json.Valid([]byte(body)) {
+		if parsed := parseErrorResponse(body); parsed != nil {
+			parsed.UpstreamResponse = body
+			return parsed
+		}
+	}
+	return raiseForStatus(statusCode, "", "Upstream Error: "+body, nil, body)
 }
 
 // scanStream 跨 chunk 增量扫描花括号配对，逐个完整 JSON 对象回调 onObject（O(n)）。

@@ -62,21 +62,25 @@ type raceResult[T any] struct {
 }
 
 // errorPriority 返回错误的优先级数值（越小优先级越高）。
-// 核心原则：可重试错误优先级高于不可重试错误。
-// 当任意节点返回可重试错误时，客户端可据此判断应重试，
-// 而不是被不可重试错误直接中断。
+// 请求级硬错误优先，其次保留可诊断上游错误，再到网络与空响应。
 func errorPriority(err error) int {
 	var ve *VertexError
 	if errors.As(err, &ve) {
-		if ve.IsRetryable() {
-			if ve.Kind == "ratelimit" || ve.Code == 429 {
-				return 1
-			}
-			return 2
+		if ve.IsGlobalHardError() {
+			return 1
 		}
-		return 3
+		switch ve.Kind {
+		case "auth", "permission", "ratelimit", "client", "server", "unavailable":
+			return 2
+		case "network":
+			return 3
+		case "empty":
+			return 4
+		default:
+			return 5
+		}
 	}
-	return 4
+	return 6
 }
 
 // pickBestError 从多个错误中挑选优先级最高（数值最小）的一个返回。
@@ -193,6 +197,9 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		}
 
 		ve := asVertexError(res.err)
+		if ve != nil && ve.IsGlobalHardError() {
+			return
+		}
 		if ve != nil && ve.Kind == "ratelimit" {
 			nodes.RecordRateLimit(res.uri, 30)
 			stickyPool.Evict(res.uri)
@@ -367,6 +374,13 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 						failedErrors = append(failedErrors, res.err)
 
 						ve := asVertexError(res.err)
+						if ve != nil && ve.IsGlobalHardError() {
+							if cfg.DebugMode() {
+								log.Printf("[Racing] 节点 %s 返回请求级错误(%s)，终止竞速: %s", name, ve.Kind, ve.Message)
+							}
+							cancel()
+							return zero, res.err
+						}
 						if ve != nil && ve.Kind == "ratelimit" {
 							if cfg.DebugMode() {
 								log.Printf("[Racing] 节点 %s 触发 429 API 限制，进入 30 秒短时歇息", name)

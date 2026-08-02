@@ -3,6 +3,7 @@ package vertex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -366,7 +367,8 @@ func deepCopyAny(v any) any {
 }
 
 func asVertexError(err error) *VertexError {
-	if ve, ok := err.(*VertexError); ok {
+	var ve *VertexError
+	if errors.As(err, &ve) {
 		return ve
 	}
 	return nil

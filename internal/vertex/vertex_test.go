@@ -1,6 +1,8 @@
 package vertex
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
@@ -19,6 +21,40 @@ func TestParseErrorResponse(t *testing.T) {
 	}})
 	if e2 == nil {
 		t.Error("errors 数组未解析")
+	}
+}
+
+func TestVertexErrorPreservesCauseAndClassifiesNetwork(t *testing.T) {
+	ctxErr := NewContextError(context.DeadlineExceeded)
+	if !errors.Is(ctxErr, context.DeadlineExceeded) {
+		t.Fatal("context cause 应可通过 errors.Is 穿透")
+	}
+	if ctxErr.IsRetryable() {
+		t.Fatal("调用方 context 超时不应重试")
+	}
+
+	networkCause := errors.New("connection reset")
+	networkErr := NewNetworkError(networkCause)
+	if !networkErr.IsRetryable() || !errors.Is(networkErr, networkCause) {
+		t.Fatal("网络错误应可重试并保留底层 cause")
+	}
+}
+
+func TestParseErrorResponseSafetyAndNonJSON(t *testing.T) {
+	safety := parseErrorResponse(map[string]any{"promptFeedback": map[string]any{"blockReason": "SAFETY"}})
+	if safety == nil || safety.Kind != "safety" || !safety.IsGlobalHardError() {
+		t.Fatalf("安全拦截分类错误: %+v", safety)
+	}
+	nonJSON := parseErrorResponse("<html>bad gateway</html>")
+	if nonJSON == nil || nonJSON.Code != 502 || nonJSON.UpstreamResponse == "" {
+		t.Fatalf("非 JSON 上游错误未保留: %+v", nonJSON)
+	}
+}
+
+func TestClassifyUpstreamHTTPErrorKeepsStatusForPlainText(t *testing.T) {
+	err := classifyUpstreamHTTPError(400, "plain invalid argument")
+	if err.Code != 400 || err.Kind != "invalid" {
+		t.Fatalf("纯文本 HTTP 错误应保留状态码: %+v", err)
 	}
 }
 

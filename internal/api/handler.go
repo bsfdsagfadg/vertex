@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math/rand/v2"
 	"net/http"
 	"strconv"
@@ -21,7 +23,6 @@ type handler struct {
 	keys *APIKeyManager
 	cfg  config.ConfigProvider
 }
-
 
 func (h *handler) decodeAdminBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	if r.Body == nil {
@@ -155,13 +156,23 @@ func withUpstreamDetail(friendly string, e *vertex.VertexError) string {
 }
 
 func toVertexError(err error) *vertex.VertexError {
-	if ve, ok := err.(*vertex.VertexError); ok {
+	var ve *vertex.VertexError
+	if errors.As(err, &ve) {
 		return ve
 	}
-	return vertex.NewInternalError(err.Error())
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return vertex.NewContextError(err)
+	}
+	return vertex.NewInternalError(err.Error(), err)
 }
 
 func isSafetyBlock(e *vertex.VertexError) bool {
+	if e == nil {
+		return false
+	}
+	if e.Kind == "safety" {
+		return true
+	}
 	msg := strings.ToLower(e.Message)
 	status := strings.ToLower(e.Status)
 	for _, k := range []string{"safety", "block_reason", "content_filter", "finish_reason_safety"} {
