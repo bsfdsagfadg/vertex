@@ -91,6 +91,13 @@ func pickBestResult(results []candidateResult) (map[string]any, error) {
 			return r.resp, nil
 		}
 	}
+	// 所有候选均无有效内容时：若任一候选被安全审查拦截（finishReason=SAFETY），
+	// 返回 safety 错误而非退化为 500 内部错误，避免网关误判为服务故障。
+	for _, r := range results {
+		if candidateFinish(r.resp) == "SAFETY" {
+			return nil, NewSafetyError("Blocked by safety filter", "SAFETY", nil)
+		}
+	}
 	return nil, NewInternalError("no viable candidate results", nil)
 }
 

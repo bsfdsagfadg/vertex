@@ -262,7 +262,13 @@ func (c *ChatHandler) writeStreamError(write func(string) bool, e *vertex.Vertex
 		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "content_filter"}}
 		_ = write(sseEvent(base))
 	} else {
-		_ = write(sseEvent(vertexErrorToOAI(e)))
+		// 流式中途报错：SSE Header 已发送，无法再用 HTTP 状态码 JSON 报错。
+		// 必须携带合规的 choices 数组（含 finish_reason=error）让 OpenAI SDK 免于解析崩溃，
+		// 同时挂载 vertexErrorToOAI 产生的 error 字典。
+		base := streamChunkBase(model, requestID)
+		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "error"}}
+		base["error"] = vertexErrorToOAI(e)["error"]
+		_ = write(sseEvent(base))
 	}
 	_ = write("data: [DONE]\n\n")
 }

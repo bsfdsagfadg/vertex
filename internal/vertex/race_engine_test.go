@@ -597,6 +597,135 @@ func TestRunRace_ContextCanceled_PreservesCollectedResultsAndFailedErrors(t *tes
 	})
 }
 
+// TestRunRace_CandidatePanic_HandledGracefully 验证 launchNode 内部协程 panic 时：
+// RunRace 不崩溃、能收敛返回健康节点结果，且 in-flight 计数无泄露。
+// 修复前：未 recover 的 panic 会打穿竞速引擎，使 active 计数失步、竞速循环挂死。
+func TestRunRace_CandidatePanic_HandledGracefully(t *testing.T) {
+	setupRaceNodes(t, "uri1", "uri2")
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	run := func(ctx context.Context, uri string) (string, error) {
+		if uri == "uri1" {
+			panic("simulated node panic")
+		}
+		return "result-uri2", nil
+	}
+
+	result, err := RunRace[string](ctx, cfg, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "result-uri2" {
+		t.Errorf("expected healthy node result, got %q", result)
+	}
+
+	// in-flight 计数应在竞速收敛后归零（无泄露）。
+	waitForZeroInFlight(t, "uri1", "uri2")
+}
+
+// waitForZeroInFlight 轮询等待给定节点 InFlight 归零（带超时），检测 goroutine/计数泄露。
+func waitForZeroInFlight(t *testing.T, uris ...string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		health := nodes.LoadHealth()
+		ok := true
+		for _, u := range uris {
+			if h, exists := health[u]; exists {
+				if atomic.LoadInt32(&h.InFlight) != 0 {
+					ok = false
+					break
+				}
+			}
+		}
+		if ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Errorf("InFlight 计数未在期限内归零: %s", uris)
+}
+
+// TestRunRace_StreamIdleTimeout_TriggersRateLimitCooldown 验证流式包间空闲超时
+// （ErrStreamIdleTimeout）会触发节点的短时避让（RecordRateLimit），使僵死/慢节点被隔离，
+// 避免反复被选中。修复前：空闲超时的节点仅记失败、无冷却，极易被下一轮竞速再次选中。
+func TestRunRace_StreamIdleTimeout_TriggersRateLimitCooldown(t *testing.T) {
+	setupRaceNodes(t, "uri1", "uri2")
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	run := func(ctx context.Context, uri string) (string, error) {
+		return "", NewNetworkError(ErrStreamIdleTimeout)
+	}
+
+	if _, err := RunRace[string](ctx, cfg, run); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	now := time.Now().Unix()
+	health := nodes.LoadHealth()
+	for _, uri := range []string{"uri1", "uri2"} {
+		h, exists := health[uri]
+		if !exists {
+			t.Errorf("node %s 缺少 health 记录", uri)
+			continue
+		}
+		if h.CooldownUntil <= now {
+			t.Errorf("node %s 应进入 15 秒冷却避让, CooldownUntil=%d (now=%d)", uri, h.CooldownUntil, now)
+		}
+	}
+}
+
+// TestRunRace_ParentContextCanceled_ReturnsContextErrorOverFailedErrors 验证外部父 Context 被取消时，
+// RunRace 必须优先返回 context 错误，而不是已经积累的历史节点 502 错误。
+// 修复前：终结评估按 failedErrors 挑错误，会把客户端断开误报为历史节点 502。
+func TestRunRace_ParentContextCanceled_ReturnsContextErrorOverFailedErrors(t *testing.T) {
+	setupRaceNodes(t, "uri1", "uri2")
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// uri1 立即返回节点级错误（存入 failedErrors）；uri2 阻塞，等待 ctx 取消。
+	run := func(ctx context.Context, uri string) (string, error) {
+		if uri == "uri1" {
+			return "", NewEmptyResponseError("gateway 502", nil)
+		}
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := RunRace[string](ctx, cfg, run)
+		errCh <- err
+	}()
+
+	// 等待 uri1 的 502 已被收集（failedErrors 非空）后再取消父 ctx。
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected errors.Is(err, context.Canceled)=true, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunRace did not return after parent context canceled")
+	}
+}
+
 func TestRunRace_PickBestError_Priority(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2")
 	defer nodes.ResetState()

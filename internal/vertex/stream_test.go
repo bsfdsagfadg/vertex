@@ -1051,6 +1051,74 @@ func TestExecuteStreamingWithRetries_ClientCancel(t *testing.T) {
 	}
 }
 
+// TestExecuteStreamingWithRetries_NetworkError_RecreatesSession 验证网络/空响应重试时，
+// executeStreamingWithRetries 会关闭并重建 Session（干净会话），使重试成功拿到有效内容。
+// 修复前：空响应 / 网络错误重试沿用旧 Session，复用脏连接池导致连续失败。
+func TestExecuteStreamingWithRetries_NetworkError_RecreatesSession(t *testing.T) {
+	var mu sync.Mutex
+	requestCount := 0
+	// 第 1 次请求返回「无有效内容」触发空响应错误，第 2 次请求返回有效内容。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestCount++
+		count := requestCount
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		if count == 1 {
+			// 首帧无有效内容（仅 UNSPECIFIED finishReason）→ 空响应分支。
+			_, _ = w.Write([]byte(`{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"content":{"parts":[{"text":"recovered"}],"role":"model"},"finishReason":"STOP"}]}}}}]}`))
+	}))
+	defer server.Close()
+
+	origURL := batchGraphqlURL
+	batchGraphqlURL = server.URL + "/batchGraphql"
+	defer func() { batchGraphqlURL = origURL }()
+
+cfg := config.DefaultConfig()
+	cfg.ParallelPoolEnabled = false // 池重试开关关闭时 MaxRetries 生效
+	cfg.MaxRetries = 2
+	cfg.StreamIdleTimeoutSeconds = 360
+	provider := config.StaticProvider(cfg)
+
+	netClient := transport.NewNetworkClient(nil)
+	vc := &VertexAIClient{
+		net:  netClient,
+		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
+			return "test-token", nil
+		}),
+		cfg: provider,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var gotText string
+	yield := func(chunk StreamChunk) bool {
+		if chunk.Err != nil {
+			t.Errorf("unexpected error chunk: %v", chunk.Err)
+			return false
+		}
+		if chunk.Data != nil {
+			gotText = firstPartText(chunk.Data)
+		}
+		return true
+	}
+
+	vc.executeStreamingWithRetries(ctx, "test-model", map[string]any{}, "", yield)
+
+	if gotText != "recovered" {
+		t.Errorf("expected retries to recover valid content, got %q", gotText)
+	}
+	if requestCount < 2 {
+		t.Errorf("预期发生重试（>=2 次请求），实际 %d 次", requestCount)
+	}
+}
+
 // ---- 测试小工具 ----
 
 func firstPartText(chunk map[string]any) string {

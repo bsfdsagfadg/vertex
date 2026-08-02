@@ -177,9 +177,16 @@ func raiseForStatus(code int, status, message string, details map[string]any, up
 func parseErrorResponse(data any) *VertexError {
 	switch v := data.(type) {
 	case string:
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return nil
+		}
 		var parsed any
 		if err := json.Unmarshal([]byte(v), &parsed); err != nil {
-			return nil
+			// 上游 HTML/纯文本错误（如 Cloudflare 502/504 网关页）非 JSON。
+			// 兜底按 502 server/network 解析，避免静默返回 nil 导致下游误判为空响应。
+			e := raiseForStatus(502, "", "Upstream non-JSON response: "+truncateStr(v, 200), nil, v)
+			return e
 		}
 		return parseErrorResponse(parsed)
 	case []any:

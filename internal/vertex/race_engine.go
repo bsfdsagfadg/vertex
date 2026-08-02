@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -203,6 +204,18 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 
 		go func(u string) {
 			defer nodes.DecInFlight(u)
+			// 防御性 recover：候选 run 内部 panic 不能打穿竞速引擎。
+			// 恢复后以非阻塞方式把内部错误结果推入 resCh；若主竞速 ctx 已取消则直接放弃，
+			// 避免阻塞在已关闭/无人消费的通道上导致 active 计数失步。
+			defer func() {
+				if r := recover(); r != nil {
+					panicErr := NewInternalError(fmt.Sprintf("node candidate panic on %s: %v", u, r), nil)
+					select {
+					case resCh <- raceResult[T]{uri: u, err: panicErr}:
+					case <-ctxRace.Done():
+					}
+				}
+			}()
 			v, err := run(candCtx, u)
 			select {
 			case resCh <- raceResult[T]{u, v, err}:
@@ -297,9 +310,18 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 
 					failedErrors = append(failedErrors, res.err)
 
-					ve := asVertexError(res.err)
-					if ve != nil {
-						switch ve.Kind {
+ve := asVertexError(res.err)
+				if ve != nil {
+					// 流式包间空闲超时：节点僵死/极慢，进入 15 秒短时避让，
+					// 避免下一轮竞速反复选中同一节点。
+					if errors.Is(res.err, ErrStreamIdleTimeout) ||
+						(ve.Kind == "network" && strings.Contains(ve.Message, "idle timeout")) {
+						if cfg.DebugMode() {
+							log.Printf("[Racing] 节点 %s 触发流式包间空闲超时，进入 15 秒短时避让", name)
+						}
+						nodes.RecordRateLimit(res.uri, 15)
+					}
+					switch ve.Kind {
 						case "ratelimit":
 							if cfg.DebugMode() {
 								log.Printf("[Racing] 节点 %s 触发 429 API 限制，进入 30 秒短时歇息", name)
@@ -353,10 +375,17 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 					}
 					return rc.collectedResults[0].val, nil
 				}
+				// 父 Context 取消/超时优先于历史节点错误归因（避免误报上游 502）。
+				if ctx.Err() != nil {
+					return zero, ctx.Err()
+				}
 				if len(failedErrors) > 0 {
 					return zero, pickBestError(failedErrors)
 				}
 				if res.err != nil {
+					if ctxRace.Err() != nil {
+						return zero, ctxRace.Err()
+					}
 					return zero, res.err
 				}
 				if err := ctxRace.Err(); err != nil {

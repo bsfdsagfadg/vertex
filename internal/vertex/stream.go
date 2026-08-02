@@ -236,6 +236,13 @@ retryLoop:
 			if contentYielded || attempt >= maxRetries {
 				break retryLoop
 			}
+			sess.Close()
+			newSess, e := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
+			if e != nil {
+				yield(StreamChunk{Err: NewInternalError("recreate session: " + e.Error(), nil)})
+				return
+			}
+			sess = newSess
 			attempt++
 			if err := sleepCtx(ctx, backoff(attempt)); err != nil {
 				break retryLoop
@@ -248,6 +255,13 @@ retryLoop:
 				break retryLoop
 			}
 			log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发异常错误将重试: [%s] %s, 请求ID=%s, 代理=%s", attempt, maxRetries, model, ve.Kind, ve.Message, reqID, nodes.GetNodeName(proxyURI))
+			sess.Close()
+			newSess, e := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
+			if e != nil {
+				yield(StreamChunk{Err: NewInternalError("recreate session: " + e.Error(), nil)})
+				return
+			}
+			sess = newSess
 			attempt++
 			if err := sleepCtx(ctx, backoff(attempt)); err != nil {
 				break retryLoop

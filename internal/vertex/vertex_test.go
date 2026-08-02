@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
@@ -23,6 +24,36 @@ func TestParseErrorResponse(t *testing.T) {
 	}})
 	if e2 == nil {
 		t.Error("errors 数组未解析")
+	}
+}
+
+// TestParseErrorResponse_HTMLAndNonJSONResponse 验证上游返回 HTML / 纯文本（如 Cloudflare 502/504
+// 网关页）时的兜底解析：不能静默返回 nil 导致下游误判为 EmptyResponseError，而应产出结构化的
+// *VertexError，且 UpstreamResponse 保留原始响应体。
+func TestParseErrorResponse_HTMLAndNonJSONResponse(t *testing.T) {
+	html := `<html><head><title>502 Bad Gateway</title></head><body>502 Bad Gateway</body></html>`
+	ve := parseErrorResponse(html)
+	if ve == nil {
+		t.Fatal("HTML 上游响应应解析出 *VertexError，而不是 nil")
+	}
+	if ve.Code != 502 {
+		t.Errorf("Code=%d, want 502", ve.Code)
+	}
+	if ve.Kind != "network" && ve.Kind != "server" {
+		t.Errorf("Kind=%s, want network/server", ve.Kind)
+	}
+	if !strings.Contains(ve.UpstreamResponse, "502 Bad Gateway") {
+		t.Errorf("UpstreamResponse 应包含原始 HTML, got %q", ve.UpstreamResponse)
+	}
+
+	// 纯文本（非 JSON）也应兜底解析。
+	text := "502 Bad Gateway (cloudflare)"
+	tv := parseErrorResponse(text)
+	if tv == nil {
+		t.Fatal("纯文本上游错误也应解析出 *VertexError")
+	}
+	if tv.Code != 502 {
+		t.Errorf("纯文本 Code=%d, want 502", tv.Code)
 	}
 }
 

@@ -191,9 +191,13 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 			if isSafetyBlock(err) {
 				_ = sw.write(g.geminiSSE(geminiSafetyChunk(err)))
 			} else {
-				_ = sw.write(g.geminiSSE(map[string]any{"error": map[string]any{
-					"code": err.Code, "message": vertex.FriendlyErrorMessage(err), "status": geminiStatusOf(err),
-				}}))
+				pkt := map[string]any{
+					"candidates": []any{map[string]any{"finishReason": "OTHER", "index": 0}},
+					"error": map[string]any{
+						"code": err.Code, "message": vertex.FriendlyErrorMessage(err), "status": geminiStatusOf(err),
+					},
+				}
+				_ = sw.write(g.geminiSSE(pkt))
 			}
 			streamErrWritten = true
 			return false
