@@ -50,6 +50,34 @@ func TestWriteSettingsMergesAndPreservesUnknown(t *testing.T) {
 	InvalidateCache() // 清理，避免影响其它测试
 }
 
+func TestLoadInitializesMissingConfigFromExample(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	t.Setenv("VPROXY_CONFIG", path)
+	t.Cleanup(InvalidateCache)
+	example := `{"port_api":4321,"max_retries":3,"custom_template_field":"kept"}`
+	if err := os.WriteFile(filepath.Join(dir, "config.example.json"), []byte(example), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateCache()
+
+	cfg := Load()
+	if cfg.PortAPI != 4321 || cfg.MaxRetries != 3 {
+		t.Fatalf("未从模板加载配置: port=%d retries=%d", cfg.PortAPI, cfg.MaxRetries)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("初始 config.json 未创建: %v", err)
+	}
+	raw := map[string]any{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw["custom_template_field"] != "kept" {
+		t.Fatalf("模板未知字段未保留: %#v", raw)
+	}
+}
+
 // TestWriteModelsRoundTrip 验证 WriteModels：写盘 + 热重载，BaseModels/AliasMap 立即读到新值。
 func TestWriteModelsRoundTrip(t *testing.T) {
 	dir := t.TempDir()

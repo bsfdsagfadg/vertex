@@ -179,6 +179,7 @@ func Load() AppConfig {
 		return *cached
 	}
 	cfg := DefaultConfig()
+	initializeConfigFromExample()
 	if data, err := os.ReadFile(configPath()); err == nil {
 		if errUnm := json.Unmarshal(data, &cfg); errUnm != nil { //nolint:govet
 			log.Printf("[Config] 解析 config.json 失败: %v", err)
@@ -248,6 +249,30 @@ func Load() AppConfig {
 	cached = &cfg
 	cacheTime = time.Now()
 	return cfg
+}
+
+func initializeConfigFromExample() {
+	path := configPath()
+	if _, err := os.Stat(path); err == nil || !os.IsNotExist(err) {
+		return
+	}
+	examplePath := filepath.Join(filepath.Dir(path), "config.example.json")
+	data, err := os.ReadFile(examplePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("[Config] 读取初始配置模板失败: %v", err)
+		}
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		log.Printf("[Config] 创建配置目录失败: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		log.Printf("[Config] 从 config.example.json 创建初始配置失败: %v", err)
+		return
+	}
+	log.Printf("[Config] 已从 config.example.json 创建初始配置")
 }
 
 func InvalidateCache() {

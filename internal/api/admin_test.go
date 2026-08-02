@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +16,32 @@ func resetAdminSessions() {
 	adminSessionsMu.Lock()
 	adminSessions = map[string]time.Time{}
 	adminSessionsMu.Unlock()
+}
+
+func TestAdminGetKeysIncludesDescription(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "api_keys.txt")
+	t.Setenv("VPROXY_API_KEYS", path)
+	manager := NewAPIKeyManager()
+	if err := manager.Add("测试密钥", "sk-abcdef123456", "用于回归测试"); err != nil {
+		t.Fatal(err)
+	}
+	adm := &AdminHandler{handler: handler{keys: manager, cfg: config.StaticProvider(config.DefaultConfig())}}
+	recorder := httptest.NewRecorder()
+	adm.adminGetKeys(recorder, httptest.NewRequest("GET", "/api/admin/keys", nil))
+	if recorder.Code != 200 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Keys []struct {
+			Description string `json:"description"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Keys) != 1 || response.Keys[0].Description != "用于回归测试" {
+		t.Fatalf("description 未返回: %#v", response.Keys)
+	}
 }
 
 // ---- session token：生成 / 校验 / 过期 / 登出 ----
