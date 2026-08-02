@@ -94,6 +94,36 @@ func TestRunRace_FastNodeWinsDespiteStuck(t *testing.T) {
 	}
 }
 
+func TestRunRaceUsesConfiguredHedgeDelay(t *testing.T) {
+	raceTestNodes(t)
+	cfg := config.StaticProvider(config.AppConfig{ //nolint:exhaustruct
+		ParallelPoolEnabled:      true,
+		ParallelPoolSize:         3,
+		ParallelNodeTopK:         80,
+		StickyNodePriority:       false,
+		ParallelPoolDelayDynamic: false,
+		ParallelPoolDelayMs:      150,
+	})
+
+	started := make(chan time.Time, 3)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := RunRace(ctx, cfg, func(candidateCtx context.Context, _ string) (string, error) {
+		started <- time.Now()
+		<-candidateCtx.Done()
+		return "", candidateCtx.Err()
+	})
+	if err == nil {
+		t.Fatal("父上下文超时后应返回错误")
+	}
+
+	first := <-started
+	second := <-started
+	if elapsed := second.Sub(first); elapsed < 100*time.Millisecond {
+		t.Fatalf("第二候选启动过早，固定 hedge 延迟未生效: %v", elapsed)
+	}
+}
+
 // TestRunRace_NoTimeoutKeepsLegacyBehavior 验证 RaceTimeout=0（默认）时行为不变：
 // 卡死节点不会提前被淘汰（保留原有等待语义，由上层 ctx 控制）。
 func TestRunRace_NoTimeoutKeepsLegacyBehavior(t *testing.T) {
