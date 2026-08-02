@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -146,36 +147,36 @@ func (c *VertexAIClient) completeChatNSerial(ctx context.Context, model string, 
 	return ok, nil
 }
 
+type candidateCollector struct {
+	index             int
+	parts             []map[string]any
+	finishReason      string
+	finishMessage     any
+	safetyRatings     any
+	citationMetadata  any
+	groundingMetadata any
+	tokenCount        any
+	avgLogprobs       any
+	logprobsResult    any
+}
+
 func (c *VertexAIClient) buildCompleteResponse(r *ParseResult) (map[string]any, error) {
-	if len(r.Parts) == 0 {
-		if r.HasError {
-			return nil, NewInternalError("upstream parse error: " + r.ErrorMessage)
-		}
-		if len(r.PromptFeedback) == 0 {
-			return nil, NewEmptyResponseError("Upstream returned empty response (no content)")
-		}
+	if r.HasError {
+		return nil, NewInternalError("upstream parse error: " + r.ErrorMessage)
 	}
 
-	allParts := r.Parts
-	if len(allParts) == 0 {
-		allParts = []map[string]any{{"text": " "}}
+	resp := map[string]any{}
+	switch {
+	case len(r.Candidates) > 0:
+		resp["candidates"] = toAnySlice(r.Candidates)
+	case len(r.Parts) > 0:
+		resp["candidates"] = []any{buildCandidate(r.CandidateIndex, r.Parts, r)}
+	case len(r.PromptFeedback) > 0:
+		resp["candidates"] = []any{buildCandidate(r.CandidateIndex, []map[string]any{{"text": " "}}, r)}
+	default:
+		return nil, NewEmptyResponseError("Upstream returned empty response (no content)")
 	}
-	candidate := map[string]any{
-		"index":   r.CandidateIndex,
-		"content": map[string]any{"parts": toAnySlice(allParts), "role": "model"},
-	}
-	if r.FinishReason != "" {
-		candidate["finishReason"] = strings.ToUpper(r.FinishReason)
-	}
-	setIfPresent(candidate, "finishMessage", r.FinishMessage)
-	setIfPresent(candidate, "safetyRatings", r.SafetyRatings)
-	setIfPresent(candidate, "citationMetadata", r.CitationMetadata)
-	setIfPresent(candidate, "groundingMetadata", r.GroundingMetadata)
-	setIfPresent(candidate, "tokenCount", r.TokenCount)
-	setIfPresent(candidate, "avgLogprobs", r.AvgLogprobs)
-	setIfPresent(candidate, "logprobsResult", r.LogprobsResult)
 
-	resp := map[string]any{"candidates": []any{candidate}}
 	setIfPresent(resp, "createTime", r.CreateTime)
 	setIfPresent(resp, "modelVersion", r.ModelVersion)
 	if len(r.PromptFeedback) > 0 {
@@ -189,54 +190,78 @@ func (c *VertexAIClient) buildCompleteResponse(r *ParseResult) (map[string]any, 
 	return resp, nil
 }
 
-// collectChunksToParseResult 把流式收集到的 chunk 列表合并为 ParseResult。
-//
-// chunks 是 extractChunk 的输出：每条含 candidates[0].content.parts（已清洗）、
-// finishReason、usageMetadata、promptFeedback 等元数据。
-// parts 经 MergeContentBlocks 合并相邻 text 后写入 result。
+func buildCandidate(index int, parts []map[string]any, r *ParseResult) map[string]any {
+	candidate := map[string]any{
+		"index":   index,
+		"content": map[string]any{"parts": toAnySlice(parts), "role": "model"},
+	}
+	if r.FinishReason != "" {
+		candidate["finishReason"] = strings.ToUpper(r.FinishReason)
+	}
+	setIfPresent(candidate, "finishMessage", r.FinishMessage)
+	setIfPresent(candidate, "safetyRatings", r.SafetyRatings)
+	setIfPresent(candidate, "citationMetadata", r.CitationMetadata)
+	setIfPresent(candidate, "groundingMetadata", r.GroundingMetadata)
+	setIfPresent(candidate, "tokenCount", r.TokenCount)
+	setIfPresent(candidate, "avgLogprobs", r.AvgLogprobs)
+	setIfPresent(candidate, "logprobsResult", r.LogprobsResult)
+	return candidate
+}
+
+// collectChunksToParseResult 按 candidate index 独立合并流式 parts，并保留所有候选。
 func collectChunksToParseResult(chunks []map[string]any) *ParseResult {
 	s := &ParseResult{
 		PromptFeedback: map[string]any{},
 		UsageMetadata:  map[string]any{},
 	}
-	var allParts []map[string]any
+	candidatesMap := map[int]*candidateCollector{}
 
 	for _, chunk := range chunks {
-		if cands, ok := chunk["candidates"].([]any); ok && len(cands) > 0 {
-			if c, ok := cands[0].(map[string]any); ok {
-				if fr := c["finishReason"]; isTruthyAny(fr) {
-					s.FinishReason = toStr(fr)
+		if candidates, ok := chunk["candidates"].([]any); ok {
+			for position, rawCandidate := range candidates {
+				candidate, ok := rawCandidate.(map[string]any)
+				if !ok {
+					continue
 				}
-				if fm, ok := c["finishMessage"]; ok {
-					s.FinishMessage = fm
+				index := position
+				if candidate["index"] != nil {
+					index = toInt(candidate["index"], position)
 				}
-				if v := c["safetyRatings"]; isTruthyAny(v) {
-					s.SafetyRatings = v
-				}
-				if v := c["citationMetadata"]; isTruthyAny(v) {
-					s.CitationMetadata = v
-				}
-				if v := c["groundingMetadata"]; isTruthyAny(v) {
-					s.GroundingMetadata = v
-				}
-				if v, ok := c["tokenCount"]; ok {
-					s.TokenCount = v
-				}
-				if v, ok := c["avgLogprobs"]; ok {
-					s.AvgLogprobs = v
-				}
-				if v, ok := c["logprobsResult"]; ok {
-					s.LogprobsResult = v
-				}
-				if v := c["index"]; v != nil {
-					s.CandidateIndex = toInt(v, 0)
+				collector, exists := candidatesMap[index]
+				if !exists {
+					collector = &candidateCollector{index: index} //nolint:exhaustruct
+					candidatesMap[index] = collector
 				}
 
-				if content, ok := c["content"].(map[string]any); ok {
+				if value := candidate["finishReason"]; isTruthyAny(value) {
+					collector.finishReason = toStr(value)
+				}
+				if value, exists := candidate["finishMessage"]; exists {
+					collector.finishMessage = value
+				}
+				if value := candidate["safetyRatings"]; isTruthyAny(value) {
+					collector.safetyRatings = value
+				}
+				if value := candidate["citationMetadata"]; isTruthyAny(value) {
+					collector.citationMetadata = value
+				}
+				if value := candidate["groundingMetadata"]; isTruthyAny(value) {
+					collector.groundingMetadata = value
+				}
+				if value, exists := candidate["tokenCount"]; exists {
+					collector.tokenCount = value
+				}
+				if value, exists := candidate["avgLogprobs"]; exists {
+					collector.avgLogprobs = value
+				}
+				if value, exists := candidate["logprobsResult"]; exists {
+					collector.logprobsResult = value
+				}
+				if content, ok := candidate["content"].(map[string]any); ok {
 					if parts, ok := content["parts"].([]any); ok {
-						for _, pRaw := range parts {
-							if p, ok := pRaw.(map[string]any); ok {
-								allParts = append(allParts, p)
+						for _, rawPart := range parts {
+							if part, ok := rawPart.(map[string]any); ok {
+								collector.parts = append(collector.parts, part)
 							}
 						}
 					}
@@ -244,26 +269,63 @@ func collectChunksToParseResult(chunks []map[string]any) *ParseResult {
 			}
 		}
 
-		if pf, ok := chunk["promptFeedback"].(map[string]any); ok && len(pf) > 0 && len(s.PromptFeedback) == 0 {
-			s.PromptFeedback = pf
+		if feedback, ok := chunk["promptFeedback"].(map[string]any); ok && len(feedback) > 0 && len(s.PromptFeedback) == 0 {
+			s.PromptFeedback = feedback
 		}
-		if um, ok := chunk["usageMetadata"]; ok {
-			if m := toMap(um); len(m) > 0 {
-				s.UsageMetadata = m
+		if usage, ok := chunk["usageMetadata"]; ok {
+			if usageMap := toMap(usage); len(usageMap) > 0 {
+				s.UsageMetadata = usageMap
 			}
 		}
-		if v, ok := chunk["createTime"]; ok {
-			s.CreateTime = v
+		if value, ok := chunk["createTime"]; ok {
+			s.CreateTime = value
 		}
-		if v, ok := chunk["modelVersion"]; ok {
-			s.ModelVersion = v
+		if value, ok := chunk["modelVersion"]; ok {
+			s.ModelVersion = value
 		}
-		if v, ok := chunk["responseId"]; ok {
-			s.ResponseID = v
+		if value, ok := chunk["responseId"]; ok {
+			s.ResponseID = value
 		}
 	}
 
-	s.Parts = transform.MergeContentBlocks(allParts)
+	indices := make([]int, 0, len(candidatesMap))
+	for index := range candidatesMap {
+		indices = append(indices, index)
+	}
+	sort.Ints(indices)
+	for _, index := range indices {
+		collector := candidatesMap[index]
+		parts := transform.MergeContentBlocks(collector.parts)
+		candidate := map[string]any{
+			"index":   index,
+			"content": map[string]any{"parts": toAnySlice(parts), "role": "model"},
+		}
+		if collector.finishReason != "" {
+			candidate["finishReason"] = strings.ToUpper(collector.finishReason)
+		}
+		setIfPresent(candidate, "finishMessage", collector.finishMessage)
+		setIfPresent(candidate, "safetyRatings", collector.safetyRatings)
+		setIfPresent(candidate, "citationMetadata", collector.citationMetadata)
+		setIfPresent(candidate, "groundingMetadata", collector.groundingMetadata)
+		setIfPresent(candidate, "tokenCount", collector.tokenCount)
+		setIfPresent(candidate, "avgLogprobs", collector.avgLogprobs)
+		setIfPresent(candidate, "logprobsResult", collector.logprobsResult)
+		s.Candidates = append(s.Candidates, candidate)
+	}
+
+	if len(indices) > 0 {
+		first := candidatesMap[indices[0]]
+		s.Parts = transform.MergeContentBlocks(first.parts)
+		s.FinishReason = first.finishReason
+		s.FinishMessage = first.finishMessage
+		s.SafetyRatings = first.safetyRatings
+		s.CitationMetadata = first.citationMetadata
+		s.GroundingMetadata = first.groundingMetadata
+		s.TokenCount = first.tokenCount
+		s.AvgLogprobs = first.avgLogprobs
+		s.LogprobsResult = first.logprobsResult
+		s.CandidateIndex = first.index
+	}
 	return s
 }
 

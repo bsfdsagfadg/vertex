@@ -79,3 +79,44 @@ func TestBuildCompleteResponse_Empty(t *testing.T) {
 		t.Errorf("err=%v, want empty", err)
 	}
 }
+
+func TestCollectChunksToParseResultPreservesMultipleCandidates(t *testing.T) {
+	chunks := []map[string]any{
+		{"candidates": []any{
+			map[string]any{"index": 0, "content": map[string]any{"parts": []any{map[string]any{"text": "zero-a"}}}},
+			map[string]any{"index": 1, "content": map[string]any{"parts": []any{map[string]any{"text": "one-a"}}}},
+		}},
+		{"candidates": []any{
+			map[string]any{"index": 0, "content": map[string]any{"parts": []any{map[string]any{"text": "-zero-b"}}}, "finishReason": "STOP"},
+			map[string]any{"index": 1, "content": map[string]any{"parts": []any{map[string]any{"text": "-one-b"}}}, "finishReason": "MAX_TOKENS"},
+		}, "usageMetadata": map[string]any{"totalTokenCount": float64(10)}},
+	}
+
+	result := collectChunksToParseResult(chunks)
+	if len(result.Candidates) != 2 {
+		t.Fatalf("candidates=%#v, want 2", result.Candidates)
+	}
+	for index, wantText := range []string{"zero-a-zero-b", "one-a-one-b"} {
+		candidate := result.Candidates[index]
+		content := candidate["content"].(map[string]any)
+		parts := content["parts"].([]any)
+		if got := parts[0].(map[string]any)["text"]; got != wantText {
+			t.Fatalf("candidate %d text=%#v, want %q", index, got, wantText)
+		}
+	}
+	if result.Parts[0]["text"] != "zero-a-zero-b" {
+		t.Fatalf("first-candidate compatibility fields=%#v", result.Parts)
+	}
+	if result.UsageMetadata["totalTokenCount"] != float64(10) {
+		t.Fatalf("usage metadata=%#v", result.UsageMetadata)
+	}
+
+	client := &VertexAIClient{}
+	response, err := client.buildCompleteResponse(result)
+	if err != nil {
+		t.Fatalf("buildCompleteResponse: %v", err)
+	}
+	if candidates := response["candidates"].([]any); len(candidates) != 2 {
+		t.Fatalf("response candidates=%#v, want 2", candidates)
+	}
+}

@@ -154,6 +154,7 @@ func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.Response
 	gotContent := false
 	streamErrWritten := false
 	startTime := time.Now()
+	toolCallTracker := transform.NewStreamToolCallTracker()
 
 	c.vc.StreamChat(ctx, model, geminiPayload, func(ch vertex.StreamChunk) bool {
 		if isFirst && ch.Err == nil {
@@ -175,7 +176,7 @@ func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.Response
 			streamErrWritten = true
 			return false
 		}
-		events := c.respConv.StreamToSSE(ch.Data, model, requestID, isFirst)
+		events := c.respConv.StreamToSSE(ch.Data, model, requestID, isFirst, toolCallTracker)
 		isFirst = false
 		for _, ev := range events {
 			if strings.Contains(ev, `"finish_reason"`) && !strings.Contains(ev, `"finish_reason":null`) {

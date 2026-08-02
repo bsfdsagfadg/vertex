@@ -375,6 +375,53 @@ func TestEmitAndCheckFinish(t *testing.T) {
 	}
 }
 
+func TestStreamCompletionStateWaitsForEveryCandidateAndUsage(t *testing.T) {
+	state := newStreamCompletionState()
+	emit := func(map[string]any) bool { return true }
+
+	_, done := emitAndCheckFinish(map[string]any{"candidates": []any{
+		map[string]any{"index": 0, "finishReason": "STOP"},
+		map[string]any{"index": 1, "finishReason": finishReasonUnspecified},
+	}}, emit, state)
+	if done {
+		t.Fatal("stream stopped before all candidates finished and usage arrived")
+	}
+	_, done = emitAndCheckFinish(map[string]any{"usageMetadata": map[string]any{"totalTokenCount": float64(5)}}, emit, state)
+	if done {
+		t.Fatal("stream stopped while candidate 1 was unfinished")
+	}
+	_, done = emitAndCheckFinish(map[string]any{"candidates": []any{
+		map[string]any{"index": 1, "finishReason": "MAX_TOKENS"},
+	}}, emit, state)
+	if !done {
+		t.Fatal("stream did not stop after all candidates finished and usage was observed")
+	}
+}
+
+func TestProcessStreamingObjectDoesNotStopInsideParallelCandidateList(t *testing.T) {
+	state := newStreamCompletionState()
+	emitted := 0
+	emit := func(map[string]any) bool {
+		emitted++
+		return true
+	}
+	obj := map[string]any{"results": []any{map[string]any{"data": map[string]any{
+		"usageMetadata": map[string]any{"totalTokenCount": float64(5)},
+		"ui": map[string]any{"streamGenerateContentAnonymous": []any{
+			map[string]any{"candidates": []any{map[string]any{"index": 0, "finishReason": "STOP"}}},
+			map[string]any{"candidates": []any{map[string]any{"index": 1, "finishReason": finishReasonUnspecified}}},
+		}},
+	}}}}
+
+	stop, err := processStreamingObject(obj, emit, state)
+	if err != nil || stop {
+		t.Fatalf("processStreamingObject stop=%v err=%v", stop, err)
+	}
+	if emitted != 2 {
+		t.Fatalf("emitted=%d, want both parallel candidates", emitted)
+	}
+}
+
 // ---- 测试小工具 ----
 
 func firstPartText(chunk map[string]any) string {

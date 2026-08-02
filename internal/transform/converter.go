@@ -8,7 +8,7 @@ type RequestConverter interface {
 
 type ResponseConverter interface {
 	ToOAI(geminiResp map[string]any, model string) map[string]any
-	StreamToSSE(chunk map[string]any, model, requestID string, isFirst bool) []string
+	StreamToSSE(chunk map[string]any, model, requestID string, isFirst bool, tracker *StreamToolCallTracker) []string
 	AggregateN(responses []map[string]any, model string) map[string]any
 }
 
@@ -26,8 +26,8 @@ func (defaultResponseConverter) ToOAI(geminiResp map[string]any, model string) m
 	return GeminiJSONToOAIJSON(geminiResp, model)
 }
 
-func (defaultResponseConverter) StreamToSSE(chunk map[string]any, model, requestID string, isFirst bool) []string {
-	return ConvertRealtimeChunk(chunk, model, requestID, isFirst)
+func (defaultResponseConverter) StreamToSSE(chunk map[string]any, model, requestID string, isFirst bool, tracker *StreamToolCallTracker) []string {
+	return ConvertRealtimeChunk(chunk, model, requestID, isFirst, tracker)
 }
 
 func (defaultResponseConverter) AggregateN(responses []map[string]any, model string) map[string]any {

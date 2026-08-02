@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,101 @@ func TestConvertRealtimeChunk_FirstAndContent(t *testing.T) {
 			t.Errorf("🔴 UNSPECIFIED 绝不能发真实 finish_reason（截断血泪教训）: %s", e)
 		}
 	}
+}
+
+func TestConvertRealtimeChunkPreservesMultipleCandidates(t *testing.T) {
+	chunk := map[string]any{"candidates": []any{
+		map[string]any{"index": 0, "content": map[string]any{"parts": []any{map[string]any{"text": "first"}}}, "finishReason": "STOP"},
+		map[string]any{"index": 1, "content": map[string]any{"parts": []any{map[string]any{"text": "second"}}}, "finishReason": "MAX_TOKENS"},
+	}}
+
+	events := ConvertRealtimeChunk(chunk, "m", "r", true, NewStreamToolCallTracker())
+	joined := strings.Join(events, "")
+	for _, want := range []string{`"index":0`, `"index":1`, `"content":"first"`, `"content":"second"`, `"finish_reason":"stop"`, `"finish_reason":"length"`} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("events missing %s: %s", want, joined)
+		}
+	}
+}
+
+func TestConvertRealtimeChunkEmitsUsageOnlyChunk(t *testing.T) {
+	events := ConvertRealtimeChunk(map[string]any{
+		"usageMetadata": map[string]any{"promptTokenCount": float64(2), "candidatesTokenCount": float64(3), "totalTokenCount": float64(5)},
+	}, "m", "r", false)
+	if len(events) != 1 || !strings.Contains(events[0], `"choices":[]`) || !strings.Contains(events[0], `"total_tokens":5`) {
+		t.Fatalf("usage-only events=%#v", events)
+	}
+}
+
+func TestStreamToolCallTrackerSeparatesSameNameAndStaysStable(t *testing.T) {
+	chunk := map[string]any{"candidates": []any{map[string]any{
+		"index": 0,
+		"content": map[string]any{"parts": []any{
+			map[string]any{"functionCall": map[string]any{"name": "lookup", "args": map[string]any{"city": "A"}}},
+			map[string]any{"functionCall": map[string]any{"name": "lookup", "args": map[string]any{"city": "B"}}},
+		}},
+	}}}
+	tracker := NewStreamToolCallTracker()
+	first := toolCallsFromEvents(t, ConvertRealtimeChunk(chunk, "m", "r", false, tracker))
+	second := toolCallsFromEvents(t, ConvertRealtimeChunk(chunk, "m", "r", false, tracker))
+	if len(first) != 2 || len(second) != 2 {
+		t.Fatalf("tool calls first=%#v second=%#v", first, second)
+	}
+	if first[0]["id"] == first[1]["id"] || first[0]["index"] == first[1]["index"] {
+		t.Fatalf("same-name calls were collapsed: %#v", first)
+	}
+	for index := range first {
+		if first[index]["id"] != second[index]["id"] || first[index]["index"] != second[index]["index"] {
+			t.Fatalf("tool call %d changed across frames: %#v -> %#v", index, first[index], second[index])
+		}
+	}
+}
+
+func TestStreamToolCallTrackerKeepsToolFinishAcrossSeparateFrame(t *testing.T) {
+	tracker := NewStreamToolCallTracker()
+	toolChunk := map[string]any{"candidates": []any{map[string]any{
+		"index": 0,
+		"content": map[string]any{"parts": []any{map[string]any{
+			"functionCall": map[string]any{"name": "lookup", "args": map[string]any{}},
+		}}},
+	}}}
+	if calls := toolCallsFromEvents(t, ConvertRealtimeChunk(toolChunk, "m", "r", false, tracker)); len(calls) != 1 {
+		t.Fatalf("tool calls=%#v", calls)
+	}
+	finishChunk := map[string]any{"candidates": []any{map[string]any{"index": 0, "finishReason": "STOP"}}}
+	events := ConvertRealtimeChunk(finishChunk, "m", "r", false, tracker)
+	if len(events) != 1 || !strings.Contains(events[0], `"finish_reason":"tool_calls"`) {
+		t.Fatalf("finish events=%#v", events)
+	}
+}
+
+func toolCallsFromEvents(t *testing.T, events []string) []map[string]any {
+	t.Helper()
+	for _, event := range events {
+		var payload map[string]any
+		raw := strings.TrimSpace(strings.TrimPrefix(event, "data: "))
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			t.Fatalf("decode SSE event: %v", err)
+		}
+		choices, _ := payload["choices"].([]any)
+		if len(choices) == 0 {
+			continue
+		}
+		choice, _ := choices[0].(map[string]any)
+		delta, _ := choice["delta"].(map[string]any)
+		rawCalls, _ := delta["tool_calls"].([]any)
+		if len(rawCalls) == 0 {
+			continue
+		}
+		calls := make([]map[string]any, 0, len(rawCalls))
+		for _, rawCall := range rawCalls {
+			if call, ok := rawCall.(map[string]any); ok {
+				calls = append(calls, call)
+			}
+		}
+		return calls
+	}
+	return nil
 }
 
 // 红线：UNSPECIFIED 时 finish_reason 只能是 null（在 role 事件里），不能是真实终止值。

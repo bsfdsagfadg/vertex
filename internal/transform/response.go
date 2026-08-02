@@ -6,32 +6,10 @@ import (
 
 // GeminiJSONToOAIJSON 把 Gemini 非流式响应转为 OpenAI ChatCompletion JSON。
 func GeminiJSONToOAIJSON(geminiResp map[string]any, model string) map[string]any {
-	candidate := firstCandidate(geminiResp)
-	parts := candidateParts(candidate)
-	finish, _ := candidate["finishReason"].(string)
-
-	text, toolCalls, reasoning := ExtractParts(parts, false)
-
-	var oaiFinish string
-	if finish != "" {
-		oaiFinish = MapFinishReason(finish, len(toolCalls) > 0)
-	} else if len(toolCalls) > 0 {
-		oaiFinish = "tool_calls"
-	} else {
-		oaiFinish = "stop"
-	}
-
-	message := map[string]any{"role": "assistant"}
-	if text != "" {
-		message["content"] = text
-	} else {
-		message["content"] = nil
-	}
-	if len(toolCalls) > 0 {
-		message["tool_calls"] = toolCalls
-	}
-	if reasoning != "" {
-		message["reasoning_content"] = reasoning
+	candidates := responseCandidates(geminiResp)
+	choices := make([]any, 0, len(candidates))
+	for index, candidate := range candidates {
+		choices = append(choices, candidateToOAIChoice(candidate, index))
 	}
 
 	result := map[string]any{
@@ -39,11 +17,7 @@ func GeminiJSONToOAIJSON(geminiResp map[string]any, model string) map[string]any
 		"object":  "chat.completion",
 		"created": time.Now().Unix(),
 		"model":   model,
-		"choices": []any{map[string]any{
-			"index":         0,
-			"message":       message,
-			"finish_reason": oaiFinish,
-		}},
+		"choices": choices,
 	}
 	if usageMeta, ok := geminiResp["usageMetadata"].(map[string]any); ok {
 		result["usage"] = ConvertUsage(usageMeta)
@@ -57,36 +31,10 @@ func GeminiResponsesToOAIJSON(geminiResponses []map[string]any, model string) ma
 	totalPrompt, totalCompletion, totalTokens := 0, 0, 0
 	anyUsage := false
 
-	for idx, resp := range geminiResponses {
-		candidate := firstCandidate(resp)
-		parts := candidateParts(candidate)
-		finish, _ := candidate["finishReason"].(string)
-		text, toolCalls, reasoning := ExtractParts(parts, false)
-
-		var oaiFinish string
-		if finish != "" {
-			oaiFinish = MapFinishReason(finish, len(toolCalls) > 0)
-		} else if len(toolCalls) > 0 {
-			oaiFinish = "tool_calls"
-		} else {
-			oaiFinish = "stop"
+	for _, resp := range geminiResponses {
+		for _, candidate := range responseCandidates(resp) {
+			choices = append(choices, candidateToOAIChoice(candidate, len(choices)))
 		}
-
-		message := map[string]any{"role": "assistant"}
-		if text != "" {
-			message["content"] = text
-		} else {
-			message["content"] = nil
-		}
-		if len(toolCalls) > 0 {
-			message["tool_calls"] = toolCalls
-		}
-		if reasoning != "" {
-			message["reasoning_content"] = reasoning
-		}
-		choices = append(choices, map[string]any{
-			"index": idx, "message": message, "finish_reason": oaiFinish,
-		})
 
 		if usageMeta, ok := resp["usageMetadata"].(map[string]any); ok {
 			anyUsage = true
@@ -115,6 +63,43 @@ func GeminiResponsesToOAIJSON(geminiResponses []map[string]any, model string) ma
 		}
 	}
 	return result
+}
+
+func responseCandidates(resp map[string]any) []map[string]any {
+	rawCandidates, _ := resp["candidates"].([]any)
+	candidates := make([]map[string]any, 0, len(rawCandidates))
+	for _, rawCandidate := range rawCandidates {
+		if candidate, ok := rawCandidate.(map[string]any); ok {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
+}
+
+func candidateToOAIChoice(candidate map[string]any, index int) map[string]any {
+	parts := candidateParts(candidate)
+	finish, _ := candidate["finishReason"].(string)
+	text, toolCalls, reasoning := ExtractParts(parts, false)
+
+	oaiFinish := "stop"
+	if finish != "" {
+		oaiFinish = MapFinishReason(finish, len(toolCalls) > 0)
+	} else if len(toolCalls) > 0 {
+		oaiFinish = "tool_calls"
+	}
+	message := map[string]any{"role": "assistant", "content": nil}
+	if text != "" {
+		message["content"] = text
+	}
+	if len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
+	}
+	if reasoning != "" {
+		message["reasoning_content"] = reasoning
+	}
+	return map[string]any{
+		"index": index, "message": message, "finish_reason": oaiFinish,
+	}
 }
 
 // ConvertUsage 把 Gemini usageMetadata 转 OpenAI usage。

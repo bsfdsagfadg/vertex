@@ -172,6 +172,32 @@ func TestGeminiJSONToOAIJSON(t *testing.T) {
 	}
 }
 
+func TestGeminiJSONToOAIJSONPreservesMultipleCandidates(t *testing.T) {
+	response := map[string]any{
+		"candidates": []any{
+			map[string]any{"index": 0, "content": map[string]any{"parts": []any{map[string]any{"text": "first"}}}, "finishReason": "STOP"},
+			map[string]any{"index": 1, "content": map[string]any{"parts": []any{map[string]any{"text": "second"}}}, "finishReason": "MAX_TOKENS"},
+		},
+		"usageMetadata": map[string]any{"totalTokenCount": float64(9)},
+	}
+
+	converted := GeminiJSONToOAIJSON(response, "gemini-test")
+	choices := converted["choices"].([]any)
+	if len(choices) != 2 {
+		t.Fatalf("choices=%#v, want 2", choices)
+	}
+	for index, want := range []string{"first", "second"} {
+		choice := choices[index].(map[string]any)
+		message := choice["message"].(map[string]any)
+		if message["content"] != want || choice["index"] != index {
+			t.Fatalf("choice %d=%#v", index, choice)
+		}
+	}
+	if converted["usage"].(map[string]any)["total_tokens"] != 9 {
+		t.Fatalf("usage=%#v", converted["usage"])
+	}
+}
+
 func TestMapFinishReason(t *testing.T) {
 	cases := []struct {
 		in   string

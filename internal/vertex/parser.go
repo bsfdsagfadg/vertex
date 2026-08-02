@@ -25,6 +25,8 @@ type ParseResult struct { //nolint:govet
 	HasError          bool
 	ErrorMessage      string
 	ErrorObj          *VertexError
+	// Candidates 保存按 index 合并后的完整候选列表；顶层字段继续映射首候选以兼容旧调用方。
+	Candidates []map[string]any
 }
 
 // ---- 小工具 ----
