@@ -41,7 +41,7 @@ function Build-Release {
     $env:CGO_ENABLED = "0"
     $env:GOOS = $goos
     $env:GOARCH = $goarch
-    go build -trimpath -tags with_utls -ldflags="$LDFLAGS" -o (Join-Path $stage $bin) ./cmd/vproxy
+    go build -trimpath -tags "with_utls with_quic with_wireguard" -ldflags="$LDFLAGS" -o (Join-Path $stage $bin) ./cmd/vproxy
     Remove-Item Env:\CGO_ENABLED
     Remove-Item Env:\GOOS
     Remove-Item Env:\GOARCH

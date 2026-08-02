@@ -10,7 +10,7 @@ RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 
-RUN CGO_ENABLED=0 go build -tags with_utls -buildvcs=false -trimpath -ldflags="-s -w" -o vproxy ./cmd/vproxy \
+RUN CGO_ENABLED=0 go build -tags "with_utls with_quic with_wireguard" -buildvcs=false -trimpath -ldflags="-s -w" -o vproxy ./cmd/vproxy \
     && go clean -cache -modcache -testcache
 
 FROM alpine:3.20

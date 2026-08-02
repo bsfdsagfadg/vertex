@@ -36,21 +36,26 @@
 如果你想从源码自行编译：
 
 ```bash
-go build -tags with_utls -o vertex-proxy ./cmd/vproxy
-go build -tags with_utls -o vertex-proxy.exe ./cmd/vproxy
+# Linux / macOS / Android (Termux) 环境本地编译
+go build -tags "with_utls with_quic with_wireguard" -o vertex-proxy ./cmd/vproxy
+
+# Windows 环境本地编译
+go build -tags "with_utls with_quic with_wireguard" -o vertex-proxy.exe ./cmd/vproxy
 ```
+
+> **提示**：`-tags "with_utls with_quic with_wireguard"` 为全功能构建标签，开启后可完整支持 Hysteria / Hysteria2 / TUIC 及 WireGuard / Cloudflare WARP 等全协议节点。
 
 交叉编译示例：
 ```bash
 # 在 Linux/macOS 上编译 Linux AMD64 版本（服务器）
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags with_utls -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags "with_utls with_quic with_wireguard" -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy
 # 在 Linux/macOS 上编译 Android ARM64 版本（Termux 手机）
-CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -tags with_utls -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy
+CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -tags "with_utls with_quic with_wireguard" -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy
 
 # 在 Windows PowerShell 上编译 Linux AMD64 版本（服务器）
-& { $env:CGO_ENABLED="0"; $env:GOOS="linux"; $env:GOARCH="amd64"; go build -tags with_utls -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy }
+& { $env:CGO_ENABLED="0"; $env:GOOS="linux"; $env:GOARCH="amd64"; go build -tags "with_utls with_quic with_wireguard" -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy }
 # 在 Windows PowerShell 上编译 Android ARM64 版本（Termux 手机）
-& { $env:CGO_ENABLED="0"; $env:GOOS="android"; $env:GOARCH="arm64"; go build -tags with_utls -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy }
+& { $env:CGO_ENABLED="0"; $env:GOOS="android"; $env:GOARCH="arm64"; go build -tags "with_utls with_quic with_wireguard" -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy }
 ```
 
 ## ⚙️ 配置说明

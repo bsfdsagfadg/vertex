@@ -30,7 +30,7 @@ build() {
   echo "==> 编译 $goos/$goarch"
 
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-    go build -tags with_utls -trimpath -ldflags="$LDFLAGS" -o "$stage/$bin" ./cmd/vproxy
+    go build -tags "with_utls with_quic with_wireguard" -trimpath -ldflags="$LDFLAGS" -o "$stage/$bin" ./cmd/vproxy
 
   mkdir -p "$stage/config"
   cp config/config.example.json   "$stage/config/"
