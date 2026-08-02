@@ -21,12 +21,13 @@ import (
 
 // recaptcha 相关硬编码常量（逐字节保持既定常量）。
 const (
-	recaptchaBase = "https://www.google.com"
-	siteKey       = "6LdCjtspAAAAAMcV4TGdWLJqRTEk1TfpdLqEnKdj"
-	recaptchaCo   = "aHR0cHM6Ly9jb25zb2xlLmNsb3VkLmdvb2dsZS5jb206NDQz"
-	recaptchaHl   = "zh-CN"
-	recaptchaVh   = "6581054572"
-	randomCharset = "abcdefghijklmnopqrstuvwxyz0123456789"
+	recaptchaBase      = "https://www.google.com"
+	siteKey            = "6LdCjtspAAAAAMcV4TGdWLJqRTEk1TfpdLqEnKdj"
+	recaptchaCo        = "aHR0cHM6Ly9jb25zb2xlLmNsb3VkLmdvb2dsZS5jb206NDQz"
+	recaptchaHl        = "zh-CN"
+	recaptchaVFallback = "jdMmXeCQEkPbnFDy9T04NbgJ"
+	recaptchaVh        = "6581054572"
+	randomCharset      = "abcdefghijklmnopqrstuvwxyz0123456789"
 )
 
 var (
@@ -38,7 +39,7 @@ var (
 	versionRe = regexp.MustCompile(`releases/([A-Za-z0-9_-]{20,})`)
 
 	versionMu sync.Mutex //nolint:gochecknoglobals
-	cachedVer string //nolint:gochecknoglobals
+	cachedVer string     //nolint:gochecknoglobals
 )
 
 // versionUA 拉取 enterprise.js 时使用的浏览器 UA（与 transport 包保持一致）。
@@ -49,41 +50,48 @@ const versionUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 // 版本号 Google 会定期滚动：硬编码旧版本会让 reload 换发的 token 第一次被
 // batchGraphql 评估时失败（"Failed to verify action"），同 token 重试一次才过。
 // 动态拉取当前版本后首帧即可通过（实测）。
-func fetchVersionFromJS(net *transport.NetworkClient, proxyURI string) (string, bool) {
-	sess, err := net.CreateSession(15, proxyURI, "recaptcha-version")
-	if err != nil {
-		return "", false
-	}
-	defer sess.Close()
-
+func fetchVersionFromSession(ctx context.Context, sess *transport.Session) (string, error) {
 	h := transport.Header{
 		"user-agent":      {versionUA},
 		"accept":          {"*/*"},
 		"accept-language": {"zh-CN,zh;q=0.9,en;q=0.8"},
 	}
-	_, body, err := sess.DoAndRead(context.Background(), "GET", recaptchaBase+"/recaptcha/enterprise.js", h, nil)
+	status, body, err := sess.DoAndRead(ctx, "GET", recaptchaBase+"/recaptcha/enterprise.js", h, nil)
 	if err != nil {
-		return "", false
+		return "", fmt.Errorf("获取 reCAPTCHA 版本失败: %w", err)
+	}
+	if status != 200 {
+		return "", fmt.Errorf("获取 reCAPTCHA 版本返回 HTTP %d", status)
 	}
 	m := versionRe.FindSubmatch(body)
 	if m == nil {
-		return "", false
+		return "", fmt.Errorf("无法从 enterprise.js 解析 reCAPTCHA 版本")
 	}
-	return string(m[1]), true
+	return string(m[1]), nil
 }
 
 // currentVersion 返回缓存的 reCAPTCHA 版本号，未缓存则现场拉取。
-func currentVersion(net *transport.NetworkClient, proxyURI string) (string, bool) {
+func currentVersion(ctx context.Context, sess *transport.Session) (string, error) {
 	versionMu.Lock()
-	defer versionMu.Unlock()
 	if cachedVer != "" {
-		return cachedVer, true
+		version := cachedVer
+		versionMu.Unlock()
+		return version, nil
 	}
-	v, ok := fetchVersionFromJS(net, proxyURI)
-	if ok {
-		cachedVer = v
+	versionMu.Unlock()
+
+	version, err := fetchVersionFromSession(ctx, sess)
+	if err != nil {
+		return "", err
 	}
-	return v, ok
+	versionMu.Lock()
+	if cachedVer == "" {
+		cachedVer = version
+	} else {
+		version = cachedVer
+	}
+	versionMu.Unlock()
+	return version, nil
 }
 
 // invalidateVersion 清除版本缓存：token 获取失败时调用，强制下一次重新拉取版本
@@ -105,9 +113,8 @@ func randomString(n int) string {
 // FetchRecaptchaToken 获取 Google reCAPTCHA token（隔离特征）。
 //
 // 最多 3 次重试，每次新建一个 short Timeout Session
-// （即用即毁，FRESH_CONNECT 语义）。全部失败返回 ("", nil) —— 返回空值表示失败，
-// 调用方按“空则换新/重试”处理。返回非空字符串即成功。
-func FetchRecaptchaToken(net *transport.NetworkClient, proxyURI string, debugMode bool) (string, error) {
+// （即用即毁，FRESH_CONNECT 语义）。返回非空字符串表示成功；全部失败返回显式错误。
+func FetchRecaptchaToken(ctx context.Context, net *transport.NetworkClient, proxyURI string, debugMode bool) (string, error) {
 	// 【核心修改：解析并缓存节点友好名称】
 	nodeName := nodes.GetNodeName(proxyURI)
 	if proxyURI == "" {
@@ -115,53 +122,77 @@ func FetchRecaptchaToken(net *transport.NetworkClient, proxyURI string, debugMod
 	}
 
 	start := time.Now()
+	var lastErr error
 	for retry := 0; retry < 3; retry++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		// 【核心修改：将具体的节点名称明确输出在日志归属中】
 		if debugMode {
 			log.Printf("[Recaptcha] [节点: %s] 开始获取 reCAPTCHA token (尝试 %d/3)", nodeName, retry+1)
 		}
-		version, ok := currentVersion(net, proxyURI)
-		if !ok {
-			invalidateVersion()
-			if debugMode {
-				log.Printf("[Recaptcha] [节点: %s] 拉取 reCAPTCHA 版本号失败 (尝试 %d/3)", nodeName, retry+1)
-			}
-			continue
-		}
-		if token, ok := fetchOnce(net, proxyURI, version); ok {
+		token, err := fetchOnce(ctx, net, proxyURI)
+		if err == nil && token != "" {
 			elapsed := time.Since(start)
 			if debugMode {
 				log.Printf("[Recaptcha] [节点: %s] 成功获取 reCAPTCHA token, 耗时: %d ms", nodeName, elapsed.Milliseconds())
 			}
 			return token, nil
 		}
-		// token 获取失败：大概率版本号已过期，清缓存强制重新拉取。
+		lastErr = err
 		invalidateVersion()
+		if retry < 2 {
+			timer := time.NewTimer(time.Duration(retry+1) * 200 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return "", ctx.Err()
+			case <-timer.C:
+			}
+		}
 	}
 	elapsed := time.Since(start)
 	if debugMode {
 		log.Printf("[Recaptcha] [节点: %s] 3次尝试后获取 reCAPTCHA token 失败, 耗时: %d ms", nodeName, elapsed.Milliseconds())
 	}
-	return "", nil
+	if lastErr == nil {
+		lastErr = fmt.Errorf("未知 reCAPTCHA 错误")
+	}
+	return "", fmt.Errorf("节点 %s 3 次重试后仍无法获取 reCAPTCHA token: %w", nodeName, lastErr)
 }
 
-func fetchOnce(net *transport.NetworkClient, proxyURI string, version string) (string, bool) {
+func fetchOnce(ctx context.Context, net *transport.NetworkClient, proxyURI string) (string, error) {
 	sess, err := net.CreateSession(15, proxyURI, "recaptcha")
 	if err != nil {
-		return "", false
+		return "", fmt.Errorf("创建 reCAPTCHA Session 失败: %w", err)
 	}
 	defer sess.Close()
+	return FetchRecaptchaTokenWithSession(ctx, sess)
+}
 
+// FetchRecaptchaTokenWithSession 在同一 Session 中完成版本、anchor 与 reload 请求。
+func FetchRecaptchaTokenWithSession(ctx context.Context, sess *transport.Session) (string, error) {
+	version, err := currentVersion(ctx, sess)
+	if err != nil {
+		version = recaptchaVFallback
+	}
 	cb := randomString(10)
 	anchorURL := fmt.Sprintf(
 		"%s/recaptcha/enterprise/anchor?ar=1&k=%s&co=%s&hl=%s&v=%s&size=invisible&anchor-ms=20000&execute-ms=15000&cb=%s",
 		recaptchaBase, siteKey, recaptchaCo, recaptchaHl, version, cb,
 	)
 
-	// token 预取与具体请求无关（后台细流），故用 context.Background()，不随某个请求取消。
-	_, anchorBody, err := sess.DoAndRead(context.Background(), "GET", anchorURL, transport.AnchorHeaders(), nil)
+	status, anchorBody, err := sess.DoAndRead(ctx, "GET", anchorURL, transport.AnchorHeaders(), nil)
 	if err != nil {
-		return "", false
+		return "", fmt.Errorf("GET anchor 失败: %w", err)
+	}
+	if status != 200 {
+		return "", fmt.Errorf("anchor 返回 HTTP %d", status)
 	}
 	m := tokenRe.FindSubmatch(anchorBody)
 	if m == nil {
@@ -170,7 +201,7 @@ func fetchOnce(net *transport.NetworkClient, proxyURI string, version string) (s
 			bodyStr = bodyStr[:500] + "..."
 		}
 		log.Printf("[Recaptcha] anchor token正则匹配失败, body前缀: %s", bodyStr)
-		return "", false
+		return "", fmt.Errorf("从 anchor HTML 解析 recaptcha-token 失败")
 	}
 	baseToken := string(m[1])
 
@@ -192,16 +223,26 @@ func fetchOnce(net *transport.NetworkClient, proxyURI string, version string) (s
 		recaptchaBase, anchorURL, "same-origin",
 	)
 
-	status, reloadBody, err := sess.DoAndRead(context.Background(), "POST", reloadURL, header, strings.NewReader(form.Encode()))
+	status, reloadBody, err := sess.DoAndRead(ctx, "POST", reloadURL, header, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", false
+		return "", fmt.Errorf("POST reload 失败: %w", err)
 	}
 	if status != 200 {
-		log.Printf("[Recaptcha] Reload 失败, HTTP 状态码: %d, 返回内容: %s", status, string(reloadBody))
+		bodyText := truncateLogBody(reloadBody, 200)
+		log.Printf("[Recaptcha] Reload 失败, HTTP 状态码: %d, 响应体前缀: %s", status, bodyText)
+		return "", fmt.Errorf("reload 返回 HTTP %d", status)
 	}
 	rm := rrespRe.FindSubmatch(reloadBody)
 	if rm == nil {
-		return "", false
+		log.Printf("[Recaptcha] Reload 响应解析失败, 响应体前缀: %s", truncateLogBody(reloadBody, 200))
+		return "", fmt.Errorf("从 reload 响应解析 rresp 失败")
 	}
-	return string(rm[1]), true
+	return string(rm[1]), nil
+}
+
+func truncateLogBody(body []byte, maxBytes int) string {
+	if len(body) <= maxBytes {
+		return string(body)
+	}
+	return string(body[:maxBytes]) + "..."
 }

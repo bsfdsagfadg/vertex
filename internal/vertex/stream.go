@@ -108,13 +108,22 @@ retryLoop:
 	for attempt <= maxRetries {
 		log.Printf("[Vertex] [StreamChat] 开始尝试 (Attempt %d/%d), 模型=%s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, reqID, nodes.GetNodeName(proxyURI))
 		if recaptchaToken == "" {
-			tok, _ := c.pool.GetTokenWithProxy(proxyURI)
+			tok, tokenErr := c.pool.GetTokenWithProxyContext(ctx, proxyURI)
+			if tokenErr != nil && ctx.Err() != nil {
+				lastError = NewContextError(ctx.Err())
+				break retryLoop
+			}
+			if tokenErr != nil {
+				lastError = NewAuthenticationError("Could not fetch recaptcha token: "+tokenErr.Error(), tokenErr)
+			}
 			recaptchaToken = tok
 			isFirstAuth = true
 		}
 		if recaptchaToken == "" {
 			if attempt == maxRetries {
-				lastError = NewAuthenticationError("Could not fetch recaptcha token.")
+				if lastError == nil {
+					lastError = NewAuthenticationError("Could not fetch recaptcha token.")
+				}
 				break retryLoop
 			}
 			attempt++
