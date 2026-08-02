@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -171,5 +172,190 @@ func TestRunRace_RoundRelaySwitchesToFreshNodes(t *testing.T) {
 		if c != 1 {
 			t.Fatalf("节点 %s 被尝试 %d 次, 应只 1 次", uri, c)
 		}
+	}
+}
+
+func TestStreamParallelWinnerContinuesBeyondRaceTimeout(t *testing.T) {
+	raceTestNodes(t)
+
+	op := func(ctx context.Context, _ string) <-chan StreamChunk {
+		ch := make(chan StreamChunk, 2)
+		go func() {
+			defer close(ch)
+			select {
+			case ch <- StreamChunk{Data: map[string]any{"text": "first"}}:
+			case <-ctx.Done():
+				return
+			}
+			timer := time.NewTimer(1200 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case ch <- StreamChunk{Data: map[string]any{"text": "after-timeout"}}:
+			case <-ctx.Done():
+			}
+		}()
+		return ch
+	}
+
+	var got []string
+	StreamParallel(context.Background(), raceTestConfig(1), op, func(chunk StreamChunk) bool {
+		if chunk.Err != nil {
+			t.Fatalf("胜出流不应被 race_timeout 截断: %v", chunk.Err)
+		}
+		if text, _ := chunk.Data["text"].(string); text != "" {
+			got = append(got, text)
+		}
+		return true
+	})
+	if fmt.Sprint(got) != "[first after-timeout]" {
+		t.Fatalf("跨过 race_timeout 后仍应收到完整流, got %v", got)
+	}
+}
+
+func TestStreamParallelYieldStopCancelsUpstream(t *testing.T) {
+	raceTestNodes(t)
+
+	var canceled atomic.Int32
+	op := func(ctx context.Context, _ string) <-chan StreamChunk {
+		ch := make(chan StreamChunk, 1)
+		go func() {
+			defer close(ch)
+			select {
+			case ch <- StreamChunk{Data: map[string]any{"text": "first"}}:
+			case <-ctx.Done():
+			}
+			<-ctx.Done()
+			canceled.Add(1)
+		}()
+		return ch
+	}
+
+	StreamParallel(context.Background(), raceTestConfig(0), op, func(StreamChunk) bool { return false })
+	deadline := time.Now().Add(2 * time.Second)
+	for canceled.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if canceled.Load() != 3 {
+		t.Fatalf("客户端停止消费应取消所有上游候选, canceled=%d", canceled.Load())
+	}
+}
+
+func TestStreamParallelCanceledLosersAreNotRecordedAsEmptyFailures(t *testing.T) {
+	raceTestNodes(t)
+	var losersCanceled atomic.Int32
+	op := func(ctx context.Context, uri string) <-chan StreamChunk {
+		ch := make(chan StreamChunk, 1)
+		go func() {
+			defer close(ch)
+			if strings.Contains(uri, "node1") {
+				ch <- StreamChunk{Data: map[string]any{"text": "winner"}}
+				return
+			}
+			<-ctx.Done()
+			losersCanceled.Add(1)
+		}()
+		return ch
+	}
+	StreamParallel(context.Background(), raceTestConfig(0), op, func(StreamChunk) bool { return true })
+
+	deadline := time.Now().Add(2 * time.Second)
+	for losersCanceled.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if losersCanceled.Load() != 2 {
+		t.Fatalf("落败候选未全部取消: %d", losersCanceled.Load())
+	}
+	time.Sleep(50 * time.Millisecond)
+	health := nodes.LoadHealth()
+	for _, uri := range []string{"http://node2:8080", "http://node3:8080"} {
+		if h := health[uri]; h != nil && h.FailCount > 0 {
+			t.Fatalf("被取消的 loser 不应记录为空流失败: %+v", health)
+		}
+	}
+}
+
+func TestRunRaceParentCancellationPropagatesToCandidates(t *testing.T) {
+	raceTestNodes(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	var started atomic.Int32
+	var canceled atomic.Int32
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunRace(ctx, raceTestConfig(0), func(candidateCtx context.Context, _ string) (string, error) {
+			started.Add(1)
+			<-candidateCtx.Done()
+			canceled.Add(1)
+			return "", candidateCtx.Err()
+		})
+		done <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for started.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("父请求取消应原样返回 context.Canceled, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("父请求取消后竞速未及时退出")
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for canceled.Load() < started.Load() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if canceled.Load() != started.Load() {
+		t.Fatalf("父请求取消未传播到所有已启动候选: started=%d canceled=%d", started.Load(), canceled.Load())
+	}
+}
+
+func TestRunRaceRecoversCandidatePanic(t *testing.T) {
+	raceTestNodes(t)
+	_, err := RunRace(context.Background(), raceTestConfig(0), func(context.Context, string) (string, error) {
+		panic("boom")
+	})
+	if err == nil || !strings.Contains(err.Error(), "panic") {
+		t.Fatalf("候选 panic 应转换为可诊断错误, got %v", err)
+	}
+}
+
+func TestRunRaceChoosesRetryableErrorAfterAllCandidatesFail(t *testing.T) {
+	raceTestNodes(t)
+	_, err := RunRace(context.Background(), raceTestConfig(0), func(_ context.Context, uri string) (string, error) {
+		switch {
+		case strings.Contains(uri, "node1"):
+			return "", NewInvalidArgumentError("bad request")
+		case strings.Contains(uri, "node2"):
+			return "", NewRateLimitError("quota", 0)
+		default:
+			return "", NewPermissionDeniedError("permission")
+		}
+	})
+	var ve *VertexError
+	if !errors.As(err, &ve) || ve.Kind != "ratelimit" {
+		t.Fatalf("全部失败时应按优先级返回可重试的限流错误, got %v", err)
+	}
+}
+
+func TestStreamParallelReportsEmptyResponse(t *testing.T) {
+	raceTestNodes(t)
+	var gotErr *VertexError
+	StreamParallel(context.Background(), raceTestConfig(0), func(context.Context, string) <-chan StreamChunk {
+		ch := make(chan StreamChunk)
+		close(ch)
+		return ch
+	}, func(chunk StreamChunk) bool {
+		gotErr = chunk.Err
+		return true
+	})
+	if gotErr == nil || gotErr.Kind != "empty" {
+		t.Fatalf("所有候选空流应返回 empty 错误, got %+v", gotErr)
 	}
 }

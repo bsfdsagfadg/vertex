@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
@@ -22,7 +23,10 @@ func StreamParallel(ctx context.Context, cfg config.ConfigProvider,
 		select {
 		case first, ok = <-ch:
 			if !ok {
-				return nil, fmt.Errorf("stream: %s closed immediately", nodes.GetNodeName(uri))
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				return nil, NewEmptyResponseError(fmt.Sprintf("stream: %s closed with no data", nodes.GetNodeName(uri)))
 			}
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -48,8 +52,8 @@ func StreamParallel(ctx context.Context, cfg config.ConfigProvider,
 
 	winnerCh, err := RunRace(streamCtx, cfg, wrappedOp, WithNoCancelOnSuccess[<-chan StreamChunk]())
 	if err != nil {
-		vertexErr, ok := err.(*VertexError)
-		if ok {
+		var vertexErr *VertexError
+		if errors.As(err, &vertexErr) {
 			yield(StreamChunk{Err: vertexErr})
 		} else {
 			yield(StreamChunk{Err: NewInternalError(err.Error())})
