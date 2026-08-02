@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/db"
@@ -308,7 +309,7 @@ func TestDedupNodesSemantic(t *testing.T) {
 	}
 }
 
-func TestSelectForParallelCooldownFallback(t *testing.T) {
+func TestSelectForParallelSkipsActiveCooldown(t *testing.T) {
 	resetState()
 	defer resetState()
 
@@ -321,9 +322,64 @@ func TestSelectForParallelCooldownFallback(t *testing.T) {
 	RecordTest("uri1", false, 0, "timeout")
 	RecordTest("uri2", false, 0, "timeout")
 
-	// Request 3 nodes, should get n3 + fallback from cooldown
+	// Request 3 nodes, active cooldown nodes must not be reused immediately.
 	selected := SelectForParallel(3, 80, false, false)
-	if len(selected) != 3 {
-		t.Errorf("Expected 3 selected (1 normal + 2 cooldown), got %d", len(selected))
+	if len(selected) != 1 || selected[0].RawURI != "uri3" {
+		t.Errorf("Expected only healthy uri3 while others cool down, got %+v", selected)
+	}
+}
+
+func TestCooldownAndSubHealthyStateSurvivesReload(t *testing.T) {
+	db.CloseDB()
+	resetState()
+	if err := db.InitDB(filepath.Join(t.TempDir(), "data.db")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		resetState()
+		db.CloseDB()
+	})
+
+	MergeNodes([]Node{
+		{RawURI: "limited", Name: "limited"},
+		{RawURI: "healthy", Name: "healthy"},
+	})
+	RecordRateLimit("limited", 60)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var cooldownUntil, last429At, lastSubHealthyAt int64
+		var rateLimitCount int
+		err := db.GlobalDB.QueryRow(`SELECT cooldown_until, last_429_at, rate_limit_count, last_sub_healthy_at FROM node_health WHERE raw_uri = ?`, "limited").
+			Scan(&cooldownUntil, &last429At, &rateLimitCount, &lastSubHealthyAt)
+		if err == nil && cooldownUntil > time.Now().Unix() && last429At > 0 && rateLimitCount == 1 && lastSubHealthyAt > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("健康状态未及时持久化: err=%v cooldown=%d last429=%d rate=%d sub=%d", err, cooldownUntil, last429At, rateLimitCount, lastSubHealthyAt)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	resetState()
+	health := LoadHealth()
+	h := health["limited"]
+	if h == nil || h.CooldownUntil <= time.Now().Unix() || h.LastSubHealthyAt == 0 || h.Last429At == 0 || h.RateLimitCount != 1 {
+		t.Fatalf("重载后的冷却/亚健康状态错误: %+v", h)
+	}
+	selected := SelectForParallel(2, 80, false, false)
+	if len(selected) != 1 || selected[0].RawURI != "healthy" {
+		t.Fatalf("重载后活动冷却节点不应进入候选: %+v", selected)
+	}
+
+	mu.Lock()
+	h.CooldownUntil = time.Now().Unix() - 1
+	mu.Unlock()
+	selected = SelectForParallel(2, 80, false, false)
+	if len(selected) != 2 {
+		t.Fatalf("冷却到期后亚健康节点应作为 Tier 2 候选: %+v", selected)
+	}
+	if tier := getNodeTier(Node{RawURI: "limited"}, h); tier != 2 {
+		t.Fatalf("冷却到期不应自动恢复为健康 Tier 1, got Tier %d", tier)
 	}
 }

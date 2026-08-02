@@ -88,12 +88,56 @@ func createTables(db *sql.DB) error {
 		last_success_at INTEGER NOT NULL DEFAULT 0,
 		last_fail_at INTEGER NOT NULL DEFAULT 0,
 		cooldown_until INTEGER NOT NULL DEFAULT 0,
+		last_429_at INTEGER NOT NULL DEFAULT 0,
+		rate_limit_count INTEGER NOT NULL DEFAULT 0,
+		last_sub_healthy_at INTEGER NOT NULL DEFAULT 0,
 		FOREIGN KEY(raw_uri) REFERENCES nodes(raw_uri) ON DELETE CASCADE
 	);
 	`
 	_, err := db.Exec(schema)
 	if err != nil {
 		return fmt.Errorf("error: %w", err)
+	}
+	return ensureNodeHealthColumns(db)
+
+}
+
+func ensureNodeHealthColumns(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(node_health)")
+	if err != nil {
+		return fmt.Errorf("read node_health schema: %w", err)
+	}
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if errScan := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); errScan != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan node_health schema: %w", errScan)
+		}
+		existing[name] = true
+	}
+	if errClose := rows.Close(); errClose != nil {
+		return fmt.Errorf("close node_health schema rows: %w", errClose)
+	}
+
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"last_429_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"rate_limit_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"last_sub_healthy_at", "INTEGER NOT NULL DEFAULT 0"},
+	}
+	for _, column := range columns {
+		if existing[column.name] {
+			continue
+		}
+		query := fmt.Sprintf("ALTER TABLE node_health ADD COLUMN %s %s", column.name, column.definition)
+		if _, errAlter := db.Exec(query); errAlter != nil {
+			return fmt.Errorf("add node_health.%s: %w", column.name, errAlter)
+		}
 	}
 	return nil
 
@@ -140,15 +184,18 @@ func migrateFromFiles(db *sql.DB, configDir string) {
 			LastSuccessAt       int64   `json:"last_success_at"`
 			LastFailAt          int64   `json:"last_fail_at"`
 			CooldownUntil       int64   `json:"cooldown_until"`
+			Last429At           int64   `json:"last_429_at"`
+			RateLimitCount      int     `json:"rate_limit_count"`
+			LastSubHealthyAt    int64   `json:"last_sub_healthy_at"`
 		}
 		if errUnm := json.Unmarshal(data, &healthMap); errUnm == nil { //nolint:govet
 			tx, _ := db.Begin()
-			stmt, _ := tx.Prepare(`INSERT OR REPLACE INTO node_health 
-				(raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until) 
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			stmt, _ := tx.Prepare(`INSERT OR REPLACE INTO node_health
+				(raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until, last_429_at, rate_limit_count, last_sub_healthy_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 			migrated := 0
 			for uri, h := range healthMap {
-				_, err := stmt.Exec(uri, h.SuccessCount, h.FailCount, h.ConsecutiveFailures, h.LastTestMs, h.LastTestError, h.LastSuccessAt, h.LastFailAt, h.CooldownUntil) //nolint:govet
+				_, err := stmt.Exec(uri, h.SuccessCount, h.FailCount, h.ConsecutiveFailures, h.LastTestMs, h.LastTestError, h.LastSuccessAt, h.LastFailAt, h.CooldownUntil, h.Last429At, h.RateLimitCount, h.LastSubHealthyAt) //nolint:govet
 				if err == nil {
 					migrated++
 				}

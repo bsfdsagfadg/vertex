@@ -76,7 +76,7 @@ func ensureLoaded() {
 	}
 
 	// Load health
-	hRows, err := db.GlobalDB.Query("SELECT raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until FROM node_health")
+	hRows, err := db.GlobalDB.Query("SELECT raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until, last_429_at, rate_limit_count, last_sub_healthy_at FROM node_health")
 	if err == nil {
 		defer func() {
 			_ = hRows.Close()
@@ -84,7 +84,7 @@ func ensureLoaded() {
 		for hRows.Next() {
 			var uri string
 			h := &NodeHealth{} //nolint:exhaustruct
-			if err := hRows.Scan(&uri, &h.SuccessCount, &h.FailCount, &h.ConsecutiveFailures, &h.LastTestMs, &h.LastTestError, &h.LastSuccessAt, &h.LastFailAt, &h.CooldownUntil); err == nil {
+			if err := hRows.Scan(&uri, &h.SuccessCount, &h.FailCount, &h.ConsecutiveFailures, &h.LastTestMs, &h.LastTestError, &h.LastSuccessAt, &h.LastFailAt, &h.CooldownUntil, &h.Last429At, &h.RateLimitCount, &h.LastSubHealthyAt); err == nil {
 				healthMap[uri] = h
 			}
 		}
@@ -173,9 +173,9 @@ func initHealthQueue() {
 				}
 				return
 			}
-			stmt, err := tx.Prepare(`INSERT OR REPLACE INTO node_health 
-				(raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until) 
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			stmt, err := tx.Prepare(`INSERT OR REPLACE INTO node_health
+				(raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until, last_429_at, rate_limit_count, last_sub_healthy_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 			if err != nil {
 				_ = tx.Rollback()
 				log.Printf("[ERROR] Failed to prepare health save statement: %v", err)
@@ -189,7 +189,7 @@ func initHealthQueue() {
 			defer stmt.Close()
 
 			for uri, h := range batch {
-				_, _ = stmt.Exec(uri, h.SuccessCount, h.FailCount, h.ConsecutiveFailures, h.LastTestMs, h.LastTestError, h.LastSuccessAt, h.LastFailAt, h.CooldownUntil)
+				_, _ = stmt.Exec(uri, h.SuccessCount, h.FailCount, h.ConsecutiveFailures, h.LastTestMs, h.LastTestError, h.LastSuccessAt, h.LastFailAt, h.CooldownUntil, h.Last429At, h.RateLimitCount, h.LastSubHealthyAt)
 			}
 			_ = tx.Commit()
 			for k := range batch {
@@ -814,7 +814,7 @@ func getNodeTier(n Node, h *NodeHealth) int {
 	if n.Disabled {
 		return 3
 	}
-	if h != nil && h.LastSubHealthyAt > 0 {
+	if h != nil && (h.LastSubHealthyAt > 0 || h.CooldownUntil > time.Now().Unix()) {
 		return 2
 	}
 	return 1
@@ -833,13 +833,17 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 
 	var tier1 []tierCandidate
 	var tier2 []tierCandidate
-	var tier2Cooldown []tierCandidate
+	cooldownCount := 0
 
 	for _, n := range nodeList {
 		if n.Disabled {
 			continue
 		}
 		h := healthMap[n.RawURI]
+		if h != nil && h.CooldownUntil > now {
+			cooldownCount++
+			continue
+		}
 		tier := getNodeTier(n, h)
 		inFlight := int32(0)
 		if h != nil {
@@ -849,11 +853,7 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 		case 1:
 			tier1 = append(tier1, tierCandidate{n, inFlight})
 		case 2:
-			if h != nil && h.CooldownUntil > now {
-				tier2Cooldown = append(tier2Cooldown, tierCandidate{n, inFlight})
-			} else {
-				tier2 = append(tier2, tierCandidate{n, inFlight})
-			}
+			tier2 = append(tier2, tierCandidate{n, inFlight})
 		}
 	}
 
@@ -932,37 +932,6 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 		}
 	}
 
-	// 健康节点不足时，用冷却中的节点兜底（按 Last429At 最早优先）。
-	if len(selected) < k && len(tier2Cooldown) > 0 {
-		sort.Slice(tier2Cooldown, func(i, j int) bool {
-			hi := healthMap[tier2Cooldown[i].node.RawURI]
-			hj := healthMap[tier2Cooldown[j].node.RawURI]
-			li := int64(0)
-			lj := int64(0)
-			if hi != nil {
-				li = hi.Last429At
-			}
-			if hj != nil {
-				lj = hj.Last429At
-			}
-			if li != lj {
-				return li < lj
-			}
-			return tier2Cooldown[i].inFlight < tier2Cooldown[j].inFlight
-		})
-
-		needed := k - len(selected)
-		if needed > len(tier2Cooldown) {
-			needed = len(tier2Cooldown)
-		}
-		for i := range needed {
-			selected = append(selected, tier2Cooldown[i].node)
-		}
-		if debugMode {
-			log.Printf("[Nodes] 健康节点不足，冷却节点兜底补充 %d 个", needed)
-		}
-	}
-
 	for _, s := range selected {
 		if h := healthMap[s.RawURI]; h != nil {
 			h.LastSelectedAt = now
@@ -971,7 +940,7 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 	}
 
 	if debugMode {
-		log.Printf("[Nodes] 选择并行节点 (需求: %d, 实际: %d)", k, len(selected))
+		log.Printf("[Nodes] 选择并行节点 (需求: %d, 实际: %d, 冷却跳过: %d)", k, len(selected), cooldownCount)
 	}
 	return selected
 }
