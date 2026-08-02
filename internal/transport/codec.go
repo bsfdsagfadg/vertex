@@ -37,6 +37,21 @@ func ParseURI(uri string) (map[string]any, error) {
 	if strings.HasPrefix(uri, "tuic://") {
 		return parseSimple(uri, "tuic")
 	}
+	if strings.HasPrefix(uri, "socks5://") || strings.HasPrefix(uri, "socks5h://") || strings.HasPrefix(uri, "socks://") {
+		return parseSocks(uri)
+	}
+	if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
+		return parseHTTP(uri)
+	}
+	if strings.HasPrefix(uri, "ssr://") || strings.HasPrefix(uri, "shadowsocksr://") {
+		return parseShadowsocksR(uri)
+	}
+	if strings.HasPrefix(uri, "hysteria://") {
+		return parseHysteria(uri)
+	}
+	if strings.HasPrefix(uri, "anytls://") {
+		return parseAnyTLS(uri)
+	}
 	if strings.HasPrefix(uri, "clash://") {
 		b, _ := base64.StdEncoding.DecodeString(padB64(uri[8:]))
 		var d map[string]any
@@ -455,4 +470,225 @@ func parseSS(uri string) (map[string]any, error) {
 		}, nil
 	}
 	return nil, fmt.Errorf("ss parse failed")
+}
+
+func parseSocks(uri string) (map[string]any, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("socks parse failed: %w", err)
+	}
+	port, err := parseProxyPort(u, 1080)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{
+		"name": nameFromURL(u), "type": "socks5", "server": u.Hostname(), "port": port, "udp": true,
+	}
+	if u.User != nil {
+		out["username"] = u.User.Username()
+		if password, ok := u.User.Password(); ok {
+			out["password"] = password
+		}
+	}
+	return out, nil
+}
+
+func parseHTTP(uri string) (map[string]any, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("http proxy parse failed: %w", err)
+	}
+	defaultPort := 80
+	if strings.EqualFold(u.Scheme, "https") {
+		defaultPort = 443
+	}
+	port, err := parseProxyPort(u, defaultPort)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{
+		"name": nameFromURL(u), "type": "http", "server": u.Hostname(), "port": port,
+	}
+	if u.User != nil {
+		out["username"] = u.User.Username()
+		if password, ok := u.User.Password(); ok {
+			out["password"] = password
+		}
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		out["tls"] = true
+		out["sni"] = firstNonEmpty(u.Query().Get("sni"), u.Hostname())
+		if queryFlag(u.Query(), "allowInsecure", "insecure") {
+			out["skip-cert-verify"] = true
+		}
+	}
+	return out, nil
+}
+
+func parseShadowsocksR(uri string) (map[string]any, error) {
+	prefix := "ssr://"
+	if strings.HasPrefix(uri, "shadowsocksr://") {
+		prefix = "shadowsocksr://"
+	}
+	body := strings.TrimSpace(uri[len(prefix):])
+	if hash := strings.Index(body, "#"); hash >= 0 {
+		body = body[:hash]
+	}
+	decodedBytes, err := base64.StdEncoding.DecodeString(padB64(body))
+	if err != nil {
+		return nil, fmt.Errorf("ssr parse failed: decode body: %w", err)
+	}
+	decoded := string(decodedBytes)
+	params := ""
+	if queryIndex := strings.Index(decoded, "/?"); queryIndex >= 0 {
+		params = decoded[queryIndex+2:]
+		decoded = decoded[:queryIndex]
+	} else if queryIndex := strings.Index(decoded, "?"); queryIndex >= 0 {
+		params = decoded[queryIndex+1:]
+		decoded = strings.TrimSuffix(decoded[:queryIndex], "/")
+	}
+	parts := strings.SplitN(decoded, ":", 6)
+	if len(parts) != 6 {
+		return nil, fmt.Errorf("ssr parse failed: invalid body")
+	}
+	port, err := strconv.Atoi(parts[1])
+	if err != nil || port <= 0 || port > 65535 || strings.TrimSpace(parts[0]) == "" {
+		return nil, fmt.Errorf("ssr parse failed: invalid server or port")
+	}
+	passwordBytes, err := base64.StdEncoding.DecodeString(padB64(strings.TrimRight(parts[5], "/")))
+	if err != nil {
+		return nil, fmt.Errorf("ssr parse failed: decode password: %w", err)
+	}
+	out := map[string]any{
+		"name": "", "type": "ssr", "server": parts[0], "port": port,
+		"protocol": parts[2], "cipher": parts[3], "obfs": parts[4], "password": string(passwordBytes), "udp": true,
+	}
+	if params != "" {
+		query, _ := url.ParseQuery(params)
+		if value := decodeSSRParam(query.Get("obfsparam")); value != "" {
+			out["obfs-param"] = value
+		}
+		if value := decodeSSRParam(query.Get("protoparam")); value != "" {
+			out["protocol-param"] = value
+		}
+		if value := decodeSSRParam(query.Get("remarks")); value != "" {
+			out["name"] = value
+		}
+	}
+	return out, nil
+}
+
+func decodeSSRParam(value string) string {
+	if value == "" {
+		return ""
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(padB64(value)); err == nil {
+		return strings.TrimSpace(string(decoded))
+	}
+	if decoded, err := url.QueryUnescape(value); err == nil {
+		return strings.TrimSpace(decoded)
+	}
+	return strings.TrimSpace(value)
+}
+
+func parseHysteria(uri string) (map[string]any, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("hysteria parse failed: %w", err)
+	}
+	port, err := parseProxyPort(u, 443)
+	if err != nil {
+		return nil, err
+	}
+	query := u.Query()
+	up := normalizeHysteriaSpeed(firstNonEmpty(query.Get("up"), query.Get("upmbps"), query.Get("up-speed")))
+	down := normalizeHysteriaSpeed(firstNonEmpty(query.Get("down"), query.Get("downmbps"), query.Get("down-speed")))
+	if up == "" || down == "" {
+		return nil, fmt.Errorf("hysteria parse failed: up/down speed is required")
+	}
+	auth := query.Get("auth")
+	if u.User != nil && u.User.Username() != "" {
+		auth = u.User.Username()
+	}
+	out := map[string]any{
+		"name": nameFromURL(u), "type": "hysteria", "server": u.Hostname(), "port": port,
+		"up": up, "down": down, "auth-str": auth,
+		"sni": firstNonEmpty(query.Get("sni"), query.Get("peer"), u.Hostname()),
+	}
+	if queryFlag(query, "allowInsecure", "insecure") {
+		out["skip-cert-verify"] = true
+	}
+	if obfs := query.Get("obfs"); obfs != "" {
+		out["obfs"] = obfs
+	}
+	if alpn := query.Get("alpn"); alpn != "" {
+		out["alpn"] = strings.Split(alpn, ",")
+	}
+	return out, nil
+}
+
+func normalizeHysteriaSpeed(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if _, err := strconv.Atoi(value); err == nil {
+		return value + " Mbps"
+	}
+	return value
+}
+
+func parseAnyTLS(uri string) (map[string]any, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("anytls parse failed: %w", err)
+	}
+	port, err := parseProxyPort(u, 443)
+	if err != nil {
+		return nil, err
+	}
+	password := ""
+	if u.User != nil {
+		password = u.User.Username()
+	}
+	if password == "" {
+		return nil, fmt.Errorf("anytls parse failed: password is required")
+	}
+	query := u.Query()
+	out := map[string]any{
+		"name": nameFromURL(u), "type": "anytls", "server": u.Hostname(), "port": port,
+		"password": password, "sni": firstNonEmpty(query.Get("sni"), u.Hostname()), "udp": true,
+	}
+	if queryFlag(query, "allowInsecure", "insecure") {
+		out["skip-cert-verify"] = true
+	}
+	if fp := firstNonEmpty(query.Get("fp"), query.Get("fingerprint")); fp != "" {
+		out["client-fingerprint"] = fp
+	}
+	if alpn := query.Get("alpn"); alpn != "" {
+		out["alpn"] = strings.Split(alpn, ",")
+	}
+	return out, nil
+}
+
+func parseProxyPort(u *url.URL, defaultPort int) (int, error) {
+	if strings.TrimSpace(u.Hostname()) == "" {
+		return 0, fmt.Errorf("proxy parse failed: server is required")
+	}
+	if u.Port() == "" {
+		return defaultPort, nil
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, fmt.Errorf("proxy parse failed: invalid port")
+	}
+	return port, nil
+}
+
+func nameFromURL(u *url.URL) string {
+	name := u.Fragment
+	if decoded, err := url.QueryUnescape(name); err == nil {
+		return strings.TrimSpace(decoded)
+	}
+	return strings.TrimSpace(name)
 }

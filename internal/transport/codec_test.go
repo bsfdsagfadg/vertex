@@ -2,7 +2,10 @@ package transport
 
 import (
 	"encoding/base64"
+	"net/url"
 	"testing"
+
+	"github.com/metacubex/mihomo/adapter"
 )
 
 func TestParseURIShadowsocksKeepsPortAndPlugin(t *testing.T) {
@@ -25,6 +28,55 @@ func TestParseURIShadowsocksKeepsPortAndPlugin(t *testing.T) {
 	}
 	if opts["mode"] != "http" || opts["host"] != "cdn.example.com" {
 		t.Fatalf("unexpected plugin opts: %#v", opts)
+	}
+}
+
+func TestParseURIAdditionalMihomoProtocols(t *testing.T) {
+	password := base64.RawURLEncoding.EncodeToString([]byte("secret"))
+	remarks := base64.RawURLEncoding.EncodeToString([]byte("SSR 节点"))
+	ssrBody := "ssr.example.com:8388:auth_sha1_v4:aes-256-cfb:tls1.2_ticket_auth:" + password + "/?remarks=" + url.QueryEscape(remarks)
+	ssrURI := "ssr://" + base64.RawURLEncoding.EncodeToString([]byte(ssrBody))
+
+	cases := []struct {
+		name string
+		uri  string
+		typ  string
+	}{
+		{"SOCKS5", "socks5://user:pass@127.0.0.1:1080#local-socks", "socks5"},
+		{"HTTPS", "https://user:pass@127.0.0.1:8443?sni=proxy.example.com&insecure=1#secure-http", "http"},
+		{"SSR", ssrURI, "ssr"},
+		{"Hysteria", "hysteria://auth@hy.example.com:443?upmbps=100&downmbps=200&sni=edge.example.com#hy", "hysteria"},
+		{"AnyTLS", "anytls://secret@any.example.com:443?sni=edge.example.com&insecure=1#any", "anytls"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			mapping, err := ParseURI(testCase.uri)
+			if err != nil {
+				t.Fatalf("ParseURI: %v", err)
+			}
+			if mapping["type"] != testCase.typ {
+				t.Fatalf("type=%v, want %s", mapping["type"], testCase.typ)
+			}
+			proxy, err := adapter.ParseProxy(mapping)
+			if err != nil {
+				t.Fatalf("mihomo adapter.ParseProxy: %v; map=%#v", err, mapping)
+			}
+			if closer, ok := proxy.(interface{ Close() error }); ok {
+				_ = closer.Close()
+			}
+		})
+	}
+}
+
+func TestParseURIAdditionalProtocolsRejectsIncompleteInput(t *testing.T) {
+	for _, uri := range []string{
+		"socks5://",
+		"hysteria://auth@hy.example.com:443",
+		"anytls://any.example.com:443",
+	} {
+		if _, err := ParseURI(uri); err == nil {
+			t.Fatalf("incomplete URI should fail: %s", uri)
+		}
 	}
 }
 
