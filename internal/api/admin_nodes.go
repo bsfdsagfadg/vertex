@@ -390,7 +390,7 @@ func (adm *AdminHandler) fetchSubscriptionText(ctx context.Context, rawURL strin
 		return strings.TrimSpace(string(data)), nil
 	}
 
-	proxyURI := firstNonEmpty(adm.cfg.ActiveNodeURI(), adm.cfg.ProxyURL())
+	proxyURI := subscriptionFallbackProxy(adm.cfg)
 	if proxyURI == "" || adm.vc == nil || adm.vc.Net() == nil {
 		return "", err
 	}
@@ -403,6 +403,13 @@ func (adm *AdminHandler) fetchSubscriptionText(ctx context.Context, rawURL strin
 
 	log.Printf("[Admin] [FetchSub] proxy retry succeeded")
 	return strings.TrimSpace(string(data)), nil
+}
+
+func subscriptionFallbackProxy(cfg config.ConfigProvider) string {
+	if cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.ProxyURL())
 }
 
 func fetchSubscriptionDataDirect(ctx context.Context, rawURL string) ([]byte, error) {

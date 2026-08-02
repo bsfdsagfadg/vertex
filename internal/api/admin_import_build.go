@@ -585,11 +585,33 @@ func looksLikeClashProxyMap(obj map[string]any) bool {
 	if !supportedClashProxyType(typ) {
 		return false
 	}
-	if typ == "wireguard" {
-		return strings.TrimSpace(valueToString(obj["private-key"])) != "" &&
-			(strings.TrimSpace(valueToString(obj["server"])) != "" || len(sliceValue(obj["peers"])) > 0)
+
+	hasEndpoint := strings.TrimSpace(valueToString(obj["server"])) != "" && intValue(obj["port"]) > 0
+	switch typ {
+	case "tuic":
+		hasToken := strings.TrimSpace(valueToString(obj["token"])) != ""
+		hasUserPassword := strings.TrimSpace(valueToString(obj["uuid"])) != "" && strings.TrimSpace(valueToString(obj["password"])) != ""
+		return hasEndpoint && (hasToken || hasUserPassword)
+	case "wireguard":
+		if strings.TrimSpace(valueToString(obj["private-key"])) == "" ||
+			(strings.TrimSpace(valueToString(obj["ip"])) == "" && strings.TrimSpace(valueToString(obj["ipv6"])) == "") {
+			return false
+		}
+		peers := sliceValue(obj["peers"])
+		if len(peers) == 0 {
+			return hasEndpoint && strings.TrimSpace(valueToString(obj["public-key"])) != ""
+		}
+		for _, rawPeer := range peers {
+			peer := mapValue(rawPeer)
+			if strings.TrimSpace(valueToString(peer["server"])) == "" || intValue(peer["port"]) <= 0 ||
+				strings.TrimSpace(valueToString(peer["public-key"])) == "" || len(sliceValue(peer["allowed-ips"])) == 0 {
+				return false
+			}
+		}
+		return true
+	default:
+		return hasEndpoint
 	}
-	return strings.TrimSpace(valueToString(obj["server"])) != "" && intValue(obj["port"]) > 0
 }
 
 func buildImportedNodeFromProxyMap(proxy map[string]any) (nodes.Node, bool) {
