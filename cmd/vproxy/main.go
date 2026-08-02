@@ -200,14 +200,22 @@ func main() {
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-		for s := range sig {
-			if s == syscall.SIGHUP {
-				config.InvalidateCache()
-				config.InvalidateModelsCache()
-				log.Printf("[vproxy] 收到 SIGHUP：已清配置/模型缓存，下次读取即热重载")
-				continue
+		defer signal.Stop(sig)
+		for {
+			var reason string
+			select {
+			case s := <-sig:
+				if s == syscall.SIGHUP {
+					config.InvalidateCache()
+					config.InvalidateModelsCache()
+					log.Printf("[vproxy] 收到 SIGHUP：已清配置/模型缓存，下次读取即热重载")
+					continue
+				}
+				reason = s.String()
+			case <-cli.TUIDone():
+				reason = "TUI Ctrl+C"
 			}
-			log.Printf("[vproxy] 收到 %v：开始关闭程序，等待在途请求处理完成(最长 %s)…", s, shutdownGrace)
+			log.Printf("[vproxy] 收到 %s：开始关闭程序，等待在途请求处理完成(最长 %s)…", reason, shutdownGrace)
 			ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 			if err := httpServer.Shutdown(ctx); err != nil {
 				log.Printf("[vproxy] 关闭超时/出错：%v(强制结束)", err)

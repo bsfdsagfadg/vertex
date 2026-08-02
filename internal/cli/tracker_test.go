@@ -3,7 +3,21 @@ package cli
 import (
 	"reflect"
 	"testing"
+
+	"charm.land/bubbletea/v2"
 )
+
+func TestCtrlCQuitsTUI(t *testing.T) {
+	m := TuiModel{activeReqs: make(map[string]*ReqState)}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("Ctrl+C 应返回退出命令")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("Ctrl+C 返回消息类型 %T, want tea.QuitMsg", msg)
+	}
+}
 
 func TestStringWidth(t *testing.T) {
 	tests := []struct {

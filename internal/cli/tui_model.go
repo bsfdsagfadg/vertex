@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -115,12 +114,9 @@ func (m TuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch {
 		case msg.Mod == tea.ModCtrl && msg.Code == 'c':
-			// 拦截 Ctrl+C 转换为系统信号，触发 main.go 的平滑退出流程。
-			// 保持 TUI 显示，直到 main.go 彻底处理完才通过 StopTUI 退出界面。
-			if p, err := os.FindProcess(os.Getpid()); err == nil {
-				_ = p.Signal(os.Interrupt)
-			}
-			return m, nil
+			// Windows 不支持向当前进程发送 os.Interrupt；直接退出 TUI，
+			// 由 main 监听 TUIDone 并执行与系统信号相同的优雅关闭流程。
+			return m, tea.Quit
 		case msg.Code == tea.KeyUp:
 			if m.scrollOffset > 0 {
 				m.scrollOffset--
