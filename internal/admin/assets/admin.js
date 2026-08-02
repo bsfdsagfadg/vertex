@@ -9,13 +9,15 @@ const LOADERS = { overview: loadOverview, settings: loadSettings, keys: loadKeys
 const PAGE_CACHE = {};
 let curPage = null;
 function go(page, instant) {
-  if (curPage === 'settings' && page !== 'settings' && window.hasUnsavedSettings) {
+  if ((curPage === 'settings' || curPage === 'models') && page !== curPage && window.hasUnsavedSettings) {
     showConfirm('您对设置进行了修改且未保存，离开将丢失这些更改。<br>确认离开吗？', () => {
       window.hasUnsavedSettings = false;
       go(page, instant);
     }, null, async () => {
-      if (typeof saveSettings === 'function') {
+      if (curPage === 'settings' && typeof saveSettings === 'function') {
         await saveSettings();
+      } else if (curPage === 'models' && typeof saveModels === 'function') {
+        await saveModels();
       }
       window.hasUnsavedSettings = false;
       go(page, instant);

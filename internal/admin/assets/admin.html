@@ -103,19 +103,28 @@
         <section id="page-models" class="hidden">
           <div class="page-head">
             <div>
-              <h2>模型</h2>
-              <div class="hint">对外暴露的模型清单（每行一个）+ 别名映射</div>
+              <h2>模型管理</h2>
+              <div class="hint">统一管理模型启用、假流式、尾部修复和任意数量别名</div>
             </div>
-            <button class="btn" onclick="saveModels()">保存</button>
+            <div class="toolbar m-0">
+              <button class="btn ghost" onclick="addModelRow()">新增模型</button>
+              <button class="btn ghost" onclick="openModelImport('models')">导入模型列表</button>
+              <button class="btn ghost" onclick="openModelImport('aliases')">导入别名列表</button>
+              <button class="btn" onclick="saveModels()">保存设置</button>
+            </div>
           </div>
-          <div class="grid grid-2">
-            <div class="card glass">
-              <div class="field m-0"><label for="modelsList">模型清单（每行一个）</label><textarea id="modelsList" rows="13"
-                  class="font-mono"></textarea></div>
-            </div>
-            <div class="card glass">
-              <div class="field m-0"><label for="aliasMap">别名映射（每行 别名=真名）</label><textarea id="aliasMap" rows="13"
-                  class="font-mono"></textarea></div>
+          <div class="card glass model-registry-card">
+            <div class="model-global-hints"><span id="modelFakeGlobalHint"></span><span id="modelTrailingGlobalHint"></span></div>
+            <div class="table-scroll">
+              <table class="model-registry-table">
+                <thead><tr>
+                  <th>启用 <input id="allModelsEnabled" type="checkbox" onchange="setAllModelFlags('enabled',this.checked)"></th>
+                  <th>假流式 <input id="allModelsFake" type="checkbox" onchange="setAllModelFlags('fake_stream_enabled',this.checked)"></th>
+                  <th>尾部修复 <input id="allModelsTrailing" type="checkbox" onchange="setAllModelFlags('trailing_fix_enabled',this.checked)"></th>
+                  <th>模型 ID</th><th>别名</th>
+                </tr></thead>
+                <tbody id="modelsTableBody"></tbody>
+              </table>
             </div>
           </div>
         </section>
@@ -411,6 +420,19 @@
   </div>
 
   <div class="toast glass" id="toast"></div>
+
+  <div id="modelImportModal" class="hidden modal-overlay">
+    <div class="modal-card model-import-card">
+      <h3 id="modelImportTitle">导入模型列表</h3>
+      <div id="modelImportHint" class="hint"></div>
+      <textarea id="modelImportText" class="font-mono" rows="12" oninput="previewModelImport()" placeholder="在此粘贴内容"></textarea>
+      <div id="modelImportPreview" class="model-import-preview">粘贴内容后显示预览</div>
+      <div class="toolbar justify-end">
+        <button class="btn ghost" onclick="closeModelImport()">取消</button>
+        <button class="btn" onclick="applyModelImport()">合并导入</button>
+      </div>
+    </div>
+  </div>
 
   <div id="confirmModal" class="hidden"
     style="position:fixed;inset:0;display:grid;place-items:center;z-index:9999;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:opacity .3s var(--ease);">

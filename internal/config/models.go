@@ -119,6 +119,8 @@ func defaultEntryFor(id string) ModelEntry {
 	return ModelEntry{ID: id, Enabled: true, FakeStreamEnabled: true}
 }
 
+func DefaultModelEntry(id string) ModelEntry { return defaultEntryFor(strings.TrimSpace(id)) }
+
 func decodeModelsFile(data []byte) (mf modelsFile, migrated bool, err error) {
 	mf = modelsFile{Version: modelsFileVersion, AliasMap: map[string]string{}}
 	trimmed := strings.TrimSpace(string(data))

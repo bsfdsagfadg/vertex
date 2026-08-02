@@ -557,6 +557,27 @@ td code { background: rgba(0, 0, 0, .3); padding: 2px 9px; border-radius: 8px; f
   width: 320px;
   transform: translateY(10px);
 }
+
+.model-registry-card { padding: 0; overflow: hidden; }
+.table-scroll { overflow: auto; max-width: 100%; }
+.model-global-hints { display: flex; gap: 18px; min-height: 20px; padding: 10px 14px 0; color: var(--gold); font-size: 12px; }
+.model-registry-table { width: 100%; border-collapse: collapse; min-width: 980px; }
+.model-registry-table th, .model-registry-table td { padding: 10px; border-bottom: 1px solid var(--stroke); vertical-align: middle; text-align: left; }
+.model-registry-table th { position: sticky; top: 0; z-index: 2; background: var(--panel); white-space: nowrap; }
+.model-registry-table th input { margin-left: 6px; vertical-align: middle; }
+.model-registry-table .model-check { width: 82px; text-align: center; }
+.model-id-input { min-width: 230px; width: 100%; }
+.model-alias-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.model-alias-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border-radius: 999px; background: rgba(212,175,55,.16); border: 1px solid rgba(212,175,55,.35); }
+.model-alias-chip button { border: 0; background: transparent; color: var(--text-dim); cursor: pointer; padding: 0; }
+.model-alias-add { display: flex; gap: 6px; min-width: 260px; }
+.model-alias-add input { min-width: 150px; }
+.modal-overlay { position: fixed; inset: 0; display: grid; place-items: center; z-index: 9999; background: rgba(0,0,0,.55); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+.modal-card { padding: 26px; border: 1px solid var(--stroke); border-radius: 14px; background: var(--panel); box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+.model-import-card { width: min(680px, calc(100vw - 32px)); }
+.model-import-card textarea { width: 100%; box-sizing: border-box; margin: 14px 0 8px; }
+.model-import-preview { min-height: 22px; color: var(--text-dim); margin-bottom: 12px; }
+.justify-end { justify-content: flex-end; }
 .color-palette-container.show {
   display: block;
   animation: popIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;

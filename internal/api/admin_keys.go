@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -76,23 +77,41 @@ func (adm *AdminHandler) adminDeleteKey(w http.ResponseWriter, r *http.Request, 
 
 func (adm *AdminHandler) adminGetModels(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"models":    config.BaseModels(),
+		"version":   2,
+		"models":    config.ModelRegistry(),
 		"alias_map": config.AliasMap(),
 	})
 }
 
 func (adm *AdminHandler) adminPutModels(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Models   []string          `json:"models"`
+		Models   json.RawMessage   `json:"models"`
 		AliasMap map[string]string `json:"alias_map"`
 	}
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	cleaned := make([]string, 0, len(body.Models))
-	for _, m := range body.Models {
-		if m = strings.TrimSpace(m); m != "" {
-			cleaned = append(cleaned, m)
+	var entries []config.ModelEntry
+	if err := json.Unmarshal(body.Models, &entries); err != nil {
+		var legacy []string
+		if legacyErr := json.Unmarshal(body.Models, &legacy); legacyErr != nil {
+			writeJSON(w, http.StatusBadRequest, adminErr("模型列表格式错误 (invalid models format)"))
+			return
+		}
+		for _, model := range legacy {
+			model = strings.TrimSpace(model)
+			if model != "" {
+				entries = append(entries, config.DefaultModelEntry(model))
+			}
+		}
+	}
+	cleaned := make([]config.ModelEntry, 0, len(entries))
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		entry.ID = strings.TrimSpace(entry.ID)
+		if entry.ID != "" && !seen[entry.ID] {
+			seen[entry.ID] = true
+			cleaned = append(cleaned, entry)
 		}
 	}
 	if len(cleaned) == 0 {
@@ -105,7 +124,7 @@ func (adm *AdminHandler) adminPutModels(w http.ResponseWriter, r *http.Request) 
 			alias[k] = v
 		}
 	}
-	if err := config.WriteModels(cleaned, alias); err != nil {
+	if err := config.WriteModelRegistry(cleaned, alias); err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr("写入模型失败 (failed to write models)"))
 		return
 	}
