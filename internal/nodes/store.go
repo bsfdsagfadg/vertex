@@ -38,7 +38,7 @@ type NodeHealth struct { //nolint:govet
 	RecentUseCount      int     `json:"recent_use_count"`
 	LastSelectedAt      int64   `json:"last_selected_at"`
 	LastSubHealthyAt    int64   `json:"last_sub_healthy_at"` // 记录上一次处于亚健康状态的时间
-	InFlight            int32   `json:"-"` // 当前并发连接数，不持久化
+	InFlight            int32   `json:"-"`                   // 当前并发连接数，不持久化
 }
 
 var (
@@ -772,19 +772,14 @@ func RecordTest(uri string, ok bool, ms float64, errStr string) {
 	} else {
 		h.FailCount++
 		h.ConsecutiveFailures++
-		h.LastFailAt = time.Now().Unix()
+		now := time.Now().Unix()
+		h.LastFailAt = now
 		failures := maxInt(1, h.ConsecutiveFailures)
 		cooldown := minInt(1800, 30*(1<<minInt(failures-1, 6)))
-		h.CooldownUntil = time.Now().Unix() + int64(cooldown)
-		
-		errLower := strings.ToLower(errStr)
-		if strings.Contains(errLower, "dial") || strings.Contains(errLower, "refused") ||
-			strings.Contains(errLower, "i/o timeout") || strings.Contains(errLower, "deadline exceeded") ||
-			strings.Contains(errLower, "connection") {
-			updateSingleNodeDisabledUnsafe(uri, true)
-		} else {
-			h.LastSubHealthyAt = time.Now().Unix()
-		}
+		h.CooldownUntil = now + int64(cooldown)
+		// 运行时网络失败只影响健康层级和冷却。Disabled 仅由管理页显式操作，
+		// 避免一次临时拨号错误在数据库中留下永久禁用状态。
+		h.LastSubHealthyAt = now
 	}
 	updateSingleNodeHealthUnsafe(uri, h)
 }
@@ -812,6 +807,7 @@ func RecordRateLimit(uri string, cooldownSec int) {
 	h.LastFailAt = now
 	updateSingleNodeHealthUnsafe(uri, h)
 }
+
 var atomicRoundRobinIndex uint64
 
 func getNodeTier(n Node, h *NodeHealth) int {
@@ -918,7 +914,7 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 			}
 			return tier2[i].node.RawURI < tier2[j].node.RawURI
 		})
-		
+
 		i := 0
 		for i < len(tier2) && len(selected) < k {
 			curInFlight := tier2[i].inFlight
@@ -935,7 +931,7 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 			i = j
 		}
 	}
-	
+
 	// 健康节点不足时，用冷却中的节点兜底（按 Last429At 最早优先）。
 	if len(selected) < k && len(tier2Cooldown) > 0 {
 		sort.Slice(tier2Cooldown, func(i, j int) bool {

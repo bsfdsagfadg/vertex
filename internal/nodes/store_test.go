@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/db"
 )
 
 func resetState() {
@@ -180,6 +181,40 @@ func TestUpdateNodeTestResult(t *testing.T) {
 	nodes = LoadNodes()
 	if len(nodes) == 0 || nodes[0].Disabled {
 		t.Errorf("Expected node1 to be enabled after success")
+	}
+}
+
+func TestRecordTestTransportFailureDoesNotDisableNodeInDB(t *testing.T) {
+	db.CloseDB()
+	resetState()
+	if err := db.InitDB(filepath.Join(t.TempDir(), "data.db")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		resetState()
+		db.CloseDB()
+	})
+
+	MergeNodes([]Node{{RawURI: "uri1", Name: "node1"}})
+	RecordTest("uri1", false, 0, "dial tcp: i/o timeout")
+
+	nodes := LoadNodes()
+	if len(nodes) != 1 || nodes[0].Disabled {
+		t.Fatalf("临时网络错误不应禁用内存节点: %+v", nodes)
+	}
+	var disabled bool
+	if err := db.GlobalDB.QueryRow("SELECT disabled FROM nodes WHERE raw_uri = ?", "uri1").Scan(&disabled); err != nil {
+		t.Fatal(err)
+	}
+	if disabled {
+		t.Fatal("临时网络错误不应将数据库节点标记为 disabled")
+	}
+
+	// 模拟进程重启后从数据库重新加载。
+	resetState()
+	nodes = LoadNodes()
+	if len(nodes) != 1 || nodes[0].Disabled {
+		t.Fatalf("重载后节点应保持启用: %+v", nodes)
 	}
 }
 
