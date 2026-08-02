@@ -23,6 +23,25 @@ func resetState() {
 	_ = os.Remove(filepath.Join(config.ConfigDir(), "node_health.json"))
 }
 
+func TestBatchTestProgressRejectsDuplicateAndKeepsTermination(t *testing.T) {
+	FinishTestProgress()
+	if !StartTestProgress(10) {
+		t.Fatal("首次批量测试应成功占用状态")
+	}
+	if StartTestProgress(20) {
+		t.Fatal("运行中应拒绝重复批量测试")
+	}
+	if !IsTestRunning() {
+		t.Fatal("批量测试应处于运行状态")
+	}
+	TerminateTestProgress()
+	FinishTestProgress()
+	progress := GetTestProgress()
+	if progress.Running || !progress.Terminated || progress.CurrentNode != "已终止" {
+		t.Fatalf("终止状态未保留: %+v", progress)
+	}
+}
+
 func TestNodesLifecycle(t *testing.T) {
 	// Setup a temporary directory for config
 	_ = t.TempDir()

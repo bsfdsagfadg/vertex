@@ -280,9 +280,18 @@ func GetTestProgress() TestProgress {
 	return globalProgress
 }
 
-func StartTestProgress(total int) {
+func IsTestRunning() bool {
+	progressMu.RLock()
+	defer progressMu.RUnlock()
+	return globalProgress.Running
+}
+
+func StartTestProgress(total int) bool {
 	progressMu.Lock()
 	defer progressMu.Unlock()
+	if globalProgress.Running {
+		return false
+	}
 	globalProgress = TestProgress{
 		Running:     true,
 		Paused:      false,
@@ -293,6 +302,7 @@ func StartTestProgress(total int) {
 		FailCount:   0,
 		CurrentNode: "准备中...",
 	}
+	return true
 }
 
 func UpdateTestProgress(nodeName string, ok bool) {
@@ -315,7 +325,11 @@ func FinishTestProgress() {
 	defer progressMu.Unlock()
 	globalProgress.Running = false
 	globalProgress.Paused = false
-	globalProgress.CurrentNode = "测试完成"
+	if globalProgress.Terminated {
+		globalProgress.CurrentNode = "已终止"
+	} else {
+		globalProgress.CurrentNode = "测试完成"
+	}
 	testControlCond.Broadcast()
 }
 

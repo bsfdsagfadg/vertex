@@ -7,8 +7,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +14,22 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/netx"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
+)
+
+const (
+	batchTestConcurrency     = 50
+	singleNodeTestTimeoutSec = 15
+)
+
+var (
+	//nolint:gochecknoglobals // 当前唯一批量测速任务的取消函数和代次
+	testAllCancel context.CancelFunc
+	//nolint:gochecknoglobals // guards testAllCancel/testAllGeneration
+	testAllMu sync.Mutex
+	//nolint:gochecknoglobals // prevents an old task from clearing a newer cancel function
+	testAllGeneration uint64
 )
 
 func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, _ *http.Request) {
@@ -67,23 +80,40 @@ func (adm *AdminHandler) adminFetchSub(w http.ResponseWriter, r *http.Request) {
 }
 
 func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
+	list := nodes.LoadNodes()
+	enabledNodes := make([]nodes.Node, 0, len(list))
+	for _, node := range list {
+		if !node.Disabled {
+			enabledNodes = append(enabledNodes, node)
+		}
+	}
+	if !nodes.StartTestProgress(len(enabledNodes)) {
+		writeJSON(w, http.StatusConflict, adminErr("已有批量测试正在进行中，请先等待其结束或终止"))
+		return
+	}
+
+	dynamicTimeout := batchTestTimeout(len(enabledNodes))
+	ctx, cancel := context.WithTimeout(context.Background(), dynamicTimeout)
+	testAllMu.Lock()
+	testAllGeneration++
+	generation := testAllGeneration
+	testAllCancel = cancel
+	testAllMu.Unlock()
+
 	log.Printf("[Admin] [TestAll] 开始触发全局并发测速（基于 recaptchaToken 耗时）")
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-
-		list := nodes.LoadNodes()
-		var enabledNodes []nodes.Node
-		for _, n := range list {
-			if !n.Disabled {
-				enabledNodes = append(enabledNodes, n)
+		defer func() {
+			cancel()
+			testAllMu.Lock()
+			if testAllGeneration == generation {
+				testAllCancel = nil
 			}
-		}
-		log.Printf("[Admin] [TestAll] 加载到待测启用节点数: %d / %d", len(enabledNodes), len(list))
-		nodes.StartTestProgress(len(enabledNodes))
+			testAllMu.Unlock()
+		}()
+		log.Printf("[Admin] [TestAll] 加载待测节点数: %d/%d, 并发上限: %d, 总超时: %v", len(enabledNodes), len(list), batchTestConcurrency, dynamicTimeout)
 
 		var wg sync.WaitGroup
-		sem := make(chan struct{}, 10)
+		sem := make(chan struct{}, batchTestConcurrency)
 
 		for _, n := range enabledNodes {
 			wg.Add(1)
@@ -105,16 +135,21 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 				start := time.Now()
 				log.Printf("[Admin] [TestAll] 开始测试节点: %s (%s)", node.Name, node.Type)
 
-				sess, err := adm.vc.Net().CreateSession(15, node.RawURI, "admin-test-all")
+				nodeCtx, nodeCancel := context.WithTimeout(ctx, singleNodeTestTimeoutSec*time.Second)
+				defer nodeCancel()
+				sess, err := adm.vc.Net().CreateSession(singleNodeTestTimeoutSec, node.RawURI, "admin-test-all")
 				var testErr error
 				if err == nil {
-					testErr = fetchRecaptchaTokenWithSess(ctx, sess)
-					sess.Close()
+					defer sess.Close()
+					testErr = fetchRecaptchaTokenWithSess(nodeCtx, sess)
 				} else {
 					testErr = err
 				}
 
 				duration := float64(time.Since(start).Milliseconds())
+				if ctx.Err() != nil || nodeCtx.Err() != nil || nodes.CheckTestControl() {
+					return
+				}
 				if testErr != nil {
 					log.Printf("[Admin] [TestAll] 节点 %s 测试失败: %v, 耗时: %.0fms", node.Name, testErr, duration)
 				} else {
@@ -133,6 +168,15 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 		log.Printf("[Admin] [TestAll] 全局节点测试全部结束")
 	}()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func batchTestTimeout(total int) time.Duration {
+	rounds := (total + batchTestConcurrency - 1) / batchTestConcurrency
+	timeout := time.Duration(rounds*2)*singleNodeTestTimeoutSec*time.Second + 2*time.Minute
+	if timeout < 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return timeout
 }
 
 func (adm *AdminHandler) adminTestPause(w http.ResponseWriter, r *http.Request) {
@@ -159,6 +203,11 @@ func (adm *AdminHandler) adminTestTerminate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	nodes.TerminateTestProgress()
+	testAllMu.Lock()
+	if testAllCancel != nil {
+		testAllCancel()
+	}
+	testAllMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -230,68 +279,8 @@ func (adm *AdminHandler) adminEnableNode(w http.ResponseWriter, r *http.Request)
 }
 
 func fetchRecaptchaTokenWithSess(ctx context.Context, sess *transport.Session) error {
-	const (
-		recaptchaBase = "https://www.google.com"
-		siteKey       = "6LdCjtspAAAAAMcV4TGdWLJqRTEk1TfpdLqEnKdj"
-		recaptchaCo   = "aHR0cHM6Ly9jb25zb2xlLmNsb3VkLmdvb2dsZS5jb206NDQz"
-		recaptchaHl   = "zh-CN"
-		recaptchaV    = "jdMmXeCQEkPbnFDy9T04NbgJ"
-		recaptchaVh   = "6581054572"
-		randomCharset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	)
-	var (
-		tokenRe = regexp.MustCompile(`id="recaptcha-token"[^>]*value="([^"]+)"`)
-		rrespRe = regexp.MustCompile(`rresp","(.*?)"`)
-	)
-
-	b := make([]byte, 10)
-	for i := range b {
-		b[i] = randomCharset[time.Now().UnixNano()%int64(len(randomCharset))]
-	}
-	cb := string(b)
-
-	anchorURL := fmt.Sprintf(
-		"%s/recaptcha/enterprise/anchor?ar=1&k=%s&co=%s&hl=%s&v=%s&size=invisible&anchor-ms=20000&execute-ms=15000&cb=%s",
-		recaptchaBase, siteKey, recaptchaCo, recaptchaHl, recaptchaV, cb,
-	)
-
-	_, anchorBody, err := sess.DoAndRead(ctx, "GET", anchorURL, transport.AnchorHeaders(), nil)
-	if err != nil {
-		return fmt.Errorf("GET anchor 失败: %w", err)
-	}
-	m := tokenRe.FindSubmatch(anchorBody)
-	if m == nil {
-		return fmt.Errorf("从 anchor HTML 解析 recaptcha-token 失败")
-	}
-	baseToken := string(m[1])
-
-	form := url.Values{
-		"v":      {recaptchaV},
-		"reason": {"q"},
-		"k":      {siteKey},
-		"c":      {baseToken},
-		"co":     {recaptchaCo},
-		"hl":     {recaptchaHl},
-		"size":   {"invisible"},
-		"vh":     {recaptchaVh},
-		"chr":    {""},
-		"bg":     {""},
-	}
-	reloadURL := recaptchaBase + "/recaptcha/enterprise/reload?k=" + siteKey
-	header := transport.XHRHeaders(
-		"application/x-www-form-urlencoded;charset=UTF-8", "*/*",
-		recaptchaBase, anchorURL, "same-origin",
-	)
-
-	_, reloadBody, err := sess.DoAndRead(ctx, "POST", reloadURL, header, strings.NewReader(form.Encode()))
-	if err != nil {
-		return fmt.Errorf("POST reload 失败: %w", err)
-	}
-	rm := rrespRe.FindSubmatch(reloadBody)
-	if rm == nil {
-		return fmt.Errorf("从 reload 响应解析 rresp 失败")
-	}
-	return nil
+	_, err := recaptcha.FetchRecaptchaTokenWithSession(ctx, sess)
+	return err
 }
 
 func (adm *AdminHandler) adminDedupNodes(w http.ResponseWriter, _ *http.Request) {

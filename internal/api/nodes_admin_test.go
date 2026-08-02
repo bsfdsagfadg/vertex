@@ -4,15 +4,42 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/constant/features"
 )
+
+func TestBatchTestTimeoutAndDuplicateRejection(t *testing.T) {
+	if got := batchTestTimeout(1); got != 5*time.Minute {
+		t.Fatalf("小批量总超时=%v, want 5m", got)
+	}
+	if got := batchTestTimeout(1000); got <= 5*time.Minute {
+		t.Fatalf("大批量应按轮次增加总超时: %v", got)
+	}
+
+	nodes.FinishTestProgress()
+	if !nodes.StartTestProgress(1) {
+		t.Fatal("测试状态初始化失败")
+	}
+	t.Cleanup(func() {
+		nodes.TerminateTestProgress()
+		nodes.FinishTestProgress()
+	})
+	adm := &AdminHandler{}
+	recorder := httptest.NewRecorder()
+	adm.adminTestAll(recorder, httptest.NewRequest("POST", "/api/admin/nodes/test-all", nil))
+	if recorder.Code != 409 {
+		t.Fatalf("重复批量测试 status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
 
 func TestParseInlineYamlAttrsKeepsNestedObjects(t *testing.T) {
 	attrs := parseInlineYamlAttrs("name: demo, type: vless, ws-opts: { path: /ws, headers: { Host: edge.example.com } }, reality-opts: { public-key: pubkey, short-id: abcd }")
