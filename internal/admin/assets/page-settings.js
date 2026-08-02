@@ -12,7 +12,7 @@ const SETTINGS_FIELDS = [
   { k: 'max_spill_mb', label: '最大内存缓冲 (MB)', type: 'number', group: 'core', desc: '上传大文件时，超过此大小将写入磁盘，防爆内存 (默认 2048)' },
   { k: 'request_timeout', label: '请求超时', type: 'number', max: 1800, min: 1, group: 'core', desc: '单次请求的最大连接时间 (默认 180 秒，最大 1800 秒)' },
   { k: 'aggregate_stream', label: '聚合流式', type: 'bool', group: 'core', desc: '拦截流式请求，改为一次性返回完整结果的单块流（解决部分客户端单字流式卡顿问题）' },
-  { k: 'model_turn_guard_enabled', label: '新模型轮次补齐', type: 'bool', group: 'core', desc: '对 gemini-3.6flash / 3.5-flash-lite 等新模型，自动在消息末尾追加空用户消息，修复“末尾不能是 model”校验报错' },
+  { k: 'model_turn_guard_enabled', label: '新模型轮次补齐', type: 'bool', group: 'core', desc: '对 gemini-3.6-flash / gemini-3.5-flash-lite 等新模型，自动在消息末尾追加空用户消息，修复“末尾不能是 model”校验报错' },
   { k: 'debug_mode', label: 'Debug 日志', type: 'bool', group: 'core', desc: '开启更详细的错误与负载调试日志' },
 
   // 🛡 Group: security (安全增强与模型策略)

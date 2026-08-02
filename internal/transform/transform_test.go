@@ -481,6 +481,31 @@ func TestBuildVertexVariables(t *testing.T) {
 	}
 }
 
+func TestConvertChatRequestGemini36TurnGuard(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ModelTurnGuardEnabled = true
+
+	_, payload, err := ConvertChatRequest(map[string]any{
+		"model": "gemini-3.6-flash",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "继续回答"},
+			map[string]any{"role": "assistant", "content": "未完成"},
+		},
+	}, config.StaticProvider(cfg))
+	if err != nil {
+		t.Fatalf("ConvertChatRequest: %v", err)
+	}
+
+	contents, ok := payload["contents"].([]any)
+	if !ok || len(contents) != 3 {
+		t.Fatalf("contents=%#v, want 3 entries", payload["contents"])
+	}
+	last, ok := contents[len(contents)-1].(map[string]any)
+	if !ok || last["role"] != "user" {
+		t.Fatalf("last content=%#v, want appended user turn", contents[len(contents)-1])
+	}
+}
+
 // TestMarshalRoundTrip 验证 ConvertChatRequest + BuildVertexVariables 的 JSON 可序列化。
 func TestMarshalRoundTrip(t *testing.T) {
 	cfg := config.StaticProvider(config.DefaultConfig())
