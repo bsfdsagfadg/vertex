@@ -85,11 +85,19 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 		case "max_retries", "max_spill_mb", "max_request_mb", "max_n", "parallel_pool_size", "parallel_pool_delay_ms", "request_timeout", "race_timeout":
 			if f, ok := v.(float64); ok {
 				val := int(f)
-				if k == "request_timeout" && val > 1800 {
-					val = 1800
-				}
-				if k == "race_timeout" && val > 1800 {
-					val = 1800
+				switch k {
+				case "request_timeout":
+					if val <= 0 {
+						val = 180
+					} else if val > 1800 {
+						val = 1800
+					}
+				case "race_timeout":
+					if val < 0 {
+						val = 0
+					} else if val > 1800 {
+						val = 1800
+					}
 				}
 				updates[k] = val
 				continue

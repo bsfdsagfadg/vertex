@@ -13,6 +13,7 @@ import (
 const (
 	defaultAnonAPIKey          = "AIzaSyCI-zsRP85UVOi0DjtiCwWBwQ1djDy741g"
 	defaultCountTokensQuerySig = "2/mENOSldfC+HZM+tGhVuJLrl8M6gEyK3HRjUKuA5AM58="
+	maxTimeoutSeconds          = 1800
 )
 
 type AppConfig struct { //nolint:govet
@@ -89,6 +90,8 @@ func DefaultConfig() AppConfig {
 var (
 	//nolint:gochecknoglobals // Global configuration cache
 	mu sync.Mutex
+	// writeMu serializes config.json read-modify-write operations.
+	writeMu sync.Mutex
 	//nolint:gochecknoglobals // Global configuration cache
 	cached *AppConfig
 	//nolint:gochecknoglobals // Global configuration cache
@@ -115,6 +118,17 @@ func ConfigPath() string { return configPath() }
 func ConfigDir() string { return filepath.Dir(configPath()) }
 
 func WriteSettings(updates map[string]any) error {
+	if err := writeSettings(updates); err != nil {
+		return err
+	}
+	InvalidateCache()
+	return nil
+}
+
+func writeSettings(updates map[string]any) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
 	path := configPath()
 	raw := map[string]any{}
 	if data, err := os.ReadFile(path); err == nil {
@@ -136,7 +150,6 @@ func WriteSettings(updates map[string]any) error {
 	if err := writeJSONFile(path, raw); err != nil {
 		return err
 	}
-	InvalidateCache()
 	return nil
 }
 
@@ -169,13 +182,17 @@ func Load() AppConfig {
 			if cfg.RequestTimeout <= 0 {
 				cfg.RequestTimeout = 180
 				needsSave = true
-			} else if cfg.RequestTimeout > 1800 {
-				log.Printf("[Config] 警告: 请求超时配置过高 (%d)，已限制为上限 1800", cfg.RequestTimeout)
-				cfg.RequestTimeout = 1800
+			} else if cfg.RequestTimeout > maxTimeoutSeconds {
+				log.Printf("[Config] 警告: 请求超时配置过高 (%d)，已限制为上限 %d", cfg.RequestTimeout, maxTimeoutSeconds)
+				cfg.RequestTimeout = maxTimeoutSeconds
 				needsSave = true
 			}
 			if cfg.RaceTimeout < 0 {
 				cfg.RaceTimeout = 0
+				needsSave = true
+			} else if cfg.RaceTimeout > maxTimeoutSeconds {
+				log.Printf("[Config] 警告: 竞速超时配置过高 (%d)，已限制为上限 %d", cfg.RaceTimeout, maxTimeoutSeconds)
+				cfg.RaceTimeout = maxTimeoutSeconds
 				needsSave = true
 			}
 			if cfg.StreamIdleTimeoutSeconds <= 0 {
@@ -189,13 +206,15 @@ func Load() AppConfig {
 				needsSave = true
 			}
 			if needsSave {
-				// 异步回写，避免阻塞加载，并保留未知字段
-				go func(t int, p int) {
-					_ = WriteSettings(map[string]any{
-						"request_timeout":    t,
-						"parallel_pool_size": p,
-					})
-				}(cfg.RequestTimeout, cfg.ParallelPoolSize)
+				// 在返回配置前完成回写，避免调用方读到已修正值但文件仍保留非法值。
+				if errSave := writeSettings(map[string]any{
+					"request_timeout":             cfg.RequestTimeout,
+					"race_timeout":                cfg.RaceTimeout,
+					"stream_idle_timeout_seconds": cfg.StreamIdleTimeoutSeconds,
+					"parallel_pool_size":          cfg.ParallelPoolSize,
+				}); errSave != nil {
+					log.Printf("[Config] 自动回写规范化配置失败: %v", errSave)
+				}
 			}
 			log.Printf("[Config] 成功加载配置文件 config.json")
 		}
