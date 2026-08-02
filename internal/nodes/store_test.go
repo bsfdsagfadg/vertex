@@ -3,6 +3,7 @@ package nodes
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ func resetState() {
 	defer mu.Unlock()
 	nodeList = nil
 	healthMap = make(map[string]*NodeHealth)
+	globalStickyPool = NewStickyNodePool()
 	loaded = false
 	// 彻底清除物理磁盘缓存，防止测试间的数据污染
 	_ = os.Remove(filepath.Join(config.ConfigDir(), "nodes.json"))
@@ -381,5 +383,56 @@ func TestCooldownAndSubHealthyStateSurvivesReload(t *testing.T) {
 	}
 	if tier := getNodeTier(Node{RawURI: "limited"}, h); tier != 2 {
 		t.Fatalf("冷却到期不应自动恢复为健康 Tier 1, got Tier %d", tier)
+	}
+}
+
+func TestSelectForParallelHonorsTopK(t *testing.T) {
+	resetState()
+	defer resetState()
+	MergeNodes([]Node{
+		{RawURI: "a", Name: "a"},
+		{RawURI: "b", Name: "b"},
+		{RawURI: "c", Name: "c"},
+	})
+	mu.Lock()
+	healthMap["a"] = &NodeHealth{LastSelectedAt: 0}
+	healthMap["b"] = &NodeHealth{LastSelectedAt: 10}
+	healthMap["c"] = &NodeHealth{LastSelectedAt: 20}
+	mu.Unlock()
+	atomic.StoreUint64(&atomicRoundRobinIndex, 0)
+
+	selected := SelectForParallel(1, 1, false, false)
+	if len(selected) != 1 || selected[0].RawURI != "a" {
+		t.Fatalf("topK=1 应只在排序第一的候选中选择: %+v", selected)
+	}
+
+	mu.Lock()
+	healthMap["a"].LastSelectedAt = 0
+	healthMap["b"].LastSelectedAt = 10
+	healthMap["c"].LastSelectedAt = 20
+	mu.Unlock()
+	atomic.StoreUint64(&atomicRoundRobinIndex, 0)
+	selected = SelectForParallel(1, 3, false, false)
+	if len(selected) != 1 || selected[0].RawURI != "b" {
+		t.Fatalf("topK=3 应在三个候选间轮询，本轮预期 b: %+v", selected)
+	}
+}
+
+func TestSelectForParallelHonorsStickyPriority(t *testing.T) {
+	resetState()
+	defer resetState()
+	MergeNodes([]Node{
+		{RawURI: "a", Name: "a"},
+		{RawURI: "b", Name: "b"},
+	})
+	globalStickyPool.Add("b")
+
+	selected := SelectForParallel(1, 1, false, false)
+	if len(selected) != 1 || selected[0].RawURI != "a" {
+		t.Fatalf("关闭 sticky 优先时应保持普通排序: %+v", selected)
+	}
+	selected = SelectForParallel(1, 1, false, true)
+	if len(selected) != 1 || selected[0].RawURI != "b" {
+		t.Fatalf("启用 sticky 优先时应优先 sticky 节点: %+v", selected)
 	}
 }

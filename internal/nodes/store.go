@@ -823,6 +823,7 @@ func getNodeTier(n Node, h *NodeHealth) int {
 type tierCandidate struct {
 	node     Node
 	inFlight int32
+	sticky   bool
 }
 
 func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool) []Node {
@@ -849,40 +850,67 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 		if h != nil {
 			inFlight = h.InFlight
 		}
+		sticky := stickyBonusEnabled && globalStickyPool.IsSticky(n.RawURI)
 		switch tier {
 		case 1:
-			tier1 = append(tier1, tierCandidate{n, inFlight})
+			tier1 = append(tier1, tierCandidate{node: n, inFlight: inFlight, sticky: sticky})
 		case 2:
-			tier2 = append(tier2, tierCandidate{n, inFlight})
+			tier2 = append(tier2, tierCandidate{node: n, inFlight: inFlight, sticky: sticky})
 		}
 	}
 
-	sort.Slice(tier1, func(i, j int) bool {
-		if tier1[i].inFlight != tier1[j].inFlight {
-			return tier1[i].inFlight < tier1[j].inFlight
+	sortTier := func(candidates []tierCandidate) {
+		sort.Slice(candidates, func(i, j int) bool {
+			if candidates[i].inFlight != candidates[j].inFlight {
+				return candidates[i].inFlight < candidates[j].inFlight
+			}
+			if candidates[i].sticky != candidates[j].sticky {
+				return candidates[i].sticky
+			}
+			hi := healthMap[candidates[i].node.RawURI]
+			hj := healthMap[candidates[j].node.RawURI]
+			ti := int64(0)
+			if hi != nil {
+				ti = hi.LastSelectedAt
+			}
+			tj := int64(0)
+			if hj != nil {
+				tj = hj.LastSelectedAt
+			}
+			if ti != tj {
+				return ti < tj
+			}
+			return candidates[i].node.RawURI < candidates[j].node.RawURI
+		})
+	}
+	sortTier(tier1)
+	sortTier(tier2)
+
+	if topK <= 0 {
+		topK = 80
+	}
+	// topK 限制每轮可参与轮询的候选池；不能小于本轮实际需求，
+	// 否则配置较小时会无故减少并发候选数量。
+	candidateLimit := maxInt(k, topK)
+	if len(tier1) > candidateLimit {
+		tier1 = tier1[:candidateLimit]
+		tier2 = nil
+	} else {
+		remaining := candidateLimit - len(tier1)
+		if len(tier2) > remaining {
+			tier2 = tier2[:remaining]
 		}
-		hi := healthMap[tier1[i].node.RawURI]
-		hj := healthMap[tier1[j].node.RawURI]
-		ti := int64(0)
-		if hi != nil {
-			ti = hi.LastSelectedAt
-		}
-		tj := int64(0)
-		if hj != nil {
-			tj = hj.LastSelectedAt
-		}
-		if ti != tj {
-			return ti < tj
-		}
-		return tier1[i].node.RawURI < tier1[j].node.RawURI
-	})
+	}
+
+	samePriorityGroup := func(a, b tierCandidate) bool {
+		return a.inFlight == b.inFlight && a.sticky == b.sticky
+	}
 
 	var selected []Node
 	i := 0
 	for i < len(tier1) && len(selected) < k {
-		curInFlight := tier1[i].inFlight
 		j := i
-		for j < len(tier1) && tier1[j].inFlight == curInFlight {
+		for j < len(tier1) && samePriorityGroup(tier1[i], tier1[j]) {
 			j++
 		}
 		group := tier1[i:j]
@@ -895,31 +923,10 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 	}
 
 	if len(selected) < k {
-		sort.Slice(tier2, func(i, j int) bool {
-			if tier2[i].inFlight != tier2[j].inFlight {
-				return tier2[i].inFlight < tier2[j].inFlight
-			}
-			hi := healthMap[tier2[i].node.RawURI]
-			hj := healthMap[tier2[j].node.RawURI]
-			si := int64(0)
-			if hi != nil {
-				si = hi.LastSelectedAt
-			}
-			sj := int64(0)
-			if hj != nil {
-				sj = hj.LastSelectedAt
-			}
-			if si != sj {
-				return si < sj
-			}
-			return tier2[i].node.RawURI < tier2[j].node.RawURI
-		})
-
 		i := 0
 		for i < len(tier2) && len(selected) < k {
-			curInFlight := tier2[i].inFlight
 			j := i
-			for j < len(tier2) && tier2[j].inFlight == curInFlight {
+			for j < len(tier2) && samePriorityGroup(tier2[i], tier2[j]) {
 				j++
 			}
 			group := tier2[i:j]
