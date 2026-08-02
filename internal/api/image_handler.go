@@ -31,16 +31,21 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	model := getStr(body, "model", "")
+	rawModel := getStr(body, "model", "")
 	prompt := getStr(body, "prompt", "")
 	size := getStr(body, "size", "1024x1024")
 	respFmt := getStr(body, "response_format", "b64_json")
 
-	log.Printf("[Server] [ImageGenerations] 收到请求: 模型=%s, 尺寸=%s, 格式=%s", model, size, respFmt)
+	log.Printf("[Server] [ImageGenerations] 收到请求: 模型=%s, 尺寸=%s, 格式=%s", rawModel, size, respFmt)
 
-	if model == "" {
+	if rawModel == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": "缺少model字段", "type": "invalid_request_error", "code": nil}})
+		return
+	}
+	model, _, modelOK := resolveConfiguredModel(rawModel, img.cfg)
+	if !modelOK {
+		oaiModelNotFound(w, rawModel)
 		return
 	}
 	if prompt == "" {
@@ -121,7 +126,12 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 		mask = &m
 	}
 
-	model := transform.ResolveImageModel(formValue(r, "model"))
+	rawModel := transform.ResolveImageModel(formValue(r, "model"))
+	model, _, modelOK := resolveConfiguredModel(rawModel, img.cfg)
+	if !modelOK {
+		oaiModelNotFound(w, rawModel)
+		return
+	}
 	prompt := firstNonEmptyStr(formValue(r, "prompt"), "Edit the provided image.")
 	prompt = transform.AppendNegativePrompt(prompt, formValue(r, "negative_prompt"))
 	n := coerceOAIN(formValue(r, "n"))
@@ -157,7 +167,12 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	model := transform.ResolveImageModel(formValue(r, "model"))
+	rawModel := transform.ResolveImageModel(formValue(r, "model"))
+	model, _, modelOK := resolveConfiguredModel(rawModel, img.cfg)
+	if !modelOK {
+		oaiModelNotFound(w, rawModel)
+		return
+	}
 	prompt := firstNonEmptyStr(formValue(r, "prompt"), "Create a variation of the provided image.")
 	prompt = transform.AppendNegativePrompt(prompt, formValue(r, "negative_prompt"))
 	n := coerceOAIN(formValue(r, "n"))

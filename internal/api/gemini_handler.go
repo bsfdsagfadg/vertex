@@ -83,7 +83,11 @@ func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (
 }
 
 func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, model string) {
-	actualModel, _ := stripFakePrefix(model, g.cfg.FakePrefixes())
+	actualModel, _, modelOK := resolveConfiguredModel(model, g.cfg)
+	if !modelOK {
+		geminiModelNotFound(w, model)
+		return
+	}
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -109,7 +113,11 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 }
 
 func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *http.Request, model string) {
-	actualModel, useFake := stripFakePrefix(model, g.cfg.FakePrefixes())
+	actualModel, useFake, modelOK := resolveConfiguredModel(model, g.cfg)
+	if !modelOK {
+		geminiModelNotFound(w, model)
+		return
+	}
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -223,7 +231,11 @@ func (g *GeminiHandler) geminiFakeStream(ctx context.Context, w http.ResponseWri
 	}
 }
 func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request, model string) {
-	actualModel, _ := stripFakePrefix(model, g.cfg.FakePrefixes())
+	actualModel, _, modelOK := resolveConfiguredModel(model, g.cfg)
+	if !modelOK {
+		geminiModelNotFound(w, model)
+		return
+	}
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -246,17 +258,8 @@ func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request
 
 func (g *GeminiHandler) handleModelInfo(w http.ResponseWriter, modelName string) {
 	name := strings.TrimPrefix(modelName, "models/")
-	known := false
-	for _, m := range g.cfg.ModelsWithFakeVariants() {
-		if m == name {
-			known = true
-			break
-		}
-	}
-	if !known {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]any{
-			"code": 404, "message": "Model '" + modelName + "' not found.", "status": "NOT_FOUND",
-		}})
+	if _, _, ok := resolveConfiguredModel(name, g.cfg); !ok {
+		geminiModelNotFound(w, modelName)
 		return
 	}
 	writeJSON(w, http.StatusOK, geminiModelInfo(name))

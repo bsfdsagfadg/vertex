@@ -119,7 +119,8 @@ func ConvertChatRequest(body map[string]any, cfg config.ConfigProvider) (string,
 		}
 	}
 	realModel := cfg.ResolveModelName(model)
-	if cfg.ModelTurnGuardEnabled() && (strings.Contains(realModel, "gemini-3.6-flash") || strings.Contains(realModel, "gemini-3.5-flash-lite")) && len(contents) > 0 {
+	modelEntry, _ := cfg.LookupModel(realModel)
+	if cfg.ModelTurnGuardEnabled() && modelEntry.TrailingFixEnabled && len(contents) > 0 {
 		if lastContent, ok := contents[len(contents)-1].(map[string]any); ok {
 			if lastContent["role"] == "model" {
 				contents = append(contents, map[string]any{

@@ -10,7 +10,8 @@ import (
 var adminAllowedSettings = map[string]bool{
 	"max_retries": true, "max_spill_mb": true,
 	"max_request_mb": true, "max_n": true, "aggregate_stream": true,
-	"drop_max_tokens": true, "proxy_url": true,
+	"fake_stream_enabled": true,
+	"drop_max_tokens":     true, "proxy_url": true,
 	"request_timeout":          true,
 	"race_timeout":             true,
 	"model_turn_guard_enabled": true,
@@ -41,6 +42,7 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"max_request_mb":           adm.cfg.MaxRequestMB(),
 		"max_n":                    adm.cfg.MaxN(),
 		"aggregate_stream":         adm.cfg.AggregateStream(),
+		"fake_stream_enabled":      adm.cfg.FakeStreamEnabled(),
 		"drop_max_tokens":          adm.cfg.DropMaxTokens(),
 		"telemetry_enabled":        telEnabled,
 		"request_timeout":          adm.cfg.RequestTimeout(),
