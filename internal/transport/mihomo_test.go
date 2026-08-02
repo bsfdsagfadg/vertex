@@ -23,10 +23,10 @@ func TestGetOrStartProxyDialerInitializesSameURIOnce(t *testing.T) {
 		"port":   7890,
 	})
 	var buildCount atomic.Int32
-	builder := func(mapping map[string]any) (constant.Proxy, error) {
+	builder := func(mapping map[string]any, options ...adapter.ProxyOption) (constant.Proxy, error) {
 		buildCount.Add(1)
 		time.Sleep(25 * time.Millisecond)
-		return adapter.ParseProxy(mapping)
+		return adapter.ParseProxy(mapping, options...)
 	}
 
 	const callers = 16
@@ -68,10 +68,10 @@ func TestRemoveProxyCancelsInFlightInitialization(t *testing.T) {
 	})
 	started := make(chan struct{})
 	release := make(chan struct{})
-	builder := func(mapping map[string]any) (constant.Proxy, error) {
+	builder := func(mapping map[string]any, options ...adapter.ProxyOption) (constant.Proxy, error) {
 		close(started)
 		<-release
-		return adapter.ParseProxy(mapping)
+		return adapter.ParseProxy(mapping, options...)
 	}
 
 	errCh := make(chan error, 1)
@@ -91,6 +91,36 @@ func TestRemoveProxyCancelsInFlightInitialization(t *testing.T) {
 	proxyMutex.RUnlock()
 	if cached {
 		t.Fatal("removed proxy was inserted into the cache after initialization completed")
+	}
+}
+
+func TestProxyChainBuildsEntryAndSecondHop(t *testing.T) {
+	StopAllProxies()
+	t.Cleanup(StopAllProxies)
+
+	entryURI := "socks5://127.0.0.1:1080#entry"
+	secondURI := "http://127.0.0.1:8080#second"
+	var buildCount atomic.Int32
+	var chained atomic.Bool
+	builder := func(mapping map[string]any, options ...adapter.ProxyOption) (constant.Proxy, error) {
+		buildCount.Add(1)
+		if len(options) > 0 {
+			chained.Store(true)
+		}
+		return adapter.ParseProxy(mapping, options...)
+	}
+
+	if _, err := getOrStartProxyDialerWithBuilder(secondURI, "test", false, builder, entryURI); err != nil {
+		t.Fatalf("build proxy chain: %v", err)
+	}
+	if buildCount.Load() != 2 || !chained.Load() {
+		t.Fatalf("expected entry and chained second hop, builds=%d chained=%v", buildCount.Load(), chained.Load())
+	}
+	if _, err := getOrStartProxyDialerWithBuilder(secondURI, "test", false, builder, entryURI); err != nil {
+		t.Fatalf("reuse proxy chain: %v", err)
+	}
+	if buildCount.Load() != 2 {
+		t.Fatalf("expected cached proxy chain, builds=%d", buildCount.Load())
 	}
 }
 

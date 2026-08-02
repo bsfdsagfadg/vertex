@@ -80,10 +80,17 @@ func (s *Session) Close() {
 }
 
 type NetworkClient struct {
-	debugMode bool
+	debugMode     bool
+	entryProxyURI func() string
 }
 
-func NewNetworkClient(debugMode bool) *NetworkClient { return &NetworkClient{debugMode: debugMode} }
+func NewNetworkClient(debugMode bool, entryProxyURI ...func() string) *NetworkClient {
+	client := &NetworkClient{debugMode: debugMode}
+	if len(entryProxyURI) > 0 {
+		client.entryProxyURI = entryProxyURI[0]
+	}
+	return client
+}
 
 //nolint:gochecknoglobals // Read-only list of browser profiles
 var browserProfiles = []profiles.ClientProfile{
@@ -95,17 +102,20 @@ func pickProfile() profiles.ClientProfile {
 }
 
 // injectProxy 统一处理网络代理挂载，如果代理初始化失败，返回 error
-func injectProxy(opts []tls_client.HttpClientOption, proxyURI string, reqID string, debugMode bool) ([]tls_client.HttpClientOption, error) {
+func injectProxy(opts []tls_client.HttpClientOption, proxyURI, entryProxyURI, reqID string, debugMode bool) ([]tls_client.HttpClientOption, error) {
 	if proxyURI == "" {
 		return opts, nil
 	}
 	// 用户自定义的外部标准代理，直接使用 URL
-	if strings.HasPrefix(proxyURI, "http://") || strings.HasPrefix(proxyURI, "https://") || strings.HasPrefix(proxyURI, "socks5://") {
-		return append(opts, tls_client.WithProxyUrl(proxyURI)), nil
+	if entryProxyURI == "" || entryProxyURI == proxyURI {
+		if strings.HasPrefix(proxyURI, "http://") || strings.HasPrefix(proxyURI, "https://") || strings.HasPrefix(proxyURI, "socks5://") {
+			return append(opts, tls_client.WithProxyUrl(proxyURI)), nil
+		}
 	}
 
-	// 订阅节点，获取并挂载内部 Dialer
-	dialCtx, err := getOrStartProxyDialer(proxyURI, reqID, debugMode)
+	// 第二跳通过 mihomo DialerForAPI 复用第一跳，形成 entry -> candidate 代理链。
+	// 两跳相同则只构造一次，避免代理自引用。
+	dialCtx, err := getOrStartProxyDialer(proxyURI, reqID, debugMode, entryProxyURI)
 	if err != nil {
 		return nil, fmt.Errorf("节点内部 Dialer 启动失败: %w", err)
 	}
@@ -116,6 +126,19 @@ func injectProxy(opts []tls_client.HttpClientOption, proxyURI string, reqID stri
 
 // CreateSession 创建一个新 Session：随机 Chrome 指纹 + 可选代理 + 独立 cookie jar。
 func (c *NetworkClient) CreateSession(timeoutSec int, proxyURI string, reqID string) (*Session, error) {
+	entryProxyURI := ""
+	if proxyURI != "" && c.entryProxyURI != nil {
+		entryProxyURI = strings.TrimSpace(c.entryProxyURI())
+	}
+	return c.createSession(timeoutSec, proxyURI, entryProxyURI, reqID)
+}
+
+// CreateSessionWithoutEntryProxy 创建只经过指定代理的隔离会话，用于验证入口代理候选本身。
+func (c *NetworkClient) CreateSessionWithoutEntryProxy(timeoutSec int, proxyURI string, reqID string) (*Session, error) {
+	return c.createSession(timeoutSec, proxyURI, "", reqID)
+}
+
+func (c *NetworkClient) createSession(timeoutSec int, proxyURI, entryProxyURI, reqID string) (*Session, error) {
 	prof := pickProfile()
 	log.Printf("[Transport] reqID: %s, Assigned TLS Profile: %s", reqID, prof.GetClientHelloStr())
 
@@ -127,7 +150,7 @@ func (c *NetworkClient) CreateSession(timeoutSec int, proxyURI string, reqID str
 
 	// 使用 injectProxy 挂载代理，失败则直接熔断，坚决不走静默直连！
 	var err error
-	opts, err = injectProxy(opts, proxyURI, reqID, c.debugMode)
+	opts, err = injectProxy(opts, proxyURI, entryProxyURI, reqID, c.debugMode)
 	if err != nil {
 		return nil, err
 	}

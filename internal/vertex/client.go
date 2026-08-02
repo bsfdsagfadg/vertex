@@ -52,7 +52,7 @@ type VertexAIClient struct {
 }
 
 func NewVertexAIClient(cfg config.ConfigProvider) *VertexAIClient {
-	net := transport.NewNetworkClient(cfg.DebugMode())
+	net := transport.NewNetworkClient(cfg.DebugMode(), cfg.ProxyURL)
 	return &VertexAIClient{
 		net:  net,
 		pool: recaptcha.NewTokenPool(net, cfg.ProxyURL(), cfg.DebugMode()),

@@ -13,22 +13,28 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/component/proxydialer"
 	"github.com/metacubex/mihomo/constant"
 )
 
 type proxyInfo struct {
-	proxy      constant.Proxy
-	lastUsedAt time.Time
-	closed     bool
+	proxy        constant.Proxy
+	dependencies []constant.Proxy
+	proxyURI     string
+	entryURI     string
+	lastUsedAt   time.Time
+	closed       bool
 }
 
 type proxyInitState struct {
 	done     chan struct{}
 	err      error
 	canceled bool
+	proxyURI string
+	entryURI string
 }
 
-type proxyBuilder func(map[string]any) (constant.Proxy, error)
+type proxyBuilder func(map[string]any, ...adapter.ProxyOption) (constant.Proxy, error)
 
 var (
 	//nolint:gochecknoglobals // Internal proxy connection cache
@@ -39,81 +45,128 @@ var (
 	proxyMutex sync.RWMutex
 )
 
-func getOrStartProxyDialer(uri string, reqID string, debugMode bool) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
-	return getOrStartProxyDialerWithBuilder(uri, reqID, debugMode, func(mapping map[string]any) (constant.Proxy, error) {
-		return adapter.ParseProxy(mapping)
+func getOrStartProxyDialer(uri string, reqID string, debugMode bool, entryURIs ...string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
+	return getOrStartProxyDialerWithBuilder(uri, reqID, debugMode, func(mapping map[string]any, options ...adapter.ProxyOption) (constant.Proxy, error) {
+		return adapter.ParseProxy(mapping, options...)
 	})
 }
 
-func getOrStartProxyDialerWithBuilder(uri string, reqID string, debugMode bool, builder proxyBuilder) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
+// ValidateProxyURI verifies that the URI can construct a mihomo proxy in the current build.
+func ValidateProxyURI(uri string) error {
+	proxy, dependencies, err := buildMihomoProxy(uri, "", func(mapping map[string]any, options ...adapter.ProxyOption) (constant.Proxy, error) {
+		return adapter.ParseProxy(mapping, options...)
+	})
+	if err != nil {
+		return err
+	}
+	closeMihomoProxies(proxy, dependencies)
+	return nil
+}
+
+func getOrStartProxyDialerWithBuilder(uri string, reqID string, debugMode bool, builder proxyBuilder, entryURIs ...string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
+	entryURI := ""
+	if len(entryURIs) > 0 && entryURIs[0] != uri {
+		entryURI = entryURIs[0]
+	}
+	cacheKey := proxyCacheKey(uri, entryURI)
 	proxyMutex.Lock()
-	if info, ok := proxyMap[uri]; ok && !info.closed {
+	if info, ok := proxyMap[cacheKey]; ok && !info.closed {
 		info.lastUsedAt = time.Now()
 		p := info.proxy
 		proxyMutex.Unlock()
 		return makeDialer(p, debugMode), nil
 	}
-	if pending, ok := proxyInitMap[uri]; ok {
+	if pending, ok := proxyInitMap[cacheKey]; ok {
 		proxyMutex.Unlock()
 		<-pending.done
 		if pending.err != nil {
 			return nil, pending.err
 		}
-		return getOrStartProxyDialerWithBuilder(uri, reqID, debugMode, builder)
+		return getOrStartProxyDialerWithBuilder(uri, reqID, debugMode, builder, entryURI)
 	}
-	pending := &proxyInitState{done: make(chan struct{})}
-	proxyInitMap[uri] = pending
+	pending := &proxyInitState{done: make(chan struct{}), proxyURI: uri, entryURI: entryURI}
+	proxyInitMap[cacheKey] = pending
 	proxyMutex.Unlock()
 
 	log.Printf("[Transport] 请求ID=%s 触发代理初始化: %s", reqID, nodes.GetNodeName(uri))
-	proxy, initErr := buildMihomoProxy(uri, builder)
+	proxy, dependencies, initErr := buildMihomoProxy(uri, entryURI, builder)
 
 	proxyMutex.Lock()
-	current, ownsInit := proxyInitMap[uri]
+	current, ownsInit := proxyInitMap[cacheKey]
 	if !ownsInit || current != pending || pending.canceled {
 		if initErr == nil {
 			initErr = errors.New("proxy initialization canceled")
 		}
 		pending.err = initErr
 		if ownsInit && current == pending {
-			delete(proxyInitMap, uri)
+			delete(proxyInitMap, cacheKey)
 		}
 		close(pending.done)
 		proxyMutex.Unlock()
-		closeMihomoProxy(proxy)
+		closeMihomoProxies(proxy, dependencies)
 		return nil, initErr
 	}
 	if initErr != nil {
 		pending.err = initErr
-		delete(proxyInitMap, uri)
+		delete(proxyInitMap, cacheKey)
 		close(pending.done)
 		proxyMutex.Unlock()
 		return nil, initErr
 	}
 
-	proxyMap[uri] = &proxyInfo{proxy: proxy, lastUsedAt: time.Now()} //nolint:exhaustruct
-	delete(proxyInitMap, uri)
+	proxyMap[cacheKey] = &proxyInfo{
+		proxy: proxy, dependencies: dependencies, proxyURI: uri, entryURI: entryURI, lastUsedAt: time.Now(),
+	}
+	delete(proxyInitMap, cacheKey)
 	close(pending.done)
 	proxyMutex.Unlock()
 	return makeDialer(proxy, debugMode), nil
 }
 
-func buildMihomoProxy(uri string, builder proxyBuilder) (proxy constant.Proxy, err error) {
+func proxyCacheKey(uri, entryURI string) string {
+	if entryURI == "" || entryURI == uri {
+		return uri
+	}
+	return entryURI + "\x00" + uri
+}
+
+func buildMihomoProxy(uri, entryURI string, builder proxyBuilder) (proxy constant.Proxy, dependencies []constant.Proxy, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			closeMihomoProxies(proxy, dependencies)
+			proxy = nil
+			dependencies = nil
 			err = fmt.Errorf("parse proxy panic: %v", recovered)
 		}
 	}()
 	outMap, err := ParseURI(uri)
 	if err != nil {
-		return nil, fmt.Errorf("parse URI: %w", err)
+		return nil, nil, fmt.Errorf("parse URI: %w", err)
 	}
 
-	proxy, err = builder(outMap)
-	if err != nil {
-		return nil, fmt.Errorf("parse proxy: %w", err)
+	if entryURI == "" || entryURI == uri {
+		proxy, err = builder(outMap)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse proxy: %w", err)
+		}
+		return proxy, nil, nil
 	}
-	return proxy, nil
+
+	entryMap, err := ParseURI(entryURI)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse entry proxy URI: %w", err)
+	}
+	entryProxy, err := builder(entryMap)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse entry proxy: %w", err)
+	}
+	dependencies = []constant.Proxy{entryProxy}
+	proxy, err = builder(outMap, adapter.WithDialerForAPI(proxydialer.New(entryProxy, true)))
+	if err != nil {
+		closeMihomoProxies(nil, dependencies)
+		return nil, nil, fmt.Errorf("parse proxy chain: %w", err)
+	}
+	return proxy, dependencies, nil
 }
 
 func makeDialer(p constant.Proxy, debugMode bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -153,21 +206,31 @@ func makeDialer(p constant.Proxy, debugMode bool) func(ctx context.Context, netw
 
 // RemoveProxy 主动清理代理实例 (响应面板删除节点)
 func RemoveProxy(uri string) {
-	var proxy constant.Proxy
-	proxyMutex.Lock()
-	if pending, ok := proxyInitMap[uri]; ok {
-		pending.canceled = true
+	type proxySet struct {
+		proxy        constant.Proxy
+		dependencies []constant.Proxy
 	}
-	if info, ok := proxyMap[uri]; ok {
-		if !info.closed {
-			info.closed = true
-			proxy = info.proxy
+	var proxies []proxySet
+	proxyMutex.Lock()
+	for _, pending := range proxyInitMap {
+		if pending.proxyURI == uri || pending.entryURI == uri {
+			pending.canceled = true
 		}
-		delete(proxyMap, uri)
+	}
+	for key, info := range proxyMap {
+		if info.proxyURI == uri || info.entryURI == uri {
+			if !info.closed {
+				info.closed = true
+				proxies = append(proxies, proxySet{proxy: info.proxy, dependencies: info.dependencies})
+			}
+			delete(proxyMap, key)
+		}
 	}
 	proxyMutex.Unlock()
-	if proxy != nil {
-		closeMihomoProxy(proxy)
+	for _, item := range proxies {
+		closeMihomoProxies(item.proxy, item.dependencies)
+	}
+	if len(proxies) > 0 {
 		log.Printf("[Transport] 代理节点已清理释放: %s", nodes.GetNodeName(uri))
 	}
 }
@@ -190,8 +253,9 @@ func StartProxyGC(interval, maxIdle time.Duration) {
 
 func cleanupIdleProxies(maxIdle time.Duration) {
 	type idleProxy struct {
-		uri   string
-		proxy constant.Proxy
+		uri          string
+		proxy        constant.Proxy
+		dependencies []constant.Proxy
 	}
 	var idle []idleProxy
 	proxyMutex.Lock()
@@ -200,21 +264,25 @@ func cleanupIdleProxies(maxIdle time.Duration) {
 		if now.Sub(info.lastUsedAt) > maxIdle {
 			if !info.closed {
 				info.closed = true
-				idle = append(idle, idleProxy{uri: uri, proxy: info.proxy})
+				idle = append(idle, idleProxy{uri: uri, proxy: info.proxy, dependencies: info.dependencies})
 			}
 			delete(proxyMap, uri)
 		}
 	}
 	proxyMutex.Unlock()
 	for _, item := range idle {
-		closeMihomoProxy(item.proxy)
+		closeMihomoProxies(item.proxy, item.dependencies)
 		log.Printf("[Transport] 空闲代理已清理释放: %s", nodes.GetNodeName(item.uri))
 	}
 }
 
 // StopAllProxies 程序优雅退出时清理全部实例
 func StopAllProxies() {
-	var proxies []constant.Proxy
+	type proxySet struct {
+		proxy        constant.Proxy
+		dependencies []constant.Proxy
+	}
+	var proxies []proxySet
 	proxyMutex.Lock()
 	for _, pending := range proxyInitMap {
 		pending.canceled = true
@@ -222,17 +290,27 @@ func StopAllProxies() {
 	for _, info := range proxyMap {
 		if !info.closed {
 			info.closed = true
-			proxies = append(proxies, info.proxy)
+			proxies = append(proxies, proxySet{proxy: info.proxy, dependencies: info.dependencies})
 		}
 	}
 	proxyMap = make(map[string]*proxyInfo)
 	proxyMutex.Unlock()
-	for _, proxy := range proxies {
-		closeMihomoProxy(proxy)
+	for _, item := range proxies {
+		closeMihomoProxies(item.proxy, item.dependencies)
+	}
+}
+
+func closeMihomoProxies(proxy constant.Proxy, dependencies []constant.Proxy) {
+	closeMihomoProxy(proxy)
+	for _, dependency := range dependencies {
+		closeMihomoProxy(dependency)
 	}
 }
 
 func closeMihomoProxy(proxy constant.Proxy) {
+	if proxy == nil {
+		return
+	}
 	if closer, ok := proxy.(interface{ Close() error }); ok {
 		_ = closer.Close()
 	}
