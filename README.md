@@ -55,7 +55,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ver
 | `port_api` | 2156 | 服务监听端口 |
 | `admin_password` | 自动生成 | 管理面板登录密码 |
 | `max_retries` | 10 | 请求失败重试次数 |
-| `proxy_url` | 空 | 出站代理地址 (如 `http://127.0.0.1:7890`) |
+| `proxy_url` | 空 | 全局入口代理；业务节点启用时作为第一跳，否则单独出站 |
+| `proxy_url_candidates` | `[]` | 由管理页维护的入口代理候选、测速结果和显示名称 |
 | `parallel_pool_enabled` | true | 是否开启并发竞速节点池 |
 
 > **提示**：在模型名（如 `gemini-3.5-flash`）前加上 `fake-` 或 `假流式-` 前缀，可将非流式模型伪装成流式输出。

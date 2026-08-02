@@ -108,6 +108,41 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 	case "/nodes/sort":
 		adm.adminSortNodesByLatency(w, r)
 		return
+	case "/proxy-nodes/import":
+		if r.Method == http.MethodPost {
+			adm.adminImportProxyNode(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
+	case "/proxy-nodes/enable":
+		if r.Method == http.MethodPost {
+			adm.adminEnableProxyNode(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
+	case "/proxy-nodes/disable":
+		if r.Method == http.MethodPost {
+			adm.adminDisableProxyNode(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
+	case "/proxy-nodes/test":
+		if r.Method == http.MethodPost {
+			adm.adminTestProxyNode(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
+	case "/proxy-nodes":
+		if r.Method == http.MethodDelete {
+			adm.adminDeleteProxyNode(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
 	case "/upload-bg":
 		adm.adminUploadBg(w, r)
 		return

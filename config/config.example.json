@@ -7,6 +7,8 @@
   "default_response_modalities": "图文",
   "max_n": 8,
   "max_retries": 1,
+  "proxy_url": "",
+  "proxy_url_candidates": [],
   "parallel_pool_delay_dynamic": false,
   "parallel_pool_delay_ms": 2500,
   "parallel_pool_enabled": true,

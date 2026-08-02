@@ -138,10 +138,20 @@
           </div>
           <div class="grid grid-1">
             <div class="card glass">
-              <div class="field"><label for="globalProxy">全局外部代理 (SOCKS5/HTTP)</label>
-                <div class="toolbar m-0"><input id="globalProxy" placeholder="socks5://127.0.0.1:1080"><button
-                    class="btn" onclick="saveGlobalProxy()">保存</button></div>
-                <div class="desc">配置后默认走该代理；如果未启用并发池且无锁定节点，将使用此代理。</div>
+              <div class="field"><label for="globalProxy">全局入口代理</label>
+                <div class="toolbar m-0"><input id="globalProxy" placeholder="socks5://127.0.0.1:1080 或 vless://..."><button
+                    class="btn" onclick="importProxyNode()">导入候选</button></div>
+                <div class="desc">启用后作为业务节点的第一跳；未使用业务节点时仅经过该入口。订阅仍先直连，失败后才用当前入口重试一次。</div>
+              </div>
+              <div class="divider"></div>
+              <div class="field m-0">
+                <div class="field-heading">入口代理候选</div>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>名称</th><th>类型</th><th>测试状态</th><th>操作</th></tr></thead>
+                    <tbody id="proxyNodesBody"></tbody>
+                  </table>
+                </div>
               </div>
             </div>
             <div class="card glass">

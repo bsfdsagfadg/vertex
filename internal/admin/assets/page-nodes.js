@@ -75,6 +75,8 @@ async function loadNodes() {
     if (gpEl && (sd.settings || sd).proxy_url !== undefined) {
       gpEl.value = (sd.settings || sd).proxy_url;
     }
+    var settings = sd.settings || sd;
+    renderProxyNodes(settings.proxy_url_candidates || [], settings.proxy_url || '');
   } catch (e) { }
 
   const d = await API.nodes.list();
@@ -578,4 +580,119 @@ function importJsonNodes(replace) {
   reader.readAsText(file);
 }
 
-async function saveGlobalProxy() { await API.settings.put({ proxy_url: $('#globalProxy').value }); loadSettings(); toast('全局代理已保存'); }
+async function importProxyNode() {
+  var input = document.getElementById('globalProxy');
+  var uri = input.value.trim();
+  if (!uri) return toast('请先输入代理 URI');
+  try {
+    var result = await API.proxyNodes.import(uri);
+    input.value = '';
+    await loadNodes();
+    toast('已导入口代理候选：' + (result.candidate.name || uri));
+  } catch (e) {
+    toast('导入失败：' + e.message);
+  }
+}
+
+async function testProxyNode(uri) {
+  toast('正在隔离测试入口代理...');
+  try {
+    var result = await API.proxyNodes.test(uri);
+    await loadNodes();
+    toast(result.ok ? ('测试通过 ' + Math.round(result.elapsed_ms) + 'ms') : ('测试失败：' + (result.error || '未知错误')));
+  } catch (e) {
+    toast('测试出错：' + e.message);
+  }
+}
+
+async function enableProxyNode(uri) {
+  try {
+    await API.proxyNodes.enable(uri);
+    await loadNodes();
+    toast('已启用该入口代理');
+  } catch (e) {
+    toast('启用失败：' + e.message);
+  }
+}
+
+async function disableProxyNode() {
+  try {
+    await API.proxyNodes.disable();
+    await loadNodes();
+    toast('已停用入口代理');
+  } catch (e) {
+    toast('停用失败：' + e.message);
+  }
+}
+
+async function deleteProxyNode(uri) {
+  if (!confirm('确定删除该入口代理候选？')) return;
+  try {
+    await API.proxyNodes.delete(uri);
+    await loadNodes();
+    toast('已删除入口代理候选');
+  } catch (e) {
+    toast('删除失败：' + e.message);
+  }
+}
+
+function proxyActionButton(label, className, handler) {
+  var button = document.createElement('button');
+  button.className = className;
+  button.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;';
+  button.textContent = label;
+  button.onclick = handler;
+  return button;
+}
+
+function renderProxyNodes(candidates, activeURI) {
+  var tbody = document.getElementById('proxyNodesBody');
+  if (!tbody) return;
+  var fragment = document.createDocumentFragment();
+  if (!candidates.length) {
+    var emptyRow = document.createElement('tr');
+    var emptyCell = document.createElement('td');
+    emptyCell.colSpan = 4;
+    emptyCell.style.cssText = 'color:var(--text-dim);text-align:center;';
+    emptyCell.textContent = '暂无入口代理候选';
+    emptyRow.appendChild(emptyCell);
+    fragment.appendChild(emptyRow);
+  }
+  candidates.forEach(function (candidate) {
+    var row = document.createElement('tr');
+    var nameCell = document.createElement('td');
+    nameCell.textContent = candidate.name || candidate.raw_uri;
+    if (candidate.raw_uri === activeURI) {
+      var active = document.createElement('span');
+      active.className = 'pill on';
+      active.style.cssText = 'font-size:10px;padding:2px 8px;margin-left:6px;';
+      active.textContent = '启用中';
+      nameCell.appendChild(active);
+    }
+    var typeCell = document.createElement('td');
+    typeCell.textContent = candidate.type || '-';
+    var stateCell = document.createElement('td');
+    if (!candidate.last_test_at) {
+      stateCell.textContent = '未测试';
+    } else if (candidate.last_test_ok) {
+      stateCell.textContent = '通过 · ' + Math.round(candidate.last_test_ms) + 'ms';
+    } else {
+      stateCell.textContent = '失败 · ' + (candidate.last_test_error || '未知错误');
+    }
+    var actionCell = document.createElement('td');
+    actionCell.appendChild(proxyActionButton('测试', 'btn ghost', function () { testProxyNode(candidate.raw_uri); }));
+    if (candidate.raw_uri === activeURI) {
+      actionCell.appendChild(proxyActionButton('停用', 'btn ghost', disableProxyNode));
+    } else {
+      actionCell.appendChild(proxyActionButton('启用', 'btn ghost', function () { enableProxyNode(candidate.raw_uri); }));
+    }
+    actionCell.appendChild(proxyActionButton('删除', 'btn danger', function () { deleteProxyNode(candidate.raw_uri); }));
+    row.appendChild(nameCell);
+    row.appendChild(typeCell);
+    row.appendChild(stateCell);
+    row.appendChild(actionCell);
+    fragment.appendChild(row);
+  });
+  tbody.textContent = '';
+  tbody.appendChild(fragment);
+}

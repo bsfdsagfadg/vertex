@@ -48,5 +48,12 @@ const API = {
   subscriptions: {
     fetch(url) { return API.raw('/api/admin/subscriptions/fetch', { method: 'POST', body: JSON.stringify({ url }) }); },
   },
+  proxyNodes: {
+    import(uri) { return API.raw('/api/admin/proxy-nodes/import', { method: 'POST', body: JSON.stringify({ raw_uri: uri }) }); },
+    enable(uri) { return API.raw('/api/admin/proxy-nodes/enable', { method: 'POST', body: JSON.stringify({ raw_uri: uri }) }); },
+    disable() { return API.raw('/api/admin/proxy-nodes/disable', { method: 'POST' }); },
+    delete(uri) { return API.raw('/api/admin/proxy-nodes', { method: 'DELETE', body: JSON.stringify({ raw_uri: uri }) }); },
+    test(uri) { return API.raw('/api/admin/proxy-nodes/test', { method: 'POST', body: JSON.stringify({ raw_uri: uri, timeout_seconds: 25 }) }); },
+  },
   useNode(uri) { return this.raw('/api/admin/use-node', { method: 'POST', body: JSON.stringify({ raw_uri: uri }) }); },
 };
