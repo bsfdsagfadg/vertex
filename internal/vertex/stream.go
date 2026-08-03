@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -392,8 +393,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 }
 
 func classifyUpstreamHTTPError(statusCode int, body string) *VertexError {
-	if statusCode == 401 || statusCode == 403 ||
-		strings.Contains(body, "Failed to verify action") ||
+	if strings.Contains(body, "Failed to verify action") ||
 		strings.Contains(body, "The caller does not have permission") {
 		return NewAuthenticationError("Authentication/Recaptcha failed: " + body)
 	}
@@ -402,6 +402,9 @@ func classifyUpstreamHTTPError(statusCode int, body string) *VertexError {
 			parsed.UpstreamResponse = body
 			return parsed
 		}
+	}
+	if statusCode == http.StatusUnauthorized {
+		return NewAuthenticationError("Authentication failed: " + body)
 	}
 	return raiseForStatus(statusCode, "", "Upstream Error: "+body, nil, body)
 }

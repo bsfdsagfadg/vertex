@@ -58,6 +58,29 @@ func TestClassifyUpstreamHTTPErrorKeepsStatusForPlainText(t *testing.T) {
 	}
 }
 
+func TestClassifyUpstreamHTTPErrorDistinguishesPermissionAndRecaptcha(t *testing.T) {
+	permissionBody := `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"project access denied"}}`
+	permission := classifyUpstreamHTTPError(403, permissionBody)
+	if permission.Code != 403 || permission.Kind != "permission" || permission.Status != StatusPermissionDenied {
+		t.Fatalf("结构化权限错误应保持 permission/403: %+v", permission)
+	}
+
+	plainPermission := classifyUpstreamHTTPError(403, "access denied")
+	if plainPermission.Code != 403 || plainPermission.Kind != "permission" {
+		t.Fatalf("无认证特征的普通 403 应保持 permission: %+v", plainPermission)
+	}
+
+	verifyFail := classifyUpstreamHTTPError(403, `{"error":{"code":403,"message":"Failed to verify action"}}`)
+	if verifyFail.Code != 502 || verifyFail.Kind != "auth" {
+		t.Fatalf("明确的 reCAPTCHA verify-fail 应保持可重试 auth/502: %+v", verifyFail)
+	}
+
+	unauthorized := classifyUpstreamHTTPError(401, "unauthorized")
+	if unauthorized.Code != 502 || unauthorized.Kind != "auth" {
+		t.Fatalf("401 应保持可重试 auth/502: %+v", unauthorized)
+	}
+}
+
 func TestAuthError502(t *testing.T) {
 	e := NewAuthenticationError("x")
 	if e.Code != 502 {
