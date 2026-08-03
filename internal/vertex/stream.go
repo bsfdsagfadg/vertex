@@ -521,8 +521,11 @@ func scanStream(body io.Reader, onObject func(map[string]any) (bool, error)) err
 				return fmt.Errorf("error: %w", readErr)
 
 			}
-			// EOF 或读错误：流结束（正常 EOF 直接返回 nil，上层会按 got_content 判定空响应）。
-			return nil
+			if errors.Is(readErr, io.EOF) {
+				// 只有明确 EOF 才表示上游正常关闭；空响应由上层按 got_content 判定。
+				return nil
+			}
+			return fmt.Errorf("read upstream stream: %w", readErr)
 		}
 	}
 }

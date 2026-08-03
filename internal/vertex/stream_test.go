@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -110,6 +111,35 @@ func TestScanStream_SplitAcrossReads(t *testing.T) {
 	}
 	if got := firstPartText(emitted[0]); got != "split me" {
 		t.Errorf("text=%q", got)
+	}
+}
+
+func TestScanStream_PropagatesReadErrorAfterCompleteChunk(t *testing.T) {
+	wantErr := errors.New("connection reset")
+	raw := wrap(`{"candidates":[{"content":{"parts":[{"text":"partial answer"}],"role":"model"},"finishReason":"FINISH_REASON_UNSPECIFIED"}]}`)
+	emitted := 0
+	err := scanStream(&terminalErrorReader{data: []byte(raw), err: wantErr}, func(obj map[string]any) (bool, error) {
+		return processStreamingObject(obj, func(map[string]any) bool {
+			emitted++
+			return true
+		})
+	})
+	if emitted != 1 {
+		t.Fatalf("emitted=%d, want 1", emitted)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("异常断流应向上传播，got %v", err)
+	}
+}
+
+func TestScanStream_PropagatesReadErrorWithIncompleteObject(t *testing.T) {
+	wantErr := io.ErrUnexpectedEOF
+	err := scanStream(&terminalErrorReader{data: []byte(`{"results":[{"data":`), err: wantErr}, func(map[string]any) (bool, error) {
+		t.Fatal("不完整对象不应触发回调")
+		return false, nil
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("不完整对象后的异常断流应向上传播，got %v", err)
 	}
 }
 
@@ -447,6 +477,20 @@ type splitReader struct {
 	data  []byte
 	chunk int
 	pos   int
+}
+
+type terminalErrorReader struct {
+	data []byte
+	err  error
+	done bool
+}
+
+func (r *terminalErrorReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, r.err
+	}
+	r.done = true
+	return copy(p, r.data), r.err
 }
 
 func (r *splitReader) Read(p []byte) (int, error) {
