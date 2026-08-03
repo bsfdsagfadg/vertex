@@ -46,3 +46,37 @@ func TestTokenPoolContextCancellation(t *testing.T) {
 		t.Fatalf("取消应传播到 token 获取函数: %v", err)
 	}
 }
+
+func TestTokenPoolUsesDynamicDefaultButExplicitEmptyMeansDirect(t *testing.T) {
+	currentProxy := "http://proxy-a.example:7890"
+	var gotProxy string
+	p := &TokenPool{
+		fetch: func(_ context.Context, proxyURI string) (string, error) {
+			gotProxy = proxyURI
+			return "token", nil
+		},
+		defaultProxy: func() string { return currentProxy },
+	}
+
+	if _, err := p.GetTokenContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotProxy != currentProxy {
+		t.Fatalf("默认 token 获取应读取当前代理，got %q", gotProxy)
+	}
+
+	currentProxy = "http://proxy-b.example:7890"
+	if _, err := p.GetTokenContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotProxy != currentProxy {
+		t.Fatalf("代理热切换后应读取新值，got %q", gotProxy)
+	}
+
+	if _, err := p.GetTokenWithProxyContext(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if gotProxy != "" {
+		t.Fatalf("显式空代理应直连，不能回退当前全局代理，got %q", gotProxy)
+	}
+}

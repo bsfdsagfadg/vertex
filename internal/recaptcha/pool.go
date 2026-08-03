@@ -8,10 +8,10 @@ import (
 
 type TokenPool struct {
 	fetch        func(context.Context, string) (string, error)
-	defaultProxy string
+	defaultProxy func() string
 }
 
-func NewTokenPool(net *transport.NetworkClient, defaultProxy string, debugMode bool) *TokenPool {
+func NewTokenPool(net *transport.NetworkClient, defaultProxy func() string, debugMode bool) *TokenPool {
 	return &TokenPool{
 		fetch: func(ctx context.Context, proxyURI string) (string, error) {
 			return FetchRecaptchaToken(ctx, net, proxyURI, debugMode)
@@ -53,12 +53,15 @@ func (p *TokenPool) GetTokenWithProxy(proxyURI string) (string, error) {
 }
 
 func (p *TokenPool) GetTokenContext(ctx context.Context) (string, error) {
-	return p.fetch(ctx, p.defaultProxy)
+	proxyURI := ""
+	if p.defaultProxy != nil {
+		proxyURI = p.defaultProxy()
+	}
+	return p.fetch(ctx, proxyURI)
 }
 
 func (p *TokenPool) GetTokenWithProxyContext(ctx context.Context, proxyURI string) (string, error) {
-	if proxyURI == "" {
-		return p.GetTokenContext(ctx)
-	}
+	// 该方法的 proxyURI 是调用方已经决定好的实际出口；空值明确表示直连，
+	// 不能回退到启动时或当前全局代理，否则 token 与业务请求可能使用不同出口 IP。
 	return p.fetch(ctx, proxyURI)
 }
