@@ -28,6 +28,34 @@ func TestParseURIShadowsocksKeepsPortAndPlugin(t *testing.T) {
 	}
 }
 
+func TestParseURI_SSPlainCredentials(t *testing.T) {
+	raw := "ss://chacha20-poly1305:password@example.com:443#demo"
+
+	out, err := ParseURI(raw)
+	if err != nil {
+		t.Fatalf("ParseURI returned error: %v", err)
+	}
+	if got := out["cipher"]; got != "chacha20-ietf-poly1305" {
+		t.Fatalf("expected normalized cipher chacha20-ietf-poly1305, got %#v", got)
+	}
+	if got := out["password"]; got != "password" {
+		t.Fatalf("expected password password, got %#v", got)
+	}
+}
+
+func TestParseSS_PlainCredentialsNoHost(t *testing.T) {
+	out, err := parseSS("ss://aes-128-gcm:password@:443")
+	if err != nil {
+		t.Fatalf("parseSS returned error: %v", err)
+	}
+	if got := out["cipher"]; got != "aes-128-gcm" {
+		t.Fatalf("expected plaintext cipher aes-128-gcm, got %#v", got)
+	}
+	if got := out["password"]; got != "password" {
+		t.Fatalf("expected plaintext password, got %#v", got)
+	}
+}
+
 func TestParseURIVlessKeepsRealityAndWS(t *testing.T) {
 	raw := "vless://12345678-1234-1234-1234-123456789012@cf.example.com:443?security=reality&sni=edge.example.com&fp=chrome&pbk=pubkey&sid=abcd&type=ws&host=edge.example.com&path=%2Fws&flow=xtls-rprx-vision#demo"
 

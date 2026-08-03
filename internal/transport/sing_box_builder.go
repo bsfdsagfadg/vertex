@@ -298,7 +298,7 @@ func buildShadowsocksOutbound(u *url.URL) (option.ShadowsocksOutboundOptions, er
 
 	opts := option.ShadowsocksOutboundOptions{
 		ServerOptions: option.ServerOptions{Server: server, ServerPort: port},
-		Method:        method,
+		Method:        normalizeSSMethod(method),
 		Password:      password,
 	}
 
@@ -323,22 +323,10 @@ func buildShadowsocksFragment(body string) (option.ShadowsocksOutboundOptions, e
 		}
 		method, password := "", ""
 
-		if colonIdx := strings.Index(userInfo, ":"); colonIdx != -1 {
-			mBytes, errM := base64.StdEncoding.DecodeString(padB64(userInfo[:colonIdx]))
-			pBytes, errP := base64.StdEncoding.DecodeString(padB64(userInfo[colonIdx+1:]))
-			if errM == nil && errP == nil {
-				method = string(mBytes)
-				password = string(pBytes)
-			}
-		}
-		if method == "" || password == "" {
-			b, err := base64.StdEncoding.DecodeString(padB64(userInfo))
+		if len(userInfo) > 0 {
+			m, p, err := decodeSSCredentials(userInfo)
 			if err == nil {
-				parts := strings.SplitN(string(b), ":", 2)
-				if len(parts) == 2 {
-					method = parts[0]
-					password = parts[1]
-				}
+				method, password = m, p
 			}
 		}
 		if method == "" || password == "" {
@@ -346,7 +334,7 @@ func buildShadowsocksFragment(body string) (option.ShadowsocksOutboundOptions, e
 		}
 		return option.ShadowsocksOutboundOptions{
 			ServerOptions: option.ServerOptions{Server: hp[0], ServerPort: uint16(port)},
-			Method:        method,
+			Method:        normalizeSSMethod(method),
 			Password:      password,
 		}, nil
 	}
@@ -418,8 +406,10 @@ func buildHysteria2Outbound(u *url.URL, q url.Values) (option.Hysteria2OutboundO
 	}
 	opts.TLS = tlsOpts
 
-	if ports := firstNonEmpty(q.Get("ports"), q.Get("mport")); ports != "" {
-		opts.ServerPorts = badoption.Listable[string]{ports}
+	if rawPorts := firstNonEmpty(q.Get("ports"), q.Get("mport")); rawPorts != "" {
+		if serverPorts, ok := parseHysteria2Ports(rawPorts); ok {
+			opts.ServerPorts = serverPorts
+		}
 	}
 	if obfs := q.Get("obfs"); obfs != "" {
 		opts.Obfs = &option.Hysteria2Obfs{
@@ -485,8 +475,10 @@ func buildSOCKSOutbound(u *url.URL) (option.SOCKSOutboundOptions, error) {
 	}
 
 	if u.User != nil {
-		opts.Username = u.User.Username()
-		opts.Password, _ = u.User.Password()
+		if pwd, ok := u.User.Password(); ok && pwd != "" {
+			opts.Username = u.User.Username()
+			opts.Password = pwd
+		}
 	}
 
 	return opts, nil
@@ -508,8 +500,10 @@ func buildHTTPOutbound(u *url.URL) (option.HTTPOutboundOptions, error) {
 		}
 	}
 	if u.User != nil {
-		opts.Username = u.User.Username()
-		opts.Password, _ = u.User.Password()
+		if pwd, ok := u.User.Password(); ok && pwd != "" {
+			opts.Username = u.User.Username()
+			opts.Password = pwd
+		}
 	}
 
 	return opts, nil
@@ -629,6 +623,8 @@ func parseTLSOptions(q url.Values, server string, forceTLS bool) *option.Outboun
 	}
 	if fp := firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")); fp != "" {
 		tlsOpts.UTLS = &option.OutboundUTLSOptions{Enabled: true, Fingerprint: fp}
+	} else if sec == "reality" {
+		tlsOpts.UTLS = &option.OutboundUTLSOptions{Enabled: true, Fingerprint: "chrome"}
 	}
 	if alpn := q.Get("alpn"); alpn != "" {
 		tlsOpts.ALPN = strings.Split(alpn, ",")
@@ -637,8 +633,11 @@ func parseTLSOptions(q url.Values, server string, forceTLS bool) *option.Outboun
 }
 
 func parseV2RayTransport(q url.Values) *option.V2RayTransportOptions {
-	network := q.Get("type")
+	network := strings.ToLower(strings.TrimSpace(q.Get("type")))
 	if network == "" {
+		return nil
+	}
+	if network == "tcp" || network == "none" || network == "raw" || network == "tcpheader" {
 		return nil
 	}
 	transport := &option.V2RayTransportOptions{Type: network}
@@ -734,6 +733,63 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// parseHysteria2Ports 将订阅源中的端口范围写法（如 "50000-53000"、"30000,30002"）
+// 转换为 sing-box ServerPorts 接受的冒号范围格式（如 "50000:53000"）。
+// 无法解析时返回 false，调用方应回退使用主端口 ServerPort。
+func parseHysteria2Ports(raw string) (badoption.Listable[string], bool) {
+	items := strings.Split(raw, ",")
+	var out badoption.Listable[string]
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if strings.Contains(item, ":") {
+			if validPortRange(item) {
+				out = append(out, item)
+			}
+			continue
+		}
+		if dashIdx := strings.Index(item, "-"); dashIdx != -1 {
+			start, err1 := strconv.Atoi(strings.TrimSpace(item[:dashIdx]))
+			end, err2 := strconv.Atoi(strings.TrimSpace(item[dashIdx+1:]))
+			if err1 == nil && err2 == nil && start >= 1 && start <= 65535 && end >= start && end <= 65535 {
+				out = append(out, fmt.Sprintf("%d:%d", start, end))
+			}
+			continue
+		}
+		if p, err := strconv.Atoi(item); err == nil && p >= 1 && p <= 65535 {
+			out = append(out, fmt.Sprintf("%d:%d", p, p))
+		}
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+func validPortRange(s string) bool {
+	startStr, endStr, _ := strings.Cut(s, ":")
+	start, err1 := strconv.Atoi(startStr)
+	end, err2 := strconv.Atoi(endStr)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return start >= 1 && start <= 65535 && end >= start && end <= 65535
+}
+
+func normalizeSSMethod(method string) string {
+	switch strings.ToLower(strings.TrimSpace(method)) {
+	case "chacha20-poly1305", "chacha20poly1305", "chacha20-ietf":
+		return "chacha20-ietf-poly1305"
+	case "aes-128-poly1305":
+		return "aes-128-gcm"
+	case "aes-256-poly1305":
+		return "aes-256-gcm"
+	}
+	return method
 }
 
 func padB64(s string) string {

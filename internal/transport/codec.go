@@ -313,7 +313,7 @@ func parseShadowsocksURI(uri string) (map[string]any, error) {
 		"type":     "ss",
 		"server":   u.Hostname(),
 		"port":     port,
-		"cipher":   method,
+		"cipher":   normalizeSSMethod(method),
 		"password": password,
 	}
 	applySSPlugin(out, u.Query().Get("plugin"))
@@ -332,12 +332,17 @@ func decodeSSUserInfo(user *url.Userinfo) (string, string, error) {
 
 func decodeSSCredentials(userInfo string) (string, string, error) {
 	if colonIdx := strings.Index(userInfo, ":"); colonIdx != -1 {
-		mBytes, errM := base64.StdEncoding.DecodeString(padB64(userInfo[:colonIdx]))
-		pBytes, errP := base64.StdEncoding.DecodeString(padB64(userInfo[colonIdx+1:]))
+		method := userInfo[:colonIdx]
+		password := userInfo[colonIdx+1:]
+		if isSSPlainMethod(method) {
+			return method, password, nil
+		}
+		mBytes, errM := base64.StdEncoding.DecodeString(padB64(method))
+		pBytes, errP := base64.StdEncoding.DecodeString(padB64(password))
 		if errM == nil && errP == nil {
 			return string(mBytes), string(pBytes), nil
 		}
-		return userInfo[:colonIdx], userInfo[colonIdx+1:], nil
+		return method, password, nil
 	}
 
 	b, err := base64.StdEncoding.DecodeString(padB64(userInfo))
@@ -348,6 +353,21 @@ func decodeSSCredentials(userInfo string) (string, string, error) {
 		}
 	}
 	return "", "", fmt.Errorf("ss parse failed: invalid userinfo (cannot decode method or password)")
+}
+
+func isSSPlainMethod(method string) bool {
+	if strings.Contains(method, "-") {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(method)) {
+	case "aes-128-gcm", "aes-192-gcm", "aes-256-gcm",
+		"chacha20-poly1305", "chacha20-ietf-poly1305", "chacha20poly1305",
+		"aes-128-cfb", "aes-192-cfb", "aes-256-cfb",
+		"rc4", "rc4-md5", "rc4-md5-6", "xchacha20-ietf-poly1305",
+		"none", "plain", "table", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305":
+		return true
+	}
+	return false
 }
 
 func applySSPlugin(out map[string]any, pluginRaw string) {
@@ -405,32 +425,8 @@ func parseSS(uri string) (map[string]any, error) {
 		}
 		port, _ := strconv.Atoi(hp[1])
 
-		var method, password string
-
-		// 适配两种形式的 Shadowsocks Base64 用户信息表达
-		if colonIdx := strings.Index(userInfo, ":"); colonIdx != -1 {
-			// 形式 A: base64(method) : base64(password)
-			mBytes, errM := base64.StdEncoding.DecodeString(padB64(userInfo[:colonIdx]))
-			pBytes, errP := base64.StdEncoding.DecodeString(padB64(userInfo[colonIdx+1:]))
-			if errM == nil && errP == nil {
-				method = string(mBytes)
-				password = string(pBytes)
-			}
-		}
-
-		if method == "" || password == "" {
-			// 形式 B: 传统的整个 method:password 一起进行 base64 编码
-			b, err := base64.StdEncoding.DecodeString(padB64(userInfo))
-			if err == nil {
-				parts := strings.SplitN(string(b), ":", 2)
-				if len(parts) == 2 {
-					method = parts[0]
-					password = parts[1]
-				}
-			}
-		}
-
-		if method == "" || password == "" {
+		method, password, err := decodeSSCredentials(userInfo)
+		if err != nil || method == "" || password == "" {
 			return nil, fmt.Errorf("ss parse failed: invalid userinfo (cannot decode method or password)")
 		}
 
@@ -448,7 +444,7 @@ func parseSS(uri string) (map[string]any, error) {
 			"type":     "ss",
 			"server":   hp[0],
 			"port":     port,
-			"cipher":   method,
+			"cipher":   normalizeSSMethod(method),
 			"password": password,
 		}, nil
 	}
