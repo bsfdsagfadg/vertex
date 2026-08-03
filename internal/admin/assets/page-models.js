@@ -42,8 +42,9 @@ function renderModelTable() {
       <td class="model-check"><input type="checkbox" ${row.enabled ? 'checked' : ''} onchange="setModelFlag(${index},'enabled',this.checked)"></td>
       <td class="model-check"><input type="checkbox" ${row.fake_stream_enabled ? 'checked' : ''} ${modelGlobalSettings.fake_stream_enabled ? '' : 'disabled'} onchange="setModelFlag(${index},'fake_stream_enabled',this.checked)"></td>
       <td class="model-check"><input type="checkbox" ${row.trailing_fix_enabled ? 'checked' : ''} ${modelGlobalSettings.model_turn_guard_enabled ? '' : 'disabled'} onchange="setModelFlag(${index},'trailing_fix_enabled',this.checked)"></td>
-      <td><input class="model-id-input font-mono" value="${esc(row.id)}" onchange="renameModel(${index},this.value)"></td>
-      <td><div class="model-alias-list">${chips}</div><div class="model-alias-add"><input id="modelAliasInput_${index}" placeholder="输入别名"><button type="button" class="btn ghost" onclick="addModelAlias(${index})">添加</button></div></td>
+      <td><input class="model-id-input font-mono" style="width: 260px; flex: none;" value="${esc(row.id)}" onchange="renameModel(${index},this.value)"></td>
+      <td><div class="model-alias-list">${chips}</div><div class="model-alias-add"><input id="modelAliasInput_${index}" style="width: 260px; flex: none;" placeholder="输入别名"><button type="button" class="btn ghost" onclick="addModelAlias(${index})">添加</button></div></td>
+      <td style="text-align: center; vertical-align: middle;"><button type="button" class="btn danger" onclick="removeModelRow(${index})">删除</button></td>
     </tr>`;
   }).join('');
   updateModelHeaderChecks();
@@ -94,6 +95,16 @@ function addModelRow() {
   let serial = modelRows.length + 1;
   while (modelRows.some(row => row.id === '新模型-' + serial)) serial++;
   modelRows.push(defaultModelRow('新模型-' + serial));
+  renderModelTable();
+  window.hasUnsavedSettings = true;
+}
+
+function removeModelRow(index) {
+  const row = modelRows[index];
+  if (!row) return;
+  const oldID = row.id;
+  Object.keys(modelAliasMap).forEach(alias => { if (modelAliasMap[alias] === oldID) delete modelAliasMap[alias]; });
+  modelRows.splice(index, 1);
   renderModelTable();
   window.hasUnsavedSettings = true;
 }

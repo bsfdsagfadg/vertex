@@ -118,10 +118,11 @@
             <div class="table-scroll">
               <table class="model-registry-table">
                 <thead><tr>
-                  <th>启用 <input id="allModelsEnabled" type="checkbox" onchange="setAllModelFlags('enabled',this.checked)"></th>
-                  <th>假流式 <input id="allModelsFake" type="checkbox" onchange="setAllModelFlags('fake_stream_enabled',this.checked)"></th>
-                  <th>尾部修复 <input id="allModelsTrailing" type="checkbox" onchange="setAllModelFlags('trailing_fix_enabled',this.checked)"></th>
+                  <th class="model-check">启用<br><input style="margin: 4px 0 0;" id="allModelsEnabled" type="checkbox" onchange="setAllModelFlags('enabled',this.checked)"></th>
+                  <th class="model-check">假流式<br><input style="margin: 4px 0 0;" id="allModelsFake" type="checkbox" onchange="setAllModelFlags('fake_stream_enabled',this.checked)"></th>
+                  <th class="model-check">尾部修复<br><input style="margin: 4px 0 0;" id="allModelsTrailing" type="checkbox" onchange="setAllModelFlags('trailing_fix_enabled',this.checked)"></th>
                   <th>模型 ID</th><th>别名</th>
+                  <th style="width: 80px; text-align: center;">操作</th>
                 </tr></thead>
                 <tbody id="modelsTableBody"></tbody>
               </table>
