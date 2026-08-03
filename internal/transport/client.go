@@ -61,7 +61,9 @@ func (sr *StreamResponse) Close() {
 	if sr.Body == nil {
 		return
 	}
-	_, _ = io.Copy(io.Discard, sr.Body)
+	// 流式响应可能在收到 finish/usage 后主动结束扫描，而上游仍保持连接。
+	// 这里不能同步排干 Body，否则 Close 会一直阻塞到上游关闭或 idle timeout。
+	// Session 本身是单请求生命周期；直接关闭会让底层连接退出复用池，避免残留数据串流。
 	_ = sr.Body.Close()
 }
 
