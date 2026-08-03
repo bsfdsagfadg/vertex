@@ -283,6 +283,7 @@ func TestStreamParallelCanceledLosersAreNotRecordedAsEmptyFailures(t *testing.T)
 		go func() {
 			defer close(ch)
 			if strings.Contains(uri, "node1") {
+				time.Sleep(50 * time.Millisecond) // Ensure other candidates launch before winner completes
 				ch <- StreamChunk{Data: map[string]any{"text": "winner"}}
 				return
 			}

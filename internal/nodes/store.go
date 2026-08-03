@@ -822,6 +822,7 @@ func RecordRateLimit(uri string, cooldownSec int) {
 	updateSingleNodeHealthUnsafe(uri, h)
 }
 
+//nolint:gochecknoglobals
 var atomicRoundRobinIndex uint64
 
 func getNodeTier(n Node, h *NodeHealth) int {

@@ -107,7 +107,7 @@ func DefaultConfig() AppConfig {
 var (
 	//nolint:gochecknoglobals // Global configuration cache
 	mu sync.Mutex
-	// writeMu serializes config.json read-modify-write operations.
+	//nolint:gochecknoglobals // writeMu serializes config.json read-modify-write operations.
 	writeMu sync.Mutex
 	//nolint:gochecknoglobals // Global configuration cache
 	cached *AppConfig
