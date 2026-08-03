@@ -209,7 +209,11 @@ retryLoop:
 			lastError = ve
 			// 内部实现错误直接停止；明确分类的临时网络/上游错误按策略重试。
 			if ve.Kind == "internal" || !ve.IsRetryable() || contentYielded || attempt >= maxRetries {
-				log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发异常错误失败: [%s] %s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, ve.Kind, ve.Message, reqID, nodes.GetNodeName(proxyURI))
+				if errors.Is(ve, context.Canceled) {
+					log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 取消/断开: [%s] %s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, ve.Kind, ve.Message, reqID, nodes.GetNodeName(proxyURI))
+				} else {
+					log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发异常错误失败: [%s] %s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, ve.Kind, ve.Message, reqID, nodes.GetNodeName(proxyURI))
+				}
 				break retryLoop
 			}
 			log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发异常错误将重试: [%s] %s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, ve.Kind, ve.Message, reqID, nodes.GetNodeName(proxyURI))
