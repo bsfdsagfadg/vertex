@@ -387,6 +387,10 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		return scanErr
 	}
 	if scanErr != nil {
+		var ve *VertexError
+		if errors.As(scanErr, &ve) {
+			return scanErr
+		}
 		return NewNetworkError(fmt.Errorf("upstream stream: %w", scanErr))
 	}
 	return nil
