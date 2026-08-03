@@ -150,25 +150,25 @@ td code { background: rgba(0, 0, 0, .3); padding: 2px 9px; border-radius: 8px; f
 
 /* ── 【仅在电脑端桌面视图启用的布局锁定 (锁定列宽，防止撑开挤压)】 ── */
 @media (min-width: 769px) {
-  #page-nodes table {
+  #nodesTable {
     table-layout: fixed !important;
   }
 
-  #page-nodes table th:nth-child(1), #page-nodes table td:nth-child(1) {
+  #nodesTable th:nth-child(1), #nodesTable td:nth-child(1) {
     width: 50px !important;
     text-align: center;
   }
-  #page-nodes table th:nth-child(2), #page-nodes table td:nth-child(2) {
+  #nodesTable th:nth-child(2), #nodesTable td:nth-child(2) {
     width: auto !important;
     min-width: 180px !important;
   }
-  #page-nodes table th:nth-child(3), #page-nodes table td:nth-child(3) {
+  #nodesTable th:nth-child(3), #nodesTable td:nth-child(3) {
     width: 110px !important;
   }
-  #page-nodes table th:nth-child(4), #page-nodes table td:nth-child(4) {
+  #nodesTable th:nth-child(4), #nodesTable td:nth-child(4) {
     width: 240px !important;
   }
-  #page-nodes table th:nth-child(5), #page-nodes table td:nth-child(5) {
+  #nodesTable th:nth-child(5), #nodesTable td:nth-child(5) {
     width: 290px !important;
     text-align: right !important;
   }
@@ -180,7 +180,7 @@ td code { background: rgba(0, 0, 0, .3); padding: 2px 9px; border-radius: 8px; f
     line-height: 1.35 !important;
   }
 
-  #page-nodes table td:nth-child(2) div {
+  #nodesTable td:nth-child(2) div {
     word-break: break-all !important;
     white-space: normal !important;
     line-height: 1.35 !important;

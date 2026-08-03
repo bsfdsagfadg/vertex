@@ -148,7 +148,7 @@
               <div class="field m-0">
                 <div class="field-heading">入口代理候选</div>
                 <div class="table-wrap">
-                  <table>
+                  <table id="proxyCandidatesTable">
                     <thead><tr><th>名称</th><th>类型</th><th>测试状态</th><th>操作</th></tr></thead>
                     <tbody id="proxyNodesBody"></tbody>
                   </table>
@@ -219,7 +219,7 @@
                   onclick="selectAllNodesAcrossPages()">全选所有页共 <span id="crossPageSelectTotal">0</span> 个节点</button>
               </div>
               <div class="table-wrap">
-                <table>
+                <table id="nodesTable">
                   <thead>
                     <tr>
                       <th class="th-center"><label for="selectAllNodesCheckbox" class="sr-only">全选</label><input

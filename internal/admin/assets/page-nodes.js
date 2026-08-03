@@ -661,17 +661,23 @@ function renderProxyNodes(candidates, activeURI) {
   candidates.forEach(function (candidate) {
     var row = document.createElement('tr');
     var nameCell = document.createElement('td');
-    nameCell.textContent = candidate.name || candidate.raw_uri;
+    var nameContainer = document.createElement('div');
+    nameContainer.style.cssText = 'display:flex; align-items:center; flex-wrap:wrap; gap:6px; word-break:break-all;';
+    var nameSpan = document.createElement('span');
+    nameSpan.textContent = candidate.name || candidate.raw_uri;
+    nameContainer.appendChild(nameSpan);
     if (candidate.raw_uri === activeURI) {
       var active = document.createElement('span');
       active.className = 'pill on';
-      active.style.cssText = 'font-size:10px;padding:2px 8px;margin-left:6px;';
+      active.style.cssText = 'font-size:10px;padding:2px 8px;white-space:nowrap;flex-shrink:0;';
       active.textContent = '启用中';
-      nameCell.appendChild(active);
+      nameContainer.appendChild(active);
     }
+    nameCell.appendChild(nameContainer);
     var typeCell = document.createElement('td');
     typeCell.textContent = candidate.type || '-';
     var stateCell = document.createElement('td');
+    stateCell.style.cssText = 'white-space:nowrap;';
     if (!candidate.last_test_at) {
       stateCell.textContent = '未测试';
     } else if (candidate.last_test_ok) {
