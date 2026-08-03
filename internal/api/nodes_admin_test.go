@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"net/url"
@@ -38,6 +40,29 @@ func TestBatchTestTimeoutAndDuplicateRejection(t *testing.T) {
 	adm.adminTestAll(recorder, httptest.NewRequest("POST", "/api/admin/nodes/test-all", nil))
 	if recorder.Code != 409 {
 		t.Fatalf("重复批量测试 status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestResolveBatchNodeTestRecordsSingleNodeTimeout(t *testing.T) {
+	parentCtx := context.Background()
+	nodeCtx, cancelNode := context.WithCancel(parentCtx)
+	cancelNode()
+
+	err, abort := resolveBatchNodeTest(parentCtx, nodeCtx, nil)
+	if abort {
+		t.Fatal("单节点超时不应中止该节点的结果记账")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("单节点 context 错误应成为测试失败，got %v", err)
+	}
+
+	parentCanceled, cancelParent := context.WithCancel(context.Background())
+	cancelParent()
+	childCtx, cancelChild := context.WithCancel(parentCanceled)
+	defer cancelChild()
+	_, abort = resolveBatchNodeTest(parentCanceled, childCtx, errors.New("node failed"))
+	if !abort {
+		t.Fatal("父批量任务取消后应停止结果记账")
 	}
 }
 

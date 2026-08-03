@@ -147,7 +147,8 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 				}
 
 				duration := float64(time.Since(start).Milliseconds())
-				if ctx.Err() != nil || nodeCtx.Err() != nil || nodes.CheckTestControl() {
+				testErr, abort := resolveBatchNodeTest(ctx, nodeCtx, testErr)
+				if abort || nodes.CheckTestControl() {
 					return
 				}
 				if testErr != nil {
@@ -168,6 +169,20 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 		log.Printf("[Admin] [TestAll] 全局节点测试全部结束")
 	}()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// resolveBatchNodeTest 区分整个批量任务取消与单节点超时：父任务取消时停止记账，
+// 单节点 deadline 则是该节点的一次普通失败，必须继续记录结果并推进进度。
+func resolveBatchNodeTest(parentCtx, nodeCtx context.Context, testErr error) (resolved error, abort bool) {
+	if err := parentCtx.Err(); err != nil {
+		return err, true
+	}
+	if testErr == nil {
+		if err := nodeCtx.Err(); err != nil {
+			testErr = err
+		}
+	}
+	return testErr, false
 }
 
 func batchTestTimeout(total int) time.Duration {
