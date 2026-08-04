@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
 func redactURI(raw string) string {
@@ -173,6 +174,22 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 	timeout := time.Duration(body.TimeoutSeconds * float64(time.Second))
 	ctx, cancel := context.WithTimeout(r.Context(), 2*timeout+2*time.Second)
 	defer cancel()
+
+	// capability 早检查：不支持/解析失败的候选直接返回结果，不拨号、不写健康数据。
+	pn, perr := transport.GetOrParse(body.RawURI)
+	if perr != nil || pn == nil || !pn.Supported {
+		reason := "parse failed"
+		if perr != nil {
+			reason = "parse failed: " + perr.Error()
+		} else if pn != nil {
+			reason = "unsupported: " + pn.UnsupportedReason
+		}
+		log.Printf("[Admin] [TestProxyNode] 跳过前置代理测试 %s: %s", redactURI(body.RawURI), reason)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": false, "elapsed_ms": 0, "error": reason,
+		})
+		return
+	}
 
 	start := time.Now()
 	var testErr error

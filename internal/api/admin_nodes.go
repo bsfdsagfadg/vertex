@@ -29,18 +29,29 @@ var (
 	testAllGen    uint64
 )
 
+type nodeView struct {
+	nodes.Node
+	Supported bool `json:"supported"`
+}
+
 func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, _ *http.Request) {
 	list := nodes.LoadNodes()
 	var enabledCount, disabledCount int
+	views := make([]nodeView, 0, len(list))
 	for _, n := range list {
 		if n.Disabled {
 			disabledCount++
 		} else {
 			enabledCount++
 		}
+		supported := false
+		if pn, err := transport.GetOrParse(n.RawURI); err == nil && pn != nil && pn.Supported {
+			supported = true
+		}
+		views = append(views, nodeView{Node: n, Supported: supported})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"nodes":          list,
+		"nodes":          views,
 		"health":         nodes.LoadHealth(),
 		"total":          len(list),
 		"enabled_count":  enabledCount,
@@ -124,6 +135,21 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 			go func(node nodes.Node) {
 				defer wg.Done()
 				if nodes.CheckTestControl() {
+					return
+				}
+				// capability 早检查：不支持/解析失败的节点直接标为失败并禁用，记录真实错误原因
+				pn, perr := transport.GetOrParse(node.RawURI)
+				if perr != nil || pn == nil || !pn.Supported {
+					reason := "parse failed"
+					if perr != nil {
+						reason = "parse failed: " + perr.Error()
+					} else if pn != nil {
+						reason = "unsupported: " + pn.UnsupportedReason
+					}
+					log.Printf("[Admin] [TestAll] 节点 %s (%s) 协议不支持或解析失败，标记禁用: %s", node.Name, node.Type, reason)
+					nodes.RecordTest(node.RawURI, false, 0, reason)
+					nodes.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
+					nodes.UpdateTestProgress(node.Name, false)
 					return
 				}
 				select {
@@ -216,6 +242,24 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 	timeout := time.Duration(body.TimeoutSeconds * float64(time.Second))
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
+
+	// capability 早检查：不支持/解析失败的节点直接标为失败并禁用，记录真实错误原因
+	pn, perr := transport.GetOrParse(body.RawURI)
+	if perr != nil || pn == nil || !pn.Supported {
+		reason := "parse failed"
+		if perr != nil {
+			reason = "parse failed: " + perr.Error()
+		} else if pn != nil {
+			reason = "unsupported: " + pn.UnsupportedReason
+		}
+		log.Printf("[Admin] [TestNode] 节点 %s 协议不支持或解析失败，标记禁用: %s", nodes.GetNodeName(body.RawURI), reason)
+		nodes.UpdateNodeTestResult(body.RawURI, false, 0, reason)
+		nodes.BatchUpdateNodesDisabled([]string{body.RawURI}, true)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": false, "elapsed_ms": 0, "error": reason, "disabled": true,
+		})
+		return
+	}
 
 	start := time.Now()
 	sess, err := adm.vc.Net().CreateSession(15, body.RawURI, "admin-test-node")

@@ -3,6 +3,7 @@ package nodes
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -108,41 +109,45 @@ func TestNodesLifecycle(t *testing.T) {
 	_ = os.RemoveAll(filepath.Join(config.ConfigDir(), "node_health.json"))
 }
 
-func TestParseNodeIdentity(t *testing.T) {
-	tests := []struct { //nolint:govet
-		name     string
-		uri      string
-		wantOK   bool
-		wantS    string
-		wantUI   string
-		wantHost string
-		wantPort int
-	}{
-		{"vmess", "vmess://eyJhZGQiOiIxMjcuMC4wLjEiLCJwb3J0Ijo4ODg4LCJpZCI6InV1aWQtdmFsdWUiLCJwcyI6InRlc3QifQ==", true, "vmess", "uuid-value", "127.0.0.1", 8888},
-		{"ss", "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@127.0.0.1:8888", true, "ss", "aes-256-gcm:password", "127.0.0.1", 8888},
-		{"vless", "vless://uuid@example.com:443", true, "vless", "uuid", "example.com", 443},
-		{"trojan", "trojan://password@example.com:8443", true, "trojan", "password", "example.com", 8443},
-		{"invalid", "not-a-uri://", false, "", "", "", 0},
+func TestDedupNodeIdentityFuncFallback(t *testing.T) {
+	resetState()
+	defer resetState()
+	defer func() { NodeIdentityFunc = nil }()
+
+	// nil NodeIdentityFunc：回退 rawURI 键，不同片段（不同 RawURI）不去重
+	NodeIdentityFunc = nil
+	n1 := Node{RawURI: "vless://uuid@example.com:443?security=tls#name1", Name: "node1"} //nolint:exhaustruct
+	n2 := Node{RawURI: "vless://uuid@example.com:443?security=tls#name2", Name: "node2"} //nolint:exhaustruct
+	MergeNodes([]Node{n1, n2})
+	if removed := DedupNodes(); removed != 0 {
+		t.Errorf("nil NodeIdentityFunc: expected 0 removed (rawURI fallback), got %d", removed)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s, ui, host, port, ok := parseNodeIdentity(tt.uri)
-			if ok != tt.wantOK {
-				t.Errorf("parseNodeIdentity() ok = %v, want %v", ok, tt.wantOK)
-			}
-			if s != tt.wantS {
-				t.Errorf("parseNodeIdentity() scheme = %q, want %q", s, tt.wantS)
-			}
-			if ui != tt.wantUI {
-				t.Errorf("parseNodeIdentity() userinfo = %q, want %q", ui, tt.wantUI)
-			}
-			if host != tt.wantHost {
-				t.Errorf("parseNodeIdentity() host = %q, want %q", host, tt.wantHost)
-			}
-			if port != tt.wantPort {
-				t.Errorf("parseNodeIdentity() port = %d, want %d", port, tt.wantPort)
-			}
-		})
+
+	resetState()
+	// 注册 NodeIdentityFunc：同 server 同凭证不同 RawURI（仅片段不同）→ 同键去重
+	NodeIdentityFunc = func(rawURI string) (string, bool) {
+		if idx := strings.Index(rawURI, "#"); idx != -1 {
+			return rawURI[:idx], true
+		}
+		return rawURI, true
+	}
+	MergeNodes([]Node{n1, n2})
+	if removed := DedupNodes(); removed != 1 {
+		t.Errorf("registered NodeIdentityFunc: expected 1 removed, got %d", removed)
+	}
+	result := LoadNodes()
+	if len(result) != 1 {
+		t.Errorf("expected 1 node after dedup, got %d", len(result))
+	}
+
+	resetState()
+	// 解析失败（ok=false）→ 回退 rawURI 键，不去重
+	NodeIdentityFunc = func(rawURI string) (string, bool) {
+		return rawURI, false
+	}
+	MergeNodes([]Node{n1, n2})
+	if removed := DedupNodes(); removed != 0 {
+		t.Errorf("ok=false identity: expected 0 removed (fallback), got %d", removed)
 	}
 }
 
@@ -259,6 +264,15 @@ func TestEnableNode(t *testing.T) {
 func TestDedupNodesSemantic(t *testing.T) {
 	resetState()
 	defer resetState()
+	defer func() { NodeIdentityFunc = nil }()
+
+	// 注册注入函数模拟"同身份不同 RawURI"（api 层经 nodeIdentityFromIR 实现）
+	NodeIdentityFunc = func(rawURI string) (string, bool) {
+		if idx := strings.Index(rawURI, "#"); idx != -1 {
+			return rawURI[:idx], true
+		}
+		return rawURI, true
+	}
 
 	// Two nodes with same identity but different raw URIs (different names/fragments)
 	n1 := Node{RawURI: "vless://uuid@example.com:443?security=tls#name1", Name: "node1"}

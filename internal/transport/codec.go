@@ -9,13 +9,14 @@ import (
 	"strings"
 )
 
-// ParseURI 解析各种协议的节点链接
-func ParseURI(uri string) (map[string]any, error) {
+// ParseURI 解析各种协议的节点链接，产出统一的 ParsedNode IR。
+// clash:// 自定义包装格式已删除（C1）：clash:// 走 default 返回错误。
+func ParseURI(uri string) (*ParsedNode, error) {
 	if strings.HasPrefix(uri, "vless://") {
-		return parseSimple(uri, "vless")
+		return parseVless(uri)
 	}
 	if strings.HasPrefix(uri, "trojan://") {
-		return parseSimple(uri, "trojan")
+		return parseTrojan(uri)
 	}
 	if strings.HasPrefix(uri, "vmess://") {
 		return parseVmess(uri)
@@ -24,16 +25,20 @@ func ParseURI(uri string) (map[string]any, error) {
 		return parseShadowsocksURI(uri)
 	}
 	if strings.HasPrefix(uri, "hysteria2://") || strings.HasPrefix(uri, "hy2://") {
-		return parseSimple(uri, "hysteria2")
+		return parseHysteria2(uri)
 	}
 	if strings.HasPrefix(uri, "tuic://") {
-		return parseSimple(uri, "tuic")
+		return parseTuic(uri)
 	}
-	if strings.HasPrefix(uri, "socks5://") || strings.HasPrefix(uri, "socks5h://") || strings.HasPrefix(uri, "socks://") {
+	if strings.HasPrefix(uri, "socks5://") || strings.HasPrefix(uri, "socks5h://") || strings.HasPrefix(uri, "socks://") ||
+		strings.HasPrefix(uri, "socks4://") || strings.HasPrefix(uri, "socks4a://") {
 		return parseSocks(uri)
 	}
 	if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
 		return parseHTTP(uri)
+	}
+	if strings.HasPrefix(uri, "ssh://") {
+		return parseSSH(uri)
 	}
 	if strings.HasPrefix(uri, "ssr://") || strings.HasPrefix(uri, "shadowsocksr://") {
 		return parseShadowsocksR(uri)
@@ -44,12 +49,6 @@ func ParseURI(uri string) (map[string]any, error) {
 	if strings.HasPrefix(uri, "anytls://") {
 		return parseAnyTLS(uri)
 	}
-	if strings.HasPrefix(uri, "clash://") {
-		b, _ := base64.StdEncoding.DecodeString(padB64(uri[8:]))
-		var d map[string]any
-		_ = json.Unmarshal(b, &d)
-		return d, nil
-	}
 	safeURI := uri
 	if len(safeURI) > 10 {
 		safeURI = safeURI[:10]
@@ -57,123 +56,245 @@ func ParseURI(uri string) (map[string]any, error) {
 	return nil, fmt.Errorf("unsupported or complex protocol: %s", safeURI)
 }
 
-func parseSimple(uri, typ string) (map[string]any, error) {
+func parseVless(uri string) (*ParsedNode, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
-
-	}
-	port, _ := strconv.Atoi(u.Port())
-	if port == 0 {
-		port = 443
 	}
 	q := u.Query()
-	name := u.Fragment
-	if dec, err := url.QueryUnescape(name); err == nil {
-		name = dec
+	n := &ParsedNode{
+		RawURI: uri,
+		Type:   "vless",
+		Name:   parseFragment(u.Fragment),
+		Server: u.Hostname(),
+		Port:   parsePortOrDefault(u.Port(), 443),
 	}
-	out := map[string]any{"name": name, "type": typ, "server": u.Hostname(), "port": port}
-
-	username := ""
 	if u.User != nil {
-		username = u.User.Username()
-	}
-	if typ == "trojan" || typ == "hysteria2" {
-		out["password"] = username
-	} else {
-		out["uuid"] = username
+		n.UUID = u.User.Username()
 	}
 
-	sec := strings.ToLower(q.Get("security"))
-	if sec == "reality" || sec == "tls" || typ == "trojan" || typ == "hysteria2" || typ == "tuic" {
-		out["tls"] = true
-		sni := firstNonEmpty(q.Get("sni"), u.Hostname())
-		out["sni"] = sni
-		out["servername"] = firstNonEmpty(q.Get("servername"), sni)
-		if sec != "reality" && queryFlag(q, "allowInsecure", "insecure") {
-			out["skip-cert-verify"] = true
-		}
-	}
-
-	if sec == "reality" {
+	switch strings.ToLower(q.Get("security")) {
+	case "reality":
+		tls := &TLSOptions{Enabled: true}
+		tls.ServerName = firstNonEmpty(q.Get("sni"), q.Get("servername"), u.Hostname())
 		if pubKey := firstNonEmpty(q.Get("pbk"), q.Get("public-key")); pubKey != "" {
-			out["reality-opts"] = map[string]any{"public-key": pubKey, "short-id": firstNonEmpty(q.Get("sid"), q.Get("short-id"))}
-		}
-	}
-
-	if typ == "vless" || typ == "trojan" {
-		if flow := q.Get("flow"); flow != "" {
-			out["flow"] = flow
-		}
-		if fp := firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")); fp != "" {
-			out["client-fingerprint"] = fp
-		}
-		network := q.Get("type")
-		if network == "ws" || network == "grpc" || network == "http" || network == "xhttp" {
-			out["network"] = network
-			switch network {
-			case "ws":
-				path := q.Get("path")
-				if path == "" {
-					path = "/"
-				}
-				host := q.Get("host")
-				wsOpts := map[string]any{"path": path}
-				if host != "" {
-					wsOpts["headers"] = map[string]any{"Host": host}
-				}
-				out["ws-opts"] = wsOpts
-			case "grpc":
-				if serviceName := q.Get("serviceName"); serviceName != "" {
-					out["grpc-opts"] = map[string]any{"grpc-service-name": serviceName}
-				}
+			tls.Reality = &RealityOptions{
+				PublicKey: pubKey,
+				ShortID:   firstNonEmpty(q.Get("sid"), q.Get("short-id")),
 			}
 		}
-		if alpn := q.Get("alpn"); alpn != "" {
-			out["alpn"] = strings.Split(alpn, ",")
-		}
-		if q.Get("packetAddr") == "true" {
-			out["packet-addr"] = true
-		}
-		if q.Get("xudp") == "true" {
-			out["xudp"] = true
-		}
-	}
-	if typ == "hysteria2" {
-		if sni := firstNonEmpty(q.Get("sni"), q.Get("peer"), u.Hostname()); sni != "" {
-			out["sni"] = sni
-			out["servername"] = sni
-		}
-		if ports := firstNonEmpty(q.Get("ports"), q.Get("mport")); ports != "" {
-			out["ports"] = ports
-		}
-		if obfs := q.Get("obfs"); obfs != "" {
-			out["obfs"] = obfs
-		}
-		if obfsPassword := firstNonEmpty(q.Get("obfs-password"), q.Get("obfsPassword")); obfsPassword != "" {
-			out["obfs-password"] = obfsPassword
-		}
-		if fp := firstNonEmpty(q.Get("fp"), q.Get("fingerprint")); fp != "" {
-			out["fingerprint"] = fp
+		if fp := firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")); fp != "" {
+			tls.Fingerprint = fp
+		} else {
+			tls.Fingerprint = "chrome"
 		}
 		if alpn := q.Get("alpn"); alpn != "" {
-			out["alpn"] = strings.Split(alpn, ",")
+			tls.ALPN = strings.Split(alpn, ",")
 		}
+		n.TLS = tls
+	case "tls":
+		tls := &TLSOptions{Enabled: true}
+		tls.ServerName = firstNonEmpty(q.Get("sni"), q.Get("servername"), u.Hostname())
+		if queryFlag(q, "allowInsecure", "insecure") {
+			tls.Insecure = true
+		}
+		if fp := firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")); fp != "" {
+			tls.Fingerprint = fp
+		}
+		if alpn := q.Get("alpn"); alpn != "" {
+			tls.ALPN = strings.Split(alpn, ",")
+		}
+		n.TLS = tls
 	}
-	return out, nil
+
+	if flow := q.Get("flow"); flow != "" {
+		n.Flow = flow
+	}
+	applyVlessTrojanTransport(n, q)
+	if pe := q.Get("packet_encoding"); pe != "" {
+		n.PacketEncoding = pe
+	} else if q.Get("packetAddr") == "true" || q.Get("xudp") == "true" {
+		n.PacketEncoding = "packetaddr"
+	}
+	applyCapability(n)
+	return n, nil
 }
 
-func queryFlag(q url.Values, keys ...string) bool {
-	for _, key := range keys {
-		switch strings.ToLower(strings.TrimSpace(q.Get(key))) {
-		case "1", "true", "yes", "on":
-			return true
-		}
+func parseTrojan(uri string) (*ParsedNode, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
 	}
-	return false
+	q := u.Query()
+	n := &ParsedNode{
+		RawURI: uri,
+		Type:   "trojan",
+		Name:   parseFragment(u.Fragment),
+		Server: u.Hostname(),
+		Port:   parsePortOrDefault(u.Port(), 443),
+	}
+	if u.User != nil {
+		n.Password = u.User.Username()
+	}
+
+	// trojan 强制启用 TLS（等价 builder forceTLS=true）
+	tls := &TLSOptions{Enabled: true}
+	tls.ServerName = firstNonEmpty(q.Get("sni"), q.Get("servername"), u.Hostname())
+	if queryFlag(q, "allowInsecure", "insecure") {
+		tls.Insecure = true
+	}
+	if fp := firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")); fp != "" {
+		tls.Fingerprint = fp
+	}
+	if alpn := q.Get("alpn"); alpn != "" {
+		tls.ALPN = strings.Split(alpn, ",")
+	}
+	n.TLS = tls
+
+	if flow := q.Get("flow"); flow != "" {
+		n.Flow = flow
+	}
+	applyVlessTrojanTransport(n, q)
+	applyCapability(n)
+	return n, nil
 }
 
-func parseVmess(uri string) (map[string]any, error) {
+// applyVlessTrojanTransport vless/trojan 共用的传输层解析（type 参数）。
+// tcp 类与空 → 保持 Transport=nil；xhttp/splithttp/h2 等保留原始 Type 供 capability 判定。
+func applyVlessTrojanTransport(n *ParsedNode, q url.Values) {
+	network := strings.ToLower(strings.TrimSpace(q.Get("type")))
+	if network == "" || tcpAliases[network] {
+		return
+	}
+	switch network {
+	case "ws":
+		path := q.Get("path")
+		if path == "" {
+			path = "/"
+		}
+		tr := &TransportOptions{Type: "ws", Path: path}
+		if host := q.Get("host"); host != "" {
+			tr.Host = host
+			tr.Headers = map[string][]string{"Host": {host}}
+		}
+		n.Transport = tr
+	case "grpc":
+		tr := &TransportOptions{Type: "grpc"}
+		if serviceName := q.Get("serviceName"); serviceName != "" {
+			tr.ServiceName = serviceName
+		}
+		n.Transport = tr
+	case "http":
+		path := q.Get("path")
+		if path == "" {
+			path = "/"
+		}
+		tr := &TransportOptions{Type: "http", Path: path, Method: q.Get("method")}
+		if host := q.Get("host"); host != "" {
+			tr.Host = host
+			tr.Headers = map[string][]string{"Host": {host}}
+		}
+		n.Transport = tr
+	case "httpupgrade":
+		path := q.Get("path")
+		if path == "" {
+			path = "/"
+		}
+		n.Transport = &TransportOptions{Type: "httpupgrade", Path: path, Host: q.Get("host")}
+	case "quic":
+		n.Transport = &TransportOptions{Type: "quic"}
+	default:
+		// xhttp/splithttp/h2 等：保留原始 Type，由 applyCapability 判定
+		n.Transport = &TransportOptions{Type: network}
+	}
+}
+
+func parseHysteria2(uri string) (*ParsedNode, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+	q := u.Query()
+	n := &ParsedNode{
+		RawURI: uri,
+		Type:   "hysteria2",
+		Name:   parseFragment(u.Fragment),
+		Server: u.Hostname(),
+		Port:   parsePortOrDefault(u.Port(), 443),
+	}
+	if u.User != nil {
+		n.Password = u.User.Username()
+	}
+
+	// hy2 强制启用 TLS；sni>peer>server（对齐 builder）
+	tls := &TLSOptions{Enabled: true}
+	tls.ServerName = firstNonEmpty(q.Get("sni"), q.Get("peer"), u.Hostname())
+	if fp := firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")); fp != "" {
+		tls.Fingerprint = fp
+	}
+	if queryFlag(q, "allowInsecure", "insecure") {
+		tls.Insecure = true
+	}
+	if alpn := q.Get("alpn"); alpn != "" {
+		tls.ALPN = strings.Split(alpn, ",")
+	}
+	n.TLS = tls
+
+	if rawPorts := firstNonEmpty(q.Get("ports"), q.Get("mport")); rawPorts != "" {
+		if serverPorts, ok := parseHysteria2Ports(rawPorts); ok {
+			n.ServerPorts = []string(serverPorts)
+		}
+	}
+	if obfs := q.Get("obfs"); obfs != "" {
+		n.Obfs = obfs
+		n.ObfsPassword = firstNonEmpty(q.Get("obfs-password"), q.Get("obfsPassword"))
+	}
+	applyCapability(n)
+	return n, nil
+}
+
+func parseTuic(uri string) (*ParsedNode, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+	q := u.Query()
+	n := &ParsedNode{
+		RawURI: uri,
+		Type:   "tuic",
+		Name:   parseFragment(u.Fragment),
+		Server: u.Hostname(),
+		Port:   parsePortOrDefault(u.Port(), 443),
+	}
+	if u.User != nil {
+		n.UUID = u.User.Username()
+		if pwd, ok := u.User.Password(); ok {
+			n.Password = pwd
+		}
+	}
+
+	// tuic 强制启用 TLS；sni>peer>server（对齐 builder）
+	tls := &TLSOptions{Enabled: true}
+	tls.ServerName = firstNonEmpty(q.Get("sni"), q.Get("peer"), u.Hostname())
+	if queryFlag(q, "allowInsecure", "insecure") {
+		tls.Insecure = true
+	}
+	if alpn := q.Get("alpn"); alpn != "" {
+		tls.ALPN = strings.Split(alpn, ",")
+	}
+	n.TLS = tls
+
+	if cc := q.Get("congestion_control"); cc != "" {
+		n.CongestionControl = cc
+	}
+	if udpMode := q.Get("udp_relay_mode"); udpMode != "" {
+		n.UDPRelayMode = udpMode
+	}
+	applyCapability(n)
+	return n, nil
+}
+
+func parseVmess(uri string) (*ParsedNode, error) {
 	b64Str := uri[8:]
 	if idx := strings.Index(b64Str, "?"); idx != -1 {
 		b64Str = b64Str[:idx]
@@ -184,112 +305,101 @@ func parseVmess(uri string) (map[string]any, error) {
 	b, err := base64.StdEncoding.DecodeString(padB64(b64Str))
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
-
 	}
 	var d map[string]any
 	if err := json.Unmarshal(b, &d); err != nil {
 		return nil, fmt.Errorf("error: %w", err)
-
-	}
-	portStr := fmt.Sprintf("%v", d["port"])
-	port, _ := strconv.Atoi(portStr)
-
-	// 初始化 VMess 出站基本参数
-	out := map[string]any{
-		"name":   d["ps"],
-		"type":   "vmess",
-		"server": d["add"],
-		"port":   port,
-		"uuid":   d["id"],
-		"cipher": "auto",
 	}
 
-	// 1. 映射 alterId (aid)
+	port, _ := strconv.Atoi(fmt.Sprintf("%v", d["port"]))
+	n := &ParsedNode{
+		RawURI:   uri,
+		Type:     "vmess",
+		Name:     anyToString(d["ps"]),
+		Server:   anyToString(d["add"]),
+		Port:     port,
+		UUID:     anyToString(d["id"]),
+		Cipher:   "auto",
+		Security: firstNonEmpty(anyToString(d["scy"]), "auto"),
+	}
+
+	// alterId (aid) 兼容 float64/int/string
 	if aidVal, ok := d["aid"]; ok {
 		switch v := aidVal.(type) {
 		case float64:
-			out["alterId"] = int(v)
+			n.AlterID = int(v)
 		case int:
-			out["alterId"] = v
+			n.AlterID = v
 		case string:
-			if n, err := strconv.Atoi(v); err == nil {
-				out["alterId"] = n
+			if num, err := strconv.Atoi(v); err == nil {
+				n.AlterID = num
 			}
 		}
 	}
 
-	// 2. 补全 TLS 配置（极关键，修复免费-日本1等节点的 TLS 缺失）
-	tlsStr, _ := d["tls"].(string)
-	if strings.ToLower(tlsStr) == "tls" {
-		host, _ := d["host"].(string)
+	// TLS：d["tls"]=="tls" 才启用；sni>host>server（host 双用途 C9）
+	host, _ := d["host"].(string)
+	if tlsStr, _ := d["tls"].(string); strings.ToLower(tlsStr) == "tls" {
 		sni, _ := d["sni"].(string)
 		if sni == "" {
 			sni = host
 		}
 		if sni == "" {
-			sni, _ = d["add"].(string)
+			sni = n.Server
 		}
-		out["tls"] = true
-		out["sni"] = sni
-		out["servername"] = sni
+		tls := &TLSOptions{Enabled: true, ServerName: sni}
 		if fp, ok := d["fp"].(string); ok && fp != "" {
-			out["client-fingerprint"] = fp
-			out["fingerprint"] = fp
+			tls.Fingerprint = fp
 		}
 		if alpn, ok := d["alpn"].(string); ok && alpn != "" {
-			out["alpn"] = strings.Split(alpn, ",")
+			tls.ALPN = strings.Split(alpn, ",")
 		}
 		if insecure, ok := d["skip-cert-verify"].(bool); ok {
-			out["skip-cert-verify"] = insecure
+			tls.Insecure = insecure
 		} else if allowInsecure, ok := d["allowInsecure"].(string); ok && allowInsecure == "1" {
-			out["skip-cert-verify"] = true
-		} else {
-			out["skip-cert-verify"] = false
+			tls.Insecure = true
 		}
+		n.TLS = tls
 	}
 
-	// 3. 补全 V2Ray 传输层配置（WS / gRPC，修复 IEPL 等节点的 WS 缺失）
+	// 传输层：tcp/none/raw/tcpheader/空 → nil（tcpAliases，与 vless/trojan 一致）；h2→http；ws 空 host 不填 Headers；grpc 用 path 作 ServiceName
 	netType, _ := d["net"].(string)
 	netType = strings.ToLower(strings.TrimSpace(netType))
-	if netType != "" && netType != "tcp" {
+	if netType != "" && !tcpAliases[netType] {
 		path, _ := d["path"].(string)
-		host, _ := d["host"].(string)
-
-		out["network"] = netType
-
 		switch netType {
 		case "ws":
-			out["ws-opts"] = map[string]any{
-				"path": path,
-				"headers": map[string]any{
-					"Host": host,
-				},
+			tr := &TransportOptions{Type: "ws", Path: path}
+			if host != "" {
+				tr.Host = host
+				tr.Headers = map[string][]string{"Host": {host}}
 			}
+			n.Transport = tr
 		case "grpc":
-			out["grpc-opts"] = map[string]any{
-				"grpc-service-name": path,
-			}
+			n.Transport = &TransportOptions{Type: "grpc", ServiceName: path}
 		case "http", "h2":
 			hPath := path
 			if hPath == "" {
 				hPath = "/"
 			}
-			out["http-opts"] = map[string]any{
-				"method":  "GET",
-				"path":    []string{hPath},
-				"headers": map[string][]string{"Host": {host}},
+			tr := &TransportOptions{Type: "http", Path: hPath, Method: "GET"}
+			if host != "" {
+				tr.Host = host
+				tr.Headers = map[string][]string{"Host": {host}}
 			}
+			n.Transport = tr
+		default:
+			n.Transport = &TransportOptions{Type: netType}
 		}
 	}
-
-	return out, nil
+	applyCapability(n)
+	return n, nil
 }
 
-func parseShadowsocksURI(uri string) (map[string]any, error) {
+func parseShadowsocksURI(uri string) (*ParsedNode, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
-
 	}
 	if u.User == nil || u.Hostname() == "" {
 		return parseSS(uri)
@@ -303,21 +413,334 @@ func parseShadowsocksURI(uri string) (map[string]any, error) {
 	if port == 0 {
 		return nil, fmt.Errorf("ss parse failed: invalid host:port")
 	}
-	name := u.Fragment
-	if dec, err := url.QueryUnescape(name); err == nil {
-		name = dec
+
+	n := &ParsedNode{
+		RawURI:   uri,
+		Type:     "ss",
+		Name:     parseFragment(u.Fragment),
+		Server:   u.Hostname(),
+		Port:     port,
+		Cipher:   normalizeSSMethod(method),
+		Password: password,
+	}
+	applySSPluginIR(n, u.Query().Get("plugin"))
+	applyCapability(n)
+	return n, nil
+}
+
+func parseSS(uri string) (*ParsedNode, error) {
+	body := uri[5:]
+	if idx := strings.Index(body, "#"); idx != -1 {
+		body = body[:idx]
+	}
+	if idx := strings.Index(body, "@"); idx != -1 {
+		userInfo := body[:idx]
+		hp := strings.Split(body[idx+1:], ":")
+		if len(hp) < 2 {
+			return nil, fmt.Errorf("ss parse failed: invalid host:port")
+		}
+		port, _ := strconv.Atoi(hp[1])
+
+		method, password, err := decodeSSCredentials(userInfo)
+		if err != nil || method == "" || password == "" {
+			return nil, fmt.Errorf("ss parse failed: invalid userinfo (cannot decode method or password)")
+		}
+
+		n := &ParsedNode{
+			RawURI:   uri,
+			Type:     "ss",
+			Server:   hp[0],
+			Port:     port,
+			Cipher:   normalizeSSMethod(method),
+			Password: password,
+		}
+		applyCapability(n)
+		return n, nil
+	}
+	return nil, fmt.Errorf("ss parse failed")
+}
+
+// applySSPluginIR 把 ss 的 plugin 参数（如 "simple-obfs;obfs=http;obfs-host=x"）写入 IR：
+// Plugin=小写原始名，PluginOptions=分段 join(";")（C2，对齐 builder 语义）。
+func applySSPluginIR(n *ParsedNode, pluginRaw string) {
+	pluginRaw = strings.TrimSpace(pluginRaw)
+	if pluginRaw == "" {
+		return
+	}
+	segments := strings.Split(pluginRaw, ";")
+	n.Plugin = strings.ToLower(strings.TrimSpace(segments[0]))
+	if len(segments) > 1 {
+		n.PluginOptions = strings.Join(segments[1:], ";")
+	}
+}
+
+func parseSocks(uri string) (*ParsedNode, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+	n := &ParsedNode{
+		RawURI:       uri,
+		Type:         "socks5",
+		Name:         parseFragment(u.Fragment),
+		Server:       u.Hostname(),
+		Port:         parsePortOrDefault(u.Port(), 1080),
+		SOCKSVersion: "5",
+	}
+	switch {
+	case strings.HasPrefix(uri, "socks4a://"):
+		n.SOCKSVersion = "4a"
+	case strings.HasPrefix(uri, "socks4://"):
+		n.SOCKSVersion = "4"
+	}
+	if u.User != nil {
+		// 仅 userinfo 有 password 时填 Password（对齐 builder 现状）；仅 username 时保留 Username
+		// （proxyMapToURI 转出的 user@host 形式回读不失真，去重 identity 保持对称）
+		if pwd, ok := u.User.Password(); ok && pwd != "" {
+			n.Username = u.User.Username()
+			n.Password = pwd
+		} else if u.User.Username() != "" {
+			n.Username = u.User.Username()
+		}
+	}
+	applyCapability(n)
+	return n, nil
+}
+
+func parseSSH(uri string) (*ParsedNode, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+	q := u.Query()
+	n := &ParsedNode{
+		RawURI: uri,
+		Type:   "ssh",
+		Name:   parseFragment(u.Fragment),
+		Server: u.Hostname(),
+		Port:   parsePortOrDefault(u.Port(), 22),
+	}
+	if u.User != nil {
+		n.Username = u.User.Username()
+		if pwd, ok := u.User.Password(); ok {
+			n.Password = pwd
+		}
+	}
+	if pk := strings.TrimSpace(q.Get("pk")); pk != "" {
+		n.SSHPrivateKey = pk
+	}
+	if psk := strings.TrimSpace(q.Get("psk")); psk != "" {
+		n.SSHPrivateKeyPassphrase = psk
+	}
+	applyCapability(n)
+	return n, nil
+}
+
+func parseHTTP(uri string) (*ParsedNode, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+	n := &ParsedNode{
+		RawURI: uri,
+		Type:   "http",
+		Name:   parseFragment(u.Fragment),
+		Server: u.Hostname(),
+		Port:   parsePortOrDefault(u.Port(), 80),
+	}
+	if u.User != nil {
+		// 仅 userinfo 有 password 时填 Password（对齐 builder 现状）；仅 username 时保留 Username
+		if pwd, ok := u.User.Password(); ok && pwd != "" {
+			n.Username = u.User.Username()
+			n.Password = pwd
+		} else if u.User.Username() != "" {
+			n.Username = u.User.Username()
+		}
+	}
+	if strings.HasPrefix(uri, "https://") {
+		n.TLS = &TLSOptions{Enabled: true, ServerName: u.Hostname()}
+	}
+	applyCapability(n)
+	return n, nil
+}
+
+func parseShadowsocksR(uri string) (*ParsedNode, error) {
+	prefix := "ssr://"
+	if strings.HasPrefix(uri, "shadowsocksr://") {
+		prefix = "shadowsocksr://"
+	}
+	body := uri[len(prefix):]
+
+	name := ""
+	if idx := strings.Index(body, "#"); idx != -1 {
+		if dec, err := url.QueryUnescape(body[idx+1:]); err == nil {
+			name = dec
+		} else {
+			name = body[idx+1:]
+		}
+		body = body[:idx]
 	}
 
-	out := map[string]any{
-		"name":     name,
-		"type":     "ss",
-		"server":   u.Hostname(),
-		"port":     port,
-		"cipher":   normalizeSSMethod(method),
-		"password": password,
+	b, err := base64.StdEncoding.DecodeString(padB64(body))
+	if err != nil {
+		return nil, fmt.Errorf("ssr: failed to decode body: %w", err)
 	}
-	applySSPlugin(out, u.Query().Get("plugin"))
-	return out, nil
+
+	decoded := string(b)
+
+	params := ""
+	if idx := strings.Index(decoded, "?"); idx != -1 {
+		params = decoded[idx+1:]
+		decoded = decoded[:idx]
+	}
+
+	parts := strings.SplitN(decoded, ":", 6)
+	if len(parts) < 6 {
+		return nil, fmt.Errorf("ssr: invalid body format: %s", decoded)
+	}
+
+	server := parts[0]
+	port, _ := strconv.Atoi(parts[1])
+	protocol := parts[2]
+	method := parts[3]
+	obfs := parts[4]
+	pwdB64 := strings.TrimRight(parts[5], "/")
+
+	pwdBytes, err := base64.StdEncoding.DecodeString(padB64(pwdB64))
+	if err != nil {
+		return nil, fmt.Errorf("ssr: failed to decode password: %w", err)
+	}
+
+	n := &ParsedNode{
+		RawURI:   uri,
+		Type:     "ssr",
+		Name:     name,
+		Server:   server,
+		Port:     port,
+		Cipher:   method,
+		Password: string(pwdBytes),
+		Protocol: protocol,
+		Obfs:     obfs,
+	}
+
+	if params != "" {
+		q, _ := url.ParseQuery(params)
+		// 三键兼容读（C5）：obfsparam|obfs_param|obfs-param、protoparam|protocol_param|protocol-param
+		n.ObfsParam = firstNonEmpty(q.Get("obfsparam"), q.Get("obfs_param"), q.Get("obfs-param"))
+		n.ProtocolParam = firstNonEmpty(q.Get("protoparam"), q.Get("protocol_param"), q.Get("protocol-param"))
+		if remarks := q.Get("remarks"); remarks != "" && name == "" {
+			if dec, err := url.QueryUnescape(remarks); err == nil {
+				n.Name = dec
+			} else {
+				n.Name = remarks
+			}
+		}
+		// group 逻辑保留为忽略：IR 无 group 字段，旧 out["group"] 无消费者
+	}
+	applyCapability(n)
+	return n, nil
+}
+
+func parseHysteria(uri string) (*ParsedNode, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+	q := u.Query()
+	n := &ParsedNode{
+		RawURI: uri,
+		Type:   "hysteria",
+		Name:   parseFragment(u.Fragment),
+		Server: u.Hostname(),
+		Port:   parsePortOrDefault(u.Port(), 443),
+	}
+
+	authStr := ""
+	if u.User != nil {
+		authStr = u.User.Username()
+	}
+	if authStr == "" {
+		authStr = q.Get("auth")
+	}
+	if authStr != "" {
+		n.AuthString = authStr
+	}
+
+	// hysteria 强制启用 TLS；sni>server
+	tls := &TLSOptions{Enabled: true}
+	tls.ServerName = firstNonEmpty(q.Get("sni"), u.Hostname())
+	if queryFlag(q, "allowInsecure", "insecure") {
+		tls.Insecure = true
+	}
+	if alpn := q.Get("alpn"); alpn != "" {
+		tls.ALPN = strings.Split(alpn, ",")
+	}
+	n.TLS = tls
+
+	if obfs := q.Get("obfs"); obfs != "" {
+		n.Obfs = obfs
+	}
+	applyCapability(n)
+	return n, nil
+}
+
+func parseAnyTLS(uri string) (*ParsedNode, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+	n := &ParsedNode{
+		RawURI: uri,
+		Type:   "anytls",
+		Name:   parseFragment(u.Fragment),
+		Server: u.Hostname(),
+		Port:   parsePortOrDefault(u.Port(), 443),
+	}
+	if u.User != nil {
+		n.Password = u.User.Username()
+	}
+	n.TLS = &TLSOptions{Enabled: true, ServerName: u.Hostname()}
+	applyCapability(n)
+	return n, nil
+}
+
+func queryFlag(q url.Values, keys ...string) bool {
+	for _, key := range keys {
+		switch strings.ToLower(strings.TrimSpace(q.Get(key))) {
+		case "1", "true", "yes", "on":
+			return true
+		}
+	}
+	return false
+}
+
+func parseFragment(fragment string) string {
+	if dec, err := url.QueryUnescape(fragment); err == nil {
+		return dec
+	}
+	return fragment
+}
+
+func parsePortOrDefault(port string, def int) int {
+	if port == "" {
+		return def
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p == 0 {
+		return def
+	}
+	return p
+}
+
+func anyToString(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", x)
+	}
 }
 
 func decodeSSUserInfo(user *url.Userinfo) (string, string, error) {
@@ -368,287 +791,4 @@ func isSSPlainMethod(method string) bool {
 		return true
 	}
 	return false
-}
-
-func applySSPlugin(out map[string]any, pluginRaw string) {
-	pluginRaw = strings.TrimSpace(pluginRaw)
-	if pluginRaw == "" {
-		return
-	}
-
-	segments := strings.Split(pluginRaw, ";")
-	plugin := strings.ToLower(strings.TrimSpace(segments[0]))
-	rawOpts := map[string]string{}
-	for _, segment := range segments[1:] {
-		key, value, ok := strings.Cut(segment, "=")
-		if !ok {
-			continue
-		}
-		rawOpts[strings.ToLower(strings.TrimSpace(key))] = strings.TrimSpace(value)
-	}
-
-	switch plugin {
-	case "simple-obfs", "obfs-local", "obfs":
-		out["plugin"] = "obfs"
-		opts := map[string]any{}
-		if mode := firstNonEmpty(rawOpts["obfs"], rawOpts["mode"]); mode != "" {
-			opts["mode"] = mode
-		}
-		if host := firstNonEmpty(rawOpts["obfs-host"], rawOpts["host"]); host != "" {
-			opts["host"] = host
-		}
-		if len(opts) > 0 {
-			out["plugin-opts"] = opts
-		}
-	default:
-		out["plugin"] = plugin
-		if len(rawOpts) > 0 {
-			opts := make(map[string]any, len(rawOpts))
-			for key, value := range rawOpts {
-				opts[key] = value
-			}
-			out["plugin-opts"] = opts
-		}
-	}
-}
-
-func parseSS(uri string) (map[string]any, error) {
-	body := uri[5:]
-	if idx := strings.Index(body, "#"); idx != -1 {
-		body = body[:idx]
-	}
-	if idx := strings.Index(body, "@"); idx != -1 {
-		userInfo := body[:idx]
-		hp := strings.Split(body[idx+1:], ":")
-		if len(hp) < 2 {
-			return nil, fmt.Errorf("ss parse failed: invalid host:port")
-		}
-		port, _ := strconv.Atoi(hp[1])
-
-		method, password, err := decodeSSCredentials(userInfo)
-		if err != nil || method == "" || password == "" {
-			return nil, fmt.Errorf("ss parse failed: invalid userinfo (cannot decode method or password)")
-		}
-
-		name := ""
-		if parts := strings.Split(hp[1], "#"); len(parts) > 1 {
-			if dec, err := url.QueryUnescape(parts[1]); err == nil {
-				name = dec
-			} else {
-				name = parts[1]
-			}
-		}
-
-		return map[string]any{
-			"name":     name,
-			"type":     "ss",
-			"server":   hp[0],
-			"port":     port,
-			"cipher":   normalizeSSMethod(method),
-			"password": password,
-		}, nil
-	}
-	return nil, fmt.Errorf("ss parse failed")
-}
-
-func parseSocks(uri string) (map[string]any, error) {
-	u, err := url.Parse(uri)
-	if err != nil {
-		return nil, fmt.Errorf("error: %w", err)
-	}
-	port, _ := strconv.Atoi(u.Port())
-	if port == 0 {
-		port = 1080
-	}
-	name := u.Fragment
-	if dec, err := url.QueryUnescape(name); err == nil {
-		name = dec
-	}
-	out := map[string]any{"name": name, "type": "socks5", "server": u.Hostname(), "port": port}
-	if u.User != nil {
-		out["username"] = u.User.Username()
-		out["password"], _ = u.User.Password()
-	}
-	return out, nil
-}
-
-func parseHTTP(uri string) (map[string]any, error) {
-	u, err := url.Parse(uri)
-	if err != nil {
-		return nil, fmt.Errorf("error: %w", err)
-	}
-	port, _ := strconv.Atoi(u.Port())
-	if port == 0 {
-		port = 80
-	}
-	name := u.Fragment
-	if dec, err := url.QueryUnescape(name); err == nil {
-		name = dec
-	}
-	out := map[string]any{"name": name, "type": "http", "server": u.Hostname(), "port": port}
-	if u.User != nil {
-		out["username"] = u.User.Username()
-		out["password"], _ = u.User.Password()
-	}
-	if strings.HasPrefix(uri, "https://") {
-		out["tls"] = true
-	}
-	return out, nil
-}
-
-func parseShadowsocksR(uri string) (map[string]any, error) {
-	prefix := "ssr://"
-	if strings.HasPrefix(uri, "shadowsocksr://") {
-		prefix = "shadowsocksr://"
-	}
-	body := uri[len(prefix):]
-
-	name := ""
-	if idx := strings.Index(body, "#"); idx != -1 {
-		if dec, err := url.QueryUnescape(body[idx+1:]); err == nil {
-			name = dec
-		} else {
-			name = body[idx+1:]
-		}
-		body = body[:idx]
-	}
-
-	b, err := base64.StdEncoding.DecodeString(padB64(body))
-	if err != nil {
-		return nil, fmt.Errorf("ssr: failed to decode body: %w", err)
-	}
-
-	decoded := string(b)
-
-	params := ""
-	if idx := strings.Index(decoded, "?"); idx != -1 {
-		params = decoded[idx+1:]
-		decoded = decoded[:idx]
-	}
-
-	parts := strings.SplitN(decoded, ":", 6)
-	if len(parts) < 6 {
-		return nil, fmt.Errorf("ssr: invalid body format: %s", decoded)
-	}
-
-	server := parts[0]
-	port, _ := strconv.Atoi(parts[1])
-	protocol := parts[2]
-	method := parts[3]
-	obfs := parts[4]
-	pwdB64 := strings.TrimRight(parts[5], "/")
-
-	pwdBytes, err := base64.StdEncoding.DecodeString(padB64(pwdB64))
-	if err != nil {
-		return nil, fmt.Errorf("ssr: failed to decode password: %w", err)
-	}
-
-	out := map[string]any{
-		"name":     name,
-		"type":     "ssr",
-		"server":   server,
-		"port":     port,
-		"cipher":   method,
-		"password": string(pwdBytes),
-		"protocol": protocol,
-		"obfs":     obfs,
-	}
-
-	if params != "" {
-		q, _ := url.ParseQuery(params)
-		if obfsParam := q.Get("obfsparam"); obfsParam != "" {
-			out["obfs-param"] = obfsParam
-		}
-		if protoParam := q.Get("protoparam"); protoParam != "" {
-			out["protocol-param"] = protoParam
-		}
-		if remarks := q.Get("remarks"); remarks != "" && name == "" {
-			if dec, err := url.QueryUnescape(remarks); err == nil {
-				out["name"] = dec
-			} else {
-				out["name"] = remarks
-			}
-		}
-		if group := q.Get("group"); group != "" {
-			out["group"] = group
-		}
-	}
-
-	return out, nil
-}
-
-func parseHysteria(uri string) (map[string]any, error) {
-	u, err := url.Parse(uri)
-	if err != nil {
-		return nil, fmt.Errorf("error: %w", err)
-	}
-	port, _ := strconv.Atoi(u.Port())
-	if port == 0 {
-		port = 443
-	}
-	q := u.Query()
-	name := u.Fragment
-	if dec, err := url.QueryUnescape(name); err == nil {
-		name = dec
-	}
-
-	out := map[string]any{"name": name, "type": "hysteria", "server": u.Hostname(), "port": port}
-
-	authStr := ""
-	if u.User != nil {
-		authStr = u.User.Username()
-	}
-	if authStr == "" {
-		authStr = q.Get("auth")
-	}
-	if authStr != "" {
-		out["auth_str"] = authStr
-	}
-
-	out["tls"] = true
-	sni := firstNonEmpty(q.Get("sni"), q.Get("peer"), u.Hostname())
-	out["sni"] = sni
-	out["servername"] = sni
-
-	if queryFlag(q, "allowInsecure", "insecure") {
-		out["skip-cert-verify"] = true
-	}
-
-	if obfs := q.Get("obfs"); obfs != "" {
-		out["obfs"] = obfs
-	}
-	if alpn := q.Get("alpn"); alpn != "" {
-		out["alpn"] = strings.Split(alpn, ",")
-	}
-
-	return out, nil
-}
-
-func parseAnyTLS(uri string) (map[string]any, error) {
-	u, err := url.Parse(uri)
-	if err != nil {
-		return nil, fmt.Errorf("error: %w", err)
-	}
-	port, _ := strconv.Atoi(u.Port())
-	if port == 0 {
-		port = 443
-	}
-	name := u.Fragment
-	if dec, err := url.QueryUnescape(name); err == nil {
-		name = dec
-	}
-
-	out := map[string]any{"name": name, "type": "anytls", "server": u.Hostname(), "port": port}
-
-	if u.User != nil {
-		out["password"] = u.User.Username()
-	} else {
-		out["password"] = ""
-	}
-
-	out["tls"] = true
-	out["sni"] = u.Hostname()
-	out["servername"] = u.Hostname()
-
-	return out, nil
 }

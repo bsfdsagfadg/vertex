@@ -1,11 +1,8 @@
 package api
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"log"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
@@ -68,59 +65,28 @@ func parseImportedNodeLine(line string) (nodes.Node, bool) {
 		return nodes.Node{}, false
 	}
 
-	out, err := transport.ParseURI(raw)
-	if err != nil {
+	pn, err := transport.ParseURI(raw)
+	if err != nil || pn == nil {
 		return nodes.Node{}, false
 	}
+	transport.CacheParsedNode(pn) // 导入期预热 IR 缓存
 
-	nodeType := strings.TrimSpace(valueToString(out["type"]))
+	nodeType := strings.TrimSpace(pn.Type)
 	if nodeType == "" {
 		return nodes.Node{}, false
 	}
 
-	nodeName := extractImportedNodeName(raw, out)
+	nodeName := strings.TrimSpace(pn.Name)
 	if nodeName == "" {
 		nodeName = raw[:min(len(raw), 40)]
 	}
-	return nodes.Node{Type: nodeType, Name: nodeName, RawURI: raw}, true
-}
-
-func extractImportedNodeName(raw string, out map[string]any) string {
-	if name := strings.TrimSpace(valueToString(out["name"])); name != "" {
-		return name
+	disabled := !pn.Supported
+	if !pn.Supported {
+		reason := "unsupported: " + pn.UnsupportedReason
+		nodes.RecordTest(raw, false, 0, reason)
 	}
 
-	if strings.HasPrefix(raw, "vmess://") {
-		b64Str := raw[8:]
-		if idx := strings.Index(b64Str, "?"); idx != -1 {
-			b64Str = b64Str[:idx]
-		}
-		if idx := strings.Index(b64Str, "#"); idx != -1 {
-			b64Str = b64Str[:idx]
-		}
-		b64Str = strings.ReplaceAll(strings.ReplaceAll(b64Str, "-", "+"), "_", "/")
-		if pad := len(b64Str) % 4; pad != 0 {
-			b64Str += strings.Repeat("=", 4-pad)
-		}
-		if b, err := base64.StdEncoding.DecodeString(b64Str); err == nil {
-			var d map[string]any
-			if errUnm := json.Unmarshal(b, &d); errUnm == nil {
-				if ps, ok := d["ps"].(string); ok {
-					return strings.TrimSpace(ps)
-				}
-			}
-		}
-	}
-
-	if idx := strings.Index(raw, "#"); idx != -1 {
-		escapedName := raw[idx+1:]
-		if dec, err := url.QueryUnescape(escapedName); err == nil {
-			return strings.TrimSpace(dec)
-		}
-		return strings.TrimSpace(escapedName)
-	}
-
-	return ""
+	return nodes.Node{Type: nodeType, Name: nodeName, RawURI: raw, Disabled: disabled}, true
 }
 
 func parseFlexibleImportedNodeLine(line string) (nodes.Node, bool) {

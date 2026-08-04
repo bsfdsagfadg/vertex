@@ -1,7 +1,9 @@
 package transport
 
 import (
+	"encoding/base64"
 	"net/url"
+	"strings"
 	"testing"
 
 	C "github.com/sagernet/sing-box/constant"
@@ -93,103 +95,309 @@ func TestBuildOutbound_InvalidURI(t *testing.T) {
 	}
 }
 
-func TestParseV2RayTransport_Downgrade(t *testing.T) {
-	for _, typ := range []string{"tcp", "none", "raw", "tcpheader"} {
-		t.Run(typ, func(t *testing.T) {
-			q := url.Values{}
-			q.Set("type", typ)
-			tr := parseV2RayTransport(q)
-			if tr != nil {
-				t.Fatalf("parseV2RayTransport(%q) = %+v, want nil", typ, tr)
+func TestBuildOutbound_UnsupportedTransport(t *testing.T) {
+	_, err := buildOutbound("vless://12345678-1234-1234-1234-123456789012@example.com:443?type=xhttp")
+	if err == nil {
+		t.Fatal("expected error for unsupported transport, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("expected unsupported error, got: %v", err)
+	}
+}
+
+func TestBuildOutbound_ParseErrorPassthrough(t *testing.T) {
+	_, err := buildOutbound("vmess://not-base64!")
+	if err == nil {
+		t.Fatal("expected parse error to pass through, got nil")
+	}
+}
+
+func TestBuildOutboundFromNode_AllProtocols(t *testing.T) {
+	tests := []struct {
+		name     string
+		uri      string
+		wantType string
+	}{
+		{"vless", "vless://12345678-1234-1234-1234-123456789012@example.com:443", C.TypeVLESS},
+		{"vmess", "vmess://eyJhZGQiOiJleGFtcGxlLmNvbSIsInBvcnQiOiI0NDMiLCJpZCI6IjEyMzQ1Njc4LTEyMzQtMTIzNC0xMjM0LTEyMzQ1Njc4OTAxMiIsImFpZCI6IjAiLCJuZXQiOiJ0Y3AiLCJ0eXBlIjoibm9uZSIsImhvc3QiOiIifQ==", C.TypeVMess},
+		{"ss", "ss://YWVzLTEyOC1nY206cGFzc3dvcmQ@example.com:443", C.TypeShadowsocks},
+		{"trojan", "trojan://password@example.com:443", C.TypeTrojan},
+		{"hysteria2", "hysteria2://password@example.com:443", C.TypeHysteria2},
+		{"tuic", "tuic://uuid:password@example.com:443", C.TypeTUIC},
+		{"socks5", "socks5://user:pass@example.com:1080", C.TypeSOCKS},
+		{"http", "http://user:pass@example.com:8080", C.TypeHTTP},
+		{"https", "https://example.com:443", C.TypeHTTP},
+		{"hysteria", "hysteria://example.com:443?protocol=udp", C.TypeHysteria},
+		{"anytls", "anytls://password@example.com:443", C.TypeAnyTLS},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n, err := ParseURI(tt.uri)
+			if err != nil {
+				t.Fatalf("ParseURI(%q) unexpected error: %v", tt.uri, err)
+			}
+			ob, err := buildOutboundFromNode(n)
+			if err != nil {
+				t.Fatalf("buildOutboundFromNode(%q) unexpected error: %v", tt.uri, err)
+			}
+			if ob.Type != tt.wantType {
+				t.Fatalf("type = %q, want %q", ob.Type, tt.wantType)
+			}
+			if ob.Options == nil {
+				t.Fatal("expected non-nil Options")
 			}
 		})
 	}
 }
 
-func TestParseV2RayTransport_Passthrough(t *testing.T) {
-	q := url.Values{}
-	q.Set("type", "xhttp")
-	tr := parseV2RayTransport(q)
-	if tr == nil {
-		t.Fatal("expected non-nil transport for xhttp passthrough")
-	}
-	if tr.Type != "xhttp" {
-		t.Fatalf("tr.Type = %q, want %q", tr.Type, "xhttp")
-	}
-}
-
-func TestParseV2RayTransport_CaseAndSpaces(t *testing.T) {
-	q := url.Values{}
-	q.Set("type", "  WS ")
-	tr := parseV2RayTransport(q)
-	if tr == nil || tr.Type != "ws" {
-		t.Fatalf("got %+v, want ws transport", tr)
-	}
-}
-
-func TestParseTLSOptions_RealityDefaultFingerprint(t *testing.T) {
-	q := url.Values{}
-	q.Set("security", "reality")
-	q.Set("pbk", "public-key-value")
-	tlsOpts := parseTLSOptions(q, "example.com", false)
-	if tlsOpts == nil {
-		t.Fatal("expected non-nil TLS options for reality")
-	}
-	if tlsOpts.Reality == nil || !tlsOpts.Reality.Enabled {
-		t.Fatal("expected reality enabled")
-	}
-	if tlsOpts.UTLS == nil || !tlsOpts.UTLS.Enabled {
-		t.Fatalf("expected UTLS enabled, got %+v", tlsOpts.UTLS)
-	}
-	if tlsOpts.UTLS.Fingerprint != "chrome" {
-		t.Fatalf("fingerprint = %q, want %q", tlsOpts.UTLS.Fingerprint, "chrome")
+func TestBuildOutboundFromNode_TCPAliases(t *testing.T) {
+	for _, typ := range []string{"tcp", "none", "raw", "tcpheader", ""} {
+		t.Run(typ, func(t *testing.T) {
+			q := url.Values{}
+			q.Set("type", typ)
+			uri := "vless://12345678-1234-1234-1234-123456789012@example.com:443"
+			if typ != "" {
+				uri += "?" + q.Encode()
+			}
+			n, err := ParseURI(uri)
+			if err != nil {
+				t.Fatalf("ParseURI unexpected error: %v", err)
+			}
+			if n.Transport != nil {
+				t.Fatalf("type %q: expected nil Transport, got %+v", typ, n.Transport)
+			}
+			ob, err := buildOutboundFromNode(n)
+			if err != nil {
+				t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+			}
+			opts := ob.Options.(*option.VLESSOutboundOptions)
+			if opts.Transport != nil {
+				t.Fatalf("type %q: expected nil outbound Transport, got %+v", typ, opts.Transport)
+			}
+		})
 	}
 }
 
-func TestBuildHysteria2Outbound_PortRange(t *testing.T) {
-	u, _ := url.Parse("hysteria2://password@example.com:443")
-	q := url.Values{}
-	q.Set("ports", "50000-53000")
-	opts, err := buildHysteria2Outbound(u, q)
+func TestBuildOutboundFromNode_WSTransport(t *testing.T) {
+	n, err := ParseURI("vless://12345678-1234-1234-1234-123456789012@example.com:443?type=ws&path=/ws&host=cdn.example.com")
 	if err != nil {
-		t.Fatalf("buildHysteria2Outbound unexpected error: %v", err)
+		t.Fatalf("ParseURI unexpected error: %v", err)
 	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.VLESSOutboundOptions)
+	if opts.Transport == nil || opts.Transport.Type != "ws" {
+		t.Fatalf("expected ws transport, got %+v", opts.Transport)
+	}
+	if opts.Transport.WebsocketOptions.Path != "/ws" {
+		t.Fatalf("ws path = %q, want /ws", opts.Transport.WebsocketOptions.Path)
+	}
+	host := opts.Transport.WebsocketOptions.Headers["Host"]
+	if len(host) != 1 || host[0] != "cdn.example.com" {
+		t.Fatalf("ws Host header = %v, want [cdn.example.com]", host)
+	}
+}
+
+func TestBuildOutboundFromNode_HTTPTransport(t *testing.T) {
+	n, err := ParseURI("vless://12345678-1234-1234-1234-123456789012@example.com:443?type=http&path=/http&host=h.example.com&method=POST")
+	if err != nil {
+		t.Fatalf("ParseURI unexpected error: %v", err)
+	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.VLESSOutboundOptions)
+	if opts.Transport == nil || opts.Transport.Type != "http" {
+		t.Fatalf("expected http transport, got %+v", opts.Transport)
+	}
+	if opts.Transport.HTTPOptions.Path != "/http" {
+		t.Fatalf("http path = %q, want /http", opts.Transport.HTTPOptions.Path)
+	}
+	if opts.Transport.HTTPOptions.Method != "POST" {
+		t.Fatalf("http method = %q, want POST", opts.Transport.HTTPOptions.Method)
+	}
+	host := opts.Transport.HTTPOptions.Host
+	if len(host) != 1 || host[0] != "h.example.com" {
+		t.Fatalf("http Host = %v, want [h.example.com]", host)
+	}
+}
+
+func TestBuildOutboundFromNode_HTTPUpgradeTransport(t *testing.T) {
+	n, err := ParseURI("vless://12345678-1234-1234-1234-123456789012@example.com:443?type=httpupgrade&path=/up&host=hu.example.com")
+	if err != nil {
+		t.Fatalf("ParseURI unexpected error: %v", err)
+	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.VLESSOutboundOptions)
+	if opts.Transport == nil || opts.Transport.Type != "httpupgrade" {
+		t.Fatalf("expected httpupgrade transport, got %+v", opts.Transport)
+	}
+	if opts.Transport.HTTPUpgradeOptions.Path != "/up" {
+		t.Fatalf("httpupgrade path = %q, want /up", opts.Transport.HTTPUpgradeOptions.Path)
+	}
+	if opts.Transport.HTTPUpgradeOptions.Host != "hu.example.com" {
+		t.Fatalf("httpupgrade host = %q, want hu.example.com", opts.Transport.HTTPUpgradeOptions.Host)
+	}
+}
+
+func TestBuildOutboundFromNode_QUICTransport(t *testing.T) {
+	n, err := ParseURI("vless://12345678-1234-1234-1234-123456789012@example.com:443?type=quic")
+	if err != nil {
+		t.Fatalf("ParseURI unexpected error: %v", err)
+	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.VLESSOutboundOptions)
+	if opts.Transport == nil || opts.Transport.Type != "quic" {
+		t.Fatalf("expected quic transport, got %+v", opts.Transport)
+	}
+	if opts.Transport.QUICOptions != (option.V2RayQUICOptions{}) {
+		t.Fatalf("expected empty QUICOptions, got %+v", opts.Transport.QUICOptions)
+	}
+}
+
+func TestBuildOutboundFromNode_RealityDefaultFingerprint(t *testing.T) {
+	n, err := ParseURI("vless://12345678-1234-1234-1234-123456789012@example.com:443?security=reality&pbk=public-key-value&sid=abcd")
+	if err != nil {
+		t.Fatalf("ParseURI unexpected error: %v", err)
+	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.VLESSOutboundOptions)
+	if opts.TLS == nil || opts.TLS.Reality == nil || !opts.TLS.Reality.Enabled {
+		t.Fatalf("expected reality enabled, got %+v", opts.TLS)
+	}
+	if opts.TLS.Reality.PublicKey != "public-key-value" {
+		t.Fatalf("reality public key = %q, want public-key-value", opts.TLS.Reality.PublicKey)
+	}
+	if opts.TLS.UTLS == nil || opts.TLS.UTLS.Fingerprint != "chrome" {
+		t.Fatalf("fingerprint = %+v, want chrome", opts.TLS.UTLS)
+	}
+}
+
+func TestBuildOutboundFromNode_SSPlugin(t *testing.T) {
+	n, err := ParseURI("ss://YWVzLTEyOC1nY206cGFzc3dvcmQ@example.com:443?plugin=simple-obfs%3Bobfs%3Dhttp%3Bobfs-host%3Dcdn.example.com")
+	if err != nil {
+		t.Fatalf("ParseURI unexpected error: %v", err)
+	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.ShadowsocksOutboundOptions)
+	if opts.Plugin != "simple-obfs" {
+		t.Fatalf("plugin = %q, want simple-obfs", opts.Plugin)
+	}
+	if opts.PluginOptions != "obfs=http;obfs-host=cdn.example.com" {
+		t.Fatalf("plugin opts = %q, want obfs=http;obfs-host=cdn.example.com", opts.PluginOptions)
+	}
+}
+
+func TestBuildOutboundFromNode_SSRParams(t *testing.T) {
+	raw := "example.com:443:auth_sha1_v4:aes-128-cfb:tls1.2_ticket_auth:" +
+		base64.StdEncoding.EncodeToString([]byte("secret")) +
+		"?obfsparam=abc&protoparam=xyz"
+	uri := "ssr://" + base64.StdEncoding.EncodeToString([]byte(raw))
+
+	n, err := ParseURI(uri)
+	if err != nil {
+		t.Fatalf("ParseURI unexpected error: %v", err)
+	}
+	if n.Type != "ssr" {
+		t.Fatalf("type = %q, want ssr", n.Type)
+	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.ShadowsocksROutboundOptions)
+	if opts.Method != "aes-128-cfb" || opts.Password != "secret" {
+		t.Fatalf("ssr credentials = %q/%q", opts.Method, opts.Password)
+	}
+	if opts.Obfs != "tls1.2_ticket_auth" || opts.Protocol != "auth_sha1_v4" {
+		t.Fatalf("ssr obfs/protocol = %q/%q", opts.Obfs, opts.Protocol)
+	}
+	if opts.ObfsParam != "abc" || opts.ProtocolParam != "xyz" {
+		t.Fatalf("ssr params = %q/%q, want abc/xyz", opts.ObfsParam, opts.ProtocolParam)
+	}
+}
+
+func TestBuildOutboundFromNode_Hysteria2Ports(t *testing.T) {
+	n, err := ParseURI("hysteria2://password@example.com:443?ports=50000-53000")
+	if err != nil {
+		t.Fatalf("ParseURI unexpected error: %v", err)
+	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.Hysteria2OutboundOptions)
 	if len(opts.ServerPorts) != 1 || opts.ServerPorts[0] != "50000:53000" {
 		t.Fatalf("ServerPorts = %v, want [50000:53000]", opts.ServerPorts)
 	}
-}
 
-func TestBuildHysteria2Outbound_PortList(t *testing.T) {
-	u, _ := url.Parse("hysteria2://password@example.com:443")
-	q := url.Values{}
-	q.Set("mport", "30000,30002")
-	opts, err := buildHysteria2Outbound(u, q)
+	n2, err := ParseURI("hysteria2://password@example.com:443?mport=30000,30002")
 	if err != nil {
-		t.Fatalf("buildHysteria2Outbound unexpected error: %v", err)
+		t.Fatalf("ParseURI unexpected error: %v", err)
 	}
+	ob2, err := buildOutboundFromNode(n2)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts2 := ob2.Options.(*option.Hysteria2OutboundOptions)
 	want := []string{"30000:30000", "30002:30002"}
-	if len(opts.ServerPorts) != len(want) {
-		t.Fatalf("ServerPorts = %v, want %v", opts.ServerPorts, want)
+	if len(opts2.ServerPorts) != len(want) {
+		t.Fatalf("ServerPorts = %v, want %v", opts2.ServerPorts, want)
 	}
 	for i := range want {
-		if opts.ServerPorts[i] != want[i] {
-			t.Fatalf("ServerPorts[%d] = %q, want %q", i, opts.ServerPorts[i], want[i])
+		if opts2.ServerPorts[i] != want[i] {
+			t.Fatalf("ServerPorts[%d] = %q, want %q", i, opts2.ServerPorts[i], want[i])
 		}
 	}
 }
 
-func TestBuildHysteria2Outbound_InvalidPortRange(t *testing.T) {
-	u, _ := url.Parse("hysteria2://password@example.com:443")
+func TestBuildOutboundFromNode_Hysteria2InvalidPorts(t *testing.T) {
 	for _, raw := range []string{"invalid", "70000-80000", "50000-1000", "-1", "abc-def"} {
-		q := url.Values{}
-		q.Set("ports", raw)
-		opts, err := buildHysteria2Outbound(u, q)
-		if err != nil {
-			t.Fatalf("buildHysteria2Outbound(%q) unexpected error: %v", raw, err)
-		}
-		if len(opts.ServerPorts) != 0 {
-			t.Fatalf("ServerPorts for %q = %v, want empty (fallback to main port)", raw, opts.ServerPorts)
-		}
+		t.Run(raw, func(t *testing.T) {
+			n, err := ParseURI("hysteria2://password@example.com:443?ports=" + url.QueryEscape(raw))
+			if err != nil {
+				t.Fatalf("ParseURI unexpected error: %v", err)
+			}
+			ob, err := buildOutboundFromNode(n)
+			if err != nil {
+				t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+			}
+			opts := ob.Options.(*option.Hysteria2OutboundOptions)
+			if len(opts.ServerPorts) != 0 {
+				t.Fatalf("ServerPorts for %q = %v, want empty (fallback to main port)", raw, opts.ServerPorts)
+			}
+		})
+	}
+}
+
+func TestBuildOutboundFromNode_Hysteria2Obfs(t *testing.T) {
+	n, err := ParseURI("hysteria2://password@example.com:443?obfs=salamander&obfs-password=obfspwd")
+	if err != nil {
+		t.Fatalf("ParseURI unexpected error: %v", err)
+	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.Hysteria2OutboundOptions)
+	if opts.Obfs == nil || opts.Obfs.Type != "salamander" || opts.Obfs.Password != "obfspwd" {
+		t.Fatalf("obfs = %+v, want salamander/obfspwd", opts.Obfs)
 	}
 }
 
@@ -252,6 +460,66 @@ func TestBuildSOCKS_NoPassword(t *testing.T) {
 	opts := ob.Options.(*option.SOCKSOutboundOptions)
 	if opts.Username != "" || opts.Password != "" {
 		t.Fatalf("expected empty credentials, got user=%q pass=%q", opts.Username, opts.Password)
+	}
+	if opts.Version != "" {
+		t.Fatalf("expected empty Version for socks5, got %q", opts.Version)
+	}
+}
+
+func TestBuildSOCKS4_VersionPassthrough(t *testing.T) {
+	for _, tt := range []struct {
+		uri     string
+		version string
+	}{
+		{"socks4://203.0.113.7:4145", "4"},
+		{"socks4a://203.0.113.7:4145", "4a"},
+		{"socks5://203.0.113.7:4145", ""},
+	} {
+		ob, err := buildOutbound(tt.uri)
+		if err != nil {
+			t.Fatalf("buildOutbound(%s) returned error: %v", tt.uri, err)
+		}
+		opts := ob.Options.(*option.SOCKSOutboundOptions)
+		if opts.Version != tt.version {
+			t.Fatalf("Version for %s = %q, want %q", tt.uri, opts.Version, tt.version)
+		}
+		if ob.Type != C.TypeSOCKS {
+			t.Fatalf("type = %v, want %v", ob.Type, C.TypeSOCKS)
+		}
+	}
+}
+
+func TestBuildSSH_Params(t *testing.T) {
+	ob, err := buildOutbound("ssh://tunnel:secret@203.0.113.9:2222?pk=QUJDRA%3D%3D&psk=pp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ob.Type != C.TypeSSH {
+		t.Fatalf("type = %v, want %v", ob.Type, C.TypeSSH)
+	}
+	opts := ob.Options.(*option.SSHOutboundOptions)
+	if opts.User != "tunnel" || opts.Password != "secret" {
+		t.Fatalf("expected user/pass, got %q/%q", opts.User, opts.Password)
+	}
+	if len(opts.PrivateKey) != 1 || opts.PrivateKey[0] != "QUJDRA==" {
+		t.Fatalf("expected private key passthrough, got %#v", opts.PrivateKey)
+	}
+	if opts.PrivateKeyPassphrase != "pp" {
+		t.Fatalf("expected passphrase pp, got %q", opts.PrivateKeyPassphrase)
+	}
+}
+
+func TestBuildSSH_PasswordOnly(t *testing.T) {
+	ob, err := buildOutbound("ssh://root@203.0.113.9:22")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.SSHOutboundOptions)
+	if opts.User != "root" || opts.Password != "" {
+		t.Fatalf("expected user root with empty password, got %q/%q", opts.User, opts.Password)
+	}
+	if len(opts.PrivateKey) != 0 {
+		t.Fatalf("expected no private key, got %#v", opts.PrivateKey)
 	}
 }
 

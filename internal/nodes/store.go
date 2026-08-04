@@ -1,14 +1,9 @@
 package nodes
 
 import (
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
 	"log"
 	"math"
-	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,6 +42,9 @@ var (
 	healthMap             = make(map[string]*NodeHealth) //nolint:gochecknoglobals
 	loaded                bool                           //nolint:gochecknoglobals
 	DeleteNodeCallback    func(uri string)               //nolint:gochecknoglobals
+	NodeIdentityFunc      func(rawURI string) (key string, ok bool) //nolint:gochecknoglobals
+	ResetStateCallback    func()                         //nolint:gochecknoglobals
+	IsSupportedFunc       func(rawURI string) bool       //nolint:gochecknoglobals
 	atomicRoundRobinIndex uint64                         //nolint:gochecknoglobals
 	nodeNameMap           = make(map[string]string)      //nolint:gochecknoglobals
 )
@@ -75,11 +73,15 @@ func DecInFlight(uri string) {
 
 func ResetState() {
 	mu.Lock()
-	defer mu.Unlock()
 	nodeList = nil
 	healthMap = make(map[string]*NodeHealth)
 	nodeNameMap = make(map[string]string)
 	loaded = false
+	cb := ResetStateCallback
+	mu.Unlock() // 先解锁再通知外部清理（如 transport 解析缓存），避免死锁
+	if cb != nil {
+		cb()
+	}
 }
 
 func ensureLoaded() {
@@ -384,8 +386,10 @@ func DedupNodes() int {
 	var removedURIs []string
 	for _, n := range nodeList {
 		key := n.RawURI
-		if scheme, userinfo, host, port, ok := parseNodeIdentity(n.RawURI); ok {
-			key = scheme + "://" + userinfo + "@" + host + ":" + strconv.Itoa(port)
+		if NodeIdentityFunc != nil {
+			if k, ok := NodeIdentityFunc(n.RawURI); ok {
+				key = k
+			}
 		}
 		if !keepMap[key] {
 			keepMap[key] = true
@@ -639,73 +643,6 @@ func EnableNode(uri string) bool {
 	return found
 }
 
-func padB64(s string) string {
-	s = strings.ReplaceAll(strings.ReplaceAll(s, "-", "+"), "_", "/")
-	if pad := len(s) % 4; pad != 0 {
-		s += strings.Repeat("=", 4-pad)
-	}
-	return s
-}
-
-func parseNodeIdentity(rawURI string) (scheme, userinfo, host string, port int, ok bool) {
-	if strings.HasPrefix(rawURI, "vmess://") {
-		b64Str := rawURI[8:]
-		if idx := strings.Index(b64Str, "?"); idx != -1 {
-			b64Str = b64Str[:idx]
-		}
-		if idx := strings.Index(b64Str, "#"); idx != -1 {
-			b64Str = b64Str[:idx]
-		}
-		b64Str = padB64(b64Str)
-		if b, err := base64.StdEncoding.DecodeString(b64Str); err == nil {
-			var d map[string]any
-			if err := json.Unmarshal(b, &d); err == nil {
-				id, _ := d["id"].(string)
-				add, _ := d["add"].(string)
-				portStr := fmt.Sprintf("%v", d["port"])
-				p, _ := strconv.Atoi(portStr)
-				return "vmess", id, add, p, true
-			}
-		}
-		return "", "", "", 0, false
-	}
-	if strings.HasPrefix(rawURI, "ss://") {
-		body := rawURI[5:]
-		if idx := strings.Index(body, "#"); idx != -1 {
-			body = body[:idx]
-		}
-		if idx := strings.Index(body, "@"); idx != -1 {
-			b, err := base64.StdEncoding.DecodeString(padB64(body[:idx]))
-			if err == nil {
-				parts := strings.SplitN(string(b), ":", 2)
-				if len(parts) >= 2 {
-					hp := strings.Split(body[idx+1:], ":")
-					if len(hp) >= 2 {
-						p, _ := strconv.Atoi(hp[1])
-						return "ss", parts[0] + ":" + parts[1], hp[0], p, true
-					}
-				}
-			}
-		}
-		return "", "", "", 0, false
-	}
-	u, err := url.Parse(rawURI)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", "", "", 0, false
-	}
-	scheme = u.Scheme
-	userinfo = ""
-	if u.User != nil {
-		userinfo = u.User.Username()
-	}
-	host = u.Hostname()
-	port, _ = strconv.Atoi(u.Port())
-	if port == 0 {
-		port = 443
-	}
-	return scheme, userinfo, host, port, true
-}
-
 func RecordTest(uri string, ok bool, ms float64, errStr string) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -794,8 +731,13 @@ func SelectForParallel(k int, debugMode bool) []Node {
 	var tier1 []tierCandidate
 	var tier2 []tierCandidate
 
-	for _, n := range nodeList {
+	for i, n := range nodeList {
 		if n.Disabled {
+			continue
+		}
+		if IsSupportedFunc != nil && !IsSupportedFunc(n.RawURI) {
+			nodeList[i].Disabled = true
+			updateSingleNodeDisabledUnsafe(n.RawURI, true)
 			continue
 		}
 		h := healthMap[n.RawURI]

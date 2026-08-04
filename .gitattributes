@@ -1,6 +1,9 @@
 # 默认按内容自动处理文本换行
 * text=auto
 
+# Go 源码统一 LF（gofmt 输出 LF，避免混合换行与跨平台 diff 噪声）
+*.go   text eol=lf
+
 # Shell 脚本与 unix 配置必须保持 LF（否则 Linux 上 shebang 带 \r 会报 bad interpreter）
 *.sh   text eol=lf
 *.service text eol=lf

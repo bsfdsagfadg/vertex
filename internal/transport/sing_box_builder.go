@@ -2,10 +2,7 @@ package transport
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -14,716 +11,287 @@ import (
 	"github.com/sagernet/sing/common/json/badoption"
 )
 
+// buildOutbound 薄壳：解析（命中 IR 缓存）→ capability 早失败 → 从 IR 构建。
+// dialer 三处调用点签名不变（startEntryBox/newSecondHopBox/TestEntryProxy），透明命中缓存。
 func buildOutbound(uri string) (option.Outbound, error) {
-	h := sha256.Sum256([]byte(uri))
+	n, err := GetOrParse(uri)
+	if err != nil {
+		return option.Outbound{}, err
+	}
+	if !n.Supported {
+		return option.Outbound{}, fmt.Errorf("unsupported: %s", n.UnsupportedReason)
+	}
+	return buildOutboundFromNode(n)
+}
+
+// buildOutboundFromNode 从 ParsedNode IR 构建 outbound，不触碰 URI 字符串。
+// 各协议凭证校验对齐旧 buildXxxOutbound 行为（仅校验，不重新解析）。
+func buildOutboundFromNode(n *ParsedNode) (option.Outbound, error) {
+	if n == nil {
+		return option.Outbound{}, fmt.Errorf("nil parsed node")
+	}
+	if n.Server == "" || n.Port <= 0 {
+		return option.Outbound{}, fmt.Errorf("%s: missing server or port", n.Type)
+	}
+	h := sha256.Sum256([]byte(n.RawURI))
 	tag := fmt.Sprintf("node-%x", h[:8])
 
-	switch {
-	case strings.HasPrefix(uri, "vless://"):
-		u, err := url.Parse(uri)
-		if err != nil {
-			return option.Outbound{}, fmt.Errorf("vless: %w", err)
+	var outType string
+	var outOpts any
+	switch n.Type {
+	case "vless":
+		if n.UUID == "" {
+			return option.Outbound{}, fmt.Errorf("vless: missing uuid")
 		}
-		q := u.Query()
-		opts, err := buildVLESSOutbound(u, q)
-		if err != nil {
-			return option.Outbound{}, err
+		outType = C.TypeVLESS
+		opts := option.VLESSOutboundOptions{
+			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
+			UUID:          n.UUID,
+			Flow:          n.Flow,
 		}
-		return option.Outbound{Type: C.TypeVLESS, Tag: tag, Options: &opts}, nil
+		if n.PacketEncoding != "" {
+			pe := n.PacketEncoding
+			opts.PacketEncoding = &pe
+		}
+		opts.TLS = tlsFromIR(n.TLS)
+		opts.Transport = transportFromIR(n.Transport)
+		outOpts = &opts
 
-	case strings.HasPrefix(uri, "vmess://"):
-		opts, err := buildVMessOutbound(uri)
-		if err != nil {
-			return option.Outbound{}, err
+	case "vmess":
+		if n.UUID == "" {
+			return option.Outbound{}, fmt.Errorf("vmess: missing uuid")
 		}
-		return option.Outbound{Type: C.TypeVMess, Tag: tag, Options: &opts}, nil
+		security := n.Security
+		if security == "" {
+			security = "auto"
+		}
+		outType = C.TypeVMess
+		opts := option.VMessOutboundOptions{
+			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
+			UUID:          n.UUID,
+			Security:      security,
+			AlterId:       n.AlterID,
+		}
+		opts.TLS = tlsFromIR(n.TLS)
+		opts.Transport = transportFromIR(n.Transport)
+		outOpts = &opts
 
-	case strings.HasPrefix(uri, "ss://"):
-		u, err := url.Parse(uri)
-		if err != nil {
-			return option.Outbound{}, fmt.Errorf("ss: %w", err)
+	case "ss":
+		if n.Cipher == "" || n.Password == "" {
+			return option.Outbound{}, fmt.Errorf("ss: missing method or password")
 		}
-		opts, err := buildShadowsocksOutbound(u)
-		if err != nil {
-			return option.Outbound{}, err
+		outType = C.TypeShadowsocks
+		opts := option.ShadowsocksOutboundOptions{
+			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
+			Method:        n.Cipher,
+			Password:      n.Password,
 		}
-		return option.Outbound{Type: C.TypeShadowsocks, Tag: tag, Options: &opts}, nil
+		if n.Plugin != "" {
+			opts.Plugin = n.Plugin
+			opts.PluginOptions = n.PluginOptions
+		}
+		outOpts = &opts
 
-	case strings.HasPrefix(uri, "trojan://"):
-		u, err := url.Parse(uri)
-		if err != nil {
-			return option.Outbound{}, fmt.Errorf("trojan: %w", err)
+	case "trojan":
+		if n.Password == "" {
+			return option.Outbound{}, fmt.Errorf("trojan: missing password")
 		}
-		q := u.Query()
-		opts, err := buildTrojanOutbound(u, q)
-		if err != nil {
-			return option.Outbound{}, err
+		outType = C.TypeTrojan
+		opts := option.TrojanOutboundOptions{
+			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
+			Password:      n.Password,
 		}
-		return option.Outbound{Type: C.TypeTrojan, Tag: tag, Options: &opts}, nil
+		opts.TLS = tlsFromIR(n.TLS)
+		opts.Transport = transportFromIR(n.Transport)
+		outOpts = &opts
 
-	case strings.HasPrefix(uri, "hysteria2://"), strings.HasPrefix(uri, "hy2://"):
-		u, err := url.Parse(uri)
-		if err != nil {
-			return option.Outbound{}, fmt.Errorf("hysteria2: %w", err)
+	case "hysteria2":
+		if n.Password == "" {
+			return option.Outbound{}, fmt.Errorf("hysteria2: missing password")
 		}
-		q := u.Query()
-		opts, err := buildHysteria2Outbound(u, q)
-		if err != nil {
-			return option.Outbound{}, err
+		outType = C.TypeHysteria2
+		opts := option.Hysteria2OutboundOptions{
+			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
+			Password:      n.Password,
+			UpMbps:        100,
+			DownMbps:      100,
+			ServerPorts:   badoption.Listable[string](n.ServerPorts),
 		}
-		return option.Outbound{Type: C.TypeHysteria2, Tag: tag, Options: &opts}, nil
+		if n.Obfs != "" {
+			opts.Obfs = &option.Hysteria2Obfs{
+				Type:     n.Obfs,
+				Password: n.ObfsPassword,
+			}
+		}
+		opts.TLS = tlsFromIR(n.TLS)
+		outOpts = &opts
 
-	case strings.HasPrefix(uri, "tuic://"):
-		u, err := url.Parse(uri)
-		if err != nil {
-			return option.Outbound{}, fmt.Errorf("tuic: %w", err)
+	case "tuic":
+		outType = C.TypeTUIC
+		opts := option.TUICOutboundOptions{
+			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
+			UUID:          n.UUID,
+			Password:      n.Password,
 		}
-		q := u.Query()
-		opts, err := buildTUICOutbound(u, q)
-		if err != nil {
-			return option.Outbound{}, err
+		if n.CongestionControl != "" {
+			opts.CongestionControl = n.CongestionControl
 		}
-		return option.Outbound{Type: C.TypeTUIC, Tag: tag, Options: &opts}, nil
+		if n.UDPRelayMode != "" {
+			opts.UDPRelayMode = n.UDPRelayMode
+		}
+		opts.TLS = tlsFromIR(n.TLS)
+		outOpts = &opts
 
-	case strings.HasPrefix(uri, "socks5://"), strings.HasPrefix(uri, "socks5h://"), strings.HasPrefix(uri, "socks://"):
-		u, err := url.Parse(uri)
-		if err != nil {
-			return option.Outbound{}, fmt.Errorf("socks: %w", err)
+	case "socks5":
+		outType = C.TypeSOCKS
+		opts := option.SOCKSOutboundOptions{
+			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
 		}
-		opts, err := buildSOCKSOutbound(u)
-		if err != nil {
-			return option.Outbound{}, err
+		if n.Password != "" {
+			opts.Username = n.Username
+			opts.Password = n.Password
 		}
-		return option.Outbound{Type: C.TypeSOCKS, Tag: tag, Options: &opts}, nil
+		if n.SOCKSVersion != "" && n.SOCKSVersion != "5" {
+			opts.Version = n.SOCKSVersion
+		}
+		outOpts = &opts
 
-	case strings.HasPrefix(uri, "http://"), strings.HasPrefix(uri, "https://"):
-		u, err := url.Parse(uri)
-		if err != nil {
-			return option.Outbound{}, fmt.Errorf("http: %w", err)
+	case "http":
+		outType = C.TypeHTTP
+		opts := option.HTTPOutboundOptions{
+			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
 		}
-		opts, err := buildHTTPOutbound(u)
-		if err != nil {
-			return option.Outbound{}, err
+		opts.TLS = tlsFromIR(n.TLS)
+		if n.Password != "" {
+			opts.Username = n.Username
+			opts.Password = n.Password
 		}
-		return option.Outbound{Type: C.TypeHTTP, Tag: tag, Options: &opts}, nil
+		outOpts = &opts
 
-	case strings.HasPrefix(uri, "ssr://"), strings.HasPrefix(uri, "shadowsocksr://"):
-		u, err := url.Parse(uri)
-		if err != nil {
-			return option.Outbound{}, fmt.Errorf("ssr: %w", err)
+	case "ssr":
+		if n.Cipher == "" || n.Password == "" {
+			return option.Outbound{}, fmt.Errorf("ssr: missing method or password")
 		}
-		opts, err := buildShadowsocksROutbound(u)
-		if err != nil {
-			return option.Outbound{}, err
+		outType = C.TypeShadowsocksR
+		opts := option.ShadowsocksROutboundOptions{
+			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
+			Method:        n.Cipher,
+			Password:      n.Password,
+			Obfs:          n.Obfs,
+			ObfsParam:     n.ObfsParam,
+			Protocol:      n.Protocol,
+			ProtocolParam: n.ProtocolParam,
 		}
-		return option.Outbound{Type: C.TypeShadowsocksR, Tag: tag, Options: &opts}, nil
+		outOpts = &opts
 
-	case strings.HasPrefix(uri, "hysteria://"):
-		u, err := url.Parse(uri)
-		if err != nil {
-			return option.Outbound{}, fmt.Errorf("hysteria: %w", err)
+	case "hysteria":
+		outType = C.TypeHysteria
+		opts := option.HysteriaOutboundOptions{
+			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
+			AuthString:    n.AuthString,
+			UpMbps:        100,
+			DownMbps:      100,
+			Obfs:          n.Obfs,
 		}
-		q := u.Query()
-		opts, err := buildHysteriaOutbound(u, q)
-		if err != nil {
-			return option.Outbound{}, err
-		}
-		return option.Outbound{Type: C.TypeHysteria, Tag: tag, Options: &opts}, nil
+		opts.TLS = tlsFromIR(n.TLS)
+		outOpts = &opts
 
-	case strings.HasPrefix(uri, "anytls://"):
-		u, err := url.Parse(uri)
-		if err != nil {
-			return option.Outbound{}, fmt.Errorf("anytls: %w", err)
+	case "anytls":
+		outType = C.TypeAnyTLS
+		opts := option.AnyTLSOutboundOptions{
+			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
+			Password:      n.Password,
 		}
-		opts, err := buildAnyTLSOutbound(u)
-		if err != nil {
-			return option.Outbound{}, err
+		opts.TLS = tlsFromIR(n.TLS)
+		outOpts = &opts
+
+	case "ssh":
+		outType = C.TypeSSH
+		opts := option.SSHOutboundOptions{
+			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
+			User:          n.Username,
+			Password:      n.Password,
 		}
-		return option.Outbound{Type: C.TypeAnyTLS, Tag: tag, Options: &opts}, nil
+		if n.SSHPrivateKey != "" {
+			opts.PrivateKey = badoption.Listable[string]{n.SSHPrivateKey}
+		}
+		if n.SSHPrivateKeyPassphrase != "" {
+			opts.PrivateKeyPassphrase = n.SSHPrivateKeyPassphrase
+		}
+		outOpts = &opts
 
 	default:
-		return option.Outbound{}, fmt.Errorf("unsupported protocol: %s", uri[:min(len(uri), 10)])
+		return option.Outbound{}, fmt.Errorf("unsupported node type: %s", n.Type)
 	}
+
+	return option.Outbound{Type: outType, Tag: tag, Options: outOpts}, nil
 }
 
-func buildVLESSOutbound(u *url.URL, q url.Values) (option.VLESSOutboundOptions, error) {
-	server, port := extractServerPort(u)
-	if server == "" || port == 0 {
-		return option.VLESSOutboundOptions{}, fmt.Errorf("vless: missing server or port")
-	}
-	uuid := ""
-	if u.User != nil {
-		uuid = u.User.Username()
-	}
-	if uuid == "" {
-		return option.VLESSOutboundOptions{}, fmt.Errorf("vless: missing uuid")
-	}
-	flow := q.Get("flow")
-
-	opts := option.VLESSOutboundOptions{
-		ServerOptions: option.ServerOptions{Server: server, ServerPort: port},
-		UUID:          uuid,
-		Flow:          flow,
-	}
-
-	if tlsOpts := parseTLSOptions(q, server, false); tlsOpts != nil {
-		opts.TLS = tlsOpts
-	}
-	if transport := parseV2RayTransport(q); transport != nil {
-		opts.Transport = transport
-	}
-	if pe := q.Get("packet_encoding"); pe != "" {
-		opts.PacketEncoding = &pe
-	} else if q.Get("packetAddr") == "true" || q.Get("xudp") == "true" {
-		pe := "packetaddr"
-		opts.PacketEncoding = &pe
-	}
-
-	return opts, nil
-}
-
-func buildVMessOutbound(uri string) (option.VMessOutboundOptions, error) {
-	b64Str := uri[8:]
-	if idx := strings.Index(b64Str, "?"); idx != -1 {
-		b64Str = b64Str[:idx]
-	}
-	if idx := strings.Index(b64Str, "#"); idx != -1 {
-		b64Str = b64Str[:idx]
-	}
-	b, err := base64.StdEncoding.DecodeString(padB64(b64Str))
-	if err != nil {
-		return option.VMessOutboundOptions{}, fmt.Errorf("vmess: base64 decode: %w", err)
-	}
-	var d map[string]any
-	if err := json.Unmarshal(b, &d); err != nil {
-		return option.VMessOutboundOptions{}, fmt.Errorf("vmess: json: %w", err)
-	}
-
-	server, _ := d["add"].(string)
-	portStr := fmt.Sprintf("%v", d["port"])
-	port, _ := strconv.Atoi(portStr)
-	if server == "" || port == 0 {
-		return option.VMessOutboundOptions{}, fmt.Errorf("vmess: missing server or port")
-	}
-	uuid, _ := d["id"].(string)
-	if uuid == "" {
-		return option.VMessOutboundOptions{}, fmt.Errorf("vmess: missing uuid")
-	}
-
-	opts := option.VMessOutboundOptions{
-		ServerOptions: option.ServerOptions{Server: server, ServerPort: uint16(port)},
-		UUID:          uuid,
-		Security:      "auto",
-	}
-
-	if aidVal, ok := d["aid"]; ok {
-		switch v := aidVal.(type) {
-		case float64:
-			opts.AlterId = int(v)
-		case int:
-			opts.AlterId = v
-		case string:
-			if n, err := strconv.Atoi(v); err == nil {
-				opts.AlterId = n
-			}
-		}
-	}
-
-	if scy, ok := d["scy"].(string); ok && scy != "" {
-		opts.Security = scy
-	}
-
-	tlsStr, _ := d["tls"].(string)
-	if strings.ToLower(tlsStr) == "tls" {
-		sni, _ := d["sni"].(string)
-		if sni == "" {
-			sni, _ = d["host"].(string)
-		}
-		if sni == "" {
-			sni = server
-		}
-		tlsOpts := &option.OutboundTLSOptions{
-			Enabled:    true,
-			ServerName: sni,
-		}
-		if fp, ok := d["fp"].(string); ok && fp != "" {
-			tlsOpts.UTLS = &option.OutboundUTLSOptions{Enabled: true, Fingerprint: fp}
-		}
-		if alpnStr, ok := d["alpn"].(string); ok && alpnStr != "" {
-			tlsOpts.ALPN = strings.Split(alpnStr, ",")
-		}
-		if insecure, ok := d["skip-cert-verify"].(bool); ok && insecure {
-			tlsOpts.Insecure = true
-		} else if allowInsecure, ok := d["allowInsecure"].(string); ok && allowInsecure == "1" {
-			tlsOpts.Insecure = true
-		}
-		opts.TLS = tlsOpts
-	}
-
-	netType, _ := d["net"].(string)
-	netType = strings.ToLower(strings.TrimSpace(netType))
-	if netType != "" && netType != "tcp" {
-		q := url.Values{}
-		q.Set("type", netType)
-		if path, ok := d["path"].(string); ok && path != "" {
-			q.Set("path", path)
-		}
-		if host, ok := d["host"].(string); ok && host != "" {
-			q.Set("host", host)
-		}
-		if netType == "grpc" {
-			if path, ok := d["path"].(string); ok && path != "" {
-				q.Set("serviceName", path)
-			}
-		}
-		opts.Transport = parseV2RayTransport(q)
-	}
-
-	return opts, nil
-}
-
-func buildShadowsocksOutbound(u *url.URL) (option.ShadowsocksOutboundOptions, error) {
-	if u.User == nil || u.Hostname() == "" {
-		return buildShadowsocksFragment(ssBody(u.String()))
-	}
-
-	method, password, err := decodeSSUserInfo(u.User)
-	if err != nil {
-		return option.ShadowsocksOutboundOptions{}, err
-	}
-	server, port, err := serverPort(u)
-	if err != nil {
-		return option.ShadowsocksOutboundOptions{}, err
-	}
-
-	opts := option.ShadowsocksOutboundOptions{
-		ServerOptions: option.ServerOptions{Server: server, ServerPort: port},
-		Method:        normalizeSSMethod(method),
-		Password:      password,
-	}
-
-	if plugin := u.Query().Get("plugin"); plugin != "" {
-		applySSPluginOpts(&opts, plugin)
-	}
-
-	return opts, nil
-}
-
-func buildShadowsocksFragment(body string) (option.ShadowsocksOutboundOptions, error) {
-	body = ssBodyFragment(body)
-	if idx := strings.Index(body, "@"); idx != -1 {
-		userInfo := body[:idx]
-		hp := strings.Split(body[idx+1:], ":")
-		if len(hp) < 2 {
-			return option.ShadowsocksOutboundOptions{}, fmt.Errorf("ss: invalid host:port")
-		}
-		port, _ := strconv.Atoi(strings.Split(hp[1], "#")[0])
-		if port == 0 {
-			return option.ShadowsocksOutboundOptions{}, fmt.Errorf("ss: invalid port")
-		}
-		method, password := "", ""
-
-		if len(userInfo) > 0 {
-			m, p, err := decodeSSCredentials(userInfo)
-			if err == nil {
-				method, password = m, p
-			}
-		}
-		if method == "" || password == "" {
-			return option.ShadowsocksOutboundOptions{}, fmt.Errorf("ss: cannot decode credentials")
-		}
-		return option.ShadowsocksOutboundOptions{
-			ServerOptions: option.ServerOptions{Server: hp[0], ServerPort: uint16(port)},
-			Method:        normalizeSSMethod(method),
-			Password:      password,
-		}, nil
-	}
-	return option.ShadowsocksOutboundOptions{}, fmt.Errorf("ss: invalid format")
-}
-
-func buildTrojanOutbound(u *url.URL, q url.Values) (option.TrojanOutboundOptions, error) {
-	server, port := extractServerPort(u)
-	if server == "" || port == 0 {
-		return option.TrojanOutboundOptions{}, fmt.Errorf("trojan: missing server or port")
-	}
-	password := ""
-	if u.User != nil {
-		password = u.User.Username()
-	}
-	if password == "" {
-		return option.TrojanOutboundOptions{}, fmt.Errorf("trojan: missing password")
-	}
-
-	opts := option.TrojanOutboundOptions{
-		ServerOptions: option.ServerOptions{Server: server, ServerPort: port},
-		Password:      password,
-	}
-
-	tlsOpts := parseTLSOptions(q, server, true)
-	if tlsOpts != nil {
-		opts.TLS = tlsOpts
-	}
-	if transport := parseV2RayTransport(q); transport != nil {
-		opts.Transport = transport
-	}
-
-	return opts, nil
-}
-
-func buildHysteria2Outbound(u *url.URL, q url.Values) (option.Hysteria2OutboundOptions, error) {
-	server, port := extractServerPort(u)
-	if server == "" || port == 0 {
-		return option.Hysteria2OutboundOptions{}, fmt.Errorf("hysteria2: missing server or port")
-	}
-	password := ""
-	if u.User != nil {
-		password = u.User.Username()
-	}
-	if password == "" {
-		return option.Hysteria2OutboundOptions{}, fmt.Errorf("hysteria2: missing password")
-	}
-
-	opts := option.Hysteria2OutboundOptions{
-		ServerOptions: option.ServerOptions{Server: server, ServerPort: port},
-		Password:      password,
-		UpMbps:        100,
-		DownMbps:      100,
-	}
-
-	sni := firstNonEmpty(q.Get("sni"), q.Get("peer"), server)
-	tlsOpts := &option.OutboundTLSOptions{
-		Enabled:    true,
-		ServerName: sni,
-	}
-	if fp := q.Get("fp"); fp != "" {
-		tlsOpts.UTLS = &option.OutboundUTLSOptions{Enabled: true, Fingerprint: fp}
-	}
-	if q.Get("allowInsecure") == "1" || q.Get("insecure") == "1" {
-		tlsOpts.Insecure = true
-	}
-	if alpn := q.Get("alpn"); alpn != "" {
-		tlsOpts.ALPN = strings.Split(alpn, ",")
-	}
-	opts.TLS = tlsOpts
-
-	if rawPorts := firstNonEmpty(q.Get("ports"), q.Get("mport")); rawPorts != "" {
-		if serverPorts, ok := parseHysteria2Ports(rawPorts); ok {
-			opts.ServerPorts = serverPorts
-		}
-	}
-	if obfs := q.Get("obfs"); obfs != "" {
-		opts.Obfs = &option.Hysteria2Obfs{
-			Type:     obfs,
-			Password: firstNonEmpty(q.Get("obfs-password"), q.Get("obfsPassword")),
-		}
-	}
-
-	return opts, nil
-}
-
-func buildTUICOutbound(u *url.URL, q url.Values) (option.TUICOutboundOptions, error) {
-	server, port := extractServerPort(u)
-	if server == "" || port == 0 {
-		return option.TUICOutboundOptions{}, fmt.Errorf("tuic: missing server or port")
-	}
-	uuid := ""
-	password := ""
-	if u.User != nil {
-		uuid = u.User.Username()
-		if pwd, ok := u.User.Password(); ok {
-			password = pwd
-		}
-	}
-
-	opts := option.TUICOutboundOptions{
-		ServerOptions: option.ServerOptions{Server: server, ServerPort: port},
-		UUID:          uuid,
-		Password:      password,
-	}
-
-	sni := firstNonEmpty(q.Get("sni"), q.Get("peer"), server)
-	tlsOpts := &option.OutboundTLSOptions{
-		Enabled:    true,
-		ServerName: sni,
-	}
-	if alpn := q.Get("alpn"); alpn != "" {
-		tlsOpts.ALPN = strings.Split(alpn, ",")
-	}
-	if q.Get("allowInsecure") == "1" || q.Get("insecure") == "1" {
-		tlsOpts.Insecure = true
-	}
-	opts.TLS = tlsOpts
-
-	if cc := q.Get("congestion_control"); cc != "" {
-		opts.CongestionControl = cc
-	}
-	if udpMode := q.Get("udp_relay_mode"); udpMode != "" {
-		opts.UDPRelayMode = udpMode
-	}
-
-	return opts, nil
-}
-
-func buildSOCKSOutbound(u *url.URL) (option.SOCKSOutboundOptions, error) {
-	server, port := extractServerPort(u)
-	if server == "" || port == 0 {
-		return option.SOCKSOutboundOptions{}, fmt.Errorf("socks: missing server or port")
-	}
-
-	opts := option.SOCKSOutboundOptions{
-		ServerOptions: option.ServerOptions{Server: server, ServerPort: port},
-	}
-
-	if u.User != nil {
-		if pwd, ok := u.User.Password(); ok && pwd != "" {
-			opts.Username = u.User.Username()
-			opts.Password = pwd
-		}
-	}
-
-	return opts, nil
-}
-
-func buildHTTPOutbound(u *url.URL) (option.HTTPOutboundOptions, error) {
-	server, port := extractServerPort(u)
-	if server == "" || port == 0 {
-		return option.HTTPOutboundOptions{}, fmt.Errorf("http: missing server or port")
-	}
-
-	opts := option.HTTPOutboundOptions{
-		ServerOptions: option.ServerOptions{Server: server, ServerPort: port},
-	}
-	if u.Scheme == "https" {
-		opts.TLS = &option.OutboundTLSOptions{
-			Enabled:    true,
-			ServerName: server,
-		}
-	}
-	if u.User != nil {
-		if pwd, ok := u.User.Password(); ok && pwd != "" {
-			opts.Username = u.User.Username()
-			opts.Password = pwd
-		}
-	}
-
-	return opts, nil
-}
-
-func buildShadowsocksROutbound(u *url.URL) (option.ShadowsocksROutboundOptions, error) {
-	server, port := extractServerPort(u)
-	if server == "" || port == 0 {
-		return option.ShadowsocksROutboundOptions{}, fmt.Errorf("ssr: missing server or port")
-	}
-
-	method, password := "", ""
-	if u.User != nil {
-		method = u.User.Username()
-		password, _ = u.User.Password()
-	}
-	if method == "" || password == "" {
-		return option.ShadowsocksROutboundOptions{}, fmt.Errorf("ssr: missing method or password")
-	}
-
-	q := u.Query()
-	opts := option.ShadowsocksROutboundOptions{
-		ServerOptions: option.ServerOptions{Server: server, ServerPort: port},
-		Method:        method,
-		Password:      password,
-		Obfs:          q.Get("obfs"),
-		ObfsParam:     q.Get("obfs_param"),
-		Protocol:      q.Get("protocol"),
-		ProtocolParam: q.Get("protocol_param"),
-	}
-
-	return opts, nil
-}
-
-func buildHysteriaOutbound(u *url.URL, q url.Values) (option.HysteriaOutboundOptions, error) {
-	server, port := extractServerPort(u)
-	if server == "" || port == 0 {
-		return option.HysteriaOutboundOptions{}, fmt.Errorf("hysteria: missing server or port")
-	}
-	authStr := ""
-	if u.User != nil {
-		authStr = u.User.Username()
-	}
-
-	opts := option.HysteriaOutboundOptions{
-		ServerOptions: option.ServerOptions{Server: server, ServerPort: port},
-		AuthString:    authStr,
-		UpMbps:        100,
-		DownMbps:      100,
-	}
-
-	tlsOpts := &option.OutboundTLSOptions{
-		Enabled:    true,
-		ServerName: firstNonEmpty(q.Get("sni"), server),
-	}
-	if q.Get("allowInsecure") == "1" || q.Get("insecure") == "1" {
-		tlsOpts.Insecure = true
-	}
-	opts.TLS = tlsOpts
-
-	if obfs := q.Get("obfs"); obfs != "" {
-		opts.Obfs = obfs
-	}
-	if alpn := q.Get("alpn"); alpn != "" {
-		tlsOpts.ALPN = strings.Split(alpn, ",")
-		opts.TLS = tlsOpts
-	}
-
-	return opts, nil
-}
-
-func buildAnyTLSOutbound(u *url.URL) (option.AnyTLSOutboundOptions, error) {
-	server, port := extractServerPort(u)
-	if server == "" || port == 0 {
-		return option.AnyTLSOutboundOptions{}, fmt.Errorf("anytls: missing server or port")
-	}
-	password := ""
-	if u.User != nil {
-		password = u.User.Username()
-	}
-
-	opts := option.AnyTLSOutboundOptions{
-		ServerOptions: option.ServerOptions{Server: server, ServerPort: port},
-		Password:      password,
-	}
-	opts.TLS = &option.OutboundTLSOptions{
-		Enabled:    true,
-		ServerName: server,
-	}
-
-	return opts, nil
-}
-
-func parseTLSOptions(q url.Values, server string, forceTLS bool) *option.OutboundTLSOptions {
-	sec := strings.ToLower(q.Get("security"))
-	if !forceTLS && sec != "tls" && sec != "reality" {
+// tlsFromIR 从 IR 的 TLSOptions 转换。Reality 指纹已在解析期补齐 chrome，此处不再兜底。
+func tlsFromIR(t *TLSOptions) *option.OutboundTLSOptions {
+	if t == nil || !t.Enabled {
 		return nil
 	}
-	tlsOpts := &option.OutboundTLSOptions{
-		Enabled: true,
+	o := &option.OutboundTLSOptions{Enabled: true, ServerName: t.ServerName}
+	if t.Insecure {
+		o.Insecure = true
 	}
-	if sec == "reality" || forceTLS || sec == "tls" {
-		sni := firstNonEmpty(q.Get("sni"), q.Get("servername"), server)
-		tlsOpts.ServerName = sni
+	if len(t.ALPN) > 0 {
+		o.ALPN = t.ALPN
 	}
-	if sec == "reality" {
-		tlsOpts.Reality = &option.OutboundRealityOptions{
+	if t.Fingerprint != "" {
+		o.UTLS = &option.OutboundUTLSOptions{Enabled: true, Fingerprint: t.Fingerprint}
+	}
+	if t.Reality != nil {
+		o.Reality = &option.OutboundRealityOptions{
 			Enabled:   true,
-			PublicKey: firstNonEmpty(q.Get("pbk"), q.Get("public-key")),
-			ShortID:   firstNonEmpty(q.Get("sid"), q.Get("short-id")),
+			PublicKey: t.Reality.PublicKey,
+			ShortID:   t.Reality.ShortID,
 		}
 	}
-	if !forceTLS && sec != "reality" {
-		if q.Get("allowInsecure") == "1" || q.Get("insecure") == "1" {
-			tlsOpts.Insecure = true
-		}
-	}
-	if fp := firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")); fp != "" {
-		tlsOpts.UTLS = &option.OutboundUTLSOptions{Enabled: true, Fingerprint: fp}
-	} else if sec == "reality" {
-		tlsOpts.UTLS = &option.OutboundUTLSOptions{Enabled: true, Fingerprint: "chrome"}
-	}
-	if alpn := q.Get("alpn"); alpn != "" {
-		tlsOpts.ALPN = strings.Split(alpn, ",")
-	}
-	return tlsOpts
+	return o
 }
 
-func parseV2RayTransport(q url.Values) *option.V2RayTransportOptions {
-	network := strings.ToLower(strings.TrimSpace(q.Get("type")))
-	if network == "" {
+// transportFromIR 从 IR 的 TransportOptions 转换。
+// tcp 类在解析期已置 nil；xhttp 类在薄壳 !Supported 早失败，此处只需处理 sing-box 支持的类型。
+func transportFromIR(t *TransportOptions) *option.V2RayTransportOptions {
+	if t == nil || t.Type == "" {
 		return nil
 	}
-	if network == "tcp" || network == "none" || network == "raw" || network == "tcpheader" {
-		return nil
-	}
-	transport := &option.V2RayTransportOptions{Type: network}
-	switch network {
+	tr := &option.V2RayTransportOptions{Type: t.Type}
+	switch t.Type {
 	case "ws":
-		path := q.Get("path")
+		path := t.Path
 		if path == "" {
 			path = "/"
 		}
-		transport.WebsocketOptions = option.V2RayWebsocketOptions{
-			Path: path,
-		}
-		if host := q.Get("host"); host != "" {
-			transport.WebsocketOptions.Headers = badoption.HTTPHeader{
-				"Host": {host},
-			}
+		tr.WebsocketOptions = option.V2RayWebsocketOptions{Path: path}
+		if t.Host != "" {
+			tr.WebsocketOptions.Headers = badoption.HTTPHeader{"Host": {t.Host}}
 		}
 	case "grpc":
-		if serviceName := q.Get("serviceName"); serviceName != "" {
-			transport.GRPCOptions = option.V2RayGRPCOptions{
-				ServiceName: serviceName,
-			}
+		if t.ServiceName != "" {
+			tr.GRPCOptions = option.V2RayGRPCOptions{ServiceName: t.ServiceName}
 		}
-	case "http", "httpupgrade":
-		path := q.Get("path")
+	case "http":
+		path := t.Path
 		if path == "" {
 			path = "/"
 		}
-		transport.HTTPUpgradeOptions = option.V2RayHTTPUpgradeOptions{
-			Host: q.Get("host"),
-			Path: path,
+		tr.HTTPOptions = option.V2RayHTTPOptions{Path: path, Method: t.Method}
+		if t.Host != "" {
+			tr.HTTPOptions.Host = badoption.Listable[string]{t.Host}
 		}
+	case "httpupgrade":
+		path := t.Path
+		if path == "" {
+			path = "/"
+		}
+		tr.HTTPUpgradeOptions = option.V2RayHTTPUpgradeOptions{Path: path, Host: t.Host}
+	case "quic":
+		tr.QUICOptions = option.V2RayQUICOptions{}
 	}
-	return transport
-}
-
-func extractServerPort(u *url.URL) (string, uint16) {
-	hostname := u.Hostname()
-	port, _ := strconv.Atoi(u.Port())
-	if port == 0 {
-		port = 443
-	}
-	return hostname, uint16(port)
-}
-
-func serverPort(u *url.URL) (string, uint16, error) {
-	hostname := u.Hostname()
-	port, err := strconv.Atoi(u.Port())
-	if err != nil || port == 0 {
-		return "", 0, fmt.Errorf("invalid port")
-	}
-	return hostname, uint16(port), nil
-}
-
-func ssBody(uri string) string {
-	body := uri[5:]
-	if idx := strings.Index(body, "#"); idx != -1 {
-		body = body[:idx]
-	}
-	return body
-}
-
-func ssBodyFragment(body string) string {
-	if idx := strings.Index(body, "#"); idx != -1 {
-		body = body[:idx]
-	}
-	return body
-}
-
-func applySSPluginOpts(opts *option.ShadowsocksOutboundOptions, pluginRaw string) {
-	pluginRaw = strings.TrimSpace(pluginRaw)
-	if pluginRaw == "" {
-		return
-	}
-	segments := strings.Split(pluginRaw, ";")
-	opts.Plugin = strings.ToLower(strings.TrimSpace(segments[0]))
-	if len(segments) > 1 {
-		opts.PluginOptions = strings.Join(segments[1:], ";")
-	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	return tr
 }
 
 func firstNonEmpty(values ...string) string {
