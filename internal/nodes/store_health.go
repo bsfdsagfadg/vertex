@@ -13,6 +13,32 @@ import (
 
 // ---- 健康度更新与测速结果落库 ----
 
+type healthEvent struct {
+	uri string
+	h   NodeHealth
+}
+
+var healthQueue = make(chan healthEvent, 1024)
+
+func StartHealthAsyncWorker() {
+	go func() {
+		for ev := range healthQueue {
+			updateSingleNodeHealthUnsafe(ev.uri, &ev.h)
+		}
+	}()
+}
+
+func pushHealthEvent(uri string, h *NodeHealth) {
+	if h == nil {
+		return
+	}
+	select {
+	case healthQueue <- healthEvent{uri: uri, h: *h}:
+	default:
+		log.Printf("[Health] 警告: 健康度异步写队列已满，丢弃事件 %s", uri)
+	}
+}
+
 func updateSingleNodeHealthUnsafe(uri string, h *NodeHealth) {
 	if db.GlobalDB == nil || h == nil {
 		return
@@ -41,7 +67,7 @@ func EnableNode(uri string) bool {
 			if h, exists := healthMap[uri]; exists {
 				h.CooldownUntil = 0
 				h.LastSubHealthyAt = 0
-				updateSingleNodeHealthUnsafe(uri, h)
+				pushHealthEvent(uri, h)
 			}
 			updateSingleNodeDisabledUnsafe(uri, false)
 			found = true
@@ -88,7 +114,7 @@ func RecordTest(uri string, ok bool, ms float64, errStr string) {
 			h.LastSubHealthyAt = time.Now().Unix()
 		}
 	}
-	updateSingleNodeHealthUnsafe(uri, h)
+	pushHealthEvent(uri, h)
 }
 
 func UpdateNodeTestResult(uri string, ok bool, ms float64, errStr string) {
@@ -112,7 +138,7 @@ func RecordRateLimit(uri string, cooldownSec int) {
 	h.LastTestError = "429 Rate Limit"
 	h.LastFailAt = now
 	h.CooldownUntil = time.Now().Unix() + int64(cooldownSec)
-	updateSingleNodeHealthUnsafe(uri, h)
+	pushHealthEvent(uri, h)
 }
 
 // ---- 节点选择与排序 ----

@@ -28,6 +28,7 @@ type ConfigProvider interface {
 	ParallelPoolRetryEnabled() bool
 	ParallelPoolSize() int
 	ParallelPoolDelayDynamic() bool
+	RecaptchaTryEntryOrDirect() bool
 	ActiveNodeURI() string
 
 	BackgroundImage() string
@@ -102,6 +103,7 @@ func (d dynamicConfig) ParallelPoolEnabled() bool      { return Load().ParallelP
 func (d dynamicConfig) ParallelPoolRetryEnabled() bool { return Load().ParallelPoolRetryEnabled }
 func (d dynamicConfig) ParallelPoolSize() int          { return Load().ParallelPoolSize }
 func (d dynamicConfig) ParallelPoolDelayDynamic() bool { return Load().ParallelPoolDelayDynamic }
+func (d dynamicConfig) RecaptchaTryEntryOrDirect() bool { return Load().RecaptchaTryEntryOrDirect }
 func (d dynamicConfig) ActiveNodeURI() string          { return Load().ActiveNodeURI }
 func (d dynamicConfig) BackgroundImage() string        { return Load().BackgroundImage }
 func (d dynamicConfig) FontSize() string               { return Load().FontSize }

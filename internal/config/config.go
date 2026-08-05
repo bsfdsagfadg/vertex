@@ -52,6 +52,7 @@ type AppConfig struct { //nolint:govet
 	TrailingModelFixEnabled  bool     `json:"trailing_model_fix_enabled"`
 	TrailingFixModels        []string `json:"trailing_fix_models,omitempty"`
 	ParallelPoolDelayDynamic bool     `json:"parallel_pool_delay_dynamic"`
+	RecaptchaTryEntryOrDirect bool     `json:"recaptcha_try_entry_or_direct"`
 	// 匿名遥测：仅发送实例 ID + 版本 + 平台，不含任何用户/网络/隐私数据。
 	// 用于了解软件的版本分布和活跃数。指针类型区分"未设置"和"显式 false"，未设置时默认开启。
 	TelemetryEnabled *bool `json:"telemetry_enabled,omitempty"`
@@ -89,6 +90,7 @@ func DefaultConfig() AppConfig {
 		ParallelPoolEnabled:       true,
 		ParallelPoolSize:          15, // 默认为 15 并发
 		ParallelPoolDelayDynamic:  false, // 建议默认关闭动态对冲，改为稳定的秒级接力
+		RecaptchaTryEntryOrDirect: true,  // 默认优先尝试前置/直连抓取 RT
 		BackgroundImage:           "url('background.jpg')",
 		FontSize:                  "14px",
 		FontColorType:             "adaptive",
@@ -221,6 +223,9 @@ func Load() AppConfig {
 			}
 			if cfg.StreamIdleTimeoutSeconds <= 0 {
 				cfg.StreamIdleTimeoutSeconds = 20
+			}
+			if cfg.RequestTimeoutSeconds < 100 {
+				cfg.RequestTimeoutSeconds = 100
 			}
 			cfg.TrailingFixModels = normalizeTrailingFixModels(cfg.TrailingFixModels)
 			log.Printf("[Config] 成功加载配置文件 config.json")

@@ -99,6 +99,7 @@ func (c *fakeCfg) ConfigDir() string                           { panic("unexpect
 func (c *fakeCfg) ConfigPath() string                          { panic("unexpected") }
 func (c *fakeCfg) DefaultResponseModalities() string           { return "图文" }
 func (c *fakeCfg) StreamIdleTimeoutSeconds() int               { return 30 }
+func (c *fakeCfg) RecaptchaTryEntryOrDirect() bool             { return true }
 
 type fakeBuilder struct {
 	count    atomic.Int64

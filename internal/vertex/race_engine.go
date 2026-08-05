@@ -186,6 +186,8 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 	// candidateCancels 存储每个候选的独立取消函数，用于胜出后立即取消落败者。
 	candidateCancels := make(map[string]context.CancelFunc)
 
+	candidateStarts := make(map[string]time.Time)
+
 	launchNode := func(uri string) {
 		mu.Lock()
 		if activeKeys[uri] {
@@ -193,6 +195,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 			return
 		}
 		activeKeys[uri] = true
+		candidateStarts[uri] = time.Now()
 		mu.Unlock()
 
 		nodes.IncInFlight(uri)
@@ -275,13 +278,18 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 			atomic.AddInt32(&active, -1)
 			name := nodes.GetNodeName(res.uri)
 
+			mu.Lock()
+			candStart := candidateStarts[res.uri]
+			mu.Unlock()
+			elapsedMs := float64(time.Since(candStart).Milliseconds())
+
 			if res.err == nil {
 				// 判定是否可立即胜出。
 				if rc.isWinningResult == nil || rc.isWinningResult(res.val) {
 					log.Printf("[Racing] 竞速胜出节点: %s", name)
 					cli.UpdateReqWinner(RequestIDFromContext(ctx), name)
 					cli.UpdateReqState(RequestIDFromContext(ctx), "🟢 数据传输", "\033[32m", "已建立连接")
-					nodes.RecordTest(res.uri, true, 50, "")
+					nodes.RecordTest(res.uri, true, elapsedMs, "")
 
 					returnedOnWinPath = true
 
@@ -295,7 +303,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 				}
 
 				rc.collectedResults = append(rc.collectedResults, res)
-				nodes.RecordTest(res.uri, true, 50, "")
+				nodes.RecordTest(res.uri, true, elapsedMs, "")
 
 				if nextIdx < len(cands) && ctxRace.Err() == nil {
 					launchNode(cands[nextIdx].RawURI)

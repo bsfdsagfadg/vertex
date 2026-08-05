@@ -31,6 +31,8 @@ var adminAllowedSettings = map[string]bool{
 	"default_thinking_level":       true,
 	"default_response_modalities": true,
 	"stream_idle_timeout_seconds":  true,
+	"request_timeout_seconds":      true,
+	"recaptcha_try_entry_or_direct": true,
 }
 
 func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request) {
@@ -60,8 +62,10 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"auto_refresh_logs":            adm.cfg.AutoRefreshLogs(),
 		"default_image_size":           adm.cfg.DefaultImageSize(),
 		"default_thinking_level":       adm.cfg.DefaultThinkingLevel(),
-		"default_response_modalities": adm.cfg.DefaultResponseModalities(),
-		"stream_idle_timeout_seconds":  adm.cfg.StreamIdleTimeoutSeconds(),
+		"default_response_modalities":   adm.cfg.DefaultResponseModalities(),
+		"stream_idle_timeout_seconds":    adm.cfg.StreamIdleTimeoutSeconds(),
+		"request_timeout_seconds":       adm.cfg.RequestTimeoutSeconds(),
+		"recaptcha_try_entry_or_direct": adm.cfg.RecaptchaTryEntryOrDirect(),
 	}})
 }
 
@@ -79,7 +83,7 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 			continue
 		}
 		switch k {
-		case "max_retries", "max_spill_mb", "max_request_mb", "max_n", "parallel_pool_size", "stream_idle_timeout_seconds":
+		case "max_retries", "max_spill_mb", "max_request_mb", "max_n", "parallel_pool_size", "stream_idle_timeout_seconds", "request_timeout_seconds":
 			if f, ok := v.(float64); ok {
 				updates[k] = int(f)
 				continue

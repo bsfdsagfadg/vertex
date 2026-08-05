@@ -26,6 +26,7 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/db"
 	"github.com/bsfdsagfadg/vertex/internal/logger"
+	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/spool"
 	"github.com/bsfdsagfadg/vertex/internal/telemetry"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
@@ -166,6 +167,7 @@ func main() {
 		log.Fatalf("[vproxy] failed to init database: %v", err)
 	}
 	defer db.CloseDB()
+	nodes.StartHealthAsyncWorker()
 
 	spool.SetMaxSpillProvider(func() int64 { return int64(config.Load().MaxSpillMB) << 20 })
 

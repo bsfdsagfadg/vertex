@@ -4,6 +4,7 @@ const SETTINGS_FIELDS = [
   { k: 'parallel_pool_retry_enabled', label: '并发池单点重试', type: 'bool', group: 'pool', desc: '开启后允许并发池内节点429后依然等待并重试（适用于少节点场景）' },
   { k: 'parallel_pool_size', label: '并发数', type: 'number', max: 20, min: 1, group: 'pool', desc: '并发抢跑的节点数 (默认 15，最大 20)' },
   { k: 'parallel_pool_delay_dynamic', label: '动态对冲延迟', type: 'bool', group: 'pool', desc: '根据节点平均响应时间动态调整并发启动间隔，平衡延迟与流量消耗' },
+  { k: 'recaptcha_try_entry_or_direct', label: '优先前置/直连抓取 RT', type: 'bool', group: 'pool', desc: '开启时获取 reCAPTCHA Token 优先尝试前置代理/直连；关闭或失败时顺次轮询健康候选节点' },
 
   // 🛠 Group: core (核心控制与基础参数)
   { k: 'max_retries', label: '上游重试次数', type: 'number', group: 'core', desc: '上游请求失败时的重试次数；总尝试 = 此值 + 1' },
@@ -16,6 +17,7 @@ const SETTINGS_FIELDS = [
   { k: 'default_thinking_level', label: '默认思考等级', type: 'select', group: 'core', opts: ['自动', '最低', '低', '中', '高'], desc: '文本/图模型请求未指定思考参数时的默认档位（按模型能力自动适配）' },
   { k: 'default_response_modalities', label: '默认图片输出模态', type: 'select', group: 'core', opts: ['图文', '仅图片'], desc: '图模型未指定响应内容时的默认类型（图文 = 图片+文本，仅图片 = 仅纯图片）' },
   { k: 'stream_idle_timeout_seconds', label: '流式包间空闲超时(秒)', type: 'number', group: 'core', min: 1, desc: '流式传输中连续无数据字节的超时时间（默认 20 秒），防止网络波动卡死' },
+  { k: 'request_timeout_seconds', label: '请求总超时(秒)', type: 'number', group: 'core', min: 1, desc: '整个 HTTP/流式请求的最大总超时限制（默认 180 秒）' },
 
   // 🛡 Group: security (安全增强与模型策略)
   { k: 'drop_max_tokens', label: '移除 maxOutputTokens', type: 'bool', group: 'security', desc: '移除输出 token 上限，让模型自由输出' },

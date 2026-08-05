@@ -112,7 +112,7 @@ retryLoop:
 	for attempt <= maxRetries {
 		log.Printf("[Vertex] [StreamChat] 开始尝试 (Attempt %d/%d), 模型=%s, 请求ID=%s, 代理=%s", attempt, maxRetries, model, reqID, nodes.GetNodeName(proxyURI))
 		if recaptchaToken == "" {
-			tok, err := c.pool.GetTokenWithProxy(ctx, proxyURI)
+			tok, err := c.pool.GetTokenShared(ctx)
 			if err != nil {
 				log.Printf("[Vertex] [StreamChat] 获取 recaptcha token 失败: %v, 代理=%s", err, nodes.GetNodeName(proxyURI))
 			}
@@ -122,6 +122,7 @@ retryLoop:
 		if recaptchaToken == "" {
 			log.Printf("[Vertex] [StreamChat] 代理 %s 获取 recaptcha token 失败，停止重试", nodes.GetNodeName(proxyURI))
 			lastError = NewAuthenticationError("Could not fetch recaptcha token for node", nil)
+			c.pool.Invalidate()
 			break retryLoop
 		}
 
@@ -181,6 +182,7 @@ retryLoop:
 			}
 			recaptchaToken = ""
 			isFirstAuth = true
+			c.pool.Invalidate()
 			lastError = ve
 			if contentYielded || attempt >= maxRetries {
 				break retryLoop

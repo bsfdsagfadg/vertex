@@ -36,6 +36,7 @@ func (s staticConfig) ParallelPoolEnabled() bool         { return s.c.ParallelPo
 func (s staticConfig) ParallelPoolRetryEnabled() bool    { return s.c.ParallelPoolRetryEnabled }
 func (s staticConfig) ParallelPoolSize() int             { return s.c.ParallelPoolSize }
 func (s staticConfig) ParallelPoolDelayDynamic() bool    { return s.c.ParallelPoolDelayDynamic }
+func (s staticConfig) RecaptchaTryEntryOrDirect() bool   { return s.c.RecaptchaTryEntryOrDirect }
 func (s staticConfig) ActiveNodeURI() string             { return s.c.ActiveNodeURI }
 func (s staticConfig) BackgroundImage() string           { return s.c.BackgroundImage }
 func (s staticConfig) FontSize() string                  { return s.c.FontSize }
