@@ -1,5 +1,4 @@
-let currentAppearanceSettings = {};
-
+// page-appearance-ui.js — 页面 DOM 渲染与交互
 function applyBg(v) { document.documentElement.style.setProperty('--bg-img', v); applyThemeColorFromBg(v); }
 
 async function initBg() {
@@ -38,20 +37,6 @@ async function initBg() {
   if (s) applyBg(s);
 }
 initBg();
-
-let _saveTimeout = null;
-async function saveAppearanceSettings(update) {
-  Object.assign(currentAppearanceSettings, update);
-  if (_saveTimeout) clearTimeout(_saveTimeout);
-  _saveTimeout = setTimeout(async () => {
-    try {
-      await API.settings.put(currentAppearanceSettings);
-    } catch (e) {
-      console.error('Failed to save settings:', e);
-    }
-  }, 500);
-}
-
 function adjustFontSize(delta) {
   let size = parseInt(currentAppearanceSettings.font_size || '14');
   size += delta;
@@ -64,7 +49,6 @@ function adjustFontSize(delta) {
   document.documentElement.style.setProperty('--base-font-size', newSize);
   saveAppearanceSettings({ font_size: newSize });
 }
-
 function setFontColorType(type) {
   currentAppearanceSettings.font_color_type = type;
   if (type === 'adaptive') {
@@ -82,7 +66,6 @@ function setFontColorType(type) {
   }
   saveAppearanceSettings({ font_color_type: type });
 }
-
 function setFontColor(color) {
   currentAppearanceSettings.font_color = color;
   currentAppearanceSettings.font_color_type = 'specified';
@@ -90,55 +73,6 @@ function setFontColor(color) {
   document.documentElement.style.setProperty('--text-dim-custom', color + 'b3');
   saveAppearanceSettings({ font_color: color, font_color_type: 'specified' });
 }
-
-async function setBgAndSync(v) {
-  applyBg(v);
-  localStorage.setItem('vproxy_bg', v); // Fallback
-  try {
-    await API.settings.put({ background_image: v });
-    toast('背景已更换');
-    loadAppearance(); // Sync current presets
-  } catch (e) {
-    toast('同步背景失败', true);
-  }
-}
-
-function applyBgUrl() { 
-  const u = $('#bgUrl').value.trim(); 
-  if (!u) return; 
-  setBgAndSync(`url('${u}')`); 
-}
-
-async function uploadBg(e) { 
-  const f = e.target.files[0]; 
-  if (!f) return;
-  if (f.size > 10 * 1024 * 1024) {
-    toast('文件不能超过10MB', true);
-    return;
-  }
-  const fd = new FormData();
-  fd.append('file', f);
-  try {
-    const res = await fetch('/api/admin/upload-bg', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (res.ok && data.ok) {
-      setBgAndSync(data.url);
-      loadAppearance();
-    } else {
-      toast(data.error?.message || '上传失败', true);
-    }
-  } catch (err) {
-    toast('上传失败', true);
-  }
-}
-
-function resetBg() { 
-  localStorage.removeItem('vproxy_bg'); 
-  applyBg(DEFAULT_BG);
-  API.settings.put({ background_image: DEFAULT_BG }).catch(()=>{});
-  toast('已恢复默认'); 
-}
-
 async function loadAppearance() {
   try {
     const data = await API.settings.get();
@@ -232,7 +166,6 @@ async function loadAppearance() {
   
   PAGE_CACHE['appearance'] = $('#page-appearance').innerHTML;
 }
-
 function applyThemeColorFromBg(bgValue) {
   const match = bgValue.match(/url\(['"]?(.*?)['"]?\)/);
   const src = match ? match[1] : null;
@@ -352,7 +285,6 @@ function extractAndSetColors(ctx) {
   document.documentElement.style.setProperty("--veil-dark", `rgba(${veilDarkRgb}, 0.62)`);
   document.documentElement.style.setProperty("--stroke", `rgba(${strokeRgb}, 0.14)`);
 }
-
 function rgbToHsl(r, g, b) {
   r /= 255; g /= 255; b /= 255;
   const max = Math.max(r, g, b), min = Math.min(r, g, b);
@@ -392,9 +324,6 @@ function hslToHex(h, s, l) {
   };
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
-
-
-
 // ==========================================
 // Advanced Color Palette Logic
 // ==========================================
@@ -402,28 +331,6 @@ function hslToHex(h, s, l) {
 let activeColorTarget = null; // 'font', 'gradient-0', etc.
 let activeColorIndex = -1; // for gradients
 let currentPaletteHex = '#002fa7';
-
-function hslToRgb(h, s, l) {
-  let r, g, b;
-  if(s === 0) {
-    r = g = b = l; // achromatic
-  } else {
-    const hue2rgb = (p, q, t) => {
-      if(t < 0) t += 1;
-      if(t > 1) t -= 1;
-      if(t < 1/6) return p + (q - p) * 6 * t;
-      if(t < 1/2) return q;
-      if(t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-      return p;
-    };
-    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-    const p = 2 * l - q;
-    r = hue2rgb(p, q, h + 1/3);
-    g = hue2rgb(p, q, h);
-    b = hue2rgb(p, q, h - 1/3);
-  }
-  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-}
 
 function hexToRgb(hex) {
   hex = hex.replace(/^#/, '');
@@ -475,9 +382,7 @@ function hsvToRgb(h, s, v) {
   }
   return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
 }
-
 let currentHSV = [0, 1, 1]; // h, s, v [0-1]
-
 window.resetColorTarget = function() {
   if (activeColorTarget === 'bg') {
     currentPaletteHex = '#002fa7';
@@ -489,7 +394,6 @@ window.resetColorTarget = function() {
   syncPaletteUI(currentPaletteHex);
   applyPaletteToTarget(currentPaletteHex);
 };
-
 function setActiveColorTarget(target, index = -1, hexColor = null, event = null) {
   if (activeColorTarget === 'bg' && target !== 'bg' && currentPaletteHex) {
     setBgAndSync(currentPaletteHex);
@@ -553,7 +457,6 @@ function setActiveColorTarget(target, index = -1, hexColor = null, event = null)
   
   syncPaletteUI(hexColor);
 }
-
 function applyPaletteToTarget(hex) {
   currentPaletteHex = hex;
   $('#palettePreview').style.backgroundColor = hex;
@@ -570,7 +473,6 @@ function applyPaletteToTarget(hex) {
     applyBg(hex);
   }
 }
-
 function syncPaletteUI(hex) {
   $('#palettePreview').style.backgroundColor = hex;
   $('#hex-input').value = hex.toUpperCase();
@@ -589,7 +491,6 @@ function syncPaletteUI(hex) {
   
   updatePickersUI();
 }
-
 function updatePickersUI() {
   const [h, s, v] = currentHSV;
   const [baseR, baseG, baseB] = hsvToRgb(h, 1, 1);
@@ -606,7 +507,6 @@ function updatePickersUI() {
     hueCursor.style.left = (h * 100) + '%';
   }
 }
-
 window.updateFromRGB = function() {
   let r = parseInt($('#rgb-r').value) || 0;
   let g = parseInt($('#rgb-g').value) || 0;
@@ -618,7 +518,6 @@ window.updateFromRGB = function() {
   syncPaletteUI(hex);
   applyPaletteToTarget(hex);
 };
-
 window.updateFromHSB = function() {
   let h = parseInt($('#hsb-h').value) || 0;
   let s = parseInt($('#hsb-s').value) || 0;
@@ -631,7 +530,6 @@ window.updateFromHSB = function() {
   syncPaletteUI(hex);
   applyPaletteToTarget(hex);
 };
-
 window.updateFromHEX = function() {
   let hex = $('#hex-input').value.trim();
   if (/^#[0-9A-Fa-f]{6}$/.test(hex)) {
@@ -639,7 +537,6 @@ window.updateFromHEX = function() {
     applyPaletteToTarget(hex);
   }
 };
-
 window.activateEyeDropper = async function() {
   if (!window.EyeDropper) {
     toast('您的浏览器不支持吸管工具', true);
@@ -653,7 +550,6 @@ window.activateEyeDropper = async function() {
   } catch (e) {
   }
 };
-
 // Panel Interactions
 const svPanel = $('#svPanel');
 const hueSlider = $('#hueSlider');
@@ -747,7 +643,6 @@ if (palette) {
   document.addEventListener('mouseup', stopDrag);
   document.addEventListener('touchend', stopDrag);
 }
-
 function renderGradientStops(stealFocus = true) {
   const container = $('#gradientStops');
   if (!container) return;
@@ -776,7 +671,6 @@ function removeGradientStop(e, index) {
   }
   renderGradientStops(false);
 }
-
 let gradientColors = ['#002fa7', '#2e1065'];
 function addGradientStop() {
   gradientColors.push('#ffffff');
@@ -787,7 +681,6 @@ function applyGradient() {
   const gradStr = `linear-gradient(135deg, ${gradientColors.join(', ')})`;
   setBgAndSync(gradStr);
 }
-
 async function saveCustomPreset(type) {
   let val = '';
   if (type === 'color') {
@@ -811,7 +704,6 @@ async function saveCustomPreset(type) {
     toast('保存预设失败', true);
   }
 }
-
 document.addEventListener('click', (e) => {
   const palette = document.querySelector('.color-palette-container');
   if (!palette) return;
@@ -830,7 +722,6 @@ document.addEventListener('click', (e) => {
   document.querySelectorAll('.color-preview-box, .gradient-stop-box').forEach(el => el.classList.remove('active'));
   activeColorTarget = null;
 });
-
 // Make palette draggable on any non-interactive part
 document.addEventListener('DOMContentLoaded', () => {
   const palette = document.getElementById('colorPaletteContainer');
@@ -873,34 +764,3 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('touchend', stopDrag);
   }
 });
-
-window.deletePreset = async function(val, event) {
-  if (event) event.stopPropagation();
-  if (!confirm('确定要删除这个预设吗？')) return;
-
-  if (val.startsWith('url')) {
-    const match = val.match(/\/assets\/(background.*?\.jpg)/);
-    if (match && match[1]) {
-      try {
-        const res = await API.raw('/api/admin/delete-bg', { method: 'POST', body: JSON.stringify({ filename: match[1] }) });
-        if (res.ok) {
-          toast('图片已删除');
-          loadAppearance();
-        }
-      } catch (e) {
-        toast('删除失败: ' + e.message);
-      }
-    }
-  } else {
-    if (currentAppearanceSettings.custom_bg_presets) {
-      currentAppearanceSettings.custom_bg_presets = currentAppearanceSettings.custom_bg_presets.filter(p => p !== val);
-      try {
-        await API.settings.put({ custom_bg_presets: currentAppearanceSettings.custom_bg_presets });
-        toast('预设已删除');
-        loadAppearance();
-      } catch (e) {
-        toast('删除失败: ' + e.message);
-      }
-    }
-  }
-};

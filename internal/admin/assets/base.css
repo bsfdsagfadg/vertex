@@ -1,0 +1,45 @@
+/* base.css — 全局基础样式：变量 / Reset / 基础元素（原 admin.css 1-44 行） */
+:root {
+  --gold: #f0bd5c;
+  --gold-rgb: 240, 189, 92;
+  --gold-deep: #e0a13c;
+  --gold-soft: rgba(var(--gold-rgb), .15);
+  --gold-shadow1: rgba(var(--gold-rgb), .3);
+  --gold-shadow2: rgba(var(--gold-rgb), .42);
+  --blue: #8fd0e8;
+  --blue-soft: rgba(120, 150, 190, .1);
+  --green: #84d6a0;
+  --red: #ec8a7c;
+  --text: #f6f1e9;
+  --text-dim: #c3b6a4;
+  --glass: rgba(34, 27, 22, .38);
+  --glass-solid: rgba(34, 27, 22, .68);
+  --veil-light: rgba(20, 15, 11, .42);
+  --veil-dark: rgba(13, 10, 8, .62);
+  --stroke: rgba(255, 246, 232, .14);
+  --hi: rgba(255, 250, 240, .18);
+  --radius: 18px;
+  --ease: cubic-bezier(.22, .8, .3, 1);
+  --bg-img: url('background.jpg');
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body { font-size: var(--base-font-size, 14px); font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; line-height: 1.55; color: var(--text-custom); overflow: hidden; }
+::selection { background: var(--gold-soft); }
+a { color: var(--blue); text-decoration: none; }
+button { font: inherit; cursor: pointer; color: inherit; }
+input, select, textarea {
+  font: inherit; color: var(--text-custom); background: rgba(255, 255, 255, .05);
+  border: 1px solid var(--stroke); border-radius: 11px; padding: 10px 13px; width: 100%;
+  transition: border-color .2s var(--ease), background .2s var(--ease), box-shadow .2s var(--ease);
+}
+input::placeholder, textarea::placeholder { color: rgba(195, 182, 164, .55); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--gold); background: rgba(255, 255, 255, .08); box-shadow: 0 0 0 3px var(--gold-soft); }
+select {
+  -webkit-appearance: none; appearance: none; cursor: pointer; padding-right: 36px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23f0bd5c' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 14px center;
+}
+option { background: #1f1813; color: var(--text-custom); }
+.hidden { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }

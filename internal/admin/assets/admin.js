@@ -1,4 +1,4 @@
-var _testTimer = null;
+var testProgressTimer = null;
 function showApp() { const lg = $('#login'), app = $('#app'); if (!lg.classList.contains('hidden')) { lg.classList.add('out'); setTimeout(() => lg.classList.add('hidden'), 420); } app.classList.remove('hidden'); requestAnimationFrame(() => app.classList.add('in')); go('overview', true); }
 function showLogin() { const lg = $('#login'), app = $('#app'); app.classList.remove('in'); setTimeout(() => app.classList.add('hidden'), 360); lg.classList.remove('hidden', 'out'); }
 async function login() { $('#loginErr').textContent = ''; try { await API.login($('#pw').value); showApp(); } catch (e) { $('#loginErr').textContent = '密码错误或登录失败'; } }
@@ -19,7 +19,7 @@ function go(page, instant) {
 
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.page === page));
   const next = $('#page-' + page), cur = curPage && $('#page-' + curPage);
-  if (curPage === 'nodes' && _testTimer) { clearInterval(_testTimer); _testTimer = null; }
+  if (curPage === 'nodes' && testProgressTimer) { clearInterval(testProgressTimer); testProgressTimer = null; }
   curPage = page;
   const enter = () => {
     next.classList.add('entering');
