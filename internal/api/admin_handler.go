@@ -108,18 +108,24 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 	case "/proxy-nodes/import":
 		adm.adminImportProxyNode(w, r)
 		return
-	case "/proxy-nodes/enable":
-		adm.adminEnableProxyNode(w, r)
+	case "/proxy-nodes/toggle":
+		adm.adminToggleProxyNodes(w, r)
 		return
-	case "/proxy-nodes/disable":
-		adm.adminDisableProxyNode(w, r)
+	case "/proxy-nodes/batch-delete":
+		adm.adminBatchDeleteProxyNodes(w, r)
+		return
+	case "/proxy-nodes/delete-disabled":
+		adm.adminDeleteDisabledProxyNodes(w, r)
+		return
+	case "/proxy-nodes/dedup":
+		adm.adminDedupProxyNodes(w, r)
 		return
 	case "/proxy-nodes/test":
 		adm.adminTestProxyNode(w, r)
 		return
 	case "/proxy-nodes":
-		if r.Method == http.MethodDelete {
-			adm.adminDeleteProxyNode(w, r)
+		if r.Method == http.MethodGet {
+			adm.adminGetProxyNodes(w, r)
 		} else {
 			adm.adminMethodNotAllowed(w)
 		}

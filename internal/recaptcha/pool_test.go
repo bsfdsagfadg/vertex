@@ -6,17 +6,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
-func TestTokenPoolCacheAndInvalidate(t *testing.T) {
+// TestTokenPoolNoCache 验证 30s 全局缓存已移除：
+// 每次顺序调用 GetTokenShared 都必须发起新的抓取，返回全新 token。
+func TestTokenPoolNoCache(t *testing.T) {
 	var calls int32
 	p := &TokenPool{fetch: func(_ string) (string, error) {
 		n := atomic.AddInt32(&calls, 1)
 		return fmt.Sprintf("tok-%d", n), nil
 	}}
 
-	// First call -> fetch 1
+	// 第一次调用 -> fetch 1
 	tok1, err := p.GetToken(context.Background())
 	if err != nil || tok1 != "tok-1" {
 		t.Fatalf("Expected tok-1, got tok=%q err=%v", tok1, err)
@@ -25,30 +26,31 @@ func TestTokenPoolCacheAndInvalidate(t *testing.T) {
 		t.Fatalf("Expected 1 fetch call, got %d", calls)
 	}
 
-	// Second call -> cached tok-1
+	// 第二次调用必须重新抓取（无缓存），返回 tok-2
 	tok2, err := p.GetToken(context.Background())
-	if err != nil || tok2 != "tok-1" {
-		t.Fatalf("Expected cached tok-1, got tok=%q err=%v", tok2, err)
-	}
-	if atomic.LoadInt32(&calls) != 1 {
-		t.Fatalf("Expected 1 fetch call (cached), got %d", calls)
-	}
-
-	// Invalidate -> next call fetches tok-2
-	p.Invalidate()
-	tok3, err := p.GetToken(context.Background())
-	if err != nil || tok3 != "tok-2" {
-		t.Fatalf("Expected tok-2 after invalidate, got tok=%q err=%v", tok3, err)
+	if err != nil || tok2 != "tok-2" {
+		t.Fatalf("Expected fresh tok-2, got tok=%q err=%v", tok2, err)
 	}
 	if atomic.LoadInt32(&calls) != 2 {
-		t.Fatalf("Expected 2 fetch calls, got %d", calls)
+		t.Fatalf("Expected 2 fetch calls (no cache), got %d", calls)
+	}
+
+	// Invalidate 为空操作，不影响后续抓取
+	p.Invalidate()
+	tok3, err := p.GetToken(context.Background())
+	if err != nil || tok3 != "tok-3" {
+		t.Fatalf("Expected tok-3, got tok=%q err=%v", tok3, err)
+	}
+	if atomic.LoadInt32(&calls) != 3 {
+		t.Fatalf("Expected 3 fetch calls, got %d", calls)
 	}
 }
 
-func TestTokenPoolSingleFlight(t *testing.T) {
+// TestTokenPoolConcurrentFresh 验证移除 singleflight 后，并发调用各自抓取独立 token：
+// reCAPTCHA token 是单次的，每个并发请求必须持有互不相同的 token。
+func TestTokenPoolConcurrentFresh(t *testing.T) {
 	var calls int32
 	p := &TokenPool{fetch: func(_ string) (string, error) {
-		time.Sleep(50 * time.Millisecond)
 		n := atomic.AddInt32(&calls, 1)
 		return fmt.Sprintf("tok-%d", n), nil
 	}}
@@ -67,12 +69,18 @@ func TestTokenPoolSingleFlight(t *testing.T) {
 	}
 	wg.Wait()
 
-	if atomic.LoadInt32(&calls) != 1 {
-		t.Fatalf("Expected singleflight to collapse to 1 fetch call, got %d", calls)
+	if atomic.LoadInt32(&calls) != 10 {
+		t.Fatalf("Expected 10 independent fetch calls, got %d", calls)
 	}
+	seen := make(map[string]bool)
 	for i, tok := range toks {
-		if tok != "tok-1" {
-			t.Errorf("Goroutine %d got tok=%q, expected tok-1", i, tok)
+		if tok == "" {
+			t.Errorf("Goroutine %d got empty token", i)
+			continue
 		}
+		if seen[tok] {
+			t.Errorf("Goroutine %d got duplicated token %q", i, tok)
+		}
+		seen[tok] = true
 	}
 }

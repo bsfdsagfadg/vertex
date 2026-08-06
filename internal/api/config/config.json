@@ -1,13 +1,2 @@
 {
-  "proxy_url_candidates": [
-    {
-      "raw_uri": "socks5://entry:1080",
-      "name": "socks5://entry:1080",
-      "type": "socks5",
-      "last_test_ok": false,
-      "last_test_ms": 0,
-      "last_test_at": 0,
-      "last_test_error": ""
-    }
-  ]
 }

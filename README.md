@@ -68,7 +68,6 @@ CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -tags "with_utls with_quic" -tr
 | `port_api` | 2156 | 服务监听端口 |
 | `admin_password` | 自动生成 | 管理面板登录密码 |
 | `max_retries` | 10 | 请求失败重试次数 |
-| `proxy_url` | 空 | 出站代理地址 (如 `http://127.0.0.1:7890`) |
 | `parallel_pool_enabled` | true | 是否开启并发竞速节点池 |
 
 > **提示**：在模型名（如 `gemini-3.5-flash`）前加上 `假非流-` 前缀（如 `假非流-gemini-3.5-flash`），可将真实流式请求转为单个 SSE 数据包返回，适合需要流式接口但期望完整响应的场景。

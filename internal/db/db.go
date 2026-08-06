@@ -95,6 +95,26 @@ func createTables(db *sql.DB) error {
 		cooldown_until INTEGER NOT NULL DEFAULT 0,
 		FOREIGN KEY(raw_uri) REFERENCES nodes(raw_uri) ON DELETE CASCADE
 	);
+
+	CREATE TABLE IF NOT EXISTS entry_nodes (
+		raw_uri TEXT PRIMARY KEY,
+		type TEXT NOT NULL,
+		name TEXT NOT NULL,
+		disabled BOOLEAN NOT NULL DEFAULT 0
+	);
+
+	CREATE TABLE IF NOT EXISTS entry_node_health (
+		raw_uri TEXT PRIMARY KEY,
+		success_count INTEGER NOT NULL DEFAULT 0,
+		fail_count INTEGER NOT NULL DEFAULT 0,
+		consecutive_failures INTEGER NOT NULL DEFAULT 0,
+		last_test_ms REAL NOT NULL DEFAULT 0,
+		last_test_error TEXT NOT NULL DEFAULT '',
+		last_success_at INTEGER NOT NULL DEFAULT 0,
+		last_fail_at INTEGER NOT NULL DEFAULT 0,
+		cooldown_until INTEGER NOT NULL DEFAULT 0,
+		FOREIGN KEY(raw_uri) REFERENCES entry_nodes(raw_uri) ON DELETE CASCADE
+	);
 	`
 	_, err := db.Exec(schema)
 	if err != nil {

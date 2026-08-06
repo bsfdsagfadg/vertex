@@ -67,8 +67,7 @@ if not exist "%SCRIPT_DIR%config" mkdir "%SCRIPT_DIR%config"
 echo {
 echo   "port_api": %PORT%,
 echo   "max_retries": %MAX_RETRIES%,
-echo   "admin_password": "%ADMIN_PASS%",
-echo   "proxy_url": "%PROXY_URL%"
+echo   "admin_password": "%ADMIN_PASS%"
 echo }
 ) > "%SCRIPT_DIR%config\config.json"
 echo [OK] config\config.json

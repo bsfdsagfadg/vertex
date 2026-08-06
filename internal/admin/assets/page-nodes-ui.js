@@ -73,8 +73,11 @@ async function loadNodes() {
     if (typeof curSettings !== 'undefined') {
       curSettings = sd.settings || sd;
     }
-    const settings = sd.settings || sd;
-    renderProxyNodes(settings.proxy_url_candidates || [], settings.proxy_url || '');
+  } catch (e) { }
+
+  try {
+    const pd = await API.proxyNodes.list();
+    renderProxyNodes(pd.nodes || [], pd.health || {});
   } catch (e) { }
 
   updateSortBtnLabel();
@@ -404,31 +407,33 @@ function toggleSelectAllNodesCheckbox(mainCb) {
   });
   loadNodes();
 }
-function renderProxyNodes(candidates, proxyUrl) {
+function renderProxyNodes(nodes, health) {
+  window.lastProxyNodes = nodes || [];
   const tbody = document.getElementById('proxyNodesBody');
   const frag = document.createDocumentFragment();
 
-  if (!candidates || candidates.length === 0) {
+  if (!nodes || nodes.length === 0) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
     td.colSpan = 4;
     td.style.cssText = 'color:var(--text-dim);text-align:center;';
-    td.textContent = '暂无前置代理候选';
+    td.textContent = '暂无前置代理节点（可在此导入节点后自动启用为第一跳 SOCKS5 通道）';
     tr.appendChild(td);
     frag.appendChild(tr);
   } else {
-    for (const c of candidates) {
+    for (const n of nodes) {
+      const h = health[n.raw_uri] || {};
       const tr = document.createElement('tr');
 
       const nameTd = document.createElement('td');
       const nameDiv = document.createElement('div');
       nameDiv.style.cssText = 'font-weight:600;font-size:13.5px;color:var(--text);';
-      nameDiv.textContent = c.name || c.raw_uri;
-      if (c.raw_uri === proxyUrl) {
+      nameDiv.textContent = n.name || n.raw_uri;
+      if (n.disabled) {
         const badge = document.createElement('span');
-        badge.className = 'pill on';
+        badge.className = 'pill off';
         badge.style.cssText = 'font-size:10px;padding:2px 8px;margin-left:5px;';
-        badge.textContent = '启用中';
+        badge.textContent = '已禁用';
         nameDiv.appendChild(badge);
       }
       nameTd.appendChild(nameDiv);
@@ -436,28 +441,34 @@ function renderProxyNodes(candidates, proxyUrl) {
 
       const typeTd = document.createElement('td');
       const typeCode = document.createElement('code');
-      typeCode.textContent = (c.type || '').toUpperCase();
+      typeCode.textContent = (n.type || '').toUpperCase();
       typeTd.appendChild(typeCode);
       tr.appendChild(typeTd);
 
       const statusTd = document.createElement('td');
-      if (c.last_test_ok) {
+      if (h.cooldown_until > Math.floor(Date.now() / 1000)) {
+        const pill = document.createElement('span');
+        pill.className = 'pill off';
+        pill.style.cssText = 'background:rgba(236,138,124,0.16);color:var(--gold);';
+        pill.textContent = '冷却中';
+        statusTd.appendChild(pill);
+      } else if ((h.last_success_at || 0) > (h.last_fail_at || 0)) {
         const pill = document.createElement('span');
         pill.className = 'pill on';
         pill.style.cssText = 'background:rgba(132,214,160,0.16);color:var(--green);';
-        const ms = c.last_test_ms ? Math.round(c.last_test_ms) + 'ms' : '';
+        const ms = h.last_test_ms ? Math.round(h.last_test_ms) + 'ms' : '';
         pill.textContent = '测试通过 ' + ms;
         statusTd.appendChild(pill);
-      } else if (c.last_test_at > 0) {
+      } else if (h.last_fail_at > 0) {
         const pill = document.createElement('span');
         pill.className = 'pill off';
         pill.style.cssText = 'background:rgba(236,138,124,0.16);color:var(--red);margin-right:5px;';
         pill.textContent = '测试失败';
         statusTd.appendChild(pill);
-        if (c.last_test_error) {
+        if (h.last_test_error) {
           const errSpan = document.createElement('div');
           errSpan.style.cssText = 'font-size:11px;color:var(--red);margin-top:2px;';
-          errSpan.textContent = c.last_test_error;
+          errSpan.textContent = h.last_test_error;
           statusTd.appendChild(errSpan);
         }
       } else {
@@ -476,30 +487,21 @@ function renderProxyNodes(candidates, proxyUrl) {
       testBtn.className = 'btn ghost';
       testBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;';
       testBtn.textContent = '测试';
-      testBtn.onclick = function () { testProxyNode(c.raw_uri); };
+      testBtn.onclick = function () { testProxyNode(n.raw_uri); };
       actionTd.appendChild(testBtn);
 
-      if (c.raw_uri === proxyUrl) {
-        const disableBtn = document.createElement('button');
-        disableBtn.className = 'btn ghost';
-        disableBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;color:var(--gold);';
-        disableBtn.textContent = '取消启用';
-        disableBtn.onclick = function () { disableProxyNode(); };
-        actionTd.appendChild(disableBtn);
-      } else {
-        const enableBtn = document.createElement('button');
-        enableBtn.className = 'btn ghost';
-        enableBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;color:var(--green);';
-        enableBtn.textContent = '启用';
-        enableBtn.onclick = function () { enableProxyNode(c.raw_uri); };
-        actionTd.appendChild(enableBtn);
-      }
+      const toggleBtn = document.createElement('button');
+      toggleBtn.className = 'btn ghost';
+      toggleBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;' + (n.disabled ? 'color:var(--green);' : 'color:var(--gold);');
+      toggleBtn.textContent = n.disabled ? '启用' : '禁用';
+      toggleBtn.onclick = function () { toggleProxyNode(n.raw_uri, !n.disabled); };
+      actionTd.appendChild(toggleBtn);
 
       const delBtn = document.createElement('button');
       delBtn.className = 'btn danger';
       delBtn.style.cssText = 'padding:4px 10px;font-size:12px;';
       delBtn.textContent = '删除';
-      delBtn.onclick = function () { deleteProxyNode(c.raw_uri); };
+      delBtn.onclick = function () { deleteProxyNode(n.raw_uri); };
       actionTd.appendChild(delBtn);
 
       tr.appendChild(actionTd);

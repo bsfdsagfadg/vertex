@@ -147,15 +147,15 @@ function importFileNodes(replace) {
   };
   reader.readAsText(file);
 }
-// ─── 前置代理候选列表 ───
+// ─── 前置代理池 ───
 async function importProxyNode() {
   const uri = $('#globalProxy').value.trim();
   if (!uri) return toast('请先输入代理 URI');
   try {
-    const res = await API.proxyNodes.import(uri);
+    await API.proxyNodes.import(uri);
     $('#globalProxy').value = '';
     await loadNodes();
-    toast('已导入前置代理: ' + (res.candidate.name || uri));
+    toast('已导入前置代理并加入轮询池');
   } catch (e) {
     toast('导入失败: ' + e.message);
   }
@@ -173,31 +173,83 @@ async function testProxyNode(uri) {
     toast('测试出错: ' + e.message);
   }
 }
-async function enableProxyNode(uri) {
-  try {
-    await API.proxyNodes.enable(uri);
-    await loadNodes();
-    toast('已启用该前置代理');
-  } catch (e) {
-    toast('启用失败: ' + e.message);
+async function testAllProxyNodes() {
+  const nodes = window.lastProxyNodes || [];
+  if (!nodes.length) return toast('前置代理池为空，无可测试节点');
+  toast('开始批量测试 ' + nodes.length + ' 个前置代理...');
+  let passCount = 0;
+  let doneCount = 0;
+  const batchSize = 5;
+  for (let i = 0; i < nodes.length; i += batchSize) {
+    const chunk = nodes.slice(i, i + batchSize);
+    await Promise.all(chunk.map(async (n) => {
+      try {
+        const res = await API.proxyNodes.test(n.raw_uri);
+        if (res && res.ok) passCount++;
+      } catch (e) {}
+      doneCount++;
+    }));
+    toast('前置代理测试中: ' + doneCount + '/' + nodes.length + '...');
   }
+  await loadNodes();
+  toast('前置代理测试完成: ' + passCount + '/' + nodes.length + ' 通过');
 }
-async function disableProxyNode() {
+async function toggleProxyNode(uri, disabled) {
   try {
-    await API.proxyNodes.disable();
+    await API.proxyNodes.toggle([uri], disabled);
     await loadNodes();
-    toast('已取消前置代理');
+    toast(disabled ? '已禁用该前置代理' : '已启用该前置代理');
   } catch (e) {
     toast('操作失败: ' + e.message);
   }
 }
-async function deleteProxyNode(uri) {
-  if (!confirm('确定删除该前置代理候选？')) return;
+async function batchToggleProxyNodes(uris, disabled) {
+  if (!uris || !uris.length) return toast('请先选择要操作的前置节点');
   try {
-    await API.proxyNodes.delete(uri);
+    await API.proxyNodes.toggle(uris, disabled);
+    await loadNodes();
+    toast(disabled ? '已批量禁用 ' + uris.length + ' 个前置节点' : '已批量启用 ' + uris.length + ' 个前置节点');
+  } catch (e) {
+    toast('批量操作失败: ' + e.message);
+  }
+}
+async function deleteProxyNode(uri) {
+  if (!confirm('确定删除该前置代理节点？')) return;
+  try {
+    await API.proxyNodes.batchDelete([uri]);
     await loadNodes();
     toast('已删除');
   } catch (e) {
     toast('删除失败: ' + e.message);
+  }
+}
+async function batchDeleteProxyNodes(uris) {
+  if (!uris || !uris.length) return toast('请选择要删除的前置节点');
+  if (!confirm('确定删除所选 ' + uris.length + ' 个前置代理节点？')) return;
+  try {
+    await API.proxyNodes.batchDelete(uris);
+    await loadNodes();
+    toast('已删除 ' + uris.length + ' 个前置节点');
+  } catch (e) {
+    toast('批量删除失败: ' + e.message);
+  }
+}
+async function deleteDisabledProxyNodes() {
+  if (!confirm('确定清空所有已禁用的前置代理节点？')) return;
+  try {
+    const res = await API.proxyNodes.deleteDisabled();
+    await loadNodes();
+    toast('已清空 ' + (res.deleted_count || 0) + ' 个禁用节点');
+  } catch (e) {
+    toast('清理失败: ' + e.message);
+  }
+}
+async function dedupProxyNodes() {
+  try {
+    const res = await API.proxyNodes.dedup();
+    await loadNodes();
+    toast('去重完成，移除 ' + (res.removed_count || 0) + ' 个');
+  } catch (e) {
+    toast('去重失败: ' + e.message);
   }
 }

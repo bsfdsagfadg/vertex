@@ -8,22 +8,46 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/entrynodes"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
-func redactURI(raw string) string {
-	before, after, found := strings.Cut(raw, "://")
-	if !found {
-		return raw
+// entryNodeNameFromParsed 从 ParsedNode 推导展示名：优先解析名，否则 scheme://host:port。
+func entryNodeNameFromParsed(n *transport.ParsedNode, raw string) string {
+	if n.Name != "" {
+		return n.Name
 	}
-	atIdx := strings.Index(after, "@")
-	if atIdx == -1 {
-		return raw
+	if n.Server != "" {
+		return fmt.Sprintf("%s://%s:%d", n.Type, n.Server, n.Port)
 	}
-	return before + "://" + after[atIdx+1:]
+	if s := transport.RedactURI(raw); s != raw {
+		return s
+	}
+	return raw
 }
 
+// adminGetProxyNodes 返回所有前置代理节点及其健康度列表。
+func (adm *AdminHandler) adminGetProxyNodes(w http.ResponseWriter, _ *http.Request) {
+	nodes := entrynodes.LoadEntryNodes()
+	var enabledCount, disabledCount int
+	for _, n := range nodes {
+		if n.Disabled {
+			disabledCount++
+		} else {
+			enabledCount++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"nodes":          nodes,
+		"health":         entrynodes.LoadEntryHealth(),
+		"total":          len(nodes),
+		"enabled_count":  enabledCount,
+		"disabled_count": disabledCount,
+	})
+}
+
+// adminImportProxyNode 导入单个前置节点 URI 到 entry_nodes 表。
+// 仅接受支持/可解析的代理协议；重复条目自动忽略。
 func (adm *AdminHandler) adminImportProxyNode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		RawURI string `json:"raw_uri"`
@@ -31,94 +55,108 @@ func (adm *AdminHandler) adminImportProxyNode(w http.ResponseWriter, r *http.Req
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	candidate, err := config.AddProxyCandidate(body.RawURI)
-	if err != nil {
-		log.Printf("[Admin] [ImportProxyNode] 导入失败: %v", err)
-		writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
-		return
-	}
-	log.Printf("[Admin] [ImportProxyNode] 导入成功: %s (%s)", candidate.Name, candidate.Type)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "candidate": candidate})
-}
-
-func (adm *AdminHandler) adminEnableProxyNode(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		RawURI string `json:"raw_uri"`
-	}
-	if !adm.decodeAdminBody(w, r, &body) {
-		return
-	}
-	cfg := config.Load()
-	found := false
-	for _, c := range cfg.ProxyURLCandidates {
-		if c.RawURI == body.RawURI {
-			found = true
-			break
-		}
-	}
-	if !found {
-		writeJSON(w, http.StatusBadRequest, adminErr("该 URI 不在候选列表中，请先导入"))
+	raw := strings.TrimSpace(body.RawURI)
+	if raw == "" {
+		writeJSON(w, http.StatusBadRequest, adminErr("URI 为空"))
 		return
 	}
 
-	dialer := adm.dialer()
-	if dialer != nil {
-		candidate, addr, err := dialer.ValidateEntryProxy(body.RawURI)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, adminErr("前置代理验证失败: "+err.Error()))
-			return
+	pn, perr := transport.GetOrParse(raw)
+	if perr != nil || pn == nil || !pn.Supported {
+		reason := "parse failed"
+		if perr != nil {
+			reason = "parse failed: " + perr.Error()
+		} else if pn != nil {
+			reason = "unsupported: " + pn.UnsupportedReason
 		}
-		oldProxy := adm.cfg.ProxyURL()
-		if err := config.WriteSettings(map[string]any{"proxy_url": body.RawURI}); err != nil {
-			candidate.Close()
-			writeJSON(w, http.StatusInternalServerError, adminErr("启用前置代理失败: "+err.Error()))
-			return
-		}
-		if err := dialer.AdoptEntryProxy(body.RawURI, candidate, addr); err != nil {
-			_ = candidate.Close()
-			_ = config.WriteSettings(map[string]any{"proxy_url": oldProxy})
-			log.Printf("[Admin] [EnableProxyNode] 采纳前置代理失败，已回滚: %v", err)
-			writeJSON(w, http.StatusInternalServerError, adminErr("采纳前置代理失败: "+err.Error()))
-			return
-		}
-	} else {
-		if err := config.WriteSettings(map[string]any{"proxy_url": body.RawURI}); err != nil {
-			writeJSON(w, http.StatusInternalServerError, adminErr("启用前置代理失败: "+err.Error()))
-			return
-		}
-	}
-
-	log.Printf("[Admin] [EnableProxyNode] 启用前置代理: %s", redactURI(body.RawURI))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (adm *AdminHandler) adminDisableProxyNode(w http.ResponseWriter, r *http.Request) {
-	if err := config.WriteSettings(map[string]any{"proxy_url": ""}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, adminErr("取消前置代理失败: "+err.Error()))
+		writeJSON(w, http.StatusBadRequest, adminErr(reason))
 		return
 	}
+
+	entrynodes.MergeEntryNodes([]entrynodes.Node{{
+		RawURI: raw,
+		Type:   pn.Type,
+		Name:   entryNodeNameFromParsed(pn, raw),
+	}})
+
+	log.Printf("[Admin] [ImportProxyNode] 导入成功: %s (%s)", transport.RedactURI(raw), pn.Type)
 	if dialer := adm.dialer(); dialer != nil {
-		if err := dialer.SyncEntryProxy(""); err != nil {
-			log.Printf("[Admin] [DisableProxyNode] 关闭前置代理失败: %v", err)
+		if err := dialer.SyncEntryPool(); err != nil {
+			log.Printf("[Admin] [ImportProxyNode] 导入后同步前置代理池失败: %v", err)
 		}
 	}
-	log.Printf("[Admin] [DisableProxyNode] 已取消前置代理")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (adm *AdminHandler) adminDeleteProxyNode(w http.ResponseWriter, r *http.Request) {
+// adminToggleProxyNodes 批量启用/禁用前置节点，并触发 SyncEntryPool 增量同步。
+func (adm *AdminHandler) adminToggleProxyNodes(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		RawURI string `json:"raw_uri"`
+		URIs     []string `json:"uris"`
+		Disabled bool     `json:"disabled"`
 	}
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	if err := config.RemoveProxyCandidate(body.RawURI); err != nil {
-		writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
+	if len(body.URIs) == 0 {
+		writeJSON(w, http.StatusBadRequest, adminErr("uris 不能为空"))
 		return
 	}
-	log.Printf("[Admin] [DeleteProxyNode] 已删除候选: %s", redactURI(body.RawURI))
+	entrynodes.BatchUpdateEntryNodesDisabled(body.URIs, body.Disabled)
+	if dialer := adm.dialer(); dialer != nil {
+		if err := dialer.SyncEntryPool(); err != nil {
+			log.Printf("[Admin] [ToggleProxyNode] 同步前置代理池失败: %v", err)
+		}
+	}
+	action := "禁用"
+	if !body.Disabled {
+		action = "启用"
+	}
+	log.Printf("[Admin] [ToggleProxyNode] 已%s %d 个前置节点，并同步轮询池", action, len(body.URIs))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// adminBatchDeleteProxyNodes 批量删除前置节点，并触发 SyncEntryPool 关闭对应实例。
+func (adm *AdminHandler) adminBatchDeleteProxyNodes(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URIs []string `json:"uris"`
+	}
+	if !adm.decodeAdminBody(w, r, &body) {
+		return
+	}
+	if len(body.URIs) == 0 {
+		writeJSON(w, http.StatusBadRequest, adminErr("uris 不能为空"))
+		return
+	}
+	entrynodes.BatchDeleteEntryNodes(body.URIs)
+	if dialer := adm.dialer(); dialer != nil {
+		if err := dialer.SyncEntryPool(); err != nil {
+			log.Printf("[Admin] [BatchDeleteProxyNode] 删除后同步前置代理池失败: %v", err)
+		}
+	}
+	log.Printf("[Admin] [BatchDeleteProxyNode] 已删除 %d 个前置节点", len(body.URIs))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// adminDeleteDisabledProxyNodes 清空已禁用的前置节点。
+func (adm *AdminHandler) adminDeleteDisabledProxyNodes(w http.ResponseWriter, _ *http.Request) {
+	n := entrynodes.DeleteDisabledEntryNodes()
+	if dialer := adm.dialer(); dialer != nil {
+		if err := dialer.SyncEntryPool(); err != nil {
+			log.Printf("[Admin] [DeleteDisabledProxyNode] 同步轮询池失败: %v", err)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted_count": n})
+}
+
+// adminDedupProxyNodes 去重前置节点。
+func (adm *AdminHandler) adminDedupProxyNodes(w http.ResponseWriter, _ *http.Request) {
+	removed := entrynodes.DedupEntryNodes()
+	if dialer := adm.dialer(); dialer != nil {
+		if err := dialer.SyncEntryPool(); err != nil {
+			log.Printf("[Admin] [DedupProxyNode] 去重后同步轮询池失败: %v", err)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed_count": removed})
 }
 
 func isRetryable(err error) bool {
@@ -160,6 +198,7 @@ func (adm *AdminHandler) testNodeOnce(ctx context.Context, timeout int, uri stri
 	return resp.StatusCode == 204, resp.StatusCode, nil
 }
 
+// adminTestProxyNode 测试指定前置节点的 204 连通性并把结果写入 entry_node_health。
 func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		RawURI         string  `json:"raw_uri"`
@@ -175,7 +214,6 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), 2*timeout+2*time.Second)
 	defer cancel()
 
-	// capability 早检查：不支持/解析失败的候选直接返回结果，不拨号、不写健康数据。
 	pn, perr := transport.GetOrParse(body.RawURI)
 	if perr != nil || pn == nil || !pn.Supported {
 		reason := "parse failed"
@@ -184,7 +222,7 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 		} else if pn != nil {
 			reason = "unsupported: " + pn.UnsupportedReason
 		}
-		log.Printf("[Admin] [TestProxyNode] 跳过前置代理测试 %s: %s", redactURI(body.RawURI), reason)
+		log.Printf("[Admin] [TestProxyNode] 跳过前置代理测试 %s: %s", transport.RedactURI(body.RawURI), reason)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": false, "elapsed_ms": 0, "error": reason,
 		})
@@ -226,12 +264,18 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	_ = config.UpdateProxyCandidateTest(body.RawURI, ok, elapsed, errStr)
+	entrynodes.RecordEntryTest(body.RawURI, ok, elapsed, errStr)
 
-	log.Printf("[Admin] [TestProxyNode] 前置代理测试 %s: ok=%v elapsed=%.0fms error=%q", redactURI(body.RawURI), ok, elapsed, errStr)
+	// 测试结果（尤其是网络类失败自动禁用）必须即时同步到轮询池，
+	// 否则被禁用的节点仍会留在 Round-Robin 池中继续承接流量。
+	if dialer := adm.dialer(); dialer != nil {
+		if err := dialer.SyncEntryPool(); err != nil {
+			log.Printf("[Admin] [TestProxyNode] 测试后同步前置代理池失败: %v", err)
+		}
+	}
+
+	log.Printf("[Admin] [TestProxyNode] 前置代理测试 %s: ok=%v elapsed=%.0fms error=%q", transport.RedactURI(body.RawURI), ok, elapsed, errStr)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         ok,
-		"elapsed_ms": elapsed,
-		"error":      errStr,
+		"ok": ok, "elapsed_ms": elapsed, "error": errStr,
 	})
 }

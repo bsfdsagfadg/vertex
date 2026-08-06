@@ -174,10 +174,8 @@ func main() {
 	dialer := transport.NewSingDialer(cfg)
 	netClient := transport.NewNetworkClient(dialer)
 
-	if proxyURL := cfg.ProxyURL(); proxyURL != "" {
-		if err := dialer.SyncEntryProxy(proxyURL); err != nil {
-			log.Printf("[vproxy] 警告: 全局前置代理预热失败 (%v)，已降级为直连模式（请在 Web 管理面板核对 proxy_url）", err)
-		}
+	if err := dialer.SyncEntryPool(); err != nil {
+		log.Printf("[vproxy] 警告: 前置代理池预热失败 (%v)，已降级为直连模式", err)
 	}
 
 	keys := api.NewAPIKeyManager()
@@ -236,9 +234,8 @@ func main() {
 				config.InvalidateCache()
 				config.InvalidateModelsCache()
 				log.Printf("[vproxy] 收到 SIGHUP：已清配置/模型缓存，执行热重载")
-				cfg := config.Load()
-				if err := dialer.SyncEntryProxy(cfg.ProxyURL); err != nil {
-					log.Printf("[vproxy] SIGHUP 前置代理同步失败: %v", err)
+				if err := dialer.SyncEntryPool(); err != nil {
+					log.Printf("[vproxy] SIGHUP 前置代理池同步失败: %v", err)
 				}
 				continue
 			}

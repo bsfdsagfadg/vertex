@@ -3,10 +3,7 @@ package recaptcha
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
-
-	"golang.org/x/sync/singleflight"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
@@ -14,13 +11,9 @@ import (
 )
 
 type TokenPool struct {
-	net       *transport.NetworkClient
-	cfg       config.ConfigProvider
-	fetch     func(proxyURI string) (string, error) // optional override for testing
-	mu        sync.RWMutex
-	cachedTok string
-	cachedAt  time.Time
-	sfGroup   singleflight.Group
+	net   *transport.NetworkClient
+	cfg   config.ConfigProvider
+	fetch func(proxyURI string) (string, error) // optional override for testing
 }
 
 func NewTokenPool(net *transport.NetworkClient, cfg config.ConfigProvider) *TokenPool {
@@ -43,103 +36,62 @@ func (p *TokenPool) GetTokenWithProxy(ctx context.Context, proxyURI string) (str
 	return p.GetTokenShared(ctx)
 }
 
-func (p *TokenPool) Invalidate() {
-	p.mu.Lock()
-	p.cachedTok = ""
-	p.cachedAt = time.Time{}
-	p.mu.Unlock()
-}
+// Invalidate 为兼容保留的空操作：30 秒全局缓存已移除，
+// 每次 GetTokenShared 都会实时抓取最新 token，无需主动失效。
+func (p *TokenPool) Invalidate() {}
 
+// GetTokenShared 每次调用都实时抓取一份独立的 reCAPTCHA token。
+//
+// 注意：不使用 singleflight 折叠并发——reCAPTCHA Enterprise token 是单次有效
+// （single-use），并发请求必须各自持有独立 token，否则复用同一份会触发
+// Google 侧验证失败（Failed to verify action / 429）。每个请求独立抓取，
+// 由 15s 超时与前置池/出口节点降级路径兜底。
 func (p *TokenPool) GetTokenShared(ctx context.Context) (string, error) {
-	p.mu.RLock()
-	if p.cachedTok != "" && time.Since(p.cachedAt) < 30*time.Second {
-		tok := p.cachedTok
-		p.mu.RUnlock()
-		return tok, nil
+	if p.fetch != nil {
+		return p.fetch("")
 	}
-	p.mu.RUnlock()
 
-	v, err, _ := p.sfGroup.Do("get_token", func() (any, error) {
-		p.mu.RLock()
-		if p.cachedTok != "" && time.Since(p.cachedAt) < 30*time.Second {
-			tok := p.cachedTok
-			p.mu.RUnlock()
+	debugMode := false
+	tryEntry := true
+	if p.cfg != nil {
+		debugMode = p.cfg.DebugMode()
+		tryEntry = p.cfg.RecaptchaTryEntryOrDirect()
+	}
+
+	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer fetchCancel()
+
+	if tryEntry {
+		tok, err := FetchRecaptchaToken(fetchCtx, p.net, "", debugMode)
+		if err == nil && tok != "" {
 			return tok, nil
 		}
-		p.mu.RUnlock()
+	}
 
-		if p.fetch != nil {
-			tok, err := p.fetch("")
-			if err != nil {
-				return "", err
-			}
-			p.mu.Lock()
-			p.cachedTok = tok
-			p.cachedAt = time.Now()
-			p.mu.Unlock()
+	// Fallback or disabled entry: poll healthy candidate nodes
+	cands := nodes.SelectForParallel(5, debugMode)
+	var lastErr error
+	for _, cand := range cands {
+		tok, err := FetchRecaptchaToken(fetchCtx, p.net, cand.RawURI, debugMode)
+		if err == nil && tok != "" {
 			return tok, nil
 		}
+		lastErr = err
+	}
 
-		debugMode := false
-		tryEntry := true
-		if p.cfg != nil {
-			debugMode = p.cfg.DebugMode()
-			tryEntry = p.cfg.RecaptchaTryEntryOrDirect()
+	// If tryEntry was false or cands was empty, attempt direct fetch as last resort if not tried yet
+	if !tryEntry {
+		tok, err := FetchRecaptchaToken(fetchCtx, p.net, "", debugMode)
+		if err == nil && tok != "" {
+			return tok, nil
 		}
-
-		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer fetchCancel()
-
-		if tryEntry {
-			tok, err := FetchRecaptchaToken(fetchCtx, p.net, "", debugMode)
-			if err == nil && tok != "" {
-				p.mu.Lock()
-				p.cachedTok = tok
-				p.cachedAt = time.Now()
-				p.mu.Unlock()
-				return tok, nil
-			}
-		}
-
-		// Fallback or disabled entry: poll healthy candidate nodes
-		cands := nodes.SelectForParallel(5, debugMode)
-		var lastErr error
-		for _, cand := range cands {
-			tok, err := FetchRecaptchaToken(fetchCtx, p.net, cand.RawURI, debugMode)
-			if err == nil && tok != "" {
-				p.mu.Lock()
-				p.cachedTok = tok
-				p.cachedAt = time.Now()
-				p.mu.Unlock()
-				return tok, nil
-			}
+		if err != nil {
 			lastErr = err
 		}
-
-		// If tryEntry was false or cands was empty, attempt direct fetch as last resort if not tried yet
-		if !tryEntry {
-			tok, err := FetchRecaptchaToken(fetchCtx, p.net, "", debugMode)
-			if err == nil && tok != "" {
-				p.mu.Lock()
-				p.cachedTok = tok
-				p.cachedAt = time.Now()
-				p.mu.Unlock()
-				return tok, nil
-			}
-			if err != nil {
-				lastErr = err
-			}
-		}
-
-		if lastErr != nil {
-			return "", lastErr
-		}
-		return "", fmt.Errorf("failed to fetch recaptcha token")
-	})
-
-	if err != nil {
-		return "", err
 	}
-	tok, _ := v.(string)
-	return tok, nil
+
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("failed to fetch recaptcha token")
 }

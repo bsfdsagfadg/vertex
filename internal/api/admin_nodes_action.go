@@ -280,14 +280,13 @@ func (adm *AdminHandler) fetchSubscriptionText(ctx context.Context, rawURL strin
 		return "", errors.New("subscription url is empty")
 	}
 
-	proxyURI := adm.cfg.ProxyURL()
-	if proxyURI != "" && adm.vc != nil && adm.vc.Net() != nil {
-		log.Printf("[Admin] [FetchSub] 经全局前置代理拉取订阅")
+	if adm.vc != nil && adm.vc.Net() != nil {
+		log.Printf("[Admin] [FetchSub] 经前置代理池拉取订阅")
 		data, err := fetchSubscriptionDataViaProxy(ctx, adm.vc.Net(), rawURL)
 		if err == nil {
 			return strings.TrimSpace(string(data)), nil
 		}
-		log.Printf("[Admin] [FetchSub] 代理拉取失败 (%v)，回退直连", err)
+		log.Printf("[Admin] [FetchSub] 前置代理拉取失败 (%v)，回退直连", err)
 	}
 
 	data, err := fetchSubscriptionDataDirect(ctx, rawURL)

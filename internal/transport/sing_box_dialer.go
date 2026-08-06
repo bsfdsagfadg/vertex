@@ -3,10 +3,10 @@ package transport
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/entrynodes"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/include"
@@ -54,119 +55,167 @@ func setOutboundDetour(o *option.Outbound, tag string) {
 	s.ReplaceDialerOptions(opts)
 }
 
-// entryBoxManager manages the single resident first-hop (entry proxy) sing-box instance.
-type entryBoxManager struct {
-	mu        sync.Mutex
-	entryURI  string
+// entryBoxInstance 是池中一个运行中的前置代理（entry proxy）sing-box 实例。
+type entryBoxInstance struct {
+	uri       string
 	box       *box.Box
 	socksAddr string
+}
+
+// entryBoxPoolManager 管理多个常驻前置代理 sing-box 实例。
+//
+// 每个实例监听 127.0.0.1 上的随机端口，提供 SOCKS5 回环通道；
+// GetNextEntrySocksAddr 基于稳定的 order 顺序 + 原子计数实现 Round-Robin 轮询；
+// 池为空时返回 ""，上层透明降级为直连（Direct）。
+type entryBoxPoolManager struct {
+	mu        sync.RWMutex
+	instances map[string]*entryBoxInstance // key=normalizeURI(raw_uri)
+	order     []string                     // 稳定顺序的 socksAddr 列表（与 instances 同步重建）
+	rrIndex   atomic.Uint64
 	stopped   bool
 }
 
-func (m *entryBoxManager) Addr() string {
-	addr, _ := m.addrAndURI()
-	return addr
+func newEntryBoxPoolManager() *entryBoxPoolManager {
+	return &entryBoxPoolManager{}
 }
 
-func (m *entryBoxManager) currentURI() string {
-	_, uri := m.addrAndURI()
-	return uri
-}
-
-// addrAndURI 在单次加锁下同时返回 socksAddr 和 entryURI。
-func (m *entryBoxManager) addrAndURI() (string, string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.stopped || m.box == nil {
-		return "", m.entryURI
+// rebuildOrderLocked 依据当前 instances 按 key 排序重建稳定的 socksAddr 顺序列表。
+// 必须在持有 m.mu 锁时调用。
+func (m *entryBoxPoolManager) rebuildOrderLocked() {
+	keys := make([]string, 0, len(m.instances))
+	for k := range m.instances {
+		keys = append(keys, k)
 	}
-	return m.socksAddr, m.entryURI
+	sort.Strings(keys)
+	order := make([]string, 0, len(keys))
+	for _, k := range keys {
+		order = append(order, m.instances[k].socksAddr)
+	}
+	m.order = order
 }
 
-// sync 同步全局前置代理 URI。
-//   - uri==""：关闭旧实例并置空。
-//   - uri==currentURI 且 box 存活：复用。
-//   - 其他：ValidateEntryProxy 隔离构建候选，成功后 AdoptEntryProxy 瞬间替换。
-//     验证失败时保留旧实例并返回错误（不静默降级为直连）。
-func (m *entryBoxManager) sync(uri string) error {
+// SyncEntryPool 从 entrynodes 加载可选前置节点，增量同步实例池：
+//   - 已删除/被禁用的节点：关闭并移除对应实例。
+//   - 新增/重新启用的节点：增量启动新实例。
+//
+// 单个节点启动失败仅记录日志并跳过，不影响其余节点（透明降级）。
+func (m *entryBoxPoolManager) SyncEntryPool() error {
+	selectable := entrynodes.GetSelectableEntryNodes()
+	desired := make(map[string]string, len(selectable)) // normalizeURI(raw) -> raw
+	for _, n := range selectable {
+		desired[normalizeURI(n.RawURI)] = n.RawURI
+	}
+
 	m.mu.Lock()
 	if m.stopped {
 		m.mu.Unlock()
-		return fmt.Errorf("entry proxy manager已停止")
+		return fmt.Errorf("entry proxy pool已停止")
 	}
-
-	normalized := normalizeURI(uri)
-	if normalized == m.entryURI && m.box != nil {
-		m.mu.Unlock()
-		return nil
+	if m.instances == nil {
+		m.instances = make(map[string]*entryBoxInstance)
 	}
-
-	if uri == "" {
-		if m.box != nil {
-			m.box.Close()
-			m.box = nil
-			m.socksAddr = ""
-			m.entryURI = ""
+	var toClose []*entryBoxInstance
+	for key, inst := range m.instances {
+		if _, ok := desired[key]; !ok {
+			toClose = append(toClose, inst)
+			delete(m.instances, key)
 		}
-		m.mu.Unlock()
-		return nil
 	}
-
+	m.rebuildOrderLocked()
+	var toStart []string
+	for key := range desired {
+		if _, ok := m.instances[key]; !ok {
+			toStart = append(toStart, key)
+		}
+	}
 	m.mu.Unlock()
 
-	newBox, newAddr, err := startEntryBox(uri)
-	if err != nil {
-		return fmt.Errorf("全局前置代理启动失败: %w", err)
+	// 关闭已失效实例（锁外执行，避免阻塞拨号）。
+	for _, inst := range toClose {
+		log.Printf("[Transport] 关闭已失效的前置代理回环实例: %s (%s)", RedactURI(inst.uri), inst.socksAddr)
+		_ = inst.box.Close()
 	}
 
-	return m.AdoptEntryProxy(uri, newBox, newAddr)
-}
-
-// ValidateEntryProxy 在不触碰常驻实例的前提下，隔离构建并启动一个候选 entry box。
-// 调用方拥有返回的 box 所有权，未采纳前必须自行关闭。
-func (m *entryBoxManager) ValidateEntryProxy(uri string) (*box.Box, string, error) {
-	return startEntryBox(uri)
-}
-
-// AdoptEntryProxy 安装已验证的候选实例为活动常驻实例。
-// 锁内关闭旧常驻实例、安装新实例并记录规范化 URI。
-// 如果管理器已停止则关闭候选并返回错误。
-func (m *entryBoxManager) AdoptEntryProxy(uri string, newBox *box.Box, socksAddr string) error {
-	normalized := normalizeURI(uri)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.stopped {
-		_ = newBox.Close()
-		return fmt.Errorf("entry proxy manager已停止")
+	// 增量启动新实例。
+	for _, key := range toStart {
+		rawURI := desired[key]
+		newBox, newAddr, err := startEntryBox(rawURI)
+		if err != nil {
+			log.Printf("[Transport] 前置代理启动失败，跳过: %s (%v)", RedactURI(rawURI), err)
+			continue
+		}
+		m.mu.Lock()
+		if m.stopped {
+			m.mu.Unlock()
+			_ = newBox.Close()
+			break
+		}
+		if m.instances == nil {
+			m.instances = make(map[string]*entryBoxInstance)
+		}
+		if _, exists := m.instances[key]; exists {
+			m.mu.Unlock()
+			_ = newBox.Close()
+			continue
+		}
+		m.instances[key] = &entryBoxInstance{uri: rawURI, box: newBox, socksAddr: newAddr}
+		m.rebuildOrderLocked()
+		m.mu.Unlock()
+		log.Printf("[Transport] 前置代理回环实例已就绪: %s (%s)", RedactURI(rawURI), newAddr)
 	}
-
-	if normalized == m.entryURI && m.box != nil {
-		_ = newBox.Close()
-		return nil
-	}
-
-	if m.box != nil {
-		m.box.Close()
-	}
-	m.box = newBox
-	m.socksAddr = socksAddr
-	m.entryURI = normalized
-	log.Printf("[Transport] 全局前置代理已就绪, 回环 SOCKS 地址: %s", socksAddr)
 	return nil
 }
 
-func (m *entryBoxManager) stop() {
+// GetNextEntrySocksAddr 按 Round-Robin 返回一个运行中的前置代理 SOCKS5 回环地址。
+// 池为空或已停止时返回 ""（上层据此透明降级直连）。
+func (m *entryBoxPoolManager) GetNextEntrySocksAddr() string {
+	m.mu.RLock()
+	if m.stopped || len(m.order) == 0 {
+		m.mu.RUnlock()
+		return ""
+	}
+	addrs := append([]string(nil), m.order...)
+	m.mu.RUnlock()
+
+	idx := (m.rrIndex.Add(1) - 1) % uint64(len(addrs))
+	return addrs[idx]
+}
+
+// socksAddrForURI 返回指定 URI 实例的回环地址；不存在时返回 ""。
+// 用于自引用场景：第二跳 URI 恰为池内前置代理时直接经回环拨号。
+func (m *entryBoxPoolManager) socksAddrForURI(uri string) string {
+	key := normalizeURI(uri)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if inst, ok := m.instances[key]; ok {
+		return inst.socksAddr
+	}
+	return ""
+}
+
+func (m *entryBoxPoolManager) stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stopped = true
-	if m.box != nil {
-		m.box.Close()
-		m.box = nil
+	for _, inst := range m.instances {
+		_ = inst.box.Close()
 	}
-	m.socksAddr = ""
-	m.entryURI = ""
+	m.instances = make(map[string]*entryBoxInstance)
+	m.order = nil
+}
+
+// RedactURI 仅保留 scheme://host:port，隐藏 URI 中的凭据信息。
+// 供 transport 与 admin API 共用，保证日志脱敏逻辑一致。
+func RedactURI(raw string) string {
+	before, after, found := strings.Cut(raw, "://")
+	if !found {
+		return raw
+	}
+	atIdx := strings.Index(after, "@")
+	if atIdx == -1 {
+		return raw
+	}
+	return before + "://" + after[atIdx+1:]
 }
 
 const (
@@ -236,32 +285,34 @@ func startEntryBox(uri string) (*box.Box, string, error) {
 
 type singDialer struct {
 	cfg        config.ConfigProvider
-	entry      *entryBoxManager
+	entry      *entryBoxPoolManager
 	boxBuilder func(uri string) (*nodeBox, error)
 }
 
 func NewSingDialer(cfg config.ConfigProvider) *singDialer {
 	d := &singDialer{
 		cfg:   cfg,
-		entry: &entryBoxManager{},
+		entry: newEntryBoxPoolManager(),
 	}
 	d.boxBuilder = d.newSecondHopBox
 	return d
 }
 
-func (d *singDialer) EntryProxySocksAddr() string {
-	return d.entry.Addr()
+// GetNextEntrySocksAddr 按请求轮询返回一个前置代理 SOCKS5 回环地址。
+func (d *singDialer) GetNextEntrySocksAddr() string {
+	return d.entry.GetNextEntrySocksAddr()
 }
 
-func (d *singDialer) SyncEntryProxy(uri string) error {
-	return d.entry.sync(uri)
+// SyncEntryPool 同步前置代理轮询池（从 entrynodes 加载可选节点）。
+func (d *singDialer) SyncEntryPool() error {
+	return d.entry.SyncEntryPool()
 }
 
 func (d *singDialer) CreateDialer(uri string, reqID string) (func(ctx context.Context, network, addr string) (net.Conn, error), func(), error) {
-	// 自引用守卫：第二跳 URI 与全局前置一致时，直接经回环 SOCKS 拨号，不自建第二跳 box。
-	// 使用 addrAndURI 单次加锁读取两个字段，防止 AdoptEntryProxy 并发修改导致 socksAddr 与 URI 不一致。
-	if socksAddr, currentURI := d.entry.addrAndURI(); socksAddr != "" && normalizeURI(uri) == currentURI {
-		log.Printf("[Transport] 请求ID=%s 第二跳 URI 与全局前置一致, 直接经回环", reqID)
+	// 自引用守卫：第二跳 URI 恰为池内前置代理时，直接经该实例回环 SOCKS 拨号，
+	// 不自建第二跳 box。
+	if socksAddr := d.entry.socksAddrForURI(uri); socksAddr != "" {
+		log.Printf("[Transport] 请求ID=%s 第二跳 URI 命中前置代理池, 直接经回环", reqID)
 		return socks5DialFunc(socksAddr), func() {}, nil
 	}
 
@@ -288,7 +339,7 @@ func (d *singDialer) newSecondHopBox(uri string) (*nodeBox, error) {
 
 	var outbounds []option.Outbound
 
-	if socksAddr := d.entry.Addr(); socksAddr != "" {
+	if socksAddr := d.entry.GetNextEntrySocksAddr(); socksAddr != "" {
 		host, portStr, _ := net.SplitHostPort(socksAddr)
 		portNum, _ := strconv.Atoi(portStr)
 		socksOut := option.Outbound{
@@ -371,19 +422,6 @@ func (d *singDialer) TestEntryProxy(uri string) (func(ctx context.Context, netwo
 	}, nil
 }
 
-func (d *singDialer) ValidateEntryProxy(uri string) (io.Closer, string, error) {
-	return d.entry.ValidateEntryProxy(uri)
-}
-
-func (d *singDialer) AdoptEntryProxy(uri string, candidate io.Closer, socksAddr string) error {
-	b, ok := candidate.(*box.Box)
-	if !ok {
-		_ = candidate.Close()
-		return fmt.Errorf("AdoptEntryProxy: invalid candidate type")
-	}
-	return d.entry.AdoptEntryProxy(uri, b, socksAddr)
-}
-
 func (d *singDialer) StopAll() {
 	d.entry.stop()
 }
@@ -431,110 +469,4 @@ func normalizeURI(uri string) string {
 	uri = strings.TrimSpace(uri)
 	uri = strings.TrimRight(uri, "/")
 	return uri
-}
-
-// socks5DialFunc 返回一个直连指定 SOCKS5 地址的拨号函数。
-// 用于自引用场景：第二跳 URI 与全局前置一致时，直接经回环 SOCKS 拨号。
-func socks5DialFunc(socksAddr string) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		dialCtx, cancel := context.WithTimeout(ctx, secondHopDialTimeout)
-		defer cancel()
-		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", socksAddr)
-		if err != nil {
-			return nil, fmt.Errorf("socks5 dial to %s: %w", socksAddr, err)
-		}
-		if deadline, ok := dialCtx.Deadline(); ok {
-			conn.SetDeadline(deadline)
-		}
-
-		// SOCKS5 方法协商：无认证
-		if _, err := conn.Write([]byte{5, 1, 0}); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("socks5 handshake write: %w", err)
-		}
-		buf := make([]byte, 2)
-		if _, err := io.ReadFull(conn, buf); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("socks5 handshake read: %w", err)
-		}
-		if buf[0] != 5 || buf[1] != 0 {
-			conn.Close()
-			return nil, fmt.Errorf("socks5 handshake rejected: ver=%d method=%d", buf[0], buf[1])
-		}
-
-		// CONNECT 请求
-		host, portStr, err := net.SplitHostPort(addr)
-		if err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("socks5 target parse: %w", err)
-		}
-		portNum, _ := strconv.Atoi(portStr)
-
-		var atyp byte
-		var addrBytes []byte
-		if ip := net.ParseIP(host); ip != nil {
-			if ip4 := ip.To4(); ip4 != nil {
-				atyp = 1
-				addrBytes = ip4
-			} else {
-				atyp = 4
-				addrBytes = ip.To16()
-			}
-		} else {
-			atyp = 3
-			addrBytes = []byte(host)
-		}
-
-		req := []byte{5, 1, 0, atyp}
-		if atyp == 3 {
-			req = append(req, byte(len(addrBytes)))
-		}
-		req = append(req, addrBytes...)
-		req = append(req, byte(portNum>>8), byte(portNum))
-
-		if _, err := conn.Write(req); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("socks5 connect write: %w", err)
-		}
-
-		resp := make([]byte, 4)
-		if _, err := io.ReadFull(conn, resp); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("socks5 connect read: %w", err)
-		}
-		if resp[1] != 0 {
-			conn.Close()
-			return nil, fmt.Errorf("socks5 connect failed: code=%d", resp[1])
-		}
-
-		// 读剩余的 BND.ADDR（最多 256 字节）以完成握手
-		restLen := 0
-		switch resp[3] {
-		case 1:
-			restLen = 4
-		case 3:
-			domainLenBuf := make([]byte, 1)
-			if _, err := io.ReadFull(conn, domainLenBuf); err != nil {
-				conn.Close()
-				return nil, fmt.Errorf("socks5 response domain length read: %w", err)
-			}
-			n := int(domainLenBuf[0])
-			restLen = n
-			if restLen > 256 {
-				conn.Close()
-				return nil, fmt.Errorf("socks5 response domain too long")
-			}
-		case 4:
-			restLen = 16
-		}
-		if restLen > 0 {
-			rest := make([]byte, restLen+2)
-			if _, err := io.ReadFull(conn, rest); err != nil {
-				conn.Close()
-				return nil, fmt.Errorf("socks5 response read: %w", err)
-			}
-		}
-
-		return conn, nil
-	}
 }

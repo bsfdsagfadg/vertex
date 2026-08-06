@@ -153,8 +153,7 @@ cat > "$CONFIG_DIR/config.json" << EOF
 {
   "port_api": $PORT,
   "max_retries": $MAX_RETRIES,
-  "admin_password": "$ADMIN_PASS",
-  "proxy_url": "$PROXY_URL"
+  "admin_password": "$ADMIN_PASS"
 }
 EOF
 echo -e "${GREEN}[✓] config/config.json${NC}"

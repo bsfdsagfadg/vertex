@@ -4,8 +4,6 @@ type ConfigProvider interface {
 	PortAPI() int
 	MaxRetries() int
 	AdminPassword() string
-	ProxyURL() string
-	ProxyURLCandidates() []ProxyCandidate
 	DebugPprof() bool
 	DebugMode() bool
 	TrailingModelFixEnabled() bool
@@ -67,13 +65,6 @@ func GetProvider() ConfigProvider { return dynamicConfig{} }
 func (d dynamicConfig) PortAPI() int                      { return Load().PortAPI }
 func (d dynamicConfig) MaxRetries() int                   { return Load().MaxRetries }
 func (d dynamicConfig) AdminPassword() string             { return Load().AdminPassword }
-func (d dynamicConfig) ProxyURL() string                  { return Load().ProxyURL }
-func (d dynamicConfig) ProxyURLCandidates() []ProxyCandidate {
-	c := Load()
-	out := make([]ProxyCandidate, len(c.ProxyURLCandidates))
-	copy(out, c.ProxyURLCandidates)
-	return out
-}
 func (d dynamicConfig) DebugPprof() bool                  { return Load().DebugPprof }
 func (d dynamicConfig) DebugMode() bool                   { return Load().DebugMode }
 func (d dynamicConfig) TrailingModelFixEnabled() bool     { return Load().TrailingModelFixEnabled }

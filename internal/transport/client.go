@@ -146,12 +146,12 @@ func (c *NetworkClient) CreateSession(timeoutSec int, secondHopURI string, reqID
 	return &Session{client: client, ProxyURI: secondHopURI, cleanup: cleanup}, nil
 }
 
-// injectEntryProxy 配置 tls-client 经回环 SOCKS 走全局前置代理。
+// injectEntryProxy 配置 tls-client 经回环 SOCKS 走前置代理池（按请求轮询）。
 func (c *NetworkClient) injectEntryProxy(opts []tls_client.HttpClientOption) ([]tls_client.HttpClientOption, error) {
 	if c.dialer == nil {
 		return opts, nil
 	}
-	addr := c.dialer.EntryProxySocksAddr()
+	addr := c.dialer.GetNextEntrySocksAddr()
 	if addr == "" {
 		return opts, nil
 	}

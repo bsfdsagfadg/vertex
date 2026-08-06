@@ -3,20 +3,28 @@ package api
 import (
 	"strconv"
 
+	"github.com/bsfdsagfadg/vertex/internal/entrynodes"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
-// init 注册节点删除缓存失效与去重身份注入：
-// - DeleteNodeCallback 一处覆盖四个删除路径（DeleteNode/DedupNodes/DeleteDisabled/BatchDeleteNodes）；
-// - ResetStateCallback 让全量重置联动清空 transport 解析缓存，规避 nodes→transport 循环依赖；
-// - NodeIdentityFunc 让 nodes 包经 IR 计算去重键，规避 nodes→transport 循环依赖；
-// - IsSupportedFunc 查询能力标注，使不可用/不支持节点自动被 SelectForParallel 过滤并标记禁用。
+// init 注册节点与前置代理节点的删除缓存失效、能力校验与去重身份注入：
+// - DeleteNodeCallback / EntryDeleteCallback 覆盖节点删除路径，联动失效 transport 解析缓存；
+// - ResetStateCallback / ResetEntryState 联动清空 transport 解析缓存，规避循环依赖；
+// - NodeIdentityFunc / EntryIdentityFunc 让节点经 IR 计算去重键（type://cred@server:port）；
+// - IsSupportedFunc / EntryIsSupportedFunc 查询能力标注，过滤不支持的节点。
 func init() {
 	nodes.DeleteNodeCallback = transport.InvalidateParsedNode
 	nodes.ResetStateCallback = transport.ClearParsedNodeCache
 	nodes.NodeIdentityFunc = nodeIdentityFromIR
 	nodes.IsSupportedFunc = func(rawURI string) bool {
+		pn, err := transport.GetOrParse(rawURI)
+		return err == nil && pn != nil && pn.Supported
+	}
+
+	entrynodes.EntryDeleteCallback = transport.InvalidateParsedNode
+	entrynodes.EntryIdentityFunc = nodeIdentityFromIR
+	entrynodes.EntryIsSupportedFunc = func(rawURI string) bool {
 		pn, err := transport.GetOrParse(rawURI)
 		return err == nil && pn != nil && pn.Supported
 	}

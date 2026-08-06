@@ -48,7 +48,6 @@ func newTestServer(t *testing.T) *testFixture {
 	cfg := config.DefaultConfig()
 	cfg.AdminPassword = "test-admin-pw"
 	cfg.ParallelPoolEnabled = false
-	cfg.ProxyURL = ""
 	cfg.ActiveNodeURI = ""
 	cfg.MaxRetries = 0
 	cfgBytes, err := json.MarshalIndent(cfg, "", "  ")
@@ -607,15 +606,9 @@ func (d *directDialer) CreateDialer(uri string, reqID string) (func(ctx context.
 	return dialer.DialContext, func() {}, nil
 }
 
-func (d *directDialer) StopAll()                      {}
-func (d *directDialer) EntryProxySocksAddr() string   { return "" }
-func (d *directDialer) SyncEntryProxy(uri string) error  { return nil }
-func (d *directDialer) ValidateEntryProxy(uri string) (io.Closer, string, error) {
-	return io.NopCloser(strings.NewReader("")), "", nil
-}
-func (d *directDialer) AdoptEntryProxy(uri string, candidate io.Closer, socksAddr string) error {
-	return nil
-}
+func (d *directDialer) StopAll()                        {}
+func (d *directDialer) GetNextEntrySocksAddr() string   { return "" }
+func (d *directDialer) SyncEntryPool() error            { return nil }
 func (d *directDialer) TestEntryProxy(uri string) (func(ctx context.Context, network, addr string) (net.Conn, error), func(), error) {
 	return d.CreateDialer(uri, "test")
 }
@@ -632,7 +625,6 @@ func newTestServerCustomMock(t *testing.T, mockHandler http.HandlerFunc, cfgMod 
 	cfg := config.DefaultConfig()
 	cfg.AdminPassword = "test-admin-pw"
 	cfg.ParallelPoolEnabled = false
-	cfg.ProxyURL = ""
 	cfg.ActiveNodeURI = ""
 	cfg.MaxRetries = 0
 	cfg.RequestTimeoutSeconds = 180

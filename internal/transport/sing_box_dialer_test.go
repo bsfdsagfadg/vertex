@@ -3,7 +3,6 @@ package transport
 import (
 	"context"
 	"errors"
-	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/include"
 	"github.com/sagernet/sing-box/option"
@@ -44,19 +42,10 @@ func (e *fakeTimeoutError) Error() string   { return e.msg }
 func (e *fakeTimeoutError) Timeout() bool   { return true }
 func (e *fakeTimeoutError) Temporary() bool { return true }
 
-type fakeCfg struct {
-	proxyURL atomic.Value
-}
+type fakeCfg struct{}
 
-func newFakeCfg(proxyURL string) *fakeCfg {
-	c := &fakeCfg{}
-	c.proxyURL.Store(proxyURL)
-	return c
-}
-
-func (c *fakeCfg) ProxyURL() string {
-	v, _ := c.proxyURL.Load().(string)
-	return v
+func newFakeCfg() *fakeCfg {
+	return &fakeCfg{}
 }
 
 func (c *fakeCfg) DefaultImageSize() string                    { return "1K" }
@@ -64,7 +53,6 @@ func (c *fakeCfg) DefaultThinkingLevel() string                { return "自动"
 func (c *fakeCfg) PortAPI() int                                { panic("unexpected") }
 func (c *fakeCfg) MaxRetries() int                             { panic("unexpected") }
 func (c *fakeCfg) AdminPassword() string                       { panic("unexpected") }
-func (c *fakeCfg) ProxyURLCandidates() []config.ProxyCandidate { panic("unexpected") }
 func (c *fakeCfg) DebugPprof() bool                            { panic("unexpected") }
 func (c *fakeCfg) DebugMode() bool                             { panic("unexpected") }
 func (c *fakeCfg) TrailingModelFixEnabled() bool               { panic("unexpected") }
@@ -118,11 +106,11 @@ func (b *fakeBuilder) build(uri string) (*nodeBox, error) {
 }
 
 func TestCreateDialer_ReturnsUniqueBoxes(t *testing.T) {
-	cfg := newFakeCfg("")
+	cfg := newFakeCfg()
 	builder := &fakeBuilder{}
 	d := &singDialer{
 		cfg:        cfg,
-		entry:      &entryBoxManager{},
+		entry:      newEntryBoxPoolManager(),
 		boxBuilder: builder.build,
 	}
 
@@ -146,8 +134,8 @@ func TestCreateDialer_ReturnsUniqueBoxes(t *testing.T) {
 func TestCreateDialer_CleanupClosesBox(t *testing.T) {
 	fc := &fakeCloser{}
 	d := &singDialer{
-		cfg:   newFakeCfg(""),
-		entry: &entryBoxManager{},
+		cfg:   newFakeCfg(),
+		entry: newEntryBoxPoolManager(),
 		boxBuilder: func(uri string) (*nodeBox, error) {
 			return &nodeBox{box: fc, outbound: fakeOutbound{}}, nil
 		},
@@ -166,11 +154,11 @@ func TestCreateDialer_CleanupClosesBox(t *testing.T) {
 }
 
 func TestCreateDialer_NoCache(t *testing.T) {
-	cfg := newFakeCfg("")
+	cfg := newFakeCfg()
 	builder := &fakeBuilder{}
 	d := &singDialer{
 		cfg:        cfg,
-		entry:      &entryBoxManager{},
+		entry:      newEntryBoxPoolManager(),
 		boxBuilder: builder.build,
 	}
 
@@ -188,8 +176,8 @@ func TestCreateDialer_NoCache(t *testing.T) {
 func TestCreateDialer_CleanupIdempotent(t *testing.T) {
 	fc := &fakeCloser{}
 	d := &singDialer{
-		cfg:   newFakeCfg(""),
-		entry: &entryBoxManager{},
+		cfg:   newFakeCfg(),
+		entry: newEntryBoxPoolManager(),
 		boxBuilder: func(uri string) (*nodeBox, error) {
 			return &nodeBox{box: fc, outbound: fakeOutbound{}}, nil
 		},
@@ -205,10 +193,10 @@ func TestCreateDialer_CleanupIdempotent(t *testing.T) {
 }
 
 func TestCreateDialer_BuilderError(t *testing.T) {
-	cfg := newFakeCfg("")
+	cfg := newFakeCfg()
 	d := &singDialer{
 		cfg:   cfg,
-		entry: &entryBoxManager{},
+		entry: newEntryBoxPoolManager(),
 		boxBuilder: func(uri string) (*nodeBox, error) {
 			return nil, errors.New("build failed")
 		},
@@ -224,47 +212,63 @@ func TestCreateDialer_BuilderError(t *testing.T) {
 }
 
 func TestEntryProxyAddr_EmptyByDefault(t *testing.T) {
-	m := &entryBoxManager{}
-	if addr := m.Addr(); addr != "" {
+	m := newEntryBoxPoolManager()
+	if addr := m.GetNextEntrySocksAddr(); addr != "" {
 		t.Fatalf("expected empty addr before sync, got %q", addr)
 	}
 }
 
 func TestEntryProxySync_EmptyIsOK(t *testing.T) {
-	m := &entryBoxManager{}
-	if err := m.sync(""); err != nil {
+	m := newEntryBoxPoolManager()
+	if err := m.SyncEntryPool(); err != nil {
 		t.Fatalf("sync empty should succeed: %v", err)
 	}
 }
 
 func TestEntryProxySync_StoppedReturnsError(t *testing.T) {
-	m := &entryBoxManager{}
+	m := newEntryBoxPoolManager()
 	m.stop()
-	if err := m.sync("socks5://entry:1080"); err == nil {
+	if err := m.SyncEntryPool(); err == nil {
 		t.Fatal("sync after stop should return error")
+	}
+	if addr := m.GetNextEntrySocksAddr(); addr != "" {
+		t.Fatalf("GetNextEntrySocksAddr after stop should be empty, got %q", addr)
 	}
 }
 
 func TestStopAll_ClearsEntryProxy(t *testing.T) {
-	d := &singDialer{
-		cfg:   newFakeCfg(""),
-		entry: &entryBoxManager{},
+	box_, err := box.New(box.Options{
+		Context: include.Context(context.Background()),
+		Options: option.Options{
+			Log: &option.LogOptions{Disabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create box: %v", err)
 	}
-	d.entry.socksAddr = "127.0.0.1:11080"
-	d.entry.entryURI = "socks5://entry:1080"
+	d := &singDialer{
+		cfg:   newFakeCfg(),
+		entry: newEntryBoxPoolManager(),
+	}
+	if err := d.entry.adoptForTest("socks5://entry:1080", box_, "127.0.0.1:11080"); err != nil {
+		t.Fatalf("adoptForTest: %v", err)
+	}
+	if addr := d.entry.GetNextEntrySocksAddr(); addr == "" {
+		t.Fatal("expected non-empty addr before StopAll")
+	}
 
 	d.StopAll()
 
-	if d.entry.socksAddr != "" {
+	if addr := d.entry.GetNextEntrySocksAddr(); addr != "" {
 		t.Fatal("socksAddr should be cleared after StopAll")
 	}
 }
 
 func TestConcurrentCreateDialer(t *testing.T) {
-	cfg := newFakeCfg("")
+	cfg := newFakeCfg()
 	d := &singDialer{
 		cfg:        cfg,
-		entry:      &entryBoxManager{},
+		entry:      newEntryBoxPoolManager(),
 		boxBuilder: func(uri string) (*nodeBox, error) {
 			return &nodeBox{box: &fakeCloser{}, outbound: fakeOutbound{}}, nil
 		},
@@ -288,10 +292,10 @@ func TestConcurrentCreateDialer(t *testing.T) {
 }
 
 func TestTestEntryProxy_Basic(t *testing.T) {
-	cfg := newFakeCfg("")
+	cfg := newFakeCfg()
 	d := &singDialer{
 		cfg:        cfg,
-		entry:      &entryBoxManager{},
+		entry:      newEntryBoxPoolManager(),
 		boxBuilder: func(uri string) (*nodeBox, error) {
 			return &nodeBox{box: &fakeCloser{}, outbound: fakeOutbound{}}, nil
 		},
@@ -320,7 +324,7 @@ func TestCreateDialer_SecondHopEqualsEntry_UsesLoopback(t *testing.T) {
 	builderCount := atomic.Int64{}
 	entryURI := "socks5://entry:1080"
 
-	// Create a minimal entry box so that Addr() returns a non-empty address.
+	// Create a minimal entry box so that the pool has a non-empty address.
 	bareBox, err := box.New(box.Options{
 		Context: include.Context(context.Background()),
 		Options: option.Options{
@@ -333,18 +337,16 @@ func TestCreateDialer_SecondHopEqualsEntry_UsesLoopback(t *testing.T) {
 	defer bareBox.Close()
 
 	d := &singDialer{
-		cfg:   newFakeCfg(""),
-		entry: &entryBoxManager{},
+		cfg:   newFakeCfg(),
+		entry: newEntryBoxPoolManager(),
 		boxBuilder: func(uri string) (*nodeBox, error) {
 			builderCount.Add(1)
 			return &nodeBox{box: &fakeCloser{}, outbound: fakeOutbound{}}, nil
 		},
 	}
-	d.entry.mu.Lock()
-	d.entry.box = bareBox
-	d.entry.socksAddr = "127.0.0.1:9999"
-	d.entry.entryURI = normalizeURI(entryURI)
-	d.entry.mu.Unlock()
+	if err := d.entry.adoptForTest(entryURI, bareBox, "127.0.0.1:9999"); err != nil {
+		t.Fatalf("adoptForTest: %v", err)
+	}
 
 	dialCtx, cleanup, err := d.CreateDialer(entryURI, "test")
 	if err != nil {
@@ -361,58 +363,49 @@ func TestCreateDialer_SecondHopEqualsEntry_UsesLoopback(t *testing.T) {
 	cleanup() // must be idempotent
 }
 
-func TestEntryProxySync_FailureKeepsOld(t *testing.T) {
-	d := &singDialer{
-		cfg:   newFakeCfg(""),
-		entry: &entryBoxManager{},
+func TestEntryProxyPool_GetNextRoundRobin(t *testing.T) {
+	m := newEntryBoxPoolManager()
+	for i := range 3 {
+		b, err := box.New(box.Options{
+			Context: include.Context(context.Background()),
+			Options: option.Options{
+				Log: &option.LogOptions{Disabled: true},
+			},
+		})
+		if err != nil {
+			t.Fatalf("create box %d: %v", i, err)
+		}
+		if err := m.adoptForTest("socks5://box"+strconv.Itoa(i)+":1080", b, "127.0.0.1:1000"+strconv.Itoa(i)); err != nil {
+			t.Fatalf("adoptForTest: %v", err)
+		}
 	}
 
-	// 预埋一个旧的常驻实例
-	bareBox, err := box.New(box.Options{
-		Context: include.Context(context.Background()),
-		Options: option.Options{
-			Log: &option.LogOptions{Disabled: true},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create bare box: %v", err)
+	seen := map[string]bool{}
+	for range 6 {
+		addr := m.GetNextEntrySocksAddr()
+		if addr == "" {
+			t.Fatal("GetNextEntrySocksAddr returned empty with populated pool")
+		}
+		seen[addr] = true
 	}
-	defer bareBox.Close()
-
-	d.entry.mu.Lock()
-	d.entry.box = bareBox
-	d.entry.socksAddr = "127.0.0.1:9999"
-	d.entry.entryURI = "socks5://old:1080"
-	d.entry.mu.Unlock()
-
-	// sync with an invalid URI should fail
-	err = d.entry.sync("invalid://bad")
-	if err == nil {
-		t.Fatal("expected sync error for invalid URI")
-	}
-
-	// old resident should survive (not replaced, not cleared)
-	if addr := d.entry.Addr(); addr != "127.0.0.1:9999" {
-		t.Fatalf("Addr() = %q, want 127.0.0.1:9999 (old resident should survive)", addr)
-	}
-	if uri := d.entry.currentURI(); uri != "socks5://old:1080" {
-		t.Fatalf("currentURI() = %q, want socks5://old:1080", uri)
+	if len(seen) != 3 {
+		t.Fatalf("round-robin should cover all 3 addrs, got %d: %#v", len(seen), seen)
 	}
 }
 
 func TestEntryProxySync_ConcurrentEmptyDoesNotPanic(t *testing.T) {
-	m := &entryBoxManager{}
+	m := newEntryBoxPoolManager()
 	var wg sync.WaitGroup
 	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = m.sync("")
+			_ = m.SyncEntryPool()
 		}()
 	}
 	wg.Wait()
-	if addr := m.Addr(); addr != "" {
-		t.Fatalf("Addr() = %q, want empty", addr)
+	if addr := m.GetNextEntrySocksAddr(); addr != "" {
+		t.Fatalf("GetNextEntrySocksAddr() = %q, want empty", addr)
 	}
 }
 
@@ -438,16 +431,19 @@ func TestEntryProxyAdopt_ClosesOldInstantly(t *testing.T) {
 		t.Fatalf("create new box: %v", err)
 	}
 
-	m := &entryBoxManager{}
+	m := newEntryBoxPoolManager()
+	// 先预置同名旧实例（socks5://old:1080），随后用新 URI 采纳，验证同名替换关闭旧实例。
+	// 这里统一用 "socks5://old:1080" 作为同一键，分别 adopt 两版实例，检查后者生效前者被关闭。
 	m.mu.Lock()
-	m.box = oldBox
-	m.socksAddr = "127.0.0.1:9999"
-	m.entryURI = "socks5://old:1080"
+	if m.instances == nil {
+		m.instances = make(map[string]*entryBoxInstance)
+	}
+	m.instances["socks5://old:1080"] = &entryBoxInstance{uri: "socks5://old:1080", box: oldBox, socksAddr: "127.0.0.1:9999"}
 	m.mu.Unlock()
 
 	oldRef := oldBox
-	if err := m.AdoptEntryProxy("socks5://new:1080", newBox, "127.0.0.1:10000"); err != nil {
-		t.Fatalf("AdoptEntryProxy: %v", err)
+	if err := m.adoptForTest("socks5://old:1080", newBox, "127.0.0.1:10000"); err != nil {
+		t.Fatalf("adoptForTest: %v", err)
 	}
 
 	// old box should be closed
@@ -455,12 +451,9 @@ func TestEntryProxyAdopt_ClosesOldInstantly(t *testing.T) {
 		t.Error("old box should have been closed by Adopt")
 	}
 
-	// Addr should reflect new address
-	if addr := m.Addr(); addr != "127.0.0.1:10000" {
-		t.Fatalf("Addr() = %q, want 127.0.0.1:10000", addr)
-	}
-	if uri := m.currentURI(); uri != "socks5://new:1080" {
-		t.Fatalf("currentURI() = %q, want socks5://new:1080", uri)
+	// socksAddr should reflect new address
+	if addr := m.socksAddrForURI("socks5://old:1080"); addr != "127.0.0.1:10000" {
+		t.Fatalf("socksAddrForURI() = %q, want 127.0.0.1:10000", addr)
 	}
 }
 
@@ -485,23 +478,7 @@ func TestStartEntryBox_UsesEphemeralPort(t *testing.T) {
 }
 
 func TestEntryProxySync_ConcurrentDifferentURIs(t *testing.T) {
-	oldBox, err := box.New(box.Options{
-		Context: include.Context(context.Background()),
-		Options: option.Options{
-			Log: &option.LogOptions{Disabled: true},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create oldBox: %v", err)
-	}
-
-	m := &entryBoxManager{}
-	m.mu.Lock()
-	m.box = oldBox
-	m.socksAddr = "127.0.0.1:9999"
-	m.entryURI = "socks5://old:1080"
-	m.mu.Unlock()
-
+	m := newEntryBoxPoolManager()
 	var wg sync.WaitGroup
 	for i := range 5 {
 		wg.Add(1)
@@ -518,25 +495,38 @@ func TestEntryProxySync_ConcurrentDifferentURIs(t *testing.T) {
 				t.Errorf("create candidate box: %v", err)
 				return
 			}
-			if err := m.AdoptEntryProxy(uri, b, "127.0.0.1:1000"+strconv.Itoa(i)); err != nil {
+			if err := m.adoptForTest(uri, b, "127.0.0.1:1000"+strconv.Itoa(i)); err != nil {
 				_ = b.Close()
-				t.Errorf("AdoptEntryProxy: %v", err)
+				t.Errorf("adoptForTest: %v", err)
 			}
 		}()
 	}
 	wg.Wait()
 
-	// oldBox should have been closed by one of the Adopt calls
-	if err := oldBox.Close(); err == nil {
-		t.Error("oldBox should have been closed by AdoptEntryProxy")
+	// 并发采纳不同 URI 应使池保留全部 5 个实例
+	m.mu.RLock()
+	count := len(m.instances)
+	m.mu.RUnlock()
+	if count != 5 {
+		t.Fatalf("instances count = %d, want 5", count)
 	}
 
-	// at most one box should be the current resident
-	if m.box == nil {
-		t.Fatal("no resident box after concurrent Adopt")
+	seen := map[string]bool{}
+	for range 10 {
+		addr := m.GetNextEntrySocksAddr()
+		if addr == "" {
+			t.Fatal("round-robin should not return empty")
+		}
+		seen[addr] = true
 	}
-	if m.socksAddr == "" || m.entryURI == "" {
-		t.Fatal("resident state should be populated")
+	if len(seen) != 5 {
+		m.mu.RLock()
+		var keys []string
+		for k, inst := range m.instances {
+			keys = append(keys, k+"="+inst.socksAddr)
+		}
+		m.mu.RUnlock()
+		t.Fatalf("round-robin should cover all 5 addrs, got %d; seen=%#v; instances=%#v", len(seen), seen, keys)
 	}
 }
 
@@ -552,18 +542,12 @@ func (d *countingDialer) CreateDialer(uri string, reqID string) (func(ctx contex
 }
 
 
-func (d *countingDialer) StopAll()                           {}
-func (d *countingDialer) EntryProxySocksAddr() string        { return "" }
-func (d *countingDialer) SyncEntryProxy(uri string) error    { return nil }
+func (d *countingDialer) StopAll()                  {}
+func (d *countingDialer) GetNextEntrySocksAddr() string { return "" }
+func (d *countingDialer) SyncEntryPool() error      { return nil }
 func (d *countingDialer) TestEntryProxy(uri string) (func(ctx context.Context, network, addr string) (net.Conn, error), func(), error) {
 	var dialer net.Dialer
 	return dialer.DialContext, func() {}, nil
-}
-func (d *countingDialer) ValidateEntryProxy(uri string) (io.Closer, string, error) {
-	return io.NopCloser(strings.NewReader("")), "", nil
-}
-func (d *countingDialer) AdoptEntryProxy(uri string, candidate io.Closer, socksAddr string) error {
-	return nil
 }
 
 func TestInjectSecondHop_AlwaysViaTempBox(t *testing.T) {
@@ -605,20 +589,17 @@ func TestTestEntryProxy_IsolatedFromResident(t *testing.T) {
 	defer residentBox.Close()
 
 	d := &singDialer{
-		cfg:   newFakeCfg(""),
-		entry: &entryBoxManager{},
+		cfg:   newFakeCfg(),
+		entry: newEntryBoxPoolManager(),
 		boxBuilder: func(uri string) (*nodeBox, error) {
 			return &nodeBox{box: &fakeCloser{}, outbound: fakeOutbound{}}, nil
 		},
 	}
-	d.entry.mu.Lock()
-	d.entry.box = residentBox
-	d.entry.socksAddr = "127.0.0.1:9999"
-	d.entry.entryURI = "socks5://resident:1080"
-	d.entry.mu.Unlock()
+	if err := d.entry.adoptForTest("socks5://resident:1080", residentBox, "127.0.0.1:9999"); err != nil {
+		t.Fatalf("adoptForTest: %v", err)
+	}
 
-	originalAddr := d.entry.Addr()
-	originalURI := d.entry.currentURI()
+	originalAddr := d.entry.GetNextEntrySocksAddr()
 
 	// TestEntryProxy with a different URI should not affect resident
 	dialCtx, cleanup, err := d.TestEntryProxy("socks5://candidate:1080")
@@ -630,11 +611,8 @@ func TestTestEntryProxy_IsolatedFromResident(t *testing.T) {
 	}
 
 	// resident state unchanged
-	if addr := d.entry.Addr(); addr != originalAddr {
-		t.Fatalf("resident Addr changed: %q -> %q", originalAddr, addr)
-	}
-	if uri := d.entry.currentURI(); uri != originalURI {
-		t.Fatalf("resident currentURI changed: %q -> %q", originalURI, uri)
+	if addr := d.entry.GetNextEntrySocksAddr(); addr != originalAddr {
+		t.Fatalf("resident socksAddr changed: %q -> %q", originalAddr, addr)
 	}
 
 	cleanup() // candidate cleanup should not close resident

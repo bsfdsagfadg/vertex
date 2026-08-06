@@ -129,14 +129,19 @@
           </div>
           <div class="grid grid-1">
             <div class="card glass">
-              <div class="field"><label for="globalProxy">全局前置代理 (SOCKS5/HTTP/VLESS 等)</label>
+              <div class="field"><label for="globalProxy">前置代理池导入 (SOCKS5/HTTP/VLESS 等)</label>
                 <div class="toolbar m-0"><input id="globalProxy" placeholder="socks5://127.0.0.1:1080 或 vless://..."><button
                     class="btn" onclick="importProxyNode()">导入</button></div>
-                <div class="desc">配置后默认走该代理；如果未启用并发池且无锁定节点，将使用此代理。导入后可在下方候选列表启用。</div>
+                <div class="desc">导入的节点进入前置代理轮询池，作为出口请求的第一跳 SOCKS5 通道；池为空或全部禁用时透明降级直连。</div>
               </div>
               <div class="divider"></div>
               <div class="field m-0">
-                <div class="field-heading">前置代理候选列表</div>
+                <div class="field-heading">前置代理池列表</div>
+                <div class="toolbar m-0 gap-8">
+                  <button class="btn ghost" onclick="testAllProxyNodes()">批量测试</button>
+                  <button class="btn ghost" onclick="dedupProxyNodes()">去重</button>
+                  <button class="btn ghost" onclick="deleteDisabledProxyNodes()">清空禁用</button>
+                </div>
                 <div class="table-wrap">
 <table class="proxy-candidates-table">
                     <thead>
