@@ -3,7 +3,7 @@ function initSubscriptions() {
 }
 
 function loadSubscriptions() {
-    apiGet('/api/admin/subscriptions/list')
+    API.raw('/api/admin/subscriptions/list')
         .then(data => {
             if (!data) return;
             renderCustomUAs(data.custom_uas || []);
@@ -16,10 +16,12 @@ function loadSubscriptions() {
 function updateUaSelect(customUAs) {
     const sel = document.getElementById('subUaSelect');
     if (!sel) return;
-    sel.innerHTML = '<option value="Chrome">Chrome (默认)</option>' +
-        '<option value="clash-verge/v2.5.2">clash-verge/v2.5.2</option>' +
-        '<option value="Clash.Meta">Clash.Meta</option>' +
-        '<option value="v2rayNG/1.8.5">v2rayNG/1.8.5</option>';
+    
+    // Retain built-in options up to the first 5 elements (Chrome, clash-verge, Clash.Meta, v2rayNG, casverge)
+    // and remove previously appended custom UAs.
+    while (sel.options.length > 5) {
+        sel.remove(sel.options.length - 1);
+    }
     
     customUAs.forEach(ua => {
         const opt = document.createElement('option');
@@ -40,10 +42,10 @@ function renderCustomUAs(uas) {
     uas.forEach(ua => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-            <td>${escapeHTML(ua.name)}</td>
-            <td style="word-break:break-all;">${escapeHTML(ua.user_agent)}</td>
+            <td>${esc(ua.name)}</td>
+            <td style="word-break:break-all;">${esc(ua.user_agent)}</td>
             <td>
-                <button class="btn danger" style="padding:2px 6px; font-size:12px;" onclick="deleteUA('${escapeHTML(ua.name)}')">删除</button>
+                <button class="btn danger" style="padding:2px 6px; font-size:12px;" onclick="deleteUA('${esc(ua.name)}')">删除</button>
             </td>
         `;
         tbody.appendChild(tr);
@@ -63,26 +65,26 @@ function renderSubscriptions(subs, uas) {
         const lastUpdate = sub.last_update_time > 0 ? new Date(sub.last_update_time * 1000).toLocaleString() : '从未更新';
         let errHtml = '';
         if (sub.last_error) {
-            errHtml = `<div style="color:var(--red);font-size:12px;margin-top:4px;">错误: ${escapeHTML(sub.last_error)}</div>`;
+            errHtml = `<div style="color:var(--red);font-size:12px;margin-top:4px;">错误: ${esc(sub.last_error)}</div>`;
         }
         
-        let uaDisplay = escapeHTML(sub.user_agent);
+        let uaDisplay = esc(sub.user_agent);
         if (!uaDisplay || uaDisplay === 'Chrome') uaDisplay = 'Chrome (默认)';
         
         tr.innerHTML = `
             <td>
-                ${escapeHTML(sub.name)}
+                ${esc(sub.name)}
                 ${errHtml}
             </td>
-            <td style="word-break:break-all;">${escapeHTML(sub.url)}</td>
+            <td style="word-break:break-all;">${esc(sub.url)}</td>
             <td>${uaDisplay}</td>
             <td>${sub.update_interval > 0 ? sub.update_interval : '禁用'}</td>
             <td style="font-size:12px;">${lastUpdate}</td>
             <td>
                 <div style="display:flex;gap:4px;flex-wrap:wrap;">
                     <button class="btn ghost btn-blue" style="padding:2px 6px; font-size:12px;" onclick='editSub(${JSON.stringify(sub).replace(/'/g, "&apos;")})'>编辑</button>
-                    <button class="btn ghost btn-green" style="padding:2px 6px; font-size:12px;" onclick="updateSub('${escapeHTML(sub.id)}')">更新</button>
-                    <button class="btn danger" style="padding:2px 6px; font-size:12px;" onclick="deleteSub('${escapeHTML(sub.id)}')">删除</button>
+                    <button class="btn ghost btn-green" style="padding:2px 6px; font-size:12px;" onclick="updateSub('${esc(sub.id)}')">更新</button>
+                    <button class="btn danger" style="padding:2px 6px; font-size:12px;" onclick="deleteSub('${esc(sub.id)}')">删除</button>
                 </div>
             </td>
         `;
@@ -111,7 +113,7 @@ function submitUA() {
         return;
     }
     
-    apiPost('/api/admin/subscriptions/custom_ua/save', { name: name, user_agent: ua })
+    API.raw('/api/admin/subscriptions/custom_ua/save', { method: 'POST', body: JSON.stringify({ name: name, user_agent: ua }) })
         .then(res => {
             if (res.ok) {
                 closeUAModal();
@@ -126,7 +128,7 @@ function submitUA() {
 
 function deleteUA(name) {
     if (!confirm('确定要删除自定义 UA "' + name + '" 吗？')) return;
-    apiPost('/api/admin/subscriptions/custom_ua/delete', { name: name })
+    API.raw('/api/admin/subscriptions/custom_ua/delete', { method: 'POST', body: JSON.stringify({ name: name }) })
         .then(res => {
             if (res.ok) {
                 loadSubscriptions();
@@ -199,7 +201,7 @@ function submitSub() {
         update_interval: interval
     };
     
-    apiPost('/api/admin/subscriptions/save', payload)
+    API.raw('/api/admin/subscriptions/save', { method: 'POST', body: JSON.stringify(payload) })
         .then(res => {
             if (res.ok) {
                 closeSubModal();
@@ -214,7 +216,7 @@ function submitSub() {
 
 function deleteSub(id) {
     if (!confirm('确定要删除此订阅吗？这将同时删除通过此订阅导入的所有节点。')) return;
-    apiPost('/api/admin/subscriptions/delete', { id: id })
+    API.raw('/api/admin/subscriptions/delete', { method: 'POST', body: JSON.stringify({ id: id }) })
         .then(res => {
             if (res.ok) {
                 loadSubscriptions();
@@ -226,22 +228,18 @@ function deleteSub(id) {
 
 function updateSub(id) {
     toast('已触发后台更新，请稍后刷新查看结果', 'ok');
-    apiPost('/api/admin/subscriptions/update', { id: id })
+    API.raw('/api/admin/subscriptions/update', { method: 'POST', body: JSON.stringify({ id: id }) })
         .then(res => {
-            if (res.ok) {
-                setTimeout(loadSubscriptions, 2000);
-            }
+            setTimeout(loadSubscriptions, 2000);
         })
         .catch(err => toast('更新请求失败: ' + err, 'err'));
 }
 
 function updateAllSubs() {
     toast('已触发全量后台更新，请稍后刷新查看结果', 'ok');
-    apiPost('/api/admin/subscriptions/update', { id: "" })
+    API.raw('/api/admin/subscriptions/update', { method: 'POST', body: JSON.stringify({ id: "" }) })
         .then(res => {
-            if (res.ok) {
-                setTimeout(loadSubscriptions, 3000);
-            }
+            setTimeout(loadSubscriptions, 3000);
         })
         .catch(err => toast('更新请求失败: ' + err, 'err'));
 }

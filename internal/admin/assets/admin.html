@@ -115,16 +115,23 @@
             </div>
           </div>
           <div class="card glass model-registry-card">
-            <div class="model-global-hints"><span id="modelFakeGlobalHint"></span><span id="modelTrailingGlobalHint"></span></div>
+            <div class="model-global-hints"><span id="modelFakeGlobalHint"></span><span
+                id="modelTrailingGlobalHint"></span></div>
             <div class="table-scroll">
               <table class="model-registry-table">
-                <thead><tr>
-                  <th class="model-check">启用<br><input style="margin: 4px 0 0;" id="allModelsEnabled" type="checkbox" onchange="setAllModelFlags('enabled',this.checked)"></th>
-                  <th class="model-check">假流式<br><input style="margin: 4px 0 0;" id="allModelsFake" type="checkbox" onchange="setAllModelFlags('fake_stream_enabled',this.checked)"></th>
-                  <th class="model-check">尾部修复<br><input style="margin: 4px 0 0;" id="allModelsTrailing" type="checkbox" onchange="setAllModelFlags('trailing_fix_enabled',this.checked)"></th>
-                  <th>模型 ID</th><th>别名</th>
-                  <th style="width: 80px; text-align: center;">操作</th>
-                </tr></thead>
+                <thead>
+                  <tr>
+                    <th class="model-check">启用<br><input style="margin: 4px 0 0;" id="allModelsEnabled" type="checkbox"
+                        onchange="setAllModelFlags('enabled',this.checked)"></th>
+                    <th class="model-check">假流式<br><input style="margin: 4px 0 0;" id="allModelsFake" type="checkbox"
+                        onchange="setAllModelFlags('fake_stream_enabled',this.checked)"></th>
+                    <th class="model-check">尾部修复<br><input style="margin: 4px 0 0;" id="allModelsTrailing"
+                        type="checkbox" onchange="setAllModelFlags('trailing_fix_enabled',this.checked)"></th>
+                    <th>模型 ID</th>
+                    <th>别名</th>
+                    <th style="width: 80px; text-align: center;">操作</th>
+                  </tr>
+                </thead>
                 <tbody id="modelsTableBody"></tbody>
               </table>
             </div>
@@ -141,8 +148,9 @@
           <div class="grid grid-1">
             <div class="card glass">
               <div class="field"><label for="globalProxy">全局入口代理</label>
-                <div class="toolbar m-0"><input id="globalProxy" placeholder="socks5://127.0.0.1:1080 或 vless://..."><button
-                    class="btn" onclick="importProxyNode()">导入候选</button></div>
+                <div class="toolbar m-0"><input id="globalProxy"
+                    placeholder="socks5://127.0.0.1:1080 或 vless://..."><button class="btn"
+                    onclick="importProxyNode()">导入候选</button></div>
                 <div class="desc">启用后作为业务节点的第一跳；未使用业务节点时仅经过该入口。订阅仍先直连，失败后才用当前入口重试一次。</div>
               </div>
               <div class="divider"></div>
@@ -150,13 +158,21 @@
                 <div class="field-heading">入口代理候选</div>
                 <div class="table-wrap">
                   <table id="proxyCandidatesTable">
-                    <thead><tr><th>名称</th><th>类型</th><th>测试状态</th><th>操作</th></tr></thead>
+                    <thead>
+                      <tr>
+                        <th>名称</th>
+                        <th>类型</th>
+                        <th>测试状态</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
                     <tbody id="proxyNodesBody"></tbody>
                   </table>
                 </div>
               </div>
             </div>
             <div class="card glass">
+              <div class="desc summary-text" id="nodesSummary" style="margin-bottom: 12px; font-weight: bold;">当前共 0 个节点</div>
               <div class="actions">
                 <button class="btn ghost" onclick="testAllNodes()">批量测试</button>
                 <button class="btn ghost" onclick="sortNodesByLatency()">按延迟顺序排序</button>
@@ -232,7 +248,8 @@
             <div class="field field-mb-20px">
               <div class="field-heading label-gold">文件优选导入 (V2RayN / Clash / Mihomo 优选节点)</div>
               <div class="toolbar m-0 gap-8">
-                <label for="nodeImportFile" class="sr-only">选择节点导入文件</label><input type="file" id="nodeImportFile" accept=".txt,.yaml,.yml,.json,.conf,.list" class="file-input">
+                <label for="nodeImportFile" class="sr-only">选择节点导入文件</label><input type="file" id="nodeImportFile"
+                  accept=".txt,.yaml,.yml,.json,.conf,.list" class="file-input">
                 <button class="btn ghost" onclick="importFileNodes(false)">导入追加</button>
                 <button class="btn danger" onclick="importFileNodes(true)">清空并替换</button>
               </div>
@@ -242,34 +259,54 @@
             <div class="field field-mb-20px">
               <div class="field-heading label-gold">导入旧版 nodes.json</div>
               <div class="toolbar m-0 gap-8">
-                <label for="nodeJsonImportFile" class="sr-only">选择 nodes.json 导入文件</label><input type="file" id="nodeJsonImportFile" accept=".json" class="file-input">
+                <label for="nodeJsonImportFile" class="sr-only">选择 nodes.json 导入文件</label><input type="file"
+                  id="nodeJsonImportFile" accept=".json" class="file-input">
                 <button class="btn ghost" onclick="importJsonNodes(false)">导入追加</button>
                 <button class="btn danger" onclick="importJsonNodes(true)">清空并替换</button>
               </div>
               <div class="desc">导入旧版 nodes.json。支持以追加或覆盖形式批量配置节点。</div>
             </div>
-            
+
             <div class="divider"></div>
 
-            <div class="field-heading">
-              自定义 User-Agent
-              <button class="btn ghost" style="margin-left:8px; padding:2px 8px; font-size:12px;" onclick="showAddUAModal()">添加 UA</button>
+            <div class="field-heading" style="display:flex; justify-content:space-between; align-items:center;">
+              <span>自定义 User-Agent</span>
+              <div class="toolbar m-0">
+                <button class="btn ghost" onclick="showAddUAModal()">添加 UA</button>
+              </div>
             </div>
             <div class="table-wrap mb-20">
               <table>
-                <thead><tr><th>名称</th><th>User-Agent</th><th style="width:100px;">操作</th></tr></thead>
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>User-Agent</th>
+                    <th style="width:100px;">操作</th>
+                  </tr>
+                </thead>
                 <tbody id="customUAsBody"></tbody>
               </table>
             </div>
 
-            <div class="field-heading mt-20">
-              订阅列表
-              <button class="btn ghost" style="margin-left:8px; padding:2px 8px; font-size:12px;" onclick="showAddSubModal()">添加订阅</button>
-              <button class="btn ghost" style="margin-left:8px; padding:2px 8px; font-size:12px;" onclick="updateAllSubs()">一键更新所有订阅</button>
+            <div class="field-heading mt-20" style="display:flex; justify-content:space-between; align-items:center;">
+              <span>订阅列表</span>
+              <div class="toolbar m-0">
+                <button class="btn ghost" onclick="showAddSubModal()">添加订阅</button>
+                <button class="btn ghost" onclick="updateAllSubs()">一键更新所有订阅</button>
+              </div>
             </div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>名称</th><th>链接</th><th>UA</th><th>自动更新(分)</th><th>最后更新</th><th style="width:150px;">操作</th></tr></thead>
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>链接</th>
+                    <th>User-Agent</th>
+                    <th>自动更新(分)</th>
+                    <th>最后更新</th>
+                    <th style="width:150px;">操作</th>
+                  </tr>
+                </thead>
                 <tbody id="subscriptionsBody"></tbody>
               </table>
             </div>
@@ -464,7 +501,8 @@
     <div class="modal-card model-import-card">
       <h3 id="modelImportTitle">导入模型列表</h3>
       <div id="modelImportHint" class="hint"></div>
-      <textarea id="modelImportText" class="font-mono" rows="12" oninput="previewModelImport()" placeholder="在此粘贴内容"></textarea>
+      <textarea id="modelImportText" class="font-mono" rows="12" oninput="previewModelImport()"
+        placeholder="在此粘贴内容"></textarea>
       <div id="modelImportPreview" class="model-import-preview">粘贴内容后显示预览</div>
       <div class="toolbar justify-end">
         <button class="btn ghost" onclick="closeModelImport()">取消</button>
@@ -511,16 +549,17 @@
       </div>
     </div>
   </div>
-  <div id="addUAModal" class="hidden" style="position:fixed;inset:0;display:grid;place-items:center;z-index:9999;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:opacity .3s var(--ease);">
+  <div id="addUAModal" class="hidden"
+    style="position:fixed;inset:0;display:grid;place-items:center;z-index:9999;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:opacity .3s var(--ease);">
     <div class="box glass" style="width:360px;padding:32px 24px;text-align:left;animation:pop .4s var(--ease);">
       <h3 style="margin-bottom:18px;font-size:16px;text-align:center;" id="addUATitle">添加自定义 User-Agent</h3>
       <div class="field" style="margin-bottom:14px;">
         <label for="uaNameInput">名称</label>
-        <input type="text" id="uaNameInput" placeholder="例如: 橘子云">
+        <input type="text" id="uaNameInput">
       </div>
       <div class="field" style="margin-bottom:20px;">
         <label for="uaContentInput">User-Agent</label>
-        <input type="text" id="uaContentInput" placeholder="例如: clash-verge/v2.4.5">
+        <input type="text" id="uaContentInput">
       </div>
       <div class="err" id="uaErr" style="color:#ff5f56;font-size:12px;margin-bottom:12px;text-align:center;"></div>
       <div style="display:flex;gap:12px;justify-content:flex-end;">
@@ -530,22 +569,28 @@
     </div>
   </div>
 
-  <div id="addSubModal" class="hidden" style="position:fixed;inset:0;display:grid;place-items:center;z-index:9999;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:opacity .3s var(--ease);">
+  <div id="addSubModal" class="hidden"
+    style="position:fixed;inset:0;display:grid;place-items:center;z-index:9999;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:opacity .3s var(--ease);">
     <div class="box glass" style="width:360px;padding:32px 24px;text-align:left;animation:pop .4s var(--ease);">
       <h3 style="margin-bottom:18px;font-size:16px;text-align:center;" id="addSubTitle">添加订阅</h3>
       <input type="hidden" id="subIdInput">
       <div class="field" style="margin-bottom:14px;">
         <label for="subNameInput">名称</label>
-        <input type="text" id="subNameInput" placeholder="例如: 机场订阅1">
+        <input type="text" id="subNameInput">
       </div>
       <div class="field" style="margin-bottom:14px;">
         <label for="subUrlInput">订阅链接</label>
-        <input type="text" id="subUrlInput" placeholder="http(s)://...">
+        <input type="text" id="subUrlInput">
       </div>
       <div class="field" style="margin-bottom:14px;">
         <label for="subUaSelect">User-Agent</label>
-        <select id="subUaSelect" class="form-select" style="width: 100%; padding: 8px; border-radius: 4px; background: rgba(255,255,255,0.05); color: var(--text); border: 1px solid var(--glass-border); outline: none;">
+        <select id="subUaSelect" class="form-select"
+          style="width: 100%; padding: 8px; border-radius: 4px; background: rgba(255,255,255,0.05); color: var(--text); border: 1px solid var(--glass-border); outline: none;">
           <option value="Chrome">Chrome (默认)</option>
+          <option value="clash-verge/v2.5.2">clash-verge/v2.5.2</option>
+          <option value="Clash.Meta">Clash.Meta</option>
+          <option value="v2rayNG/1.8.5">v2rayNG/1.8.5</option>
+          <option value="casverge/v2.4.5/Windows/Windows 10 Pro/x86_64">casverge/橘子云</option>
         </select>
       </div>
       <div class="field" style="margin-bottom:20px;">
