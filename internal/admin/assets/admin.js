@@ -5,7 +5,7 @@ async function login() { $('#loginErr').textContent = ''; try { await API.login(
 async function logout() { try { await API.logout(); } catch (e) {} showLogin(); }
 $('#pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
 
-const LOADERS = { overview: loadOverview, settings: loadSettings, keys: loadKeys, models: loadModels, nodes: loadNodes, appearance: loadAppearance, logs: loadLogs };
+const LOADERS = { overview: loadOverview, settings: loadSettings, keys: loadKeys, models: loadModels, nodes: loadNodes, subscriptions: loadSubscriptions, appearance: loadAppearance, logs: loadLogs };
 const PAGE_CACHE = {};
 let curPage = null;
 function go(page, instant) {

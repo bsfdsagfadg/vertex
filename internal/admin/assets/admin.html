@@ -34,7 +34,8 @@
         <button data-page="settings"><span class="ic">⚙️</span> 设置</button>
         <button data-page="keys"><span class="ic">🔑</span> 密钥</button>
         <button data-page="models"><span class="ic">🧩</span> 模型</button>
-        <button data-page="nodes"><span class="ic">🌐</span> 订阅与并发</button>
+        <button data-page="nodes"><span class="ic">🌐</span> 代理</button>
+        <button data-page="subscriptions"><span class="ic">📦</span> 订阅管理</button>
         <button data-page="logs"><span class="ic">📝</span> 运行日志</button>
         <button data-page="appearance"><span class="ic">🎨</span> 外观</button>
       </nav>
@@ -156,34 +157,6 @@
               </div>
             </div>
             <div class="card glass">
-              <div class="field field-mb-20px">
-                <div class="field-heading label-gold">文件优选导入 (V2RayN / Clash / Mihomo 优选节点)</div>
-                <div class="toolbar m-0 gap-8">
-                  <label for="nodeImportFile" class="sr-only">选择节点导入文件</label><input type="file" id="nodeImportFile"
-                    accept=".txt,.yaml,.yml,.json,.conf,.list" class="file-input">
-                  <button class="btn ghost" onclick="importFileNodes(false)">导入追加</button>
-                  <button class="btn danger" onclick="importFileNodes(true)">清空并替换</button>
-                </div>
-                <div class="desc">导入本地导出的节点配置文件 (.txt / .yaml)。支持以追加或覆盖形式批量配置节点。</div>
-              </div>
-
-              <div class="field field-mb-20px">
-                <div class="field-heading label-gold">导入旧版 nodes.json</div>
-                <div class="toolbar m-0 gap-8">
-                  <label for="nodeJsonImportFile" class="sr-only">选择 nodes.json 导入文件</label><input type="file"
-                    id="nodeJsonImportFile" accept=".json" class="file-input">
-                  <button class="btn ghost" onclick="importJsonNodes(false)">导入追加</button>
-                  <button class="btn danger" onclick="importJsonNodes(true)">清空并替换</button>
-                </div>
-                <div class="desc">导入旧版 nodes.json。支持以追加或覆盖形式批量配置节点。</div>
-              </div>
-
-              <div class="divider"></div>
-
-              <div class="toolbar"><label for="subUrl" class="sr-only">订阅链接</label><input id="subUrl"
-                  placeholder="订阅链接 (vless/vmess/trojan/ss/ssr...)"><button class="btn"
-                  onclick="addAndFetchSub()">拉取并保存</button></div>
-              <div class="desc summary-text" id="nodesSummary">当前共 0 个节点</div>
               <div class="actions">
                 <button class="btn ghost" onclick="testAllNodes()">批量测试</button>
                 <button class="btn ghost" onclick="sortNodesByLatency()">按延迟顺序排序</button>
@@ -244,6 +217,61 @@
                   <button class="btn ghost" id="btnPageLast" onclick="changeNodePage(totalNodePages)">末页</button>
                 </div>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="page-subscriptions" class="hidden">
+          <div class="page-head">
+            <div>
+              <h2>订阅管理</h2>
+              <div class="hint">管理订阅链接和自定义 User-Agent</div>
+            </div>
+          </div>
+          <div class="card glass">
+            <div class="field field-mb-20px">
+              <div class="field-heading label-gold">文件优选导入 (V2RayN / Clash / Mihomo 优选节点)</div>
+              <div class="toolbar m-0 gap-8">
+                <label for="nodeImportFile" class="sr-only">选择节点导入文件</label><input type="file" id="nodeImportFile" accept=".txt,.yaml,.yml,.json,.conf,.list" class="file-input">
+                <button class="btn ghost" onclick="importFileNodes(false)">导入追加</button>
+                <button class="btn danger" onclick="importFileNodes(true)">清空并替换</button>
+              </div>
+              <div class="desc">导入本地导出的节点配置文件 (.txt / .yaml)。支持以追加或覆盖形式批量配置节点。</div>
+            </div>
+
+            <div class="field field-mb-20px">
+              <div class="field-heading label-gold">导入旧版 nodes.json</div>
+              <div class="toolbar m-0 gap-8">
+                <label for="nodeJsonImportFile" class="sr-only">选择 nodes.json 导入文件</label><input type="file" id="nodeJsonImportFile" accept=".json" class="file-input">
+                <button class="btn ghost" onclick="importJsonNodes(false)">导入追加</button>
+                <button class="btn danger" onclick="importJsonNodes(true)">清空并替换</button>
+              </div>
+              <div class="desc">导入旧版 nodes.json。支持以追加或覆盖形式批量配置节点。</div>
+            </div>
+            
+            <div class="divider"></div>
+
+            <div class="field-heading">
+              自定义 User-Agent
+              <button class="btn ghost" style="margin-left:8px; padding:2px 8px; font-size:12px;" onclick="showAddUAModal()">添加 UA</button>
+            </div>
+            <div class="table-wrap mb-20">
+              <table>
+                <thead><tr><th>名称</th><th>User-Agent</th><th style="width:100px;">操作</th></tr></thead>
+                <tbody id="customUAsBody"></tbody>
+              </table>
+            </div>
+
+            <div class="field-heading mt-20">
+              订阅列表
+              <button class="btn ghost" style="margin-left:8px; padding:2px 8px; font-size:12px;" onclick="showAddSubModal()">添加订阅</button>
+              <button class="btn ghost" style="margin-left:8px; padding:2px 8px; font-size:12px;" onclick="updateAllSubs()">一键更新所有订阅</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>名称</th><th>链接</th><th>UA</th><th>自动更新(分)</th><th>最后更新</th><th style="width:150px;">操作</th></tr></thead>
+                <tbody id="subscriptionsBody"></tbody>
+              </table>
             </div>
           </div>
         </section>
@@ -483,6 +511,55 @@
       </div>
     </div>
   </div>
+  <div id="addUAModal" class="hidden" style="position:fixed;inset:0;display:grid;place-items:center;z-index:9999;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:opacity .3s var(--ease);">
+    <div class="box glass" style="width:360px;padding:32px 24px;text-align:left;animation:pop .4s var(--ease);">
+      <h3 style="margin-bottom:18px;font-size:16px;text-align:center;" id="addUATitle">添加自定义 User-Agent</h3>
+      <div class="field" style="margin-bottom:14px;">
+        <label for="uaNameInput">名称</label>
+        <input type="text" id="uaNameInput" placeholder="例如: 橘子云">
+      </div>
+      <div class="field" style="margin-bottom:20px;">
+        <label for="uaContentInput">User-Agent</label>
+        <input type="text" id="uaContentInput" placeholder="例如: clash-verge/v2.4.5">
+      </div>
+      <div class="err" id="uaErr" style="color:#ff5f56;font-size:12px;margin-bottom:12px;text-align:center;"></div>
+      <div style="display:flex;gap:12px;justify-content:flex-end;">
+        <button class="btn ghost" onclick="closeUAModal()">取消</button>
+        <button class="btn" onclick="submitUA()">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="addSubModal" class="hidden" style="position:fixed;inset:0;display:grid;place-items:center;z-index:9999;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:opacity .3s var(--ease);">
+    <div class="box glass" style="width:360px;padding:32px 24px;text-align:left;animation:pop .4s var(--ease);">
+      <h3 style="margin-bottom:18px;font-size:16px;text-align:center;" id="addSubTitle">添加订阅</h3>
+      <input type="hidden" id="subIdInput">
+      <div class="field" style="margin-bottom:14px;">
+        <label for="subNameInput">名称</label>
+        <input type="text" id="subNameInput" placeholder="例如: 机场订阅1">
+      </div>
+      <div class="field" style="margin-bottom:14px;">
+        <label for="subUrlInput">订阅链接</label>
+        <input type="text" id="subUrlInput" placeholder="http(s)://...">
+      </div>
+      <div class="field" style="margin-bottom:14px;">
+        <label for="subUaSelect">User-Agent</label>
+        <select id="subUaSelect" class="form-select" style="width: 100%; padding: 8px; border-radius: 4px; background: rgba(255,255,255,0.05); color: var(--text); border: 1px solid var(--glass-border); outline: none;">
+          <option value="Chrome">Chrome (默认)</option>
+        </select>
+      </div>
+      <div class="field" style="margin-bottom:20px;">
+        <label for="subIntervalInput">自动更新 (分钟)</label>
+        <input type="number" id="subIntervalInput" placeholder="0 表示不自动更新" value="0">
+      </div>
+      <div class="err" id="subErr" style="color:#ff5f56;font-size:12px;margin-bottom:12px;text-align:center;"></div>
+      <div style="display:flex;gap:12px;justify-content:flex-end;">
+        <button class="btn ghost" onclick="closeSubModal()">取消</button>
+        <button class="btn" onclick="submitSub()">确定</button>
+      </div>
+    </div>
+  </div>
+
   <script src="utils.js"></script>
   <script src="api.js"></script>
   <script src="page-overview.js"></script>
@@ -490,6 +567,7 @@
   <script src="page-keys.js"></script>
   <script src="page-models.js"></script>
   <script src="page-nodes.js"></script>
+  <script src="page-subscriptions.js"></script>
   <script src="page-appearance.js"></script>
   <script src="page-logs.js"></script>
   <script src="admin.js"></script>
