@@ -172,7 +172,8 @@
               </div>
             </div>
             <div class="card glass">
-              <div class="desc summary-text" id="nodesSummary" style="margin-bottom: 12px; font-weight: bold;">当前共 0 个节点</div>
+              <div class="desc summary-text" id="nodesSummary" style="margin-bottom: 12px; font-weight: bold;">当前共 0 个节点
+              </div>
               <div class="actions">
                 <button class="btn ghost" onclick="testAllNodes()">批量测试</button>
                 <button class="btn ghost" onclick="sortNodesByLatency()">按延迟顺序排序</button>
@@ -304,7 +305,7 @@
                     <th>User-Agent</th>
                     <th>自动更新(分)</th>
                     <th>最后更新</th>
-                    <th style="width:150px;">操作</th>
+                    <th>操作</th>
                   </tr>
                 </thead>
                 <tbody id="subscriptionsBody"></tbody>
@@ -594,7 +595,7 @@
         </select>
       </div>
       <div class="field" style="margin-bottom:20px;">
-        <label for="subIntervalInput">自动更新 (分钟)</label>
+        <label for="subIntervalInput">自动更新 (分钟;填 0 禁用自动更新)</label>
         <input type="number" id="subIntervalInput" placeholder="0 表示不自动更新" value="0">
       </div>
       <div class="err" id="subErr" style="color:#ff5f56;font-size:12px;margin-bottom:12px;text-align:center;"></div>

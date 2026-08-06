@@ -127,15 +127,13 @@ function submitUA() {
 }
 
 function deleteUA(name) {
-    if (!confirm('确定要删除自定义 UA "' + name + '" 吗？')) return;
-    API.raw('/api/admin/subscriptions/custom_ua/delete', { method: 'POST', body: JSON.stringify({ name: name }) })
-        .then(res => {
-            if (res.ok) {
+    showConfirm('确定要删除自定义 UA "' + esc(name) + '" 吗？', () => {
+        API.raw('/api/admin/subscriptions/custom_ua/delete', { method: 'POST', body: JSON.stringify({ name: name }) })
+            .then(res => {
                 loadSubscriptions();
-                toast('已删除 UA', 'ok');
-            }
-        })
-        .catch(err => toast('删除失败: ' + err, 'err'));
+            })
+            .catch(err => toast('删除失败: ' + err, 'err'));
+    });
 }
 
 function showAddSubModal() {
@@ -215,15 +213,14 @@ function submitSub() {
 }
 
 function deleteSub(id) {
-    if (!confirm('确定要删除此订阅吗？这将同时删除通过此订阅导入的所有节点。')) return;
-    API.raw('/api/admin/subscriptions/delete', { method: 'POST', body: JSON.stringify({ id: id }) })
-        .then(res => {
-            if (res.ok) {
+    showConfirm('确定要删除此订阅吗？<br><label style="display:flex;align-items:center;margin-top:16px;cursor:pointer;"><input type="checkbox" id="delSubNodesCheck" checked style="margin-right:8px;cursor:pointer;">同时删除该订阅导入的节点</label>', () => {
+        const delNodes = document.getElementById('delSubNodesCheck') ? document.getElementById('delSubNodesCheck').checked : true;
+        API.raw('/api/admin/subscriptions/delete', { method: 'POST', body: JSON.stringify({ id: id, delete_nodes: delNodes }) })
+            .then(res => {
                 loadSubscriptions();
-                toast('已删除订阅及相关节点', 'ok');
-            }
-        })
-        .catch(err => toast('删除失败: ' + err, 'err'));
+            })
+            .catch(err => toast('删除失败: ' + err, 'err'));
+    });
 }
 
 function updateSub(id) {

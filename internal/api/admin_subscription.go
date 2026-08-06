@@ -53,7 +53,8 @@ func (adm *AdminHandler) adminSaveSubscription(w http.ResponseWriter, r *http.Re
 
 func (adm *AdminHandler) adminDeleteSubscription(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID string `json:"id"`
+		ID          string `json:"id"`
+		DeleteNodes bool   `json:"delete_nodes"`
 	}
 	if !adm.decodeAdminBody(w, r, &req) {
 		return
@@ -72,8 +73,10 @@ func (adm *AdminHandler) adminDeleteSubscription(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// 清理节点
-	nodes.DeleteNodesBySource(req.ID)
+	// 清理节点 (可选)
+	if req.DeleteNodes {
+		nodes.DeleteNodesBySource(req.ID)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -119,6 +122,28 @@ func (adm *AdminHandler) adminDeleteCustomUA(w http.ResponseWriter, r *http.Requ
 	}
 
 	conf := config.GetSubscriptionConfig()
+	
+	// 查找即将删除的 UA 的内容
+	var targetUA string
+	for _, u := range conf.CustomUAs {
+		if u.Name == req.Name {
+			targetUA = u.UserAgent
+			break
+		}
+	}
+	if targetUA == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+
+	// 检查是否有订阅正在使用该 UA
+	for _, sub := range conf.Subscriptions {
+		if sub.UserAgent == targetUA {
+			writeJSON(w, http.StatusBadRequest, adminErr(fmt.Sprintf("无法删除：订阅 '%s' 正在使用此自定义 UA", sub.Name)))
+			return
+		}
+	}
+
 	var newUAs []config.CustomUA
 	for _, u := range conf.CustomUAs {
 		if u.Name != req.Name {
