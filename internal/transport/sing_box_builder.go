@@ -113,8 +113,6 @@ func buildOutboundFromNode(n *ParsedNode) (option.Outbound, error) {
 		opts := option.Hysteria2OutboundOptions{
 			ServerOptions: option.ServerOptions{Server: n.Server, ServerPort: uint16(n.Port)},
 			Password:      n.Password,
-			UpMbps:        100,
-			DownMbps:      100,
 			ServerPorts:   badoption.Listable[string](n.ServerPorts),
 		}
 		if n.Obfs != "" {
@@ -265,7 +263,11 @@ func transportFromIR(t *TransportOptions) *option.V2RayTransportOptions {
 		if path == "" {
 			path = "/"
 		}
-		tr.WebsocketOptions = option.V2RayWebsocketOptions{Path: path}
+		tr.WebsocketOptions = option.V2RayWebsocketOptions{
+			Path:                path,
+			MaxEarlyData:        t.MaxEarlyData,
+			EarlyDataHeaderName: t.EarlyDataHeaderName,
+		}
 		if t.Host != "" {
 			tr.WebsocketOptions.Headers = badoption.HTTPHeader{"Host": {t.Host}}
 		}

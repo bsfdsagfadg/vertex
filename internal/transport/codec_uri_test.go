@@ -431,6 +431,39 @@ func TestParseURIClashRejected(t *testing.T) {
 	}
 }
 
+func TestParseURI_WebsocketEarlyData(t *testing.T) {
+	rawVless := "vless://12345678-1234-1234-1234-123456789012@example.com:443?type=ws&ed=2560&early_data_header_name=Sec-WebSocket-Protocol"
+	n, err := ParseURI(rawVless)
+	if err != nil {
+		t.Fatalf("ParseURI returned error: %v", err)
+	}
+	if n.Transport == nil || n.Transport.Type != "ws" {
+		t.Fatalf("expected ws transport, got %#v", n.Transport)
+	}
+	if n.Transport.MaxEarlyData != 2560 {
+		t.Fatalf("MaxEarlyData = %d, want 2560", n.Transport.MaxEarlyData)
+	}
+	if n.Transport.EarlyDataHeaderName != "Sec-WebSocket-Protocol" {
+		t.Fatalf("EarlyDataHeaderName = %q, want Sec-WebSocket-Protocol", n.Transport.EarlyDataHeaderName)
+	}
+
+	rawVMessJSON := `{"v":"2","ps":"demo","add":"example.com","port":443,"id":"12345678-1234-1234-1234-123456789012","net":"ws","path":"/ws","max_early_data":"2048","early_data_header_name":"Sec-WebSocket-Protocol"}`
+	rawVMess := vmessURIFromJSON(t, rawVMessJSON)
+	nVMess, err := ParseURI(rawVMess)
+	if err != nil {
+		t.Fatalf("ParseURI VMess returned error: %v", err)
+	}
+	if nVMess.Transport == nil || nVMess.Transport.Type != "ws" {
+		t.Fatalf("expected ws transport, got %#v", nVMess.Transport)
+	}
+	if nVMess.Transport.MaxEarlyData != 2048 {
+		t.Fatalf("VMess MaxEarlyData = %d, want 2048", nVMess.Transport.MaxEarlyData)
+	}
+	if nVMess.Transport.EarlyDataHeaderName != "Sec-WebSocket-Protocol" {
+		t.Fatalf("VMess EarlyDataHeaderName = %q, want Sec-WebSocket-Protocol", nVMess.Transport.EarlyDataHeaderName)
+	}
+}
+
 func TestParseURIUnsupportedProtocol(t *testing.T) {
 	_, err := ParseURI("unknown://user@example.com:443")
 	if err == nil {

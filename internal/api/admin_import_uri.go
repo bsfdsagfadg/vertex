@@ -131,6 +131,12 @@ func applyMapTransport(q url.Values, proxy map[string]any) {
 		if host := firstNonEmpty(proxyFirstString(headers["Host"]), proxyFirstString(headers["host"])); host != "" {
 			q.Set("host", host)
 		}
+		if ed := firstNonEmpty(proxyFirstString(wsOpts["max-early-data"]), proxyFirstString(wsOpts["max_early_data"]), proxyFirstString(wsOpts["ed"])); ed != "" {
+			q.Set("ed", ed)
+		}
+		if edHeader := firstNonEmpty(proxyFirstString(wsOpts["early-data-header-name"]), proxyFirstString(wsOpts["early_data_header_name"])); edHeader != "" {
+			q.Set("early_data_header_name", edHeader)
+		}
 	case "grpc":
 		grpcOpts := mapValue(proxy["grpc-opts"])
 		if serviceName := firstNonEmpty(proxyFirstString(grpcOpts["grpc-service-name"]), proxyFirstString(grpcOpts["serviceName"])); serviceName != "" {

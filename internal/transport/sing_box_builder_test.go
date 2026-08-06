@@ -401,6 +401,43 @@ func TestBuildOutboundFromNode_Hysteria2Obfs(t *testing.T) {
 	}
 }
 
+func TestBuildOutboundFromNode_Hysteria2BBRDefault(t *testing.T) {
+	n, err := ParseURI("hysteria2://password@example.com:443")
+	if err != nil {
+		t.Fatalf("ParseURI unexpected error: %v", err)
+	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.Hysteria2OutboundOptions)
+	if opts.UpMbps != 0 || opts.DownMbps != 0 {
+		t.Fatalf("UpMbps/DownMbps = %d/%d, want 0/0 (BBR default)", opts.UpMbps, opts.DownMbps)
+	}
+}
+
+func TestBuildOutboundFromNode_WebsocketEarlyData(t *testing.T) {
+	n, err := ParseURI("vless://12345678-1234-1234-1234-123456789012@example.com:443?type=ws&ed=2560&early_data_header_name=Sec-WebSocket-Protocol")
+	if err != nil {
+		t.Fatalf("ParseURI unexpected error: %v", err)
+	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.VLESSOutboundOptions)
+	if opts.Transport == nil || opts.Transport.Type != "ws" {
+		t.Fatalf("expected ws transport, got %+v", opts.Transport)
+	}
+	wsOpts := opts.Transport.WebsocketOptions
+	if wsOpts.MaxEarlyData != 2560 {
+		t.Fatalf("MaxEarlyData = %d, want 2560", wsOpts.MaxEarlyData)
+	}
+	if wsOpts.EarlyDataHeaderName != "Sec-WebSocket-Protocol" {
+		t.Fatalf("EarlyDataHeaderName = %q, want Sec-WebSocket-Protocol", wsOpts.EarlyDataHeaderName)
+	}
+}
+
 func TestNormalizeSSMethod(t *testing.T) {
 	tests := map[string]string{
 		"chacha20-poly1305":       "chacha20-ietf-poly1305",

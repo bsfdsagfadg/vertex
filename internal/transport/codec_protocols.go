@@ -286,6 +286,14 @@ func applyVlessTrojanTransport(n *ParsedNode, q url.Values) {
 			tr.Host = host
 			tr.Headers = map[string][]string{"Host": {host}}
 		}
+		if rawED := firstNonEmpty(q.Get("ed"), q.Get("max_early_data"), q.Get("max-early-data")); rawED != "" {
+			if ed, err := strconv.ParseUint(rawED, 10, 32); err == nil {
+				tr.MaxEarlyData = uint32(ed)
+			}
+		}
+		if edHeader := firstNonEmpty(q.Get("early_data_header_name"), q.Get("early-data-header-name")); edHeader != "" {
+			tr.EarlyDataHeaderName = edHeader
+		}
 		n.Transport = tr
 	case "grpc":
 		tr := &TransportOptions{Type: "grpc"}

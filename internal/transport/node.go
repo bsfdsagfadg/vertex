@@ -63,12 +63,14 @@ type RealityOptions struct {
 }
 
 type TransportOptions struct {
-	Type        string // ws/grpc/http/httpupgrade/quic；tcp/none/raw/tcpheader→解析期置 nil
-	Path        string
-	Host        string
-	Headers     map[string][]string
-	ServiceName string // grpc
-	Method      string // http
+	Type                string // ws/grpc/http/httpupgrade/quic；tcp/none/raw/tcpheader→解析期置 nil
+	Path                string
+	Host                string
+	Headers             map[string][]string
+	ServiceName         string // grpc
+	Method              string // http
+	MaxEarlyData        uint32 // ws 0-RTT early data
+	EarlyDataHeaderName string // ws early data header
 }
 
 // sing-box v1.13.14（go.mod 锁定）实际支持的 V2Ray 传输类型。

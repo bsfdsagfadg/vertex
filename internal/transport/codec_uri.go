@@ -239,6 +239,14 @@ func parseVmess(uri string) (*ParsedNode, error) {
 				tr.Host = host
 				tr.Headers = map[string][]string{"Host": {host}}
 			}
+			if rawED := firstNonEmpty(anyToString(d["ed"]), anyToString(d["max_early_data"]), anyToString(d["max-early-data"]), anyToString(d["maxEarlyData"])); rawED != "" {
+				if ed, err := strconv.ParseUint(rawED, 10, 32); err == nil {
+					tr.MaxEarlyData = uint32(ed)
+				}
+			}
+			if edHeader := firstNonEmpty(anyToString(d["early_data_header_name"]), anyToString(d["early-data-header-name"]), anyToString(d["earlyDataHeaderName"])); edHeader != "" {
+				tr.EarlyDataHeaderName = edHeader
+			}
 			n.Transport = tr
 		case "grpc":
 			n.Transport = &TransportOptions{Type: "grpc", ServiceName: path}

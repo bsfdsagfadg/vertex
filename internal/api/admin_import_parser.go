@@ -46,6 +46,12 @@ func applyTransportExtras(proxy map[string]any, obj map[string]any, transport ma
 		if host := strings.TrimSpace(valueToString(transport["Host"])); host != "" {
 			wsOpts["headers"] = map[string]any{"Host": host}
 		}
+		if ed := strings.TrimSpace(firstNonEmpty(valueToString(transport["MaxEarlyData"]), valueToString(transport["max-early-data"]), valueToString(transport["max_early_data"]), valueToString(transport["ed"]))); ed != "" {
+			wsOpts["max-early-data"] = ed
+		}
+		if edHeader := strings.TrimSpace(firstNonEmpty(valueToString(transport["EarlyDataHeaderName"]), valueToString(transport["early-data-header-name"]), valueToString(transport["early_data_header_name"]))); edHeader != "" {
+			wsOpts["early-data-header-name"] = edHeader
+		}
 		if len(wsOpts) > 0 {
 			proxy["ws-opts"] = wsOpts
 		}
