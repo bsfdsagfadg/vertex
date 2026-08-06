@@ -44,8 +44,8 @@ function renderCustomUAs(uas) {
         tr.innerHTML = `
             <td>${esc(ua.name)}</td>
             <td style="word-break:break-all;">${esc(ua.user_agent)}</td>
-            <td>
-                <div style="display:flex;gap:4px;flex-wrap:wrap;">
+            <td style="text-align:right;">
+                <div style="display:flex;gap:4px;flex-wrap:nowrap;justify-content:flex-end;">
                     <button class="btn ghost btn-blue" style="padding:2px 6px; font-size:12px;" onclick="editUA('${esc(ua.name)}', '${esc(ua.user_agent)}')">编辑</button>
                     <button class="btn danger" style="padding:2px 6px; font-size:12px;" onclick="deleteUA('${esc(ua.name)}')">删除</button>
                 </div>
@@ -83,8 +83,8 @@ function renderSubscriptions(subs, uas) {
             <td>${uaDisplay}</td>
             <td>${sub.update_interval > 0 ? sub.update_interval : '禁用'}</td>
             <td style="font-size:12px;">${lastUpdate}</td>
-            <td>
-                <div style="display:flex;gap:4px;flex-wrap:wrap;">
+            <td style="text-align:right;">
+                <div style="display:flex;gap:4px;flex-wrap:nowrap;justify-content:flex-end;">
                     <button class="btn ghost btn-blue" style="padding:2px 6px; font-size:12px;" onclick='editSub(${JSON.stringify(sub).replace(/'/g, "&apos;")})'>编辑</button>
                     <button class="btn ghost btn-green" style="padding:2px 6px; font-size:12px;" onclick="updateSub('${esc(sub.id)}')">更新</button>
                     <button class="btn danger" style="padding:2px 6px; font-size:12px;" onclick="deleteSub('${esc(sub.id)}')">删除</button>
@@ -142,8 +142,28 @@ function submitUA() {
         });
 }
 
+function showDeleteConfirm(title, msg, onOk) {
+    const m = document.getElementById('subDeleteModal');
+    if (!m) return;
+    document.getElementById('subDeleteModalTitle').textContent = title;
+    document.getElementById('subDeleteModalText').innerHTML = msg;
+    m.classList.remove('hidden');
+    
+    const okBtn = document.getElementById('subDeleteOkBtn');
+    const cancelBtn = document.getElementById('subDeleteCancelBtn');
+    
+    const cleanup = () => {
+        m.classList.add('hidden');
+        okBtn.onclick = null;
+        cancelBtn.onclick = null;
+    };
+    
+    okBtn.onclick = () => { cleanup(); if(onOk) onOk(); };
+    cancelBtn.onclick = () => { cleanup(); };
+}
+
 function deleteUA(name) {
-    showConfirm('确定要删除自定义 UA "' + esc(name) + '" 吗？', () => {
+    showDeleteConfirm('确认删除 UA', '确定要删除自定义 UA "' + esc(name) + '" 吗？', () => {
         API.raw('/api/admin/subscriptions/custom_ua/delete', { method: 'POST', body: JSON.stringify({ name: name }) })
             .then(res => {
                 loadSubscriptions();
@@ -229,7 +249,7 @@ function submitSub() {
 }
 
 function deleteSub(id) {
-    showConfirm('确定要删除此订阅吗？<br><label style="display:flex;align-items:center;margin-top:16px;cursor:pointer;"><input type="checkbox" id="delSubNodesCheck" checked style="margin-right:8px;cursor:pointer;">同时删除该订阅导入的节点</label>', () => {
+    showDeleteConfirm('确认删除订阅', '确定要删除此订阅吗？<br><label style="display:flex;align-items:center;margin-top:16px;cursor:pointer;"><input type="checkbox" id="delSubNodesCheck" checked style="margin-right:8px;cursor:pointer;">同时删除该订阅导入的节点</label>', () => {
         const delNodes = document.getElementById('delSubNodesCheck') ? document.getElementById('delSubNodesCheck').checked : true;
         API.raw('/api/admin/subscriptions/delete', { method: 'POST', body: JSON.stringify({ id: id, delete_nodes: delNodes }) })
             .then(res => {

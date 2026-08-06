@@ -282,7 +282,7 @@
                   <tr>
                     <th>名称</th>
                     <th>User-Agent</th>
-                    <th style="width:100px;">操作</th>
+                    <th style="width:100px; text-align:right;">操作</th>
                   </tr>
                 </thead>
                 <tbody id="customUAsBody"></tbody>
@@ -305,7 +305,7 @@
                     <th>User-Agent</th>
                     <th>自动更新(分)</th>
                     <th>最后更新</th>
-                    <th>操作</th>
+                    <th style="text-align:right;">操作</th>
                   </tr>
                 </thead>
                 <tbody id="subscriptionsBody"></tbody>
@@ -567,6 +567,20 @@
       <div style="display:flex;gap:12px;justify-content:flex-end;">
         <button class="btn ghost" onclick="closeUAModal()">取消</button>
         <button class="btn" onclick="submitUA()">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="subDeleteModal" class="hidden"
+    style="position:fixed;inset:0;display:grid;place-items:center;z-index:9999;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:opacity .3s var(--ease);">
+    <div class="box glass" style="width:400px;padding:32px 24px;text-align:left;animation:pop .4s var(--ease);">
+      <h3 style="margin-bottom:16px;font-size:16px;text-align:center;" id="subDeleteModalTitle">确认删除</h3>
+      <div style="color:var(--text-dim);margin-bottom:24px;font-size:14px;line-height:1.5;" id="subDeleteModalText">
+        确定要删除吗？
+      </div>
+      <div style="display:flex;gap:12px;justify-content:flex-end;">
+        <button class="btn ghost" id="subDeleteCancelBtn">取消</button>
+        <button class="btn danger" id="subDeleteOkBtn">确认删除</button>
       </div>
     </div>
   </div>
