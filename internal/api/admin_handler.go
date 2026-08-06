@@ -93,6 +93,24 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 	case "/subscriptions/fetch":
 		adm.adminFetchSub(w, r)
 		return
+	case "/subscriptions/list":
+		adm.adminListSubscriptions(w, r)
+		return
+	case "/subscriptions/save":
+		adm.adminSaveSubscription(w, r)
+		return
+	case "/subscriptions/delete":
+		adm.adminDeleteSubscription(w, r)
+		return
+	case "/subscriptions/update":
+		adm.adminUpdateSubscriptions(w, r)
+		return
+	case "/subscriptions/custom_ua/save":
+		adm.adminSaveCustomUA(w, r)
+		return
+	case "/subscriptions/custom_ua/delete":
+		adm.adminDeleteCustomUA(w, r)
+		return
 	case "/use-node":
 		adm.adminUseNode(w, r)
 		return

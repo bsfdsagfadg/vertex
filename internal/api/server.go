@@ -26,7 +26,7 @@ type Server struct {
 
 func NewServer(vc *vertex.VertexAIClient, keys *APIKeyManager, cfg config.ConfigProvider) *Server {
 	h := handler{vc: vc, keys: keys, cfg: cfg}
-	return &Server{
+	srv := &Server{
 		chat:   &ChatHandler{handler: h, reqConv: transform.DefaultRequestConverter(), respConv: transform.DefaultResponseConverter()},
 		image:  &ImageHandler{h},
 		audio:  &AudioHandler{h},
@@ -34,6 +34,8 @@ func NewServer(vc *vertex.VertexAIClient, keys *APIKeyManager, cfg config.Config
 		admin:  &AdminHandler{h},
 		mw:     &middleware{cfg: cfg, keys: keys},
 	}
+	srv.admin.StartSubscriptionUpdater()
+	return srv
 }
 
 func (s *Server) Handler() http.Handler {
