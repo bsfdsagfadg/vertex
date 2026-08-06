@@ -181,6 +181,10 @@ func main() {
 
 	vc := vertex.NewVertexAIClient(cfg)
 
+	// P9：候选入口健康独立拨测（入口健康 = 能拨通出站代理形成链式代理，与 RT 获取成败无关）。
+	// 后台每 5min 对启用候选探测业务域，网络类失败自动禁用、恢复成功自动解禁。
+	api.StartEntryProxyProbeLoop(vc.Net())
+
 	telemetryEnabled := true
 	if cfg.TelemetryEnabled() != nil {
 		telemetryEnabled = *cfg.TelemetryEnabled()

@@ -22,6 +22,7 @@ var adminAllowedSettings = map[string]bool{
 	"active_node_uri":             true,
 	"sticky_node_priority":        true,
 	"parallel_pool_retry_enabled": true,
+	"recaptcha_try_entry_or_direct": true,
 	"background_image":            true,
 	"font_size":                   true,
 	"font_color_type":             true,
@@ -30,6 +31,7 @@ var adminAllowedSettings = map[string]bool{
 	"debug_mode":                  true,
 	"auto_refresh_logs":           true,
 	"default_image_size":          true,
+	"default_thinking_level":      true,
 	"default_response_modalities": true,
 }
 
@@ -57,6 +59,7 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"parallel_pool_delay_ms":      adm.cfg.ParallelPoolDelayMs(),
 		"sticky_node_priority":        adm.cfg.StickyNodePriority(),
 		"parallel_pool_retry_enabled": adm.cfg.ParallelPoolRetryEnabled(),
+		"recaptcha_try_entry_or_direct": adm.cfg.RecaptchaTryEntryOrDirect(),
 		"background_image":            adm.cfg.BackgroundImage(),
 		"font_size":                   adm.cfg.FontSize(),
 		"font_color_type":             adm.cfg.FontColorType(),
@@ -65,6 +68,7 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"debug_mode":                  adm.cfg.DebugMode(),
 		"auto_refresh_logs":           adm.cfg.AutoRefreshLogs(),
 		"default_image_size":          adm.cfg.DefaultImageSize(),
+		"default_thinking_level":      adm.cfg.DefaultThinkingLevel(),
 		"default_response_modalities": adm.cfg.DefaultResponseModalities(),
 	}})
 }

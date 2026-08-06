@@ -48,7 +48,7 @@ var (
 func getOrStartProxyDialer(uri string, reqID string, debugMode bool, entryURIs ...string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
 	return getOrStartProxyDialerWithBuilder(uri, reqID, debugMode, func(mapping map[string]any, options ...adapter.ProxyOption) (constant.Proxy, error) {
 		return adapter.ParseProxy(mapping, options...)
-	})
+	}, entryURIs...)
 }
 
 // ValidateProxyURI verifies that the URI can construct a mihomo proxy in the current build.
@@ -61,6 +61,20 @@ func ValidateProxyURI(uri string) error {
 	}
 	closeMihomoProxies(proxy, dependencies)
 	return nil
+}
+
+// ValidateNodeURI 预检节点 URI 在当前构建是否可用：返回空串 = 可用，非空 = 中文原因说明。
+// 内部复用 ValidateProxyURI（干跑 buildMihomoProxy + close），不重复实现解析。
+// 用途：批量/单节点测速前的能力预检，capability 不达标的节点不发起网络、不占并发槽。
+func ValidateNodeURI(uri string) string {
+	if err := ValidateProxyURI(uri); err != nil {
+		var unsupported *ErrProtocolUnsupported
+		if errors.As(err, &unsupported) {
+			return fmt.Sprintf("mihomo 不支持 %s 协议: %s", unsupported.Protocol, unsupported.Reason)
+		}
+		return fmt.Sprintf("解析失败: %v", err)
+	}
+	return ""
 }
 
 func getOrStartProxyDialerWithBuilder(uri string, reqID string, debugMode bool, builder proxyBuilder, entryURIs ...string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {

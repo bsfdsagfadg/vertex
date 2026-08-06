@@ -177,6 +177,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 	}()
 
 	cancels := make(map[string]context.CancelFunc)
+	candidateStarts := make(map[string]time.Time)
 	var cancelsMu sync.Mutex
 	cancelCandidate := func(uri string) {
 		cancelsMu.Lock()
@@ -229,6 +230,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 
 			cancelsMu.Lock()
 			cancels[uri] = candCancel
+			candidateStarts[uri] = time.Now()
 			cancelsMu.Unlock()
 
 			atomic.AddInt32(&active, 1)
@@ -353,6 +355,10 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 					return zero, parentErr
 				}
 				name := nodes.GetNodeName(res.uri)
+				cancelsMu.Lock()
+				candStart := candidateStarts[res.uri]
+				cancelsMu.Unlock()
+				elapsedMs := float64(time.Since(candStart).Milliseconds())
 
 				if res.err == nil {
 					// 判定是否可立即胜出。
@@ -361,7 +367,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 						log.Printf("[Racing] 竞速胜出节点: %s", name)
 						cli.UpdateReqWinner(RequestIDFromContext(ctx), name)
 						cli.UpdateReqState(RequestIDFromContext(ctx), "🟢 数据传输", "\033[32m", "已建立连接")
-						nodes.RecordTest(res.uri, true, 50, "")
+						nodes.RecordTest(res.uri, true, elapsedMs, "")
 						stickyPool.Add(res.uri)
 
 						returnedOnWinPath = true
@@ -410,7 +416,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 					// 非胜出成功结果：收集（CompleteChat 非 STOP 结果），继续等其余候选。
 					cancelCandidate(res.uri)
 					rc.collectedResults = append(rc.collectedResults, res)
-					nodes.RecordTest(res.uri, true, 50, "")
+					nodes.RecordTest(res.uri, true, elapsedMs, "")
 					stickyPool.Add(res.uri)
 				} else {
 					cancelCandidate(res.uri)

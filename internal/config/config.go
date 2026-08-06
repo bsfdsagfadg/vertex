@@ -21,10 +21,12 @@ type ProxyCandidate struct {
 	RawURI        string  `json:"raw_uri"`
 	Name          string  `json:"name"`
 	Type          string  `json:"type"`
+	Disabled      bool    `json:"disabled"`
 	LastTestOK    bool    `json:"last_test_ok"`
 	LastTestMs    float64 `json:"last_test_ms"`
 	LastTestAt    int64   `json:"last_test_at"`
 	LastTestError string  `json:"last_test_error"`
+	CooldownUntil int64   `json:"cooldown_until,omitempty"`
 }
 
 type AppConfig struct { //nolint:govet
@@ -63,6 +65,11 @@ type AppConfig struct { //nolint:govet
 	// 用于了解软件的版本分布和活跃数。指针类型区分"未设置"和"显式 false"，未设置时默认开启。
 	TelemetryEnabled *bool `json:"telemetry_enabled,omitempty"`
 
+	// RecaptchaTryEntryOrDirect 控制 reCAPTCHA Token 获取策略：
+	// 开启时每次请求优先经全局入口代理/直连直接抓取 RT；关闭或失败时顺次轮询健康候选节点。
+	// 指针类型区分"未设置"和"显式 false"，未设置时视为开启（默认 true）。
+	RecaptchaTryEntryOrDirect *bool `json:"recaptcha_try_entry_or_direct,omitempty"`
+
 	// 外观配置
 	BackgroundImage string   `json:"background_image"`
 	FontSize        string   `json:"font_size"`
@@ -72,6 +79,7 @@ type AppConfig struct { //nolint:govet
 	AutoRefreshLogs *bool    `json:"auto_refresh_logs,omitempty"`
 
 	DefaultImageSize          string `json:"default_image_size"`
+	DefaultThinkingLevel      string `json:"default_thinking_level"`
 	DefaultResponseModalities string `json:"default_response_modalities"`
 }
 
@@ -100,6 +108,7 @@ func DefaultConfig() AppConfig {
 		FontColor:                 "#f6f1e9",
 		CustomBgPresets:           []string{},
 		DefaultImageSize:          "1K",
+		DefaultThinkingLevel:      "自动",
 		DefaultResponseModalities: "图文",
 	}
 }
@@ -233,6 +242,16 @@ func Load() AppConfig {
 				cfg.DefaultResponseModalities = "图文"
 				needsSave = true
 			}
+			if cfg.DefaultThinkingLevel == "" {
+				cfg.DefaultThinkingLevel = "自动"
+				needsSave = true
+			} else if t := normalizeThinkingLevel(cfg.DefaultThinkingLevel); t != "" {
+				cfg.DefaultThinkingLevel = t
+			} else {
+				log.Printf("[Config] default_thinking_level 非法 (%q)，回退 自动", cfg.DefaultThinkingLevel)
+				cfg.DefaultThinkingLevel = "自动"
+				needsSave = true
+			}
 			// 拦截在文件读取配置时过高的并发数限制为 20
 			if cfg.ParallelPoolSize > 20 {
 				log.Printf("[Config] 警告: 并发数配置过高 (%d)，已限制为上限 20", cfg.ParallelPoolSize)
@@ -248,6 +267,7 @@ func Load() AppConfig {
 					"parallel_pool_size":          cfg.ParallelPoolSize,
 					"default_image_size":          cfg.DefaultImageSize,
 					"default_response_modalities": cfg.DefaultResponseModalities,
+					"default_thinking_level":      cfg.DefaultThinkingLevel,
 				}); errSave != nil {
 					log.Printf("[Config] 自动回写规范化配置失败: %v", errSave)
 				}
@@ -315,4 +335,28 @@ func normalizeImageSizeTier(value string) string {
 	default:
 		return ""
 	}
+}
+
+// ThinkingLevelOptions 是 default_thinking_level 支持的档位，作为单一事实来源：
+// 配置校验（normalizeThinkingLevel）与 transform 的思考注入档位消费共用，
+// 新增/调整档位只需改这里（transform 侧有 init 断言保证同步）。
+//
+//nolint:gochecknoglobals // Read-only option list
+var ThinkingLevelOptions = []string{"自动", "最低", "低", "中", "高"}
+
+var allowedThinkingLevels map[string]bool //nolint:gochecknoglobals // Read-only set
+
+func init() {
+	allowedThinkingLevels = make(map[string]bool, len(ThinkingLevelOptions))
+	for _, level := range ThinkingLevelOptions {
+		allowedThinkingLevels[level] = true
+	}
+}
+
+func normalizeThinkingLevel(s string) string {
+	s = strings.TrimSpace(s)
+	if allowedThinkingLevels[s] {
+		return s
+	}
+	return ""
 }

@@ -3,6 +3,7 @@ package transport
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -121,6 +122,41 @@ func TestProxyChainBuildsEntryAndSecondHop(t *testing.T) {
 	}
 	if buildCount.Load() != 2 {
 		t.Fatalf("expected cached proxy chain, builds=%d", buildCount.Load())
+	}
+}
+
+func TestValidateNodeURI(t *testing.T) {
+	ssWhole := func(method string) string {
+		return "ss://" + base64.StdEncoding.EncodeToString([]byte(method+":secret")) + "@1.2.3.4:8388"
+	}
+	cases := []struct {
+		name        string
+		uri         string
+		wantEmpty   bool
+		wantKeyword string
+	}{
+		{"socks4 显式 unsupported", "socks4://1.2.3.4:1080#s4", false, "socks4"},
+		{"ssh 缺密码 unsupported", "ssh://user@ssh.example.com:22", false, "ssh"},
+		{"vless 合法", "vless://12345678-1234-1234-1234-123456789012@example.com:443#demo", true, ""},
+		{"ss chacha20-poly1305 归一后可用", ssWhole("chacha20-poly1305"), true, ""},
+		{"ss chacha20-ietf-poly1305 可用", ssWhole("chacha20-ietf-poly1305"), true, ""},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := ValidateNodeURI(testCase.uri)
+			if testCase.wantEmpty {
+				if got != "" {
+					t.Fatalf("ValidateNodeURI(%s) 应可用（空串），got %q", testCase.uri, got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatalf("ValidateNodeURI(%s) 应返回非空原因", testCase.uri)
+			}
+			if !strings.Contains(got, testCase.wantKeyword) {
+				t.Fatalf("ValidateNodeURI(%s) 原因应包含 %q，got %q", testCase.uri, testCase.wantKeyword, got)
+			}
+		})
 	}
 }
 

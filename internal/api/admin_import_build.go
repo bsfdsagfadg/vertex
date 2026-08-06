@@ -571,9 +571,20 @@ func buildImportedProxyFromSIP008(obj map[string]any) map[string]any {
 	}
 }
 
+// normalizeClashProxyType 归一 clash type 别名：socks/socks4/socks4a → socks5
+// （mihomo 仅有 case "socks5" 出站；socks 是 socks5 的兼容写法，socks4 服务端连接失败会在测速环节兜底禁用）。
+func normalizeClashProxyType(typ string) string {
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "socks", "socks4", "socks4a":
+		return "socks5"
+	default:
+		return typ
+	}
+}
+
 func supportedClashProxyType(typ string) bool {
 	switch typ {
-	case "ss", "ssr", "socks5", "http", "vmess", "vless", "snell", "trojan", "hysteria", "hysteria2", "wireguard", "tuic", "gost-relay", "ssh", "mieru", "anytls", "sudoku", "masque", "trusttunnel", "openvpn", "tailscale":
+	case "ss", "ssr", "socks5", "http", "vmess", "vless", "snell", "trojan", "hysteria", "hysteria2", "wireguard", "tuic", "gost-relay", "ssh", "mieru", "anytls", "sudoku", "masque", "shadowquic", "trusttunnel", "openvpn", "tailscale":
 		return true
 	default:
 		return false
@@ -582,6 +593,7 @@ func supportedClashProxyType(typ string) bool {
 
 func looksLikeClashProxyMap(obj map[string]any) bool {
 	typ := strings.ToLower(strings.TrimSpace(valueToString(obj["type"])))
+	typ = normalizeClashProxyType(typ)
 	if !supportedClashProxyType(typ) {
 		return false
 	}
@@ -1024,6 +1036,10 @@ func buildClashNode(proxy map[string]any) (nodes.Node, bool) {
 	normalized, ok := normalizeYAMLValue(proxy).(map[string]any)
 	if !ok || len(normalized) == 0 {
 		return nodes.Node{}, false
+	}
+	// 归一 type 别名（socks/socks4/socks4a → socks5）后继续构建
+	if typ := normalizeClashProxyType(valueToString(normalized["type"])); typ != "" {
+		normalized["type"] = typ
 	}
 	if !looksLikeClashProxyMap(normalized) {
 		return nodes.Node{}, false

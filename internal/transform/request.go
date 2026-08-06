@@ -227,9 +227,9 @@ func ConvertChatRequest(body map[string]any, cfg config.ConfigProvider) (string,
 
 	if thinking, ok := body["thinking"].(map[string]any); ok {
 		if tt, _ := thinking["type"].(string); tt == "enabled" || tt == "disabled" {
-			tc := map[string]any{"thinkingLevel": "MEDIUM"}
+			tc := map[string]any{"thinkingLevel": thinkingLevelMedium}
 			if tt == "disabled" {
-				tc["thinkingLevel"] = "NONE"
+				tc["thinkingLevel"] = thinkingLevelNone
 			}
 			if budget, ok := thinking["budget_tokens"]; ok && budget != nil {
 				tc["thinkingBudget"] = budget

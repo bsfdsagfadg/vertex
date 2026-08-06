@@ -143,13 +143,32 @@ var (
 	healthOnce       sync.Once         //nolint:gochecknoglobals
 )
 
+// droppedHealth 记录队列满时被丢弃事件的"最新值"：worker 在下一批次合并补偿落库，
+// 避免重启后 node_health 因丢事件而回退到过期数据（复活已失败/冷却节点）。
+//nolint:gochecknoglobals // 丢弃补偿缓存（uri -> 最新值），worker 消费后清空
+var droppedHealth = make(map[string]healthUpdate)
+
+//nolint:gochecknoglobals // 保护 droppedHealth（与 healthMap 锁独立，避免锁序耦合）
+var droppedMu sync.Mutex
+
 func initHealthQueue() {
-	healthUpdateChan = make(chan healthUpdate, 2048)
+	healthUpdateChan = make(chan healthUpdate, 1024)
 	go func() {
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 
 		batch := make(map[string]NodeHealth)
+
+		// mergeDropped 把丢弃补偿缓存并入本批：被丢弃 uri 的最新值随本批落库，
+		// 并清空缓存（补偿后的 uri 若再次被丢弃会重新进入缓存）。
+		mergeDropped := func() {
+			droppedMu.Lock()
+			for uri, update := range droppedHealth {
+				batch[uri] = update.h
+				delete(droppedHealth, uri)
+			}
+			droppedMu.Unlock()
+		}
 
 		flush := func() {
 			if len(batch) == 0 {
@@ -201,14 +220,17 @@ func initHealthQueue() {
 			select {
 			case update, ok := <-healthUpdateChan:
 				if !ok {
+					mergeDropped()
 					flush()
 					return
 				}
 				batch[update.uri] = update.h
+				mergeDropped()
 				if len(batch) >= 100 {
 					flush()
 				}
 			case <-ticker.C:
+				mergeDropped()
 				flush()
 			}
 		}
@@ -222,13 +244,29 @@ func saveHealthUnsafe() {
 	healthOnce.Do(initHealthQueue)
 	for uri, h := range healthMap {
 		if h != nil {
-			select {
-			case healthUpdateChan <- healthUpdate{uri: uri, h: *h}:
-			default:
-				go func(update healthUpdate) {
-					healthUpdateChan <- update
-				}(healthUpdate{uri: uri, h: *h})
-			}
+			pushHealthEvent(uri, h)
+		}
+	}
+}
+
+// pushHealthEvent 非阻塞投递健康度落库事件：队列满时保留最新值待下批补偿落库，
+// 不阻塞、不产生 goroutine（防泄漏），也不会永久丢失健康数据。
+func pushHealthEvent(uri string, h *NodeHealth) {
+	if h == nil {
+		return
+	}
+	healthOnce.Do(initHealthQueue)
+	update := healthUpdate{uri: uri, h: *h}
+	select {
+	case healthUpdateChan <- update:
+	default:
+		// 队列满：记录该 uri 的最新值，由 worker 随下一批次合并落库。
+		droppedMu.Lock()
+		_, alreadyDropped := droppedHealth[uri]
+		droppedHealth[uri] = update
+		droppedMu.Unlock()
+		if !alreadyDropped {
+			log.Printf("[Health] 警告: 健康度异步写队列已满，暂存事件 %s（将由下批次补偿落库）", uri)
 		}
 	}
 }
@@ -237,14 +275,7 @@ func updateSingleNodeHealthUnsafe(uri string, h *NodeHealth) {
 	if db.GlobalDB == nil || h == nil {
 		return
 	}
-	healthOnce.Do(initHealthQueue)
-	select {
-	case healthUpdateChan <- healthUpdate{uri: uri, h: *h}:
-	default:
-		go func(update healthUpdate) {
-			healthUpdateChan <- update
-		}(healthUpdate{uri: uri, h: *h})
-	}
+	pushHealthEvent(uri, h)
 }
 
 func updateSingleNodeDisabledUnsafe(uri string, disabled bool) {

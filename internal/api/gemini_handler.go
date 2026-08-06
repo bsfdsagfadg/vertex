@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
@@ -89,6 +90,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 		geminiModelNotFound(w, model)
 		return
 	}
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -97,6 +99,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 		body = reqObj
 	}
 	transform.ApplyImageDefaults(body, actualModel, g.cfg.DefaultImageSize(), g.cfg.DefaultResponseModalities())
+	transform.ApplyDefaultThinking(body, g.cfg.DefaultThinkingLevel(), actualModel)
 	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
 
 	resp, vErr := g.vc.CompleteChat(r.Context(), actualModel, body)
@@ -120,6 +123,7 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 		geminiModelNotFound(w, model)
 		return
 	}
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -128,6 +132,7 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 		body = reqObj
 	}
 	transform.ApplyImageDefaults(body, actualModel, g.cfg.DefaultImageSize(), g.cfg.DefaultResponseModalities())
+	transform.ApplyDefaultThinking(body, g.cfg.DefaultThinkingLevel(), actualModel)
 	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 假流式=%v", model, actualModel, useFake)
 
 	sw := newSSEWriter(w, "text/event-stream")

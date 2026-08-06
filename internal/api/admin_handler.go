@@ -108,23 +108,16 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 	case "/nodes/sort":
 		adm.adminSortNodesByLatency(w, r)
 		return
+	case "/proxy-nodes":
+		if r.Method == http.MethodGet {
+			adm.adminGetProxyNodes(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
 	case "/proxy-nodes/import":
 		if r.Method == http.MethodPost {
 			adm.adminImportProxyNode(w, r)
-		} else {
-			adm.adminMethodNotAllowed(w)
-		}
-		return
-	case "/proxy-nodes/enable":
-		if r.Method == http.MethodPost {
-			adm.adminEnableProxyNode(w, r)
-		} else {
-			adm.adminMethodNotAllowed(w)
-		}
-		return
-	case "/proxy-nodes/disable":
-		if r.Method == http.MethodPost {
-			adm.adminDisableProxyNode(w, r)
 		} else {
 			adm.adminMethodNotAllowed(w)
 		}
@@ -136,9 +129,30 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 			adm.adminMethodNotAllowed(w)
 		}
 		return
-	case "/proxy-nodes":
-		if r.Method == http.MethodDelete {
-			adm.adminDeleteProxyNode(w, r)
+	case "/proxy-nodes/toggle":
+		if r.Method == http.MethodPost {
+			adm.adminToggleProxyNodes(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
+	case "/proxy-nodes/batch-delete":
+		if r.Method == http.MethodPost {
+			adm.adminBatchDeleteProxyNodes(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
+	case "/proxy-nodes/delete-disabled":
+		if r.Method == http.MethodPost {
+			adm.adminDeleteDisabledProxyNodes(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
+	case "/proxy-nodes/dedup":
+		if r.Method == http.MethodPost {
+			adm.adminDedupProxyNodes(w, r)
 		} else {
 			adm.adminMethodNotAllowed(w)
 		}

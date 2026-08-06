@@ -17,6 +17,19 @@ func padB64(s string) string {
 	return s
 }
 
+// ErrProtocolUnsupported 表示该协议在当前构建（mihomo 内核）无法支持，应显式上报给用户。
+type ErrProtocolUnsupported struct {
+	Protocol string
+	Reason   string
+}
+
+func (e *ErrProtocolUnsupported) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("unsupported protocol %s: %s", e.Protocol, e.Reason)
+	}
+	return "unsupported protocol: " + e.Protocol
+}
+
 // ParseURI 解析各种协议的节点链接
 func ParseURI(uri string) (map[string]any, error) {
 	if strings.HasPrefix(uri, "vless://") {
@@ -40,6 +53,10 @@ func ParseURI(uri string) (map[string]any, error) {
 	if strings.HasPrefix(uri, "socks5://") || strings.HasPrefix(uri, "socks5h://") || strings.HasPrefix(uri, "socks://") {
 		return parseSocks(uri)
 	}
+	// mihomo 仅支持 socks5 出站（adapter/parser.go 无 socks4 case），显式报 unsupported。
+	if strings.HasPrefix(uri, "socks4://") || strings.HasPrefix(uri, "socks4a://") {
+		return nil, &ErrProtocolUnsupported{Protocol: "socks4", Reason: "mihomo 仅支持 socks5 出站"}
+	}
 	if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
 		return parseHTTP(uri)
 	}
@@ -52,17 +69,80 @@ func ParseURI(uri string) (map[string]any, error) {
 	if strings.HasPrefix(uri, "anytls://") {
 		return parseAnyTLS(uri)
 	}
+	if strings.HasPrefix(uri, "ssh://") {
+		return parseSSH(uri)
+	}
 	if strings.HasPrefix(uri, "clash://") {
 		b, _ := base64.StdEncoding.DecodeString(padB64(uri[8:]))
 		var d map[string]any
 		_ = json.Unmarshal(b, &d)
 		return d, nil
 	}
+	// 兜底裸行：ip:port / host:port / [ipv6]:port（无 scheme），按 socks5 解析。
+	// 正常情况下其他协议都带 scheme，裸行归 socks5 是订阅文本常见的简化写法。
+	if looksLikeBareHostPort(uri) {
+		return parseSocks("socks5://" + uri)
+	}
 	safeURI := uri
 	if len(safeURI) > 10 {
 		safeURI = safeURI[:10]
 	}
 	return nil, fmt.Errorf("unsupported or complex protocol: %s", safeURI)
+}
+
+// looksLikeBareHostPort 判断字符串是否为无 scheme 的 host:port / [ipv6]:port 形式。
+// 含 "://" 的行视为有 scheme 特征，不归入裸行兜底（避免未知 scheme 被误解析为 socks5）。
+func looksLikeBareHostPort(line string) bool {
+	if line == "" || strings.Contains(line, "://") || strings.ContainsAny(line, " \t\r\n") {
+		return false
+	}
+	portStr := ""
+	if strings.HasPrefix(line, "[") {
+		end := strings.IndexByte(line, ']')
+		if end <= 1 || end+1 >= len(line) || line[end+1] != ':' {
+			return false
+		}
+		for _, ch := range line[1:end] {
+			if !strings.ContainsRune("0123456789abcdefABCDEF:", ch) {
+				return false
+			}
+		}
+		portStr = line[end+2:]
+	} else {
+		colonIdx := strings.LastIndexByte(line, ':')
+		if colonIdx <= 0 || colonIdx+1 >= len(line) || strings.ContainsAny(line[:colonIdx], "[]") {
+			return false
+		}
+		portStr = line[colonIdx+1:]
+	}
+	port, err := strconv.Atoi(portStr)
+	return err == nil && port > 0 && port <= 65535
+}
+
+// parseSSH 解析 ssh:// 出站（对齐 mihomo ssh 出站：server/port/username/password）。
+// ssh:// URL 无法携带私钥，私钥形式一律按 unsupported 处理。
+func parseSSH(uri string) (map[string]any, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("ssh parse failed: %w", err)
+	}
+	port, err := parseProxyPort(u, 22)
+	if err != nil {
+		return nil, err
+	}
+	username := ""
+	password := ""
+	if u.User != nil {
+		username = u.User.Username()
+		password, _ = u.User.Password()
+	}
+	if username == "" || password == "" {
+		return nil, &ErrProtocolUnsupported{Protocol: "ssh", Reason: "mihomo ssh 出站仅支持密码认证，不支持私钥"}
+	}
+	return map[string]any{
+		"name": nameFromURL(u), "type": "ssh", "server": u.Hostname(), "port": port,
+		"username": username, "password": password,
+	}, nil
 }
 
 func parseSimple(uri, typ string) (map[string]any, error) {
@@ -86,7 +166,12 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 	if u.User != nil {
 		username = u.User.Username()
 	}
-	if typ == "trojan" || typ == "hysteria2" {
+	if typ == "tuic" {
+		out["uuid"] = username
+		if pw, ok := u.User.Password(); ok {
+			out["password"] = pw
+		}
+	} else if typ == "trojan" || typ == "hysteria2" {
 		out["password"] = username
 	} else {
 		out["uuid"] = username
@@ -107,6 +192,10 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 		if pubKey := firstNonEmpty(q.Get("pbk"), q.Get("public-key")); pubKey != "" {
 			out["reality-opts"] = map[string]any{"public-key": pubKey, "short-id": firstNonEmpty(q.Get("sid"), q.Get("short-id"))}
 		}
+		// REALITY 缺省指纹补 chrome（mihomo reality 校验需要 client-fingerprint）。
+		if fp := firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")); fp == "" {
+			out["client-fingerprint"] = "chrome"
+		}
 	}
 
 	if typ == "vless" || typ == "trojan" {
@@ -115,17 +204,19 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 		}
 		if fp := firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")); fp != "" {
 			out["client-fingerprint"] = fp
+		} else if out["tls"] == true {
+			out["client-fingerprint"] = "chrome"
 		}
 		network := q.Get("type")
-		if network == "ws" || network == "grpc" || network == "http" || network == "xhttp" {
+		if network != "" && network != "tcp" {
 			out["network"] = network
+			path := q.Get("path")
+			if path == "" {
+				path = "/"
+			}
+			host := q.Get("host")
 			switch network {
 			case "ws":
-				path := q.Get("path")
-				if path == "" {
-					path = "/"
-				}
-				host := q.Get("host")
 				wsOpts := map[string]any{"path": path}
 				if host != "" {
 					wsOpts["headers"] = map[string]any{"Host": host}
@@ -135,6 +226,30 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 				if serviceName := q.Get("serviceName"); serviceName != "" {
 					out["grpc-opts"] = map[string]any{"grpc-service-name": serviceName}
 				}
+			case "http":
+				out["http-opts"] = map[string]any{
+					"method":  "GET",
+					"path":    []string{path},
+					"headers": map[string][]string{"Host": {host}},
+				}
+			case "h2":
+				var hostList []string
+				if host != "" {
+					hostList = []string{host}
+				}
+				out["h2-opts"] = map[string]any{
+					"path": path,
+					"host": hostList,
+				}
+			case "xhttp":
+				xhttpOpts := map[string]any{"path": path}
+				if host != "" {
+					xhttpOpts["host"] = host
+				}
+				if mode := q.Get("mode"); mode != "" {
+					xhttpOpts["mode"] = mode
+				}
+				out["xhttp-opts"] = xhttpOpts
 			}
 		}
 		if alpn := q.Get("alpn"); alpn != "" {
@@ -161,14 +276,23 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 		if obfsPassword := firstNonEmpty(q.Get("obfs-password"), q.Get("obfsPassword")); obfsPassword != "" {
 			out["obfs-password"] = obfsPassword
 		}
+		// mihomo hysteria2 出站的 fingerprint 仅用于 TLS cert pinning（SHA256 证书指纹），
+		// 不能使用 chrome 等浏览器 uTLS 指纹名称。仅当 fp 为有效 SHA256 指纹时写入。
 		if fp := firstNonEmpty(q.Get("fp"), q.Get("fingerprint")); fp != "" {
-			out["fingerprint"] = fp
+			if isCertPinningFingerprint(fp) {
+				out["fingerprint"] = fp
+			}
 		}
 		if alpn := q.Get("alpn"); alpn != "" {
 			out["alpn"] = strings.Split(alpn, ",")
 		}
 	}
 	return out, nil
+}
+
+func isCertPinningFingerprint(fp string) bool {
+	cleaned := strings.ReplaceAll(strings.TrimSpace(fp), ":", "")
+	return len(cleaned) == 64
 }
 
 func firstNonEmpty(values ...string) string {
@@ -212,16 +336,21 @@ func parseVmess(uri string) (map[string]any, error) {
 	port, _ := strconv.Atoi(portStr)
 
 	// 初始化 VMess 出站基本参数
+	cipher := "auto"
+	if scy, ok := d["scy"].(string); ok && strings.TrimSpace(scy) != "" && !strings.EqualFold(scy, "auto") {
+		cipher = strings.TrimSpace(scy)
+	}
+
 	out := map[string]any{
 		"name":   d["ps"],
 		"type":   "vmess",
 		"server": d["add"],
 		"port":   port,
 		"uuid":   d["id"],
-		"cipher": "auto",
+		"cipher": cipher,
 	}
 
-	// 1. 映射 alterId (aid)
+	// 1. 映射 alterId (aid)；缺失时默认 0（新协议版本不再携带 aid，兼容 v2rayN 旧订阅）
 	if aidVal, ok := d["aid"]; ok {
 		switch v := aidVal.(type) {
 		case float64:
@@ -233,11 +362,22 @@ func parseVmess(uri string) (map[string]any, error) {
 				out["alterId"] = n
 			}
 		}
+	} else {
+		out["alterId"] = 0
 	}
 
 	// 2. 补全 TLS 配置（极关键，修复免费-日本1等节点的 TLS 缺失）
-	tlsStr, _ := d["tls"].(string)
-	if strings.ToLower(tlsStr) == "tls" {
+	var tlsOn bool
+	switch tv := d["tls"].(type) {
+	case string:
+		tlsOn = strings.EqualFold(tv, "tls") || tv == "1" || strings.EqualFold(tv, "true")
+	case bool:
+		tlsOn = tv
+	case float64:
+		tlsOn = tv != 0
+	}
+
+	if tlsOn {
 		host, _ := d["host"].(string)
 		sni, _ := d["sni"].(string)
 		if sni == "" {
@@ -251,21 +391,23 @@ func parseVmess(uri string) (map[string]any, error) {
 		out["servername"] = sni
 		if fp, ok := d["fp"].(string); ok && fp != "" {
 			out["client-fingerprint"] = fp
-			out["fingerprint"] = fp
+		} else {
+			// vmess 开启 TLS 但缺 fp：补默认 chrome，避免 mihomo 指纹协商失败。
+			out["client-fingerprint"] = "chrome"
 		}
 		if alpn, ok := d["alpn"].(string); ok && alpn != "" {
 			out["alpn"] = strings.Split(alpn, ",")
 		}
 		if insecure, ok := d["skip-cert-verify"].(bool); ok {
 			out["skip-cert-verify"] = insecure
-		} else if allowInsecure, ok := d["allowInsecure"].(string); ok && allowInsecure == "1" {
+		} else if allowInsecure, ok := d["allowInsecure"].(string); ok && (allowInsecure == "1" || strings.EqualFold(allowInsecure, "true")) {
 			out["skip-cert-verify"] = true
 		} else {
 			out["skip-cert-verify"] = false
 		}
 	}
 
-	// 3. 补全 V2Ray 传输层配置（WS / gRPC，修复 IEPL 等节点的 WS 缺失）
+	// 3. 补全 V2Ray 传输层配置（WS / gRPC / HTTP / H2）
 	netType, _ := d["net"].(string)
 	netType = strings.ToLower(strings.TrimSpace(netType))
 	if netType != "" && netType != "tcp" {
@@ -286,7 +428,7 @@ func parseVmess(uri string) (map[string]any, error) {
 			out["grpc-opts"] = map[string]any{
 				"grpc-service-name": path,
 			}
-		case "http", "h2":
+		case "http":
 			hPath := path
 			if hPath == "" {
 				hPath = "/"
@@ -296,10 +438,35 @@ func parseVmess(uri string) (map[string]any, error) {
 				"path":    []string{hPath},
 				"headers": map[string][]string{"Host": {host}},
 			}
+		case "h2":
+			hPath := path
+			if hPath == "" {
+				hPath = "/"
+			}
+			var hostList []string
+			if host != "" {
+				hostList = []string{host}
+			}
+			out["h2-opts"] = map[string]any{
+				"path": hPath,
+				"host": hostList,
+			}
 		}
 	}
 
 	return out, nil
+}
+
+// normalizeSSCipher 兼容归一 ss 加密方式别名：
+// chacha20-poly1305 → chacha20-ietf-poly1305（sing-shadowsocks shadowaead 列表无前者，仅认后者）。
+// 禁止 stream→aead 的猜测映射（算法不同、服务端不通用），其余 cipher 不改动、交给 mihomo 原样报错。
+func normalizeSSCipher(method string) string {
+	switch strings.ToLower(strings.TrimSpace(method)) {
+	case "chacha20-poly1305":
+		return "chacha20-ietf-poly1305"
+	default:
+		return method
+	}
 }
 
 func parseShadowsocksURI(uri string) (map[string]any, error) {
@@ -330,7 +497,7 @@ func parseShadowsocksURI(uri string) (map[string]any, error) {
 		"type":     "ss",
 		"server":   u.Hostname(),
 		"port":     port,
-		"cipher":   method,
+		"cipher":   normalizeSSCipher(method),
 		"password": password,
 	}
 	applySSPlugin(out, u.Query().Get("plugin"))
@@ -377,8 +544,13 @@ func applySSPlugin(out map[string]any, pluginRaw string) {
 	plugin := strings.ToLower(strings.TrimSpace(segments[0]))
 	rawOpts := map[string]string{}
 	for _, segment := range segments[1:] {
+		segment = strings.TrimSpace(segment)
+		if segment == "" {
+			continue
+		}
 		key, value, ok := strings.Cut(segment, "=")
 		if !ok {
+			rawOpts[strings.ToLower(strings.TrimSpace(segment))] = "true"
 			continue
 		}
 		rawOpts[strings.ToLower(strings.TrimSpace(key))] = strings.TrimSpace(value)
@@ -397,6 +569,33 @@ func applySSPlugin(out map[string]any, pluginRaw string) {
 		if len(opts) > 0 {
 			out["plugin-opts"] = opts
 		}
+	case "v2ray-plugin":
+		out["plugin"] = plugin
+		opts := map[string]any{}
+		mode := rawOpts["mode"]
+		if mode == "" {
+			mode = "websocket"
+		}
+		opts["mode"] = mode
+		if host := rawOpts["host"]; host != "" {
+			opts["host"] = host
+		}
+		if path := rawOpts["path"]; path != "" {
+			opts["path"] = path
+		}
+		if fp := firstNonEmpty(rawOpts["fp"], rawOpts["fingerprint"]); fp != "" {
+			opts["fingerprint"] = fp
+		}
+		if v, ok := rawOpts["tls"]; ok && (v == "true" || v == "1" || v == "") {
+			opts["tls"] = true
+		}
+		if v, ok := rawOpts["mux"]; ok && (v == "true" || v == "1" || v == "") {
+			opts["mux"] = true
+		}
+		if v, ok := rawOpts["skip-cert-verify"]; ok && (v == "true" || v == "1" || v == "") {
+			opts["skip-cert-verify"] = true
+		}
+		out["plugin-opts"] = opts
 	default:
 		out["plugin"] = plugin
 		if len(rawOpts) > 0 {
@@ -465,7 +664,7 @@ func parseSS(uri string) (map[string]any, error) {
 			"type":     "ss",
 			"server":   hp[0],
 			"port":     port,
-			"cipher":   method,
+			"cipher":   normalizeSSCipher(method),
 			"password": password,
 		}, nil
 	}

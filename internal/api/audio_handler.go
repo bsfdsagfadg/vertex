@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/bsfdsagfadg/vertex/internal/cli"
+	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
 type AudioHandler struct {
@@ -71,6 +74,7 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 		oaiModelNotFound(w, rawModel)
 		return
 	}
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 
 	text, _ := body["input"].(string)
 	if strings.TrimSpace(text) == "" {

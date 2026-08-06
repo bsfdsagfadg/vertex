@@ -71,12 +71,11 @@ async function loadNodes() {
     if (typeof curSettings !== 'undefined') {
       curSettings = sd.settings || sd;
     }
-    const gpEl = document.getElementById('globalProxy');
-    if (gpEl && (sd.settings || sd).proxy_url !== undefined) {
-      gpEl.value = (sd.settings || sd).proxy_url;
-    }
-    var settings = sd.settings || sd;
-    renderProxyNodes(settings.proxy_url_candidates || [], settings.proxy_url || '');
+  } catch (e) { }
+
+  try {
+    const pd = await API.proxyNodes.list();
+    renderProxyNodes(pd.nodes || []);
   } catch (e) { }
 
   const d = await API.nodes.list();
@@ -588,14 +587,14 @@ async function importProxyNode() {
     var result = await API.proxyNodes.import(uri);
     input.value = '';
     await loadNodes();
-    toast('已导入口代理候选：' + (result.candidate.name || uri));
+    toast('已导入前置代理并加入轮询池');
   } catch (e) {
     toast('导入失败：' + e.message);
   }
 }
 
 async function testProxyNode(uri) {
-  toast('正在隔离测试入口代理...');
+  toast('正在测试前置代理...');
   try {
     var result = await API.proxyNodes.test(uri);
     await loadNodes();
@@ -605,34 +604,67 @@ async function testProxyNode(uri) {
   }
 }
 
-async function enableProxyNode(uri) {
-  try {
-    await API.proxyNodes.enable(uri);
-    await loadNodes();
-    toast('已启用该入口代理');
-  } catch (e) {
-    toast('启用失败：' + e.message);
+async function testAllProxyNodes() {
+  var nodes = window.lastProxyNodes || [];
+  if (!nodes.length) return toast('前置代理池为空，无可测试节点');
+  toast('开始批量测试 ' + nodes.length + ' 个前置代理...');
+  var passCount = 0;
+  var doneCount = 0;
+  var batchSize = 5;
+  for (var i = 0; i < nodes.length; i += batchSize) {
+    var chunk = nodes.slice(i, i + batchSize);
+    await Promise.all(chunk.map(async function (n) {
+      try {
+        var res = await API.proxyNodes.test(n.raw_uri);
+        if (res && res.ok) passCount++;
+      } catch (e) { }
+      doneCount++;
+    }));
+    toast('前置代理测试中: ' + doneCount + '/' + nodes.length + '...');
   }
+  toast('前置代理测试完成: ' + passCount + '/' + nodes.length + ' 通过');
+  await loadNodes();
 }
 
-async function disableProxyNode() {
+async function toggleProxyNode(uri, disabled) {
   try {
-    await API.proxyNodes.disable();
+    await API.proxyNodes.toggle([uri], disabled);
     await loadNodes();
-    toast('已停用入口代理');
+    toast(disabled ? '已禁用该前置代理' : '已启用该前置代理');
   } catch (e) {
-    toast('停用失败：' + e.message);
+    toast('操作失败: ' + e.message);
   }
 }
 
 async function deleteProxyNode(uri) {
-  if (!confirm('确定删除该入口代理候选？')) return;
+  if (!confirm('确定删除该前置代理节点？')) return;
   try {
-    await API.proxyNodes.delete(uri);
+    await API.proxyNodes.batchDelete([uri]);
     await loadNodes();
-    toast('已删除入口代理候选');
+    toast('已删除');
   } catch (e) {
     toast('删除失败：' + e.message);
+  }
+}
+
+async function deleteDisabledProxyNodes() {
+  if (!confirm('确定清空所有已禁用的前置代理节点？')) return;
+  try {
+    var res = await API.proxyNodes.deleteDisabled();
+    await loadNodes();
+    toast('已清空 ' + (res.deleted_count || 0) + ' 个禁用节点');
+  } catch (e) {
+    toast('清理失败: ' + e.message);
+  }
+}
+
+async function dedupProxyNodes() {
+  try {
+    var res = await API.proxyNodes.dedup();
+    await loadNodes();
+    toast('去重完成，移除 ' + (res.removed_count || 0) + ' 个');
+  } catch (e) {
+    toast('去重失败: ' + e.message);
   }
 }
 
@@ -645,20 +677,22 @@ function proxyActionButton(label, className, handler) {
   return button;
 }
 
-function renderProxyNodes(candidates, activeURI) {
+function renderProxyNodes(nodes) {
   var tbody = document.getElementById('proxyNodesBody');
   if (!tbody) return;
+  window.lastProxyNodes = nodes || [];
+  nodes = nodes || [];
   var fragment = document.createDocumentFragment();
-  if (!candidates.length) {
+  if (!nodes.length) {
     var emptyRow = document.createElement('tr');
     var emptyCell = document.createElement('td');
     emptyCell.colSpan = 4;
     emptyCell.style.cssText = 'color:var(--text-dim);text-align:center;';
-    emptyCell.textContent = '暂无入口代理候选';
+    emptyCell.textContent = '暂无前置代理节点（可在此导入节点后自动进入轮询池，作为出口请求的第一跳）';
     emptyRow.appendChild(emptyCell);
     fragment.appendChild(emptyRow);
   }
-  candidates.forEach(function (candidate) {
+  nodes.forEach(function (candidate) {
     var row = document.createElement('tr');
     var nameCell = document.createElement('td');
     var nameContainer = document.createElement('div');
@@ -666,16 +700,16 @@ function renderProxyNodes(candidates, activeURI) {
     var nameSpan = document.createElement('span');
     nameSpan.textContent = candidate.name || candidate.raw_uri;
     nameContainer.appendChild(nameSpan);
-    if (candidate.raw_uri === activeURI) {
-      var active = document.createElement('span');
-      active.className = 'pill on';
-      active.style.cssText = 'font-size:10px;padding:2px 8px;white-space:nowrap;flex-shrink:0;';
-      active.textContent = '启用中';
-      nameContainer.appendChild(active);
+    if (candidate.disabled) {
+      var disabledBadge = document.createElement('span');
+      disabledBadge.className = 'pill off';
+      disabledBadge.style.cssText = 'font-size:10px;padding:2px 8px;white-space:nowrap;flex-shrink:0;';
+      disabledBadge.textContent = '已禁用';
+      nameContainer.appendChild(disabledBadge);
     }
     nameCell.appendChild(nameContainer);
     var typeCell = document.createElement('td');
-    typeCell.textContent = candidate.type || '-';
+    typeCell.textContent = (candidate.type || '-').toUpperCase();
     var stateCell = document.createElement('td');
     stateCell.style.cssText = 'white-space:nowrap;';
     if (!candidate.last_test_at) {
@@ -687,11 +721,9 @@ function renderProxyNodes(candidates, activeURI) {
     }
     var actionCell = document.createElement('td');
     actionCell.appendChild(proxyActionButton('测试', 'btn ghost', function () { testProxyNode(candidate.raw_uri); }));
-    if (candidate.raw_uri === activeURI) {
-      actionCell.appendChild(proxyActionButton('停用', 'btn ghost', disableProxyNode));
-    } else {
-      actionCell.appendChild(proxyActionButton('启用', 'btn ghost', function () { enableProxyNode(candidate.raw_uri); }));
-    }
+    var toggleBtn = proxyActionButton(candidate.disabled ? '启用' : '禁用', 'btn ghost', function () { toggleProxyNode(candidate.raw_uri, !candidate.disabled); });
+    toggleBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;' + (candidate.disabled ? 'color:var(--green);' : 'color:var(--gold);');
+    actionCell.appendChild(toggleBtn);
     actionCell.appendChild(proxyActionButton('删除', 'btn danger', function () { deleteProxyNode(candidate.raw_uri); }));
     row.appendChild(nameCell);
     row.appendChild(typeCell);

@@ -33,6 +33,9 @@ func (s staticConfig) ParallelPoolDelayDynamic() bool           { return s.c.Par
 func (s staticConfig) ParallelPoolDelayMs() int                 { return s.c.ParallelPoolDelayMs }
 func (s staticConfig) ActiveNodeURI() string                    { return s.c.ActiveNodeURI }
 func (s staticConfig) ParallelNodeTopK() int                    { return s.c.ParallelNodeTopK }
+func (s staticConfig) RecaptchaTryEntryOrDirect() bool {
+	return s.c.RecaptchaTryEntryOrDirect == nil || *s.c.RecaptchaTryEntryOrDirect
+}
 func (s staticConfig) BackgroundImage() string                  { return s.c.BackgroundImage }
 func (s staticConfig) FontSize() string                         { return s.c.FontSize }
 func (s staticConfig) FontColorType() string                    { return s.c.FontColorType }
@@ -40,6 +43,7 @@ func (s staticConfig) FontColor() string                        { return s.c.Fon
 func (s staticConfig) CustomBgPresets() []string                { return s.c.CustomBgPresets }
 func (s staticConfig) AutoRefreshLogs() bool                    { return s.c.GetAutoRefreshLogs() }
 func (s staticConfig) DefaultImageSize() string                 { return s.c.DefaultImageSize }
+func (s staticConfig) DefaultThinkingLevel() string             { return s.c.DefaultThinkingLevel }
 func (s staticConfig) DefaultResponseModalities() string        { return s.c.DefaultResponseModalities }
 func (s staticConfig) TelemetryEnabled() *bool                  { return s.c.TelemetryEnabled }
 func (s staticConfig) BaseModels() []string                     { return s.c.BaseModels() }

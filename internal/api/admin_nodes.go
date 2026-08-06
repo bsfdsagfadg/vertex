@@ -74,9 +74,16 @@ func (adm *AdminHandler) adminFetchSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newNodes := parseImportedNodes(text)
-	nodes.MergeNodes(newNodes)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(newNodes)})
+	report := parseImportedNodesReport(text)
+	nodes.MergeNodes(report.Imported)
+	log.Printf("[Admin] [FetchSub] 导入完成: %d 个节点（unsupported: %d, failed: %d）",
+		len(report.Imported), len(report.Unsupported), len(report.Failed))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "count": len(report.Imported),
+		"unsupported":    report.Unsupported,
+		"failed":         report.Failed,
+		"protocol_stats": report.ProtocolStats,
+	})
 }
 
 func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
@@ -122,6 +129,15 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 				if nodes.CheckTestControl() {
 					return
 				}
+				// capability 预检：进并发槽之前判明当前构建能否装载该节点；
+				// 不支持的协议不发起网络、不占并发槽，直接记失败并禁用。
+				if reason := transport.ValidateNodeURI(node.RawURI); reason != "" {
+					log.Printf("[Admin] [TestAll] 节点 %s 能力预检不通过（不占并发槽）: %s", node.Name, reason)
+					nodes.RecordTest(node.RawURI, false, 0, reason)
+					nodes.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
+					nodes.UpdateTestProgress(node.Name, false)
+					return
+				}
 				select {
 				case sem <- struct{}{}:
 				case <-ctx.Done():
@@ -135,19 +151,33 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 				start := time.Now()
 				log.Printf("[Admin] [TestAll] 开始测试节点: %s (%s)", node.Name, node.Type)
 
-				nodeCtx, nodeCancel := context.WithTimeout(ctx, singleNodeTestTimeoutSec*time.Second)
-				defer nodeCancel()
-				sess, err := adm.vc.Net().CreateSession(singleNodeTestTimeoutSec, node.RawURI, "admin-test-all")
+				// 内层 goroutine + select 兜底：黑洞节点（连接永不返回）在
+				// singleNodeTestTimeoutSec+2s 内强制记普通失败，防止占满 50 并发槽挂死整批。
+				// 泄漏的内层 goroutine 每节点最多 1 个，其内部 nodeCtx 到点会自动取消，量级可接受。
+				done := make(chan error, 1)
+				go func() {
+					nodeCtx, nodeCancel := context.WithTimeout(ctx, singleNodeTestTimeoutSec*time.Second)
+					defer nodeCancel()
+					sess, sessErr := adm.vc.Net().CreateSession(singleNodeTestTimeoutSec, node.RawURI, "admin-test-all")
+					var innerErr error
+					if sessErr == nil {
+						defer sess.Close()
+						innerErr = fetchRecaptchaTokenWithSess(nodeCtx, sess)
+					} else {
+						innerErr = sessErr
+					}
+					done <- innerErr
+				}()
 				var testErr error
-				if err == nil {
-					defer sess.Close()
-					testErr = fetchRecaptchaTokenWithSess(nodeCtx, sess)
-				} else {
-					testErr = err
+				select {
+				case testErr = <-done:
+				case <-time.After(singleNodeTestTimeoutSec*time.Second + 2*time.Second):
+					testErr = context.DeadlineExceeded
+					log.Printf("[Admin] [TestAll] 节点 %s 黑洞兜底超时标记（%ds）", node.Name, singleNodeTestTimeoutSec+2)
 				}
 
 				duration := float64(time.Since(start).Milliseconds())
-				testErr, abort := resolveBatchNodeTest(ctx, nodeCtx, testErr)
+				testErr, abort := resolveBatchNodeTest(ctx, ctx, testErr)
 				if abort || nodes.CheckTestControl() {
 					return
 				}
@@ -242,14 +272,35 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
+	// capability 预检：当前构建无法装载的协议直接失败，不发起网络。
+	if reason := transport.ValidateNodeURI(body.RawURI); reason != "" {
+		log.Printf("[Admin] [TestNode] 节点 %s 能力预检不通过: %s", nodes.GetNodeName(body.RawURI), reason)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": false, "elapsed_ms": 0, "error": reason, "disabled": false,
+		})
+		return
+	}
+
 	start := time.Now()
-	sess, err := adm.vc.Net().CreateSession(15, body.RawURI, "admin-test-node")
+	// 内层 goroutine + select 兜底：黑洞节点在 body.TimeoutSeconds+2s 内强制记失败。
+	done := make(chan error, 1)
+	go func() {
+		sess, sessErr := adm.vc.Net().CreateSession(15, body.RawURI, "admin-test-node")
+		var innerErr error
+		if sessErr == nil {
+			defer sess.Close()
+			innerErr = fetchRecaptchaTokenWithSess(ctx, sess)
+		} else {
+			innerErr = sessErr
+		}
+		done <- innerErr
+	}()
 	var testErr error
-	if err == nil {
-		testErr = fetchRecaptchaTokenWithSess(ctx, sess)
-		sess.Close()
-	} else {
-		testErr = err
+	select {
+	case testErr = <-done:
+	case <-time.After(timeout + 2*time.Second):
+		testErr = context.DeadlineExceeded
+		log.Printf("[Admin] [TestNode] 节点 %s 黑洞兜底超时标记", nodes.GetNodeName(body.RawURI))
 	}
 	elapsed := float64(time.Since(start).Milliseconds())
 
@@ -389,23 +440,29 @@ func (adm *AdminHandler) fetchSubscriptionText(ctx context.Context, rawURL strin
 		return "", errors.New("subscription url is empty")
 	}
 
-	data, err := fetchSubscriptionDataDirect(ctx, rawURL)
-	if err == nil {
-		return strings.TrimSpace(string(data)), nil
+	// 代理优先 → 直连兜底（目标 4）：不论是否配置 proxy_url 都先走 CreateSession(30, proxyURI, …)；
+	// proxyURI=="" 时 P1 改造后 CreateSession 自动挂候选入口（入口优先），非空时维持双跳语义
+	// （候选入口 → proxy_url）。仅当网络客户端不可用时才跳过代理直接直连。
+	var proxyErr error
+	if adm.vc != nil && adm.vc.Net() != nil {
+		proxyURI := subscriptionFallbackProxy(adm.cfg)
+		var data []byte
+		data, proxyErr = fetchSubscriptionDataViaProxy(ctx, adm.vc.Net(), rawURL, proxyURI)
+		if proxyErr == nil {
+			return strings.TrimSpace(string(data)), nil
+		}
+		log.Printf("[Admin] [FetchSub] proxy/入口 fetch failed, retry direct: %v", proxyErr)
+	} else {
+		log.Printf("[Admin] [FetchSub] 网络客户端不可用，跳过代理直接直连")
 	}
 
-	proxyURI := subscriptionFallbackProxy(adm.cfg)
-	if proxyURI == "" || adm.vc == nil || adm.vc.Net() == nil {
-		return "", err
+	data, directErr := fetchSubscriptionDataDirect(ctx, rawURL)
+	if directErr != nil {
+		if proxyErr == nil {
+			return "", fmt.Errorf("direct fallback failed: %w", directErr)
+		}
+		return "", fmt.Errorf("proxy fetch failed: %v; direct fallback failed: %w", proxyErr, directErr)
 	}
-
-	log.Printf("[Admin] [FetchSub] direct fetch failed, retry via proxy: %v", err)
-	data, proxyErr := fetchSubscriptionDataViaProxy(ctx, adm.vc.Net(), rawURL, proxyURI)
-	if proxyErr != nil {
-		return "", fmt.Errorf("direct fetch failed: %v; proxy retry failed: %w", err, proxyErr)
-	}
-
-	log.Printf("[Admin] [FetchSub] proxy retry succeeded")
 	return strings.TrimSpace(string(data)), nil
 }
 

@@ -10,12 +10,12 @@ import (
 //
 //nolint:gochecknoglobals // Read-only mapping
 var reasoningEffortToThinkingLevel = map[string]string{
-	"none":    "NONE",
-	"minimal": "MINIMAL",
-	"low":     "LOW",
-	"medium":  "MEDIUM",
-	"high":    "HIGH",
-	"xhigh":   "HIGH",
+	"none":    thinkingLevelNone,
+	"minimal": thinkingLevelMinimal,
+	"low":     thinkingLevelLow,
+	"medium":  thinkingLevelMedium,
+	"high":    thinkingLevelHigh,
+	"xhigh":   thinkingLevelHigh,
 }
 
 // audioFormatMIME 把 input_audio.format 映射到 Gemini inlineData mimeType。

@@ -33,6 +33,7 @@ type ConfigProvider interface {
 	ParallelPoolDelayMs() int
 	ActiveNodeURI() string
 	ParallelNodeTopK() int
+	RecaptchaTryEntryOrDirect() bool
 
 	BackgroundImage() string
 	FontSize() string
@@ -41,6 +42,7 @@ type ConfigProvider interface {
 	CustomBgPresets() []string
 	AutoRefreshLogs() bool
 	DefaultImageSize() string
+	DefaultThinkingLevel() string
 	DefaultResponseModalities() string
 
 	TelemetryEnabled() *bool
@@ -100,6 +102,10 @@ func (d dynamicConfig) ParallelPoolDelayDynamic() bool { return Load().ParallelP
 func (d dynamicConfig) ParallelPoolDelayMs() int       { return Load().ParallelPoolDelayMs }
 func (d dynamicConfig) ActiveNodeURI() string          { return Load().ActiveNodeURI }
 func (d dynamicConfig) ParallelNodeTopK() int          { return Load().ParallelNodeTopK }
+func (d dynamicConfig) RecaptchaTryEntryOrDirect() bool {
+	c := Load()
+	return c.RecaptchaTryEntryOrDirect == nil || *c.RecaptchaTryEntryOrDirect
+}
 func (d dynamicConfig) BackgroundImage() string        { return Load().BackgroundImage }
 func (d dynamicConfig) FontSize() string               { return Load().FontSize }
 func (d dynamicConfig) FontColorType() string          { return Load().FontColorType }
@@ -127,6 +133,7 @@ func (d dynamicConfig) ResolveModelName(s string) string        { return Load().
 func (d dynamicConfig) LookupModel(s string) (ModelEntry, bool) { return Load().LookupModel(s) }
 func (d dynamicConfig) AutoRefreshLogs() bool                   { return Load().GetAutoRefreshLogs() }
 func (d dynamicConfig) DefaultImageSize() string                { return Load().DefaultImageSize }
+func (d dynamicConfig) DefaultThinkingLevel() string            { return Load().DefaultThinkingLevel }
 func (d dynamicConfig) DefaultResponseModalities() string       { return Load().DefaultResponseModalities }
 func (d dynamicConfig) ConfigDir() string                       { return Load().ConfigDir() }
 func (d dynamicConfig) ConfigPath() string                      { return Load().ConfigPath() }

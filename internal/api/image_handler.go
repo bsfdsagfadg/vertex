@@ -14,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
+	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
 type ImageHandler struct {
@@ -43,6 +45,7 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 		oaiModelNotFound(w, rawModel)
 		return
 	}
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), model)
 	if prompt == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": "缺少 prompt 字段 (missing prompt)", "type": "invalid_request_error", "code": 400}})
@@ -54,6 +57,7 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 	}
 	transform.ApplyImageConfig(geminiPayload, body, model)
 	transform.ApplyImageDefaults(geminiPayload, model, img.cfg.DefaultImageSize(), img.cfg.DefaultResponseModalities())
+	transform.ApplyDefaultThinking(geminiPayload, img.cfg.DefaultThinkingLevel(), model)
 
 	images, vErr := img.vc.CompleteChatImage(r.Context(), model, geminiPayload)
 	if vErr != nil {
@@ -112,6 +116,7 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 		oaiModelNotFound(w, rawModel)
 		return
 	}
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), model)
 	prompt := firstNonEmptyStr(formValue(r, "prompt"), "Edit the provided image.")
 	prompt = transform.AppendNegativePrompt(prompt, formValue(r, "negative_prompt"))
 	n := coerceOAIN(formValue(r, "n"))
@@ -123,6 +128,7 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"),
 		formValue(r, "background"), "edit")
 	transform.ApplyImageDefaults(geminiPayload, model, img.cfg.DefaultImageSize(), img.cfg.DefaultResponseModalities())
+	transform.ApplyDefaultThinking(geminiPayload, img.cfg.DefaultThinkingLevel(), model)
 
 	img.runOAIImageRequest(r.Context(), w, model, geminiPayload, n, respFmt)
 }
@@ -154,6 +160,7 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 		oaiModelNotFound(w, rawModel)
 		return
 	}
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), model)
 	prompt := firstNonEmptyStr(formValue(r, "prompt"), "Create a variation of the provided image.")
 	prompt = transform.AppendNegativePrompt(prompt, formValue(r, "negative_prompt"))
 	n := coerceOAIN(formValue(r, "n"))
@@ -164,6 +171,7 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 	geminiPayload := transform.BuildImagePayload(model, prompt, images, nil,
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"), "", "variation")
 	transform.ApplyImageDefaults(geminiPayload, model, img.cfg.DefaultImageSize(), img.cfg.DefaultResponseModalities())
+	transform.ApplyDefaultThinking(geminiPayload, img.cfg.DefaultThinkingLevel(), model)
 
 	img.runOAIImageRequest(r.Context(), w, model, geminiPayload, n, respFmt)
 }

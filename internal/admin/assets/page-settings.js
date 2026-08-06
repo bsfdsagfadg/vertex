@@ -3,6 +3,7 @@ const SETTINGS_FIELDS = [
   { k: 'parallel_pool_enabled', label: '并发请求池', type: 'bool', group: 'pool', desc: '同时请求多个健康节点，首包到达即采纳，降低延迟' },
   { k: 'parallel_pool_retry_enabled', label: '单节点重试', type: 'bool', group: 'pool', desc: '开启：重试全部由节点内部完成（429/认证/5xx 原地重打），竞速层不换节点；关闭：每轮节点只打一次，全部失败后换一批新节点重试（总轮数 = 重试次数 + 1）' },
   { k: 'sticky_node_priority', label: '粘性节点优先轮询', type: 'bool', group: 'pool', desc: '启用后优先从粘性池中逐个尝试成功节点，失败即换下一个。粘性池本身始终在工作，此开关只影响优先级的分配。' },
+  { k: 'recaptcha_try_entry_or_direct', label: '优先前置/直连抓取 RT', type: 'bool', group: 'pool', desc: '开启时获取 reCAPTCHA Token 优先尝试前置代理/直连；关闭或失败时顺次轮询健康候选节点' },
   { k: 'parallel_pool_size', label: '并发数', type: 'number', max: 20, min: 1, group: 'pool', desc: '每轮并发抢跑的节点数 (默认 15，最大 20)' },
   { k: 'race_timeout', label: '单节点竞速超时 (秒)', type: 'number', max: 1800, min: 0, group: 'pool', desc: '单个节点在该时间内未返回首包即单独淘汰，避免卡死节点拖住整轮竞速 (0 = 不限制)' },
 
@@ -16,6 +17,7 @@ const SETTINGS_FIELDS = [
   { k: 'model_turn_guard_enabled', label: '模型尾部修复', type: 'bool', group: 'core', desc: '对 gemini-3.6-flash / gemini-3.5-flash-lite 等新模型，自动在消息末尾追加空用户消息，修复“末尾不能是 model”校验报错。可在模型页自定义。' },
   { k: 'debug_mode', label: 'Debug 日志', type: 'bool', group: 'core', desc: '开启更详细的错误与负载调试日志' },
   { k: 'default_image_size', label: '默认图片清晰度', type: 'select', group: 'core', opts: ['512', '1K', '2K', '4K'], desc: '图模型未指定清晰度时的默认档位；不支持的档位会按模型能力回退。' },
+  { k: 'default_thinking_level', label: '默认思考等级', type: 'select', group: 'core', opts: ['自动', '最低', '低', '中', '高'], desc: '文本/图模型请求未指定思考参数时的默认档位（按模型能力自动适配）' },
   { k: 'default_response_modalities', label: '默认图片输出模态', type: 'select', group: 'core', opts: ['图文', '仅图片'], desc: '图模型未指定输出模态时，默认返回图文或仅图片。' },
 
   // 🛡 Group: security (安全增强与模型策略)
@@ -25,11 +27,6 @@ const SETTINGS_FIELDS = [
 let curSettings = {};
 async function loadSettings() {
   const d = await API.settings.get(); curSettings = d.settings || d;
-
-  const gpEl = $('#globalProxy');
-  if (gpEl && curSettings.proxy_url !== undefined) {
-    gpEl.value = curSettings.proxy_url;
-  }
 
   const fld = (f) => {
     const v = curSettings[f.k];

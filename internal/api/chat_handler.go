@@ -83,6 +83,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	transform.ApplyImageConfig(geminiPayload, body, actualModel)
 	transform.ApplyImageDefaults(geminiPayload, actualModel, c.cfg.DefaultImageSize(), c.cfg.DefaultResponseModalities())
+	transform.ApplyDefaultThinking(geminiPayload, c.cfg.DefaultThinkingLevel(), actualModel)
 
 	if aggregateStream {
 		c.oaiAggregateStream(r.Context(), w, model, geminiPayload)
