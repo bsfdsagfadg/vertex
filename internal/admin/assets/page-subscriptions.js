@@ -45,7 +45,10 @@ function renderCustomUAs(uas) {
             <td>${esc(ua.name)}</td>
             <td style="word-break:break-all;">${esc(ua.user_agent)}</td>
             <td>
-                <button class="btn danger" style="padding:2px 6px; font-size:12px;" onclick="deleteUA('${esc(ua.name)}')">删除</button>
+                <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                    <button class="btn ghost btn-blue" style="padding:2px 6px; font-size:12px;" onclick="editUA('${esc(ua.name)}', '${esc(ua.user_agent)}')">编辑</button>
+                    <button class="btn danger" style="padding:2px 6px; font-size:12px;" onclick="deleteUA('${esc(ua.name)}')">删除</button>
+                </div>
             </td>
         `;
         tbody.appendChild(tr);
@@ -93,12 +96,23 @@ function renderSubscriptions(subs, uas) {
 }
 
 function showAddUAModal() {
-    document.getElementById('addUATitle').innerText = '添加自定义 User-Agent';
     document.getElementById('uaNameInput').value = '';
-    document.getElementById('uaNameInput').disabled = false;
     document.getElementById('uaContentInput').value = '';
-    document.getElementById('uaErr').innerText = '';
+    document.getElementById('uaOriginalName').value = '';
+    document.getElementById('uaErr').textContent = '';
+    document.getElementById('addUATitle').textContent = '添加自定义 User-Agent';
     document.getElementById('addUAModal').classList.remove('hidden');
+    document.getElementById('uaNameInput').focus();
+}
+
+function editUA(name, userAgent) {
+    document.getElementById('uaNameInput').value = name;
+    document.getElementById('uaContentInput').value = userAgent;
+    document.getElementById('uaOriginalName').value = name;
+    document.getElementById('uaErr').textContent = '';
+    document.getElementById('addUATitle').textContent = '编辑自定义 User-Agent';
+    document.getElementById('addUAModal').classList.remove('hidden');
+    document.getElementById('uaNameInput').focus();
 }
 
 function closeUAModal() {
@@ -108,12 +122,14 @@ function closeUAModal() {
 function submitUA() {
     const name = document.getElementById('uaNameInput').value.trim();
     const ua = document.getElementById('uaContentInput').value.trim();
+    const origName = document.getElementById('uaOriginalName').value;
+    
     if (!name || !ua) {
-        document.getElementById('uaErr').innerText = '名称和User-Agent不能为空';
+        document.getElementById('uaErr').textContent = '名称和内容不能为空';
         return;
     }
     
-    API.raw('/api/admin/subscriptions/custom_ua/save', { method: 'POST', body: JSON.stringify({ name: name, user_agent: ua }) })
+    API.raw('/api/admin/subscriptions/custom_ua/save', { method: 'POST', body: JSON.stringify({ name: name, user_agent: ua, original_name: origName }) })
         .then(res => {
             if (res.ok) {
                 closeUAModal();

@@ -82,9 +82,17 @@ func (adm *AdminHandler) adminDeleteSubscription(w http.ResponseWriter, r *http.
 }
 
 func (adm *AdminHandler) adminSaveCustomUA(w http.ResponseWriter, r *http.Request) {
-	var cua config.CustomUA
-	if !adm.decodeAdminBody(w, r, &cua) {
+	var req struct {
+		Name         string `json:"name"`
+		UserAgent    string `json:"user_agent"`
+		OriginalName string `json:"original_name"`
+	}
+	if !adm.decodeAdminBody(w, r, &req) {
 		return
+	}
+	cua := config.CustomUA{
+		Name:      strings.TrimSpace(req.Name),
+		UserAgent: strings.TrimSpace(req.UserAgent),
 	}
 	cua.Name = strings.TrimSpace(cua.Name)
 	cua.UserAgent = strings.TrimSpace(cua.UserAgent)
@@ -95,8 +103,17 @@ func (adm *AdminHandler) adminSaveCustomUA(w http.ResponseWriter, r *http.Reques
 
 	conf := config.GetSubscriptionConfig()
 	found := false
+	var oldUAString string
+
+	// 查找并替换
+	searchName := cua.Name
+	if req.OriginalName != "" {
+		searchName = req.OriginalName
+	}
+
 	for i, u := range conf.CustomUAs {
-		if u.Name == cua.Name {
+		if u.Name == searchName {
+			oldUAString = u.UserAgent
 			conf.CustomUAs[i] = cua
 			found = true
 			break
@@ -104,6 +121,15 @@ func (adm *AdminHandler) adminSaveCustomUA(w http.ResponseWriter, r *http.Reques
 	}
 	if !found {
 		conf.CustomUAs = append(conf.CustomUAs, cua)
+	}
+
+	// 如果 UserAgent 内容被修改了，且有旧的 UA 记录，则级联更新对应的订阅
+	if found && oldUAString != "" && oldUAString != cua.UserAgent {
+		for i, sub := range conf.Subscriptions {
+			if sub.UserAgent == oldUAString {
+				conf.Subscriptions[i].UserAgent = cua.UserAgent
+			}
+		}
 	}
 	
 	if err := config.SaveSubscriptions(conf); err != nil {
