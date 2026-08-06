@@ -22,6 +22,7 @@ type Node struct {
 	Name     string `json:"name"`
 	RawURI   string `json:"raw_uri"`
 	Disabled bool   `json:"disabled"`
+	Source   string `json:"source"`
 }
 
 type NodeHealth struct { //nolint:govet
@@ -60,7 +61,7 @@ func ensureLoaded() {
 	}
 
 	// Load nodes
-	rows, err := db.GlobalDB.Query("SELECT raw_uri, type, name, disabled FROM nodes")
+	rows, err := db.GlobalDB.Query("SELECT raw_uri, type, name, disabled, source FROM nodes")
 	if err == nil {
 		defer func() {
 			_ = rows.Close()
@@ -68,7 +69,7 @@ func ensureLoaded() {
 		nodes := []Node{}
 		for rows.Next() {
 			var n Node
-			if err := rows.Scan(&n.RawURI, &n.Type, &n.Name, &n.Disabled); err == nil {
+			if err := rows.Scan(&n.RawURI, &n.Type, &n.Name, &n.Disabled, &n.Source); err == nil {
 				nodes = append(nodes, n)
 			}
 		}
@@ -121,10 +122,10 @@ func saveNodesUnsafe() {
 	// 为了简单起见，可以先全量删除再插入，但最好的方式是逐个插入或在添加删除时调用单个 SQL
 	// 这里保持原来 saveNodesUnsafe 的全量保存语义，执行全量同步
 	_, _ = tx.Exec("DELETE FROM nodes")
-	stmt, _ := tx.Prepare("INSERT INTO nodes (raw_uri, type, name, disabled) VALUES (?, ?, ?, ?)")
+	stmt, _ := tx.Prepare("INSERT INTO nodes (raw_uri, type, name, disabled, source) VALUES (?, ?, ?, ?, ?)")
 	for _, n := range nodeList {
 		if stmt != nil {
-			_, _ = stmt.Exec(n.RawURI, n.Type, n.Name, n.Disabled)
+			_, _ = stmt.Exec(n.RawURI, n.Type, n.Name, n.Disabled, n.Source)
 		}
 	}
 	if stmt != nil {
@@ -252,6 +253,28 @@ func updateSingleNodeDisabledUnsafe(uri string, disabled bool) {
 		return
 	}
 	_, _ = db.GlobalDB.Exec("UPDATE nodes SET disabled = ? WHERE raw_uri = ?", disabled, uri)
+}
+
+func DeleteNodesBySource(source string) {
+	mu.Lock()
+	defer mu.Unlock()
+	ensureLoaded()
+	
+	if source == "" {
+		return
+	}
+
+	var newList []Node
+	for _, n := range nodeList {
+		if n.Source != source {
+			newList = append(newList, n)
+		}
+	}
+	nodeList = newList
+
+	if db.GlobalDB != nil {
+		_, _ = db.GlobalDB.Exec("DELETE FROM nodes WHERE source = ?", source)
+	}
 }
 
 type TestProgress struct {

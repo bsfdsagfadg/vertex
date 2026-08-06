@@ -98,8 +98,11 @@ func createTables(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("error: %w", err)
 	}
-	return ensureNodeHealthColumns(db)
 
+	// Migrate schema for existing databases seamlessly
+	_, _ = db.Exec("ALTER TABLE nodes ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+
+	return ensureNodeHealthColumns(db)
 }
 
 func ensureNodeHealthColumns(db *sql.DB) error {
@@ -155,13 +158,14 @@ func migrateFromFiles(db *sql.DB, configDir string) {
 				Name     string `json:"name"`
 				RawURI   string `json:"raw_uri"`
 				Disabled bool   `json:"disabled"`
+				Source   string `json:"source"`
 			} `json:"nodes"`
 		}
 		if errUnm := json.Unmarshal(data, &d); errUnm == nil { //nolint:govet
 			tx, _ := db.Begin()
-			stmt, _ := tx.Prepare("INSERT OR IGNORE INTO nodes (raw_uri, type, name, disabled) VALUES (?, ?, ?, ?)")
+			stmt, _ := tx.Prepare("INSERT OR IGNORE INTO nodes (raw_uri, type, name, disabled, source) VALUES (?, ?, ?, ?, ?)")
 			for _, n := range d.Nodes {
-				_, _ = stmt.Exec(n.RawURI, n.Type, n.Name, n.Disabled)
+				_, _ = stmt.Exec(n.RawURI, n.Type, n.Name, n.Disabled, n.Source)
 			}
 			_ = stmt.Close()
 			_ = tx.Commit()
