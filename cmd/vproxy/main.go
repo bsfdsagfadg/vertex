@@ -167,6 +167,11 @@ func main() {
 		log.Fatalf("[vproxy] failed to init database: %v", err)
 	}
 	defer db.CloseDB()
+	if legacyProxy := strings.TrimSpace(cfg.ProxyURL()); legacyProxy != "" {
+		if err := config.MigrateLegacyProxy(legacyProxy); err != nil {
+			log.Printf("[vproxy] 迁移旧 proxy_url 到入口代理数据库失败，保留旧路线: %v", err)
+		}
+	}
 
 	spool.SetMaxSpillBytes(int64(cfg.MaxSpillMB()) << 20)
 

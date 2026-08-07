@@ -93,6 +93,19 @@ func createTables(db *sql.DB) error {
 		last_sub_healthy_at INTEGER NOT NULL DEFAULT 0,
 		FOREIGN KEY(raw_uri) REFERENCES nodes(raw_uri) ON DELETE CASCADE
 	);
+
+	CREATE TABLE IF NOT EXISTS entry_proxy_candidates (
+		raw_uri TEXT PRIMARY KEY,
+		normalized_uri TEXT NOT NULL UNIQUE,
+		name TEXT NOT NULL DEFAULT '',
+		type TEXT NOT NULL DEFAULT '',
+		disabled BOOLEAN NOT NULL DEFAULT 0,
+		cooldown_until INTEGER NOT NULL DEFAULT 0,
+		last_test_ok BOOLEAN NOT NULL DEFAULT 0,
+		last_test_ms REAL NOT NULL DEFAULT 0,
+		last_test_at INTEGER NOT NULL DEFAULT 0,
+		last_test_error TEXT NOT NULL DEFAULT ''
+	);
 	`
 	_, err := db.Exec(schema)
 	if err != nil {

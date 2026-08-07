@@ -17,22 +17,11 @@ const (
 	maxTimeoutSeconds          = 1800
 )
 
-type ProxyCandidate struct {
-	RawURI        string  `json:"raw_uri"`
-	Name          string  `json:"name"`
-	Type          string  `json:"type"`
-	LastTestOK    bool    `json:"last_test_ok"`
-	LastTestMs    float64 `json:"last_test_ms"`
-	LastTestAt    int64   `json:"last_test_at"`
-	LastTestError string  `json:"last_test_error"`
-}
-
 type AppConfig struct { //nolint:govet
 	PortAPI                   int               `json:"port_api"`
 	MaxRetries                int               `json:"max_retries"`
 	AdminPassword             string            `json:"admin_password"`
 	ProxyURL                  string            `json:"proxy_url"`
-	ProxyURLCandidates        []ProxyCandidate  `json:"proxy_url_candidates,omitempty"`
 	AggregateStream           bool              `json:"aggregate_stream"`
 	FakeStreamEnabled         bool              `json:"fake_stream_enabled"`
 	DropMaxTokens             bool              `json:"drop_max_tokens"`

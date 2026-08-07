@@ -1,0 +1,83 @@
+package config
+
+import (
+	"fmt"
+	"net/url"
+	"strings"
+	"sync/atomic"
+	"time"
+)
+
+var entryProxyCursor atomic.Uint64 //nolint:gochecknoglobals
+
+// NormalizeProxyURI returns the stable identity used for entry-proxy deduplication.
+// Fragment names are labels, not part of the dial target.
+func NormalizeProxyURI(rawURI string) (string, error) {
+	rawURI = strings.TrimSpace(rawURI)
+	parsed, err := url.Parse(rawURI)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("URI 格式无效")
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String(), nil
+}
+
+// SelectEntryProxy selects one enabled, non-cooling entry in stable database order.
+func SelectEntryProxy(cfg ConfigProvider) string {
+	items := ListProxyCandidates()
+	now := time.Now().Unix()
+	eligible := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.RawURI) == "" || item.Disabled || item.CooldownUntil > now {
+			continue
+		}
+		eligible = append(eligible, strings.TrimSpace(item.RawURI))
+	}
+	if len(eligible) == 0 && cfg != nil {
+		if len(items) == 0 {
+			return strings.TrimSpace(cfg.ProxyURL())
+		}
+	}
+	if len(eligible) == 0 {
+		return ""
+	}
+	index := entryProxyCursor.Add(1) - 1
+	return eligible[index%uint64(len(eligible))]
+}
+
+// MarkEntryProxyFailure excludes an entry for the transient 60-second cooldown.
+func MarkEntryProxyFailure(rawURI, errText string) error {
+	return updateEntryProxyTest(rawURI, false, 0, errText)
+}
+
+// MarkEntryProxySuccess clears a transient entry cooldown without changing manual state.
+func MarkEntryProxySuccess(rawURI string) error {
+	return updateEntryProxyTest(rawURI, true, 0, "")
+}
+
+func updateEntryProxyTest(rawURI string, success bool, elapsedMs float64, errText string) error {
+	return UpdateProxyCandidateTest(rawURI, success, elapsedMs, errText)
+}
+
+func SetProxyCandidateEnabled(rawURI string, enabled bool) error {
+	normalized, err := NormalizeProxyURI(rawURI)
+	if err != nil {
+		return err
+	}
+	store, err := candidateStore()
+	if err != nil {
+		return err
+	}
+	result, err := store.Exec("UPDATE entry_proxy_candidates SET disabled = ? WHERE normalized_uri = ?", !enabled, normalized)
+	if err != nil {
+		return fmt.Errorf("更新入口代理状态: %w", err)
+	}
+	count, _ := result.RowsAffected()
+	if count == 0 {
+		return fmt.Errorf("未找到该候选 URI")
+	}
+	return nil
+}
