@@ -96,25 +96,53 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 		adm.adminImportNodesJson(w, r)
 		return
 	case "/subscriptions/fetch":
-		adm.adminFetchSub(w, r)
+		if r.Method == http.MethodPost {
+			adm.adminFetchSub(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
 		return
 	case "/subscriptions/list":
-		adm.adminListSubscriptions(w, r)
+		if r.Method == http.MethodGet {
+			adm.adminListSubscriptions(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
 		return
 	case "/subscriptions/save":
-		adm.adminSaveSubscription(w, r)
+		if r.Method == http.MethodPost {
+			adm.adminSaveSubscription(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
 		return
 	case "/subscriptions/delete":
-		adm.adminDeleteSubscription(w, r)
+		if r.Method == http.MethodPost {
+			adm.adminDeleteSubscription(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
 		return
 	case "/subscriptions/update":
-		adm.adminUpdateSubscriptions(w, r)
+		if r.Method == http.MethodPost {
+			adm.adminUpdateSubscriptions(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
 		return
 	case "/subscriptions/custom_ua/save":
-		adm.adminSaveCustomUA(w, r)
+		if r.Method == http.MethodPost {
+			adm.adminSaveCustomUA(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
 		return
 	case "/subscriptions/custom_ua/delete":
-		adm.adminDeleteCustomUA(w, r)
+		if r.Method == http.MethodPost {
+			adm.adminDeleteCustomUA(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
 		return
 	case "/use-node":
 		adm.adminUseNode(w, r)

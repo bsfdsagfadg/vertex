@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -20,6 +21,8 @@ var fallbackUAs = []string{
 	"Clash.Meta",
 	"v2rayNG/1.8.5",
 }
+
+const maxSubscriptionResponseBytes = 10 * 1024 * 1024
 
 func (adm *AdminHandler) adminListSubscriptions(w http.ResponseWriter, _ *http.Request) {
 	err := config.LoadSubscriptions()
@@ -260,19 +263,12 @@ func (adm *AdminHandler) fetchSubDataWithUA(ctx context.Context, rawURL, ua stri
 		return nil, fmt.Errorf("http %d", resp.StatusCode)
 	}
 
-	data := make([]byte, 0, 1024*1024) // 1MB buffer
-	buf := make([]byte, 4096)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			data = append(data, buf[:n]...)
-		}
-		if err != nil {
-			break
-		}
-		if len(data) > 10*1024*1024 { // max 10MB
-			break
-		}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSubscriptionResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read subscription response: %w", err)
+	}
+	if len(data) > maxSubscriptionResponseBytes {
+		return nil, fmt.Errorf("subscription response exceeds %d bytes", maxSubscriptionResponseBytes)
 	}
 	return data, nil
 }
