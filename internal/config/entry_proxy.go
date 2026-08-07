@@ -36,8 +36,10 @@ func hasCaseSensitiveProxyPayload(scheme string) bool {
 	}
 }
 
-// SelectEntryProxy selects one enabled, non-cooling entry in stable database order.
-func SelectEntryProxy(cfg ConfigProvider) string {
+// SelectEntryProxySequence reserves a stable round-robin sequence for one request.
+// An empty result means that the configured entry pool has no eligible entries.
+// When no database candidates exist, the legacy proxy_url remains a single fallback.
+func SelectEntryProxySequence(count int, cfg ConfigProvider) []string {
 	items := ListProxyCandidates()
 	now := time.Now().Unix()
 	eligible := make([]string, 0, len(items))
@@ -47,16 +49,29 @@ func SelectEntryProxy(cfg ConfigProvider) string {
 		}
 		eligible = append(eligible, strings.TrimSpace(item.RawURI))
 	}
-	if len(eligible) == 0 && cfg != nil {
-		if len(items) == 0 {
-			return strings.TrimSpace(cfg.ProxyURL())
+	if len(eligible) == 0 && len(items) == 0 && cfg != nil {
+		if legacy := strings.TrimSpace(cfg.ProxyURL()); legacy != "" {
+			eligible = append(eligible, legacy)
 		}
 	}
-	if len(eligible) == 0 {
+	if len(eligible) == 0 || count <= 0 {
+		return nil
+	}
+	start := entryProxyCursor.Add(uint64(count)) - uint64(count)
+	sequence := make([]string, count)
+	for i := range sequence {
+		sequence[i] = eligible[(start+uint64(i))%uint64(len(eligible))]
+	}
+	return sequence
+}
+
+// SelectEntryProxy selects one enabled, non-cooling entry in stable database order.
+func SelectEntryProxy(cfg ConfigProvider) string {
+	sequence := SelectEntryProxySequence(1, cfg)
+	if len(sequence) == 0 {
 		return ""
 	}
-	index := entryProxyCursor.Add(1) - 1
-	return eligible[index%uint64(len(eligible))]
+	return sequence[0]
 }
 
 // MarkEntryProxyFailure excludes an entry for the transient 60-second cooldown.

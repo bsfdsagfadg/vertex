@@ -89,6 +89,44 @@ func TestSelectEntryProxyRotatesAndFiltersUnavailableCandidates(t *testing.T) {
 	}
 }
 
+func TestSelectEntryProxySequenceReservesRoundRobinSlots(t *testing.T) {
+	provider := setupEntryProxyTest(t, `{"proxy_url":""}`)
+	entries := []string{
+		"socks5://127.0.0.1:1091#one",
+		"socks5://127.0.0.1:1092#two",
+		"socks5://127.0.0.1:1093#three",
+	}
+	for _, uri := range entries {
+		if _, err := AddProxyCandidate(uri); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := SelectEntryProxySequence(8, provider)
+	want := []string{entries[0], entries[1], entries[2], entries[0], entries[1], entries[2], entries[0], entries[1]}
+	if len(got) != len(want) {
+		t.Fatalf("sequence length=%d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sequence[%d]=%q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSelectEntryProxySequenceReturnsEmptyWhenAllCandidatesCooling(t *testing.T) {
+	provider := setupEntryProxyTest(t, `{"proxy_url":"socks5://legacy:1080"}`)
+	uri := "socks5://127.0.0.1:1094#cooling"
+	if _, err := AddProxyCandidate(uri); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkEntryProxyFailure(uri, "unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	if got := SelectEntryProxySequence(3, provider); len(got) != 0 {
+		t.Fatalf("cooling entry pool unexpectedly selected routes: %#v", got)
+	}
+}
+
 func TestNormalizeProxyURIPreservesEncodedPayloadCase(t *testing.T) {
 	got, err := NormalizeProxyURI("VMESS://AbCdEf012_-#display-name")
 	if err != nil {
