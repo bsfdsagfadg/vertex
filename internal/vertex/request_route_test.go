@@ -79,6 +79,69 @@ func TestRequestTokenStateSharesFetchFailure(t *testing.T) {
 	}
 }
 
+func TestRequestTokenStateFetchHonorsCancellation(t *testing.T) {
+	started := make(chan struct{})
+	pool := recaptcha.NewTokenPoolCustomContext(func(ctx context.Context, _ string) (string, error) {
+		close(started)
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	state := &requestTokenState{} //nolint:exhaustruct
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := state.get(ctx, pool)
+		done <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("token fetch error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("token fetch did not stop after request cancellation")
+	}
+}
+
+func TestRequestTokenStateWaiterHonorsCancellation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	pool := recaptcha.NewTokenPoolCustomContext(func(context.Context, string) (string, error) {
+		close(started)
+		<-release
+		return "shared-token", nil
+	})
+	state := &requestTokenState{} //nolint:exhaustruct
+	ownerDone := make(chan error, 1)
+	go func() {
+		_, err := state.get(context.Background(), pool)
+		ownerDone <- err
+	}()
+	<-started
+
+	waiterCtx, cancelWaiter := context.WithCancel(context.Background())
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := state.get(waiterCtx, pool)
+		waiterDone <- err
+	}()
+	cancelWaiter()
+	select {
+	case err := <-waiterDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting caller error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiting caller did not stop after request cancellation")
+	}
+	close(release)
+	if err := <-ownerDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRequestTokenStateIgnoresStaleInvalidation(t *testing.T) {
 	var fetches atomic.Int32
 	pool := recaptcha.NewTokenPoolCustomContext(func(context.Context, string) (string, error) {
