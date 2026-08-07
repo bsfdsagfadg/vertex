@@ -16,6 +16,14 @@ type candidateResult struct {
 //   - 非 STOP 结果（MAX_TOKENS/SAFETY 等）全部收集后由 pickBestResult 选出最佳。
 //   - 每节点独立 RaceTimeout 淘汰、轮次换批重试、InFlight 负载均衡均由 RunRace 统一处理。
 func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, geminiPayload map[string]any) (map[string]any, error) {
+	routedCtx, err := c.prepareRequest(ctx)
+	if err != nil {
+		return nil, NewAuthenticationError("Could not fetch recaptcha token: "+err.Error(), err)
+	}
+	return c.completeChatWithRoute(routedCtx, model, geminiPayload)
+}
+
+func (c *VertexAIClient) completeChatWithRoute(ctx context.Context, model string, geminiPayload map[string]any) (map[string]any, error) {
 	run := func(ctx context.Context, proxyURI string) (map[string]any, error) {
 		copiedPayload := deepCopyAny(geminiPayload).(map[string]any)
 		return c.runSingleCandidate(ctx, model, copiedPayload, proxyURI)

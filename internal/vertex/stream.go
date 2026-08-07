@@ -29,6 +29,9 @@ import (
 // 会挂死到 180s 超时）。
 const finishReasonUnspecified = "FINISH_REASON_UNSPECIFIED"
 
+// blockReasonUnspecified is the protobuf default and does not indicate a real safety block.
+const blockReasonUnspecified = "BLOCKED_REASON_UNSPECIFIED"
+
 // StreamChunk 是真流式中 yield 的单个增量。要么是 Gemini 数据 chunk，要么是错误。
 //
 // 正常 yield Gemini dict，所有重试耗尽时 yield {"error": {...}}（routes 层据此
@@ -47,6 +50,11 @@ type StreamChunk struct {
 // 不再重试（已发出的内容不能重来）。ctx 取消（客户端断开/关闭）时干净结束流：
 // 重试退避被打断、上游流连接中断，不再空转。
 func (c *VertexAIClient) StreamChat(ctx context.Context, model string, geminiPayload map[string]any, yield func(StreamChunk) bool) {
+	routedCtx, err := c.prepareRequest(ctx)
+	if err != nil {
+		yield(StreamChunk{Err: NewAuthenticationError("Could not fetch recaptcha token: "+err.Error(), err)})
+		return
+	}
 	op := func(ctx context.Context, proxyURI string) <-chan StreamChunk {
 		ch := make(chan StreamChunk, 64)
 		// 深度拷贝 geminiPayload，防止并发竞速（StreamParallel / RunRace）时
@@ -65,7 +73,7 @@ func (c *VertexAIClient) StreamChat(ctx context.Context, model string, geminiPay
 		}()
 		return ch
 	}
-	StreamParallel(ctx, c.cfg, op, yield)
+	StreamParallel(routedCtx, c.cfg, op, yield)
 }
 
 func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model string, geminiPayload map[string]any, proxyURI string, yield func(StreamChunk) bool) {
@@ -89,7 +97,7 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 	var lastError *VertexError
 
 	reqID := RequestIDFromContext(ctx)
-	sess, err := c.net.CreateSession(cfg.RequestTimeout(), proxyURI, reqID)
+	sess, err := c.net.CreateSessionContext(ctx, cfg.RequestTimeout(), proxyURI, reqID)
 	if err != nil {
 		yield(StreamChunk{Err: NewInternalError("create session: " + err.Error())})
 		return
@@ -97,6 +105,14 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 	defer sess.Close()
 
 	recaptchaToken := ""
+	route := routeFromContext(ctx)
+	if route != nil && route.token != nil {
+		recaptchaToken, err = route.token.get(ctx, c.pool)
+		if err != nil {
+			yield(StreamChunk{Err: NewAuthenticationError("Could not fetch recaptcha token: "+err.Error(), err)})
+			return
+		}
+	}
 	isFirstAuth := true
 	attempt := 0
 
@@ -108,7 +124,20 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 retryLoop:
 	for attempt <= maxRetries {
 		log.Printf("[Vertex] [StreamChat] 开始尝试 (Attempt %d/%d), 模型=%s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, reqID, nodes.GetNodeName(proxyURI))
-		if recaptchaToken == "" {
+		if recaptchaToken == "" && route != nil && route.token != nil {
+			tok, tokenErr := route.token.get(ctx, c.pool)
+			if tokenErr != nil && ctx.Err() != nil {
+				lastError = NewContextError(ctx.Err())
+				break retryLoop
+			}
+			if tokenErr != nil {
+				lastError = NewAuthenticationError("Could not fetch recaptcha token: "+tokenErr.Error(), tokenErr)
+			} else {
+				recaptchaToken = tok
+				isFirstAuth = true
+			}
+		}
+		if recaptchaToken == "" && route == nil {
 			tok, tokenErr := c.pool.GetTokenWithProxyContext(ctx, proxyURI)
 			if tokenErr != nil && ctx.Err() != nil {
 				lastError = NewContextError(ctx.Err())
@@ -134,17 +163,31 @@ retryLoop:
 			continue
 		}
 
-		// 单次流式尝试：把增量 yield 给上层，统计本次 attempt yield 的 chunk 数。
-		chunkCount := 0
+		// 默认枚举和空 STOP 帧先暂存；只有本次尝试出现真实内容或真实安全拦截后才输出。
+		validChunkCount := 0
+		var pendingChunks []map[string]any
 		attemptErr := c.executeStreamingAttempt(ctx, sess, model, geminiPayload, recaptchaToken, isFirstAuth, func(ch map[string]any) bool {
-			chunkCount++
-			contentYielded = true
-			return yield(StreamChunk{Data: ch})
+			if isValidContentChunk(ch) {
+				for _, pending := range pendingChunks {
+					if !yield(StreamChunk{Data: pending}) {
+						return false
+					}
+				}
+				pendingChunks = nil
+				validChunkCount++
+				contentYielded = true
+				return yield(StreamChunk{Data: ch})
+			}
+			if contentYielded {
+				return yield(StreamChunk{Data: ch})
+			}
+			pendingChunks = append(pendingChunks, ch)
+			return true
 		})
 
 		if attemptErr == nil {
 			// 本次尝试无错误。若 0 chunk 且仍是首帧 → 认证重试（同 token 再打一次）。
-			if chunkCount == 0 && isFirstAuth {
+			if validChunkCount == 0 && isFirstAuth {
 				isFirstAuth = false
 				if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
 					break retryLoop
@@ -167,6 +210,12 @@ retryLoop:
 				}
 				continue
 			}
+			if route != nil && route.token != nil {
+				if !route.token.invalidate(recaptchaToken) {
+					lastError = ve
+					break retryLoop
+				}
+			}
 			recaptchaToken = ""
 			isFirstAuth = true
 			lastError = ve
@@ -186,13 +235,12 @@ retryLoop:
 			}
 			// 429：销毁旧 session 重建新的，换 token。
 			sess.Close()
-			newSess, e := c.net.CreateSession(cfg.RequestTimeout(), proxyURI, reqID)
+			newSess, e := c.net.CreateSessionContext(ctx, cfg.RequestTimeout(), proxyURI, reqID)
 			if e != nil {
 				yield(StreamChunk{Err: NewInternalError("recreate session: " + e.Error())})
 				return
 			}
 			sess = newSess
-			recaptchaToken = ""
 
 			// 避免过快重试 429 导致 token 浪费 and 节点持续封禁
 			wait := ve.RetryAfter
@@ -721,6 +769,48 @@ func chunkFinishReason(chunk map[string]any) string {
 		return ""
 	}
 	return toStr(c["finishReason"])
+}
+
+// isValidContentChunk reports whether a chunk contains generated content or a real safety block.
+// Empty STOP frames and protobuf default enums are not evidence of a successful response.
+func isValidContentChunk(chunk map[string]any) bool {
+	candidates, _ := chunk["candidates"].([]any)
+	for _, rawCandidate := range candidates {
+		candidate, ok := rawCandidate.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := candidate["content"].(map[string]any)
+		parts, _ := content["parts"].([]any)
+		for _, rawPart := range parts {
+			part, ok := rawPart.(map[string]any)
+			if !ok {
+				continue
+			}
+			if text, ok := part["text"].(string); ok && text != "" {
+				return true
+			}
+			if thought, ok := part["thought"].(string); ok && thought != "" {
+				return true
+			}
+			if thought, ok := part["thought"].(bool); ok && thought {
+				return true
+			}
+			for _, key := range []string{"functionCall", "executableCode", "codeExecutionResult", "inlineData", "fileData"} {
+				if value, ok := part[key].(map[string]any); ok && value != nil {
+					return true
+				}
+			}
+		}
+		if strings.EqualFold(toStr(candidate["finishReason"]), "SAFETY") {
+			return true
+		}
+	}
+	if feedback, ok := chunk["promptFeedback"].(map[string]any); ok {
+		blockReason := toStr(feedback["blockReason"])
+		return blockReason != "" && !strings.EqualFold(blockReason, blockReasonUnspecified)
+	}
+	return false
 }
 
 // extractChunk 从 Gemini 数据中提取标准化 chunk，清洗畸形嵌套。
