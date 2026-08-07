@@ -22,9 +22,19 @@ type Response = http.Response
 
 // Session 封装一个独立的 tls-client，服务于单次逻辑请求。
 type Session struct {
-	client   tls_client.HttpClient
-	ProxyURI string
+	client        tls_client.HttpClient
+	ProxyURI      string
+	EntryProxyURI string
 }
+
+// EntryProxyError preserves the first-hop URI when session construction fails.
+type EntryProxyError struct {
+	EntryURI string
+	Err      error
+}
+
+func (e *EntryProxyError) Error() string { return e.Err.Error() }
+func (e *EntryProxyError) Unwrap() error { return e.Err }
 
 func (s *Session) Do(ctx context.Context, method, url string, header http.Header, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest(method, url, body)
@@ -205,6 +215,9 @@ func (c *NetworkClient) createSession(timeoutSec int, proxyURI, entryProxyURI, r
 	var err error
 	opts, err = injectProxy(opts, proxyURI, entryProxyURI, reqID, c.debugMode)
 	if err != nil {
+		if entryProxyURI != "" {
+			return nil, &EntryProxyError{EntryURI: entryProxyURI, Err: err}
+		}
 		return nil, err
 	}
 
@@ -213,5 +226,5 @@ func (c *NetworkClient) createSession(timeoutSec int, proxyURI, entryProxyURI, r
 		return nil, fmt.Errorf("error: %w", err)
 
 	}
-	return &Session{client: client, ProxyURI: proxyURI}, nil
+	return &Session{client: client, ProxyURI: proxyURI, EntryProxyURI: entryProxyURI}, nil
 }

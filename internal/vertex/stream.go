@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/spool"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
@@ -95,10 +96,22 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 	}
 	contentYielded := false
 	var lastError *VertexError
+	entryFailureMarked := false
+	markEntryFailure := func(entry string, failure error) {
+		if entry == "" || entryFailureMarked || ctx.Err() != nil {
+			return
+		}
+		_ = config.MarkEntryProxyFailure(entry, failure.Error())
+		entryFailureMarked = true
+	}
 
 	reqID := RequestIDFromContext(ctx)
 	sess, err := c.net.CreateSessionContext(ctx, cfg.RequestTimeout(), proxyURI, reqID)
 	if err != nil {
+		var entryErr *transport.EntryProxyError
+		if errors.As(err, &entryErr) {
+			markEntryFailure(entryErr.EntryURI, err)
+		}
 		yield(StreamChunk{Err: NewInternalError("create session: " + err.Error())})
 		return
 	}
@@ -196,6 +209,12 @@ retryLoop:
 			}
 			return
 		}
+		if sess.EntryProxyURI != "" {
+			ve := asVertexError(attemptErr)
+			if ve != nil && (ve.Kind == "network" || ve.Kind == "unavailable") {
+				markEntryFailure(sess.EntryProxyURI, attemptErr)
+			}
+		}
 
 		ve := asVertexError(attemptErr)
 		switch {
@@ -237,6 +256,10 @@ retryLoop:
 			sess.Close()
 			newSess, e := c.net.CreateSessionContext(ctx, cfg.RequestTimeout(), proxyURI, reqID)
 			if e != nil {
+				var entryErr *transport.EntryProxyError
+				if errors.As(e, &entryErr) {
+					markEntryFailure(entryErr.EntryURI, e)
+				}
 				yield(StreamChunk{Err: NewInternalError("recreate session: " + e.Error())})
 				return
 			}
