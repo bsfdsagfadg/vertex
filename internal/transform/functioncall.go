@@ -158,6 +158,20 @@ func finalizeCleanedPart(cleaned map[string]any) {
 	}
 }
 
+// ensureBase64Signature 确保 thoughtSignature 是合法的 Base64 编码字符串。
+// 分支 1：哨兵值直接编码；分支 2：已是合法 Base64 时规范化保留；分支 3：明文转码降级。
+func ensureBase64Signature(sig string) string {
+	if sig == skipThoughtSentinel {
+		return base64.StdEncoding.EncodeToString([]byte(sig))
+	}
+	normSig := NormalizeBase64(sig)
+	if decoded, err := base64.StdEncoding.DecodeString(normSig); err == nil &&
+		base64.StdEncoding.EncodeToString(decoded) == normSig {
+		return normSig
+	}
+	return base64.StdEncoding.EncodeToString([]byte(sig))
+}
+
 // EncodeThoughtSignature 递归把 thoughtSignature 的 sentinel 值 base64 编码。
 func EncodeThoughtSignature(contents any, depth int) any {
 	const maxDepth = 64
@@ -180,8 +194,8 @@ func EncodeThoughtSignature(contents any, depth int) any {
 					for i, p := range parts {
 						if pm, ok := p.(map[string]any); ok {
 							np := copyMap(pm)
-							if sig, ok := np["thoughtSignature"].(string); ok && sig == skipThoughtSentinel {
-								np["thoughtSignature"] = base64.StdEncoding.EncodeToString([]byte(sig))
+							if sig, ok := np["thoughtSignature"].(string); ok && sig != "" {
+								np["thoughtSignature"] = ensureBase64Signature(sig)
 							}
 							newParts[i] = np
 						} else {
