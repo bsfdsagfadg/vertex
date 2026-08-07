@@ -151,11 +151,15 @@
                 <div class="toolbar m-0"><input id="globalProxy"
                     placeholder="socks5://127.0.0.1:1080 或 vless://..."><button class="btn"
                     onclick="importProxyNode()">导入候选</button></div>
-                <div class="desc">启用后作为业务节点的第一跳；未使用业务节点时仅经过该入口。订阅仍先直连，失败后才用当前入口重试一次。</div>
+                <div class="desc">启用的入口按顶层请求轮询，同一请求内的并行节点固定使用同一个入口。</div>
               </div>
               <div class="divider"></div>
               <div class="field m-0">
-                <div class="field-heading">入口代理候选</div>
+                <div class="field-heading" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                  <span>入口代理候选</span>
+                  <button class="btn danger" style="padding:5px 10px;font-size:12px;"
+                    onclick="deleteDisabledProxyNodes()">删除禁用入口</button>
+                </div>
                 <div class="table-wrap">
                   <table id="proxyCandidatesTable">
                     <thead>
@@ -169,6 +173,15 @@
                     <tbody id="proxyNodesBody"></tbody>
                   </table>
                 </div>
+                <div id="proxyNodesPaginationBar" class="toolbar m-0 gap-8"
+                  style="margin-top: 12px; justify-content: space-between; align-items: center;">
+                  <div id="proxyNodesPaginationInfo" style="font-size: 13px; color: var(--text-dim);"></div>
+                  <div class="flex-gap-11" style="display: flex; gap: 8px; align-items: center;">
+                    <button class="btn ghost" id="btnProxyPagePrev" onclick="changeProxyPage(curProxyPage - 1)">上一页</button>
+                    <span id="proxyNodesPageNumDisplay" style="font-size: 13px; font-weight: 600; padding: 0 6px;">1 / 1</span>
+                    <button class="btn ghost" id="btnProxyPageNext" onclick="changeProxyPage(curProxyPage + 1)">下一页</button>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="card glass">
@@ -181,6 +194,7 @@
                 <button class="btn ghost" onclick="dedupNodes()">一键去重</button>
                 <button class="btn ghost" onclick="exportNodes()">导出节点</button>
                 <button class="btn danger" onclick="deleteDisabledNodes()">删除禁用节点</button>
+                <button class="btn" onclick="addSelectedNodesToEntryProxies()">将已选节点加入到全局入口代理</button>
                 <span class="flex-1"></span>
                 <button class="btn ghost btn-blue" onclick="toggleSelectAllNodes()">全选/反选</button>
                 <button class="btn ghost btn-green" onclick="batchEnableSelectedNodes()">批量启用</button>

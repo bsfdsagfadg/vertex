@@ -64,10 +64,12 @@ option { background: #1f1813; color: var(--text-custom); }
 }
 .btn:hover { filter: brightness(1.06); transform: translateY(-1.5px); box-shadow: 0 9px 24px var(--gold-shadow2); }
 .btn:active { transform: translateY(0) scale(.99); }
+.btn:disabled { opacity: .48; cursor: not-allowed; filter: none; transform: none; box-shadow: none; }
 .btn.ghost { background: rgba(255, 255, 255, .06); color: var(--text-dim-custom, var(--text-dim)); box-shadow: none; border: 1px solid var(--stroke); }
 .btn.ghost:hover { color: var(--text-custom); border-color: var(--gold); background: rgba(255, 255, 255, .11); transform: translateY(-1.5px); }
 .btn.danger { background: transparent; color: var(--red); border: 1px solid rgba(236, 138, 124, .35); box-shadow: none; padding: 6px 13px; }
 .btn.danger:hover { background: rgba(236, 138, 124, .14); transform: none; }
+.btn:disabled:hover { cursor: not-allowed; filter: none; transform: none; box-shadow: none; }
 
 .toggle { position: relative; display: inline-flex; width: 46px; height: 26px; flex: none; }
 .toggle input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
@@ -521,7 +523,7 @@ td code { background: rgba(0, 0, 0, .3); padding: 2px 9px; border-radius: 8px; f
     top: 10px;
   }
   
-  /* 移动端 4 按钮排列微调 */
+  /* 移动端节点操作按钮排列 */
   #page-nodes td:nth-of-type(5) {
     display: flex !important;
     flex-wrap: wrap !important;

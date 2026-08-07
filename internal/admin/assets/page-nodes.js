@@ -8,20 +8,51 @@ document.getElementById('nodesBody').addEventListener('click', function (e) {
   else if (action === 'delete-node') delNode(uri);
   else if (action === 'test-node') testSingleNode(uri);
   else if (action === 'enable-node') enableNode(uri);
+  else if (action === 'add-entry-proxy') addNodeToEntryProxies(uri);
 });
 
 var curNodePage = 1;
 var nodePageSize = 50;
 var totalNodePages = 1;
 var cachedNodesList = [];
+var curProxyPage = 1;
+var proxyPageSize = 10;
+var totalProxyPages = 1;
+var cachedEntryProxyURIs = new Set();
+var cachedProxyCandidates = [];
 window.selectedNodeURIs = window.selectedNodeURIs || new Set();
 var testProgressTimer = null;
+
+function entryProxyIdentity(rawURI) {
+  var value = (rawURI || '').trim();
+  var separator = value.indexOf('://');
+  if (separator < 0) return value.split('#')[0];
+  var scheme = value.slice(0, separator).toLowerCase();
+  var remainder = value.slice(separator + 3).split('#')[0];
+  if (scheme === 'vmess' || scheme === 'clash' || scheme === 'ssr' || scheme === 'shadowsocksr') {
+    return scheme + '://' + remainder;
+  }
+  var pathIndex = remainder.search(/[/?]/);
+  var authority = pathIndex < 0 ? remainder : remainder.slice(0, pathIndex);
+  var suffix = pathIndex < 0 ? '' : remainder.slice(pathIndex);
+  var userInfoEnd = authority.lastIndexOf('@') + 1;
+  var userInfo = authority.slice(0, userInfoEnd);
+  var host = authority.slice(userInfoEnd).toLowerCase();
+  return scheme + '://' + userInfo + host + suffix;
+}
 
 function changeNodePage(p) {
   if (p < 1) p = 1;
   if (p > totalNodePages) p = totalNodePages;
   curNodePage = p;
   loadNodes();
+}
+
+function changeProxyPage(p) {
+  if (p < 1) p = 1;
+  if (p > totalProxyPages) p = totalProxyPages;
+  curProxyPage = p;
+  loadProxyNodes();
 }
 
 function updateSelectHeaderAndBanner() {
@@ -66,6 +97,7 @@ function selectAllNodesAcrossPages() {
 }
 
 async function loadNodes() {
+  var fallbackProxyCandidates = [];
   try {
     const sd = await API.settings.get();
     if (typeof curSettings !== 'undefined') {
@@ -76,8 +108,12 @@ async function loadNodes() {
       gpEl.value = (sd.settings || sd).proxy_url;
     }
     var settings = sd.settings || sd;
-    renderProxyNodes(settings.proxy_url_candidates || [], settings.proxy_url || '');
+    fallbackProxyCandidates = settings.proxy_url_candidates || [];
+    cachedProxyCandidates = fallbackProxyCandidates;
+    cachedEntryProxyURIs = new Set(fallbackProxyCandidates.map(function (candidate) { return entryProxyIdentity(candidate.raw_uri); }));
   } catch (e) { }
+
+  await loadProxyNodes(fallbackProxyCandidates);
 
   const d = await API.nodes.list();
   const nodes = d.nodes || [];
@@ -264,6 +300,15 @@ async function loadNodes() {
         useBtn.textContent = '\u9501\u5B9A\u4F7F\u7528';
         actionTd.appendChild(useBtn);
       }
+      var entryBtn = document.createElement('button');
+      var alreadyEntry = cachedEntryProxyURIs.has(entryProxyIdentity(n.raw_uri));
+      entryBtn.className = 'btn ghost';
+      entryBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;color:var(--gold);';
+      entryBtn.dataset.action = 'add-entry-proxy';
+      entryBtn.dataset.uri = n.raw_uri;
+      entryBtn.textContent = alreadyEntry ? '已在入口池' : '添加至全局入口代理';
+      entryBtn.disabled = alreadyEntry;
+      actionTd.appendChild(entryBtn);
       var delBtn = document.createElement('button');
       delBtn.className = 'btn danger';
       delBtn.style.cssText = 'padding:4px 10px;font-size:12px;';
@@ -589,6 +634,44 @@ async function batchDeleteSelectedNodes() {
   } catch (e) { toast('操作失败: ' + e.message); }
 }
 
+async function addNodeToEntryProxies(uri) {
+  try {
+    var result = await API.proxyNodes.importBatch([uri]);
+    var invalid = result.invalid || [];
+    if (invalid.length) {
+      return toast('加入入口代理失败：节点配置无效');
+    }
+    await loadNodes();
+    if ((result.already_present || []).length) {
+      toast('该节点已在全局入口代理池中');
+    } else {
+      toast('已加入全局入口代理池');
+    }
+  } catch (e) {
+    toast('加入入口代理失败：' + e.message);
+  }
+}
+
+async function addSelectedNodesToEntryProxies() {
+  var uris = getSelectedNodeURIs();
+  if (!uris.length) return toast('请先勾选需要加入入口代理池的节点');
+  toast('正在加入全局入口代理池...');
+  try {
+    var result = await API.proxyNodes.importBatch(uris);
+    var added = result.added || [];
+    var existing = result.already_present || [];
+    var invalid = result.invalid || [];
+    added.forEach(function (candidate) { window.selectedNodeURIs.delete(candidate.raw_uri); });
+    existing.forEach(function (uri) { window.selectedNodeURIs.delete(uri); });
+    await loadNodes();
+    var message = '已新增 ' + added.length + ' 个，已存在 ' + existing.length + ' 个';
+    if (invalid.length) message += '，失败 ' + invalid.length + ' 个（仍保持选中）';
+    toast(message);
+  } catch (e) {
+    toast('批量加入入口代理失败：' + e.message);
+  }
+}
+
 function importFileNodes(replace) {
   const fileInput = document.getElementById('nodeImportFile');
   if (!fileInput.files.length) return toast('请先选择一个节点配置文件');
@@ -664,9 +747,9 @@ async function enableProxyNode(uri) {
   }
 }
 
-async function disableProxyNode() {
+async function disableProxyNode(uri) {
   try {
-    await API.proxyNodes.disable();
+    await API.proxyNodes.disable(uri);
     await loadNodes();
     toast('已停用入口代理');
   } catch (e) {
@@ -685,6 +768,19 @@ async function deleteProxyNode(uri) {
   }
 }
 
+async function deleteDisabledProxyNodes() {
+  var disabledCount = cachedProxyCandidates.filter(function (candidate) { return candidate.disabled; }).length;
+  if (!disabledCount) return toast('没有已禁用的入口代理');
+  if (!confirm('确定删除全部 ' + disabledCount + ' 个已禁用入口代理？')) return;
+  try {
+    var result = await API.proxyNodes.deleteDisabled();
+    await loadNodes();
+    toast('已删除 ' + (result.deleted_count || 0) + ' 个禁用入口代理');
+  } catch (e) {
+    toast('删除禁用入口代理失败：' + e.message);
+  }
+}
+
 function proxyActionButton(label, className, handler) {
   var button = document.createElement('button');
   button.className = className;
@@ -694,7 +790,40 @@ function proxyActionButton(label, className, handler) {
   return button;
 }
 
-function renderProxyNodes(candidates, activeURI) {
+async function loadProxyNodes(fallbackCandidates) {
+  var candidates = [];
+  var total = 0;
+  try {
+    var result = await API.proxyNodes.list(curProxyPage, proxyPageSize);
+    candidates = result.candidates || [];
+    total = result.total || 0;
+    totalProxyPages = Math.max(1, result.total_pages || Math.ceil(total / proxyPageSize));
+    if (curProxyPage > totalProxyPages) {
+      curProxyPage = totalProxyPages;
+      return loadProxyNodes(fallbackCandidates);
+    }
+  } catch (e) {
+    var all = Array.isArray(fallbackCandidates) ? fallbackCandidates : cachedProxyCandidates;
+    total = all.length;
+    totalProxyPages = Math.max(1, Math.ceil(total / proxyPageSize));
+    if (curProxyPage > totalProxyPages) curProxyPage = totalProxyPages;
+    var start = (curProxyPage - 1) * proxyPageSize;
+    candidates = all.slice(start, start + proxyPageSize);
+  }
+  renderProxyNodes(candidates);
+  var startIndex = total ? (curProxyPage - 1) * proxyPageSize + 1 : 0;
+  var endIndex = Math.min(curProxyPage * proxyPageSize, total);
+  var info = document.getElementById('proxyNodesPaginationInfo');
+  if (info) info.textContent = total ? ('显示第 ' + startIndex + ' - ' + endIndex + ' 条，共 ' + total + ' 条') : '共 0 条';
+  var display = document.getElementById('proxyNodesPageNumDisplay');
+  if (display) display.textContent = curProxyPage + ' / ' + totalProxyPages;
+  var prev = document.getElementById('btnProxyPagePrev');
+  var next = document.getElementById('btnProxyPageNext');
+  if (prev) prev.disabled = curProxyPage <= 1;
+  if (next) next.disabled = curProxyPage >= totalProxyPages;
+}
+
+function renderProxyNodes(candidates) {
   var tbody = document.getElementById('proxyNodesBody');
   if (!tbody) return;
   var fragment = document.createDocumentFragment();
@@ -715,13 +844,20 @@ function renderProxyNodes(candidates, activeURI) {
     var nameSpan = document.createElement('span');
     nameSpan.textContent = candidate.name || candidate.raw_uri;
     nameContainer.appendChild(nameSpan);
-    if (candidate.raw_uri === activeURI) {
-      var active = document.createElement('span');
-      active.className = 'pill on';
-      active.style.cssText = 'font-size:10px;padding:2px 8px;white-space:nowrap;flex-shrink:0;';
-      active.textContent = '启用中';
-      nameContainer.appendChild(active);
+    var availability = document.createElement('span');
+    availability.style.cssText = 'font-size:10px;padding:2px 8px;white-space:nowrap;flex-shrink:0;';
+    var cooling = !candidate.disabled && candidate.cooldown_until > Math.floor(Date.now() / 1000);
+    if (candidate.disabled) {
+      availability.className = 'pill off';
+      availability.textContent = '已禁用';
+    } else if (cooling) {
+      availability.className = 'pill off';
+      availability.textContent = '冷却中';
+    } else {
+      availability.className = 'pill on';
+      availability.textContent = '轮询中';
     }
+    nameContainer.appendChild(availability);
     nameCell.appendChild(nameContainer);
     var typeCell = document.createElement('td');
     typeCell.textContent = candidate.type || '-';
@@ -735,11 +871,12 @@ function renderProxyNodes(candidates, activeURI) {
       stateCell.textContent = '失败 · ' + (candidate.last_test_error || '未知错误');
     }
     var actionCell = document.createElement('td');
+    actionCell.style.cssText = 'white-space:nowrap;';
     actionCell.appendChild(proxyActionButton('测试', 'btn ghost', function () { testProxyNode(candidate.raw_uri); }));
-    if (candidate.raw_uri === activeURI) {
-      actionCell.appendChild(proxyActionButton('停用', 'btn ghost', disableProxyNode));
-    } else {
+    if (candidate.disabled) {
       actionCell.appendChild(proxyActionButton('启用', 'btn ghost', function () { enableProxyNode(candidate.raw_uri); }));
+    } else {
+      actionCell.appendChild(proxyActionButton('禁用', 'btn ghost', function () { disableProxyNode(candidate.raw_uri); }));
     }
     actionCell.appendChild(proxyActionButton('删除', 'btn danger', function () { deleteProxyNode(candidate.raw_uri); }));
     row.appendChild(nameCell);
