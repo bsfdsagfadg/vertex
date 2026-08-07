@@ -86,6 +86,24 @@ type NetworkClient struct {
 	entryProxyURI func() string
 }
 
+type entryProxyContextKey struct{}
+
+type pinnedEntryProxy struct {
+	uri string
+}
+
+// WithEntryProxy pins a selected entry proxy to one top-level request.
+func WithEntryProxy(ctx context.Context, entryURI string) context.Context {
+	return context.WithValue(ctx, entryProxyContextKey{}, pinnedEntryProxy{uri: strings.TrimSpace(entryURI)})
+}
+
+func entryProxyFromContext(ctx context.Context) (string, bool) {
+	if value, ok := ctx.Value(entryProxyContextKey{}).(pinnedEntryProxy); ok {
+		return value.uri, true
+	}
+	return "", false
+}
+
 func NewNetworkClient(debugMode bool, entryProxyURI ...func() string) *NetworkClient {
 	client := &NetworkClient{debugMode: debugMode}
 	if len(entryProxyURI) > 0 {
@@ -130,6 +148,15 @@ func injectProxy(opts []tls_client.HttpClientOption, proxyURI, entryProxyURI, re
 func (c *NetworkClient) CreateSession(timeoutSec int, proxyURI string, reqID string) (*Session, error) {
 	entryProxyURI := ""
 	if proxyURI != "" && c.entryProxyURI != nil {
+		entryProxyURI = strings.TrimSpace(c.entryProxyURI())
+	}
+	return c.createSession(timeoutSec, proxyURI, entryProxyURI, reqID)
+}
+
+// CreateSessionContext is CreateSession with an explicit request route.
+func (c *NetworkClient) CreateSessionContext(ctx context.Context, timeoutSec int, proxyURI string, reqID string) (*Session, error) {
+	entryProxyURI, pinned := entryProxyFromContext(ctx)
+	if !pinned && proxyURI != "" && c.entryProxyURI != nil {
 		entryProxyURI = strings.TrimSpace(c.entryProxyURI())
 	}
 	return c.createSession(timeoutSec, proxyURI, entryProxyURI, reqID)

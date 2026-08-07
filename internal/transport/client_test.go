@@ -1,11 +1,20 @@
 package transport
 
 import (
+	"context"
 	"io"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestWithEntryProxyPinsExplicitDirectRoute(t *testing.T) {
+	ctx := WithEntryProxy(context.Background(), "")
+	entryURI, pinned := entryProxyFromContext(ctx)
+	if !pinned || entryURI != "" {
+		t.Fatalf("explicit direct route was not preserved: uri=%q pinned=%v", entryURI, pinned)
+	}
+}
 
 type closeUnblocksReader struct {
 	readStarted chan struct{}

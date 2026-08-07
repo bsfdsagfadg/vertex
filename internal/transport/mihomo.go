@@ -48,7 +48,7 @@ var (
 func getOrStartProxyDialer(uri string, reqID string, debugMode bool, entryURIs ...string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
 	return getOrStartProxyDialerWithBuilder(uri, reqID, debugMode, func(mapping map[string]any, options ...adapter.ProxyOption) (constant.Proxy, error) {
 		return adapter.ParseProxy(mapping, options...)
-	})
+	}, entryURIs...)
 }
 
 // ValidateProxyURI verifies that the URI can construct a mihomo proxy in the current build.

@@ -124,6 +124,24 @@ func TestProxyChainBuildsEntryAndSecondHop(t *testing.T) {
 	}
 }
 
+func TestGetOrStartProxyDialerForwardsEntryURI(t *testing.T) {
+	StopAllProxies()
+	t.Cleanup(StopAllProxies)
+
+	entryURI := "socks5://127.0.0.1:1080#entry"
+	secondURI := "http://127.0.0.1:8080#second"
+	if _, err := getOrStartProxyDialer(secondURI, "test", false, entryURI); err != nil {
+		t.Fatalf("build proxy chain through wrapper: %v", err)
+	}
+	proxyMutex.RLock()
+	_, chained := proxyMap[proxyCacheKey(secondURI, entryURI)]
+	_, unchained := proxyMap[proxyCacheKey(secondURI, "")]
+	proxyMutex.RUnlock()
+	if !chained || unchained {
+		t.Fatalf("entry URI was not forwarded: chained=%v unchained=%v", chained, unchained)
+	}
+}
+
 func testClashProxyURI(t *testing.T, mapping map[string]any) string {
 	t.Helper()
 	body, err := json.Marshal(mapping)
