@@ -8,9 +8,11 @@ import (
 	"net"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/component/proxydialer"
@@ -65,8 +67,11 @@ func ValidateProxyURI(uri string) error {
 
 func getOrStartProxyDialerWithBuilder(uri string, reqID string, debugMode bool, builder proxyBuilder, entryURIs ...string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
 	entryURI := ""
-	if len(entryURIs) > 0 && entryURIs[0] != uri {
-		entryURI = entryURIs[0]
+	if len(entryURIs) > 0 {
+		entryURI = strings.TrimSpace(entryURIs[0])
+	}
+	if entryURI != "" && proxyIdentity(entryURI) == proxyIdentity(uri) {
+		return nil, fmt.Errorf("入口代理不能与候选节点相同")
 	}
 	cacheKey := proxyCacheKey(uri, entryURI)
 	proxyMutex.Lock()
@@ -124,10 +129,23 @@ func getOrStartProxyDialerWithBuilder(uri string, reqID string, debugMode bool, 
 }
 
 func proxyCacheKey(uri, entryURI string) string {
-	if entryURI == "" || entryURI == uri {
-		return uri
+	proxyID := proxyIdentity(uri)
+	entryID := proxyIdentity(entryURI)
+	if entryID == "" {
+		return proxyID
 	}
-	return entryURI + "\x00" + uri
+	return entryID + "\x00" + proxyID
+}
+
+func proxyIdentity(uri string) string {
+	uri = strings.TrimSpace(uri)
+	if uri == "" {
+		return ""
+	}
+	if normalized, err := config.NormalizeProxyURI(uri); err == nil {
+		return normalized
+	}
+	return strings.SplitN(uri, "#", 2)[0]
 }
 
 func buildMihomoProxy(uri, entryURI string, builder proxyBuilder) (proxy constant.Proxy, dependencies []constant.Proxy, err error) {
@@ -144,12 +162,15 @@ func buildMihomoProxy(uri, entryURI string, builder proxyBuilder) (proxy constan
 		return nil, nil, fmt.Errorf("parse URI: %w", err)
 	}
 
-	if entryURI == "" || entryURI == uri {
+	if entryURI == "" {
 		proxy, err = builder(outMap)
 		if err != nil {
 			return nil, nil, fmt.Errorf("parse proxy: %w", err)
 		}
 		return proxy, nil, nil
+	}
+	if proxyIdentity(entryURI) == proxyIdentity(uri) {
+		return nil, nil, fmt.Errorf("入口代理不能与候选节点相同")
 	}
 
 	entryMap, err := ParseURI(entryURI)
@@ -213,12 +234,12 @@ func RemoveProxy(uri string) {
 	var proxies []proxySet
 	proxyMutex.Lock()
 	for _, pending := range proxyInitMap {
-		if pending.proxyURI == uri || pending.entryURI == uri {
+		if proxyIdentity(pending.proxyURI) == proxyIdentity(uri) || proxyIdentity(pending.entryURI) == proxyIdentity(uri) {
 			pending.canceled = true
 		}
 	}
 	for key, info := range proxyMap {
-		if info.proxyURI == uri || info.entryURI == uri {
+		if proxyIdentity(info.proxyURI) == proxyIdentity(uri) || proxyIdentity(info.entryURI) == proxyIdentity(uri) {
 			if !info.closed {
 				info.closed = true
 				proxies = append(proxies, proxySet{proxy: info.proxy, dependencies: info.dependencies})
