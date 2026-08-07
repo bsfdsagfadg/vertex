@@ -156,3 +156,98 @@ func TestParseURIVmessKeepsSNIAndFingerprint(t *testing.T) {
 		t.Fatalf("alpn not preserved: %#v", out["alpn"])
 	}
 }
+
+func TestParseURITuicKeepsPassword(t *testing.T) {
+	out, err := ParseURI("tuic://12345678-1234-1234-1234-123456789012:secret@tuic.example.com:443#demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["uuid"] != "12345678-1234-1234-1234-123456789012" || out["password"] != "secret" {
+		t.Fatalf("unexpected tuic credentials: %#v", out)
+	}
+}
+
+func TestParseURITuicWithoutUserInfoDoesNotPanic(t *testing.T) {
+	if _, err := ParseURI("tuic://tuic.example.com:443#demo"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParseURIVmessBoolTLSAndH2(t *testing.T) {
+	rawJSON := `{"v":"2","ps":"demo","add":"vmess.example.com","port":"443","id":"12345678-1234-1234-1234-123456789012","tls":true,"net":"h2","host":"cdn.example.com","path":"/h2","scy":"aes-128-gcm"}`
+	out, err := ParseURI("vmess://" + base64.StdEncoding.EncodeToString([]byte(rawJSON)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["tls"] != true || out["cipher"] != "aes-128-gcm" || out["client-fingerprint"] != "chrome" {
+		t.Fatalf("vmess tls metadata mismatch: %#v", out)
+	}
+	if _, ok := out["h2-opts"]; !ok {
+		t.Fatalf("missing h2-opts: %#v", out)
+	}
+	if _, ok := out["http-opts"]; ok {
+		t.Fatalf("h2 must not use http-opts: %#v", out)
+	}
+}
+
+func TestParseURIVlessTransportOptions(t *testing.T) {
+	h2, err := ParseURI("vless://12345678-1234-1234-1234-123456789012@cf.example.com:443?security=tls&type=h2&path=%2Fh2&host=cdn.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h2["h2-opts"]; !ok {
+		t.Fatalf("missing h2-opts: %#v", h2)
+	}
+	xhttp, err := ParseURI("vless://12345678-1234-1234-1234-123456789012@cf.example.com:443?security=tls&type=xhttp&path=%2Fx&host=cdn.example.com&mode=auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts, ok := xhttp["xhttp-opts"].(map[string]any); !ok || opts["mode"] != "auto" {
+		t.Fatalf("missing xhttp opts: %#v", xhttp)
+	}
+	unknown, err := ParseURI("vless://12345678-1234-1234-1234-123456789012@cf.example.com:443?security=tls&type=unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := unknown["network"]; ok {
+		t.Fatalf("unknown transport must not be forwarded to mihomo: %#v", unknown)
+	}
+}
+
+func TestParseURIHy2OnlyKeepsCertificateFingerprint(t *testing.T) {
+	out, err := ParseURI("hy2://secret@hy.example.com:443?fp=chrome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := out["fingerprint"]; ok {
+		t.Fatalf("browser fingerprint must not be used for certificate pinning: %#v", out)
+	}
+	fingerprint := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	out, err = ParseURI("hy2://secret@hy.example.com:443?fp=" + fingerprint)
+	if err != nil || out["fingerprint"] != fingerprint {
+		t.Fatalf("certificate fingerprint missing: %#v err=%v", out, err)
+	}
+}
+
+func TestParseURISSPluginFlags(t *testing.T) {
+	raw := "ss://YWVzLTEyOC1nY206aGFNTE1YaXJCeW42ckdWaA@example.com:20111/?plugin=v2ray-plugin%3Btls%3Bmux%3Bhost%3Dcdn.example.com"
+	out, err := ParseURI(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, ok := out["plugin-opts"].(map[string]any)
+	if !ok || opts["tls"] != true || opts["mux"] != true || opts["host"] != "cdn.example.com" {
+		t.Fatalf("unexpected plugin opts: %#v", out)
+	}
+}
+
+func TestParseURINormalizesShadowsocksCipherAlias(t *testing.T) {
+	raw := "ss://Y2hhY2hhMjAtcG9seTEzMDU6c2VjcmV0@example.com:8388"
+	out, err := ParseURI(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["cipher"] != "chacha20-ietf-poly1305" {
+		t.Fatalf("unexpected cipher: %#v", out["cipher"])
+	}
+}
