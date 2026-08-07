@@ -168,7 +168,9 @@ func main() {
 	}
 	defer db.CloseDB()
 	if legacyProxy := strings.TrimSpace(cfg.ProxyURL()); legacyProxy != "" {
-		if err := config.MigrateLegacyProxy(legacyProxy); err != nil {
+		if err := transport.ValidateProxyURI(legacyProxy); err != nil {
+			log.Printf("[vproxy] 旧 proxy_url 无法构造，保留旧路线: %v", err)
+		} else if err := config.MigrateLegacyProxy(legacyProxy); err != nil {
 			log.Printf("[vproxy] 迁移旧 proxy_url 到入口代理数据库失败，保留旧路线: %v", err)
 		}
 	}
