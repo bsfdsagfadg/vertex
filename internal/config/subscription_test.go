@@ -87,6 +87,22 @@ func TestCustomUAReferencesUseStableID(t *testing.T) {
 	}
 }
 
+func TestUnknownCustomUAReferencePreservesSentinel(t *testing.T) {
+	setupSubscriptionConfigTest(t)
+	if err := LoadSubscriptions(); err != nil {
+		t.Fatal(err)
+	}
+	err := UpdateSubscription(Subscription{
+		ID:         "sub-a",
+		Name:       "A",
+		URL:        "https://example.com/sub",
+		CustomUAID: "ua_missing",
+	})
+	if !errors.Is(err, ErrCustomUANotFound) {
+		t.Fatalf("unknown custom UA must preserve ErrCustomUANotFound: %v", err)
+	}
+}
+
 func TestSubscriptionConfigReadsAreDeepCopies(t *testing.T) {
 	setupSubscriptionConfigTest(t)
 	if err := SaveSubscriptions(SubscriptionConfig{

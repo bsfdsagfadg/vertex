@@ -123,7 +123,12 @@ func normalizeSubscriptionConfig(conf *SubscriptionConfig) (bool, error) {
 		}
 		if sub.CustomUAID != "" {
 			if _, ok := uaIDs[sub.CustomUAID]; !ok {
-				return false, fmt.Errorf("subscription %s references unknown custom UA %s", sub.ID, sub.CustomUAID)
+				return false, fmt.Errorf(
+					"%w: subscription %s references %s",
+					ErrCustomUANotFound,
+					sub.ID,
+					sub.CustomUAID,
+				)
 			}
 			if sub.UserAgent != "" {
 				sub.UserAgent = ""
