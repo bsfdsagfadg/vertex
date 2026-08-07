@@ -61,6 +61,8 @@ const API = {
     deleteDisabled() { return API.raw('/api/admin/proxy-nodes/disabled', { method: 'DELETE' }); },
     delete(uri) { return API.raw('/api/admin/proxy-nodes', { method: 'DELETE', body: JSON.stringify({ raw_uri: uri }) }); },
     test(uri) { return API.raw('/api/admin/proxy-nodes/test', { method: 'POST', body: JSON.stringify({ raw_uri: uri, timeout_seconds: 25 }) }); },
+    testBatch(uris) { return API.raw('/api/admin/proxy-nodes/test-batch', { method: 'POST', body: JSON.stringify({ uris, timeout_seconds: 25 }) }); },
+    testProgress() { return API.raw('/api/admin/proxy-nodes/test-progress'); },
   },
   useNode(uri) { return this.raw('/api/admin/use-node', { method: 'POST', body: JSON.stringify({ raw_uri: uri }) }); },
 };

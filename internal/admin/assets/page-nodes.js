@@ -21,6 +21,9 @@ var totalProxyPages = 1;
 var cachedEntryProxyURIs = new Set();
 var cachedProxyCandidates = [];
 window.selectedNodeURIs = window.selectedNodeURIs || new Set();
+window.selectedProxyURIs = window.selectedProxyURIs || new Set();
+var proxyTestProgressTimer = null;
+var proxySortMode = '';
 var testProgressTimer = null;
 
 function entryProxyIdentity(rawURI) {
@@ -114,6 +117,14 @@ async function loadNodes() {
   } catch (e) { }
 
   await loadProxyNodes(fallbackProxyCandidates);
+
+  try {
+    var proxyProgress = await API.proxyNodes.testProgress();
+    if (proxyProgress && proxyProgress.running) {
+      showProxyTestProgress(proxyProgress);
+      startProxyTestProgressPolling();
+    }
+  } catch (e) { }
 
   const d = await API.nodes.list();
   const nodes = d.nodes || [];
@@ -793,10 +804,129 @@ function proxyActionButton(label, className, handler) {
   return button;
 }
 
+function getSelectedProxyURIs() {
+  return Array.from(window.selectedProxyURIs);
+}
+
+function proxyLatencyValue(candidate) {
+  return candidate.last_test_ms > 0 ? candidate.last_test_ms : Number.POSITIVE_INFINITY;
+}
+
+async function sortProxyCandidates(desc) {
+  proxySortMode = desc ? 'desc' : 'asc';
+  cachedProxyCandidates.sort(function (a, b) {
+    if (!!a.disabled !== !!b.disabled) return a.disabled ? 1 : -1;
+    var left = proxyLatencyValue(a);
+    var right = proxyLatencyValue(b);
+    if (left === right) return (a.name || '').localeCompare(b.name || '');
+    return desc ? right - left : left - right;
+  });
+  curProxyPage = 1;
+  await loadProxyNodes(cachedProxyCandidates);
+  toast(desc ? '已按延迟降序重排入口代理' : '已按延迟顺序重排入口代理');
+}
+
+function sortProxyNodesByLatency() { sortProxyCandidates(false); }
+function sortProxyNodesByLatencyDesc() { sortProxyCandidates(true); }
+
+function toggleSelectAllProxyNodes() {
+  if (window.selectedProxyURIs.size === cachedProxyCandidates.length && cachedProxyCandidates.length > 0) {
+    window.selectedProxyURIs.clear();
+  } else {
+    cachedProxyCandidates.forEach(function (candidate) { window.selectedProxyURIs.add(candidate.raw_uri); });
+  }
+  loadProxyNodes(cachedProxyCandidates);
+}
+
+function toggleSelectAllProxyNodesCheckbox(mainCb) {
+  var start = (curProxyPage - 1) * proxyPageSize;
+  var page = cachedProxyCandidates.slice(start, start + proxyPageSize);
+  page.forEach(function (candidate) {
+    if (mainCb.checked) window.selectedProxyURIs.add(candidate.raw_uri);
+    else window.selectedProxyURIs.delete(candidate.raw_uri);
+  });
+  loadProxyNodes(cachedProxyCandidates);
+}
+
+async function batchTestSelectedProxyNodes() {
+  var uris = getSelectedProxyURIs();
+  if (!uris.length) return toast('请先勾选需要批量测试的入口代理');
+  toast('后台批量测速任务已启动...');
+  await API.proxyNodes.testBatch(uris);
+  window.selectedProxyURIs.clear();
+  startProxyTestProgressPolling();
+}
+
+function showProxyTestProgress(progressData) {
+  var progress = document.getElementById('proxyTestProgress');
+  var progressText = document.getElementById('proxyTestProgressText');
+  var progressFill = document.getElementById('proxyTestProgressFill');
+  var progressDetail = document.getElementById('proxyTestProgressDetail');
+  var done = progressData.done || 0;
+  var total = progressData.total || 1;
+  if (progress) progress.style.display = 'block';
+  if (progressText) progressText.textContent = '测试中 ' + done + '/' + total + ' · 通过 ' + (progressData.ok_count || 0) + ' · 失败 ' + (progressData.fail_count || 0);
+  if (progressFill) progressFill.style.width = Math.round(done / total * 100) + '%';
+  if (progressDetail) progressDetail.textContent = progressData.running ? ('当前: ' + (progressData.current_node || '')) : '测试完成';
+}
+
+function startProxyTestProgressPolling() {
+  if (proxyTestProgressTimer) return;
+  proxyTestProgressTimer = setInterval(async function () {
+    try {
+      var progressData = await API.proxyNodes.testProgress();
+      showProxyTestProgress(progressData);
+      if (!progressData.running) {
+        clearInterval(proxyTestProgressTimer);
+        proxyTestProgressTimer = null;
+        await loadNodes();
+        toast('入口代理批量测试完成');
+      }
+    } catch (e) {
+      clearInterval(proxyTestProgressTimer);
+      proxyTestProgressTimer = null;
+    }
+  }, 800);
+}
+
+async function batchEnableSelectedProxyNodes() {
+  var uris = getSelectedProxyURIs();
+  if (!uris.length) return toast('请先勾选需要批量启用的入口代理');
+  await API.proxyNodes.enableBatch(uris);
+  window.selectedProxyURIs.clear();
+  await loadNodes();
+  toast('已启用 ' + uris.length + ' 个入口代理');
+}
+
+async function batchDisableSelectedProxyNodes() {
+  var uris = getSelectedProxyURIs();
+  if (!uris.length) return toast('请先勾选需要批量禁用的入口代理');
+  await API.proxyNodes.disableBatch(uris);
+  window.selectedProxyURIs.clear();
+  await loadNodes();
+  toast('已禁用 ' + uris.length + ' 个入口代理');
+}
+
+async function batchDeleteSelectedProxyNodes() {
+  var uris = getSelectedProxyURIs();
+  if (!uris.length) return toast('请先勾选需要批量删除的入口代理');
+  if (!confirm('确定要批量删除选中 ' + uris.length + ' 个入口代理吗？')) return;
+  await API.proxyNodes.deleteBatch(uris);
+  window.selectedProxyURIs.clear();
+  await loadNodes();
+  toast('已删除 ' + uris.length + ' 个入口代理');
+}
+
 async function loadProxyNodes(fallbackCandidates) {
   var candidates = [];
   var total = 0;
-  try {
+  if (proxySortMode && cachedProxyCandidates.length) {
+    total = cachedProxyCandidates.length;
+    totalProxyPages = Math.max(1, Math.ceil(total / proxyPageSize));
+    if (curProxyPage > totalProxyPages) curProxyPage = totalProxyPages;
+    var sortedStart = (curProxyPage - 1) * proxyPageSize;
+    candidates = cachedProxyCandidates.slice(sortedStart, sortedStart + proxyPageSize);
+  } else try {
     var result = await API.proxyNodes.list(curProxyPage, proxyPageSize);
     candidates = result.candidates || [];
     total = result.total || 0;
@@ -837,7 +967,7 @@ function renderProxyNodes(candidates) {
   if (!candidates.length) {
     var emptyRow = document.createElement('tr');
     var emptyCell = document.createElement('td');
-    emptyCell.colSpan = 5;
+    emptyCell.colSpan = 6;
     emptyCell.style.cssText = 'color:var(--text-dim);text-align:center;';
     emptyCell.textContent = '暂无入口代理候选';
     emptyRow.appendChild(emptyCell);
@@ -845,6 +975,19 @@ function renderProxyNodes(candidates) {
   }
   candidates.forEach(function (candidate) {
     var row = document.createElement('tr');
+    var selectCell = document.createElement('td');
+    selectCell.className = 'th-center';
+    var checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'proxy-select-cb';
+    checkbox.checked = window.selectedProxyURIs.has(candidate.raw_uri);
+    checkbox.setAttribute('aria-label', '选择入口代理 ' + (candidate.name || candidate.raw_uri));
+    checkbox.onchange = function () {
+      if (this.checked) window.selectedProxyURIs.add(candidate.raw_uri);
+      else window.selectedProxyURIs.delete(candidate.raw_uri);
+      updateProxySelectionHeader();
+    };
+    selectCell.appendChild(checkbox);
     var nameCell = document.createElement('td');
     var nameContainer = document.createElement('div');
     nameContainer.style.cssText = 'display:flex; align-items:center; flex-wrap:wrap; gap:6px; word-break:break-all;';
@@ -877,6 +1020,7 @@ function renderProxyNodes(candidates) {
       actionCell.appendChild(proxyActionButton('禁用', 'btn ghost', function () { disableProxyNode(candidate.raw_uri); }));
     }
     actionCell.appendChild(proxyActionButton('删除', 'btn danger', function () { deleteProxyNode(candidate.raw_uri); }));
+    row.appendChild(selectCell);
     row.appendChild(nameCell);
     row.appendChild(typeCell);
     row.appendChild(enabledCell);
@@ -886,4 +1030,15 @@ function renderProxyNodes(candidates) {
   });
   tbody.textContent = '';
   tbody.appendChild(fragment);
+  updateProxySelectionHeader();
+}
+
+function updateProxySelectionHeader() {
+  var checkbox = document.getElementById('selectAllProxyNodesCheckbox');
+  if (!checkbox) return;
+  var start = (curProxyPage - 1) * proxyPageSize;
+  var page = cachedProxyCandidates.slice(start, start + proxyPageSize);
+  checkbox.checked = page.length > 0 && page.every(function (candidate) {
+    return window.selectedProxyURIs.has(candidate.raw_uri);
+  });
 }

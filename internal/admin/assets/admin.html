@@ -160,10 +160,26 @@
                   <button class="btn danger" style="padding:5px 10px;font-size:12px;"
                     onclick="deleteDisabledProxyNodes()">删除禁用入口</button>
                 </div>
+                <div class="actions proxy-actions">
+                  <button class="btn ghost" onclick="batchTestSelectedProxyNodes()">批量测试</button>
+                  <button class="btn ghost" onclick="sortProxyNodesByLatency()">按延迟顺序排序</button>
+                  <button class="btn ghost" onclick="sortProxyNodesByLatencyDesc()">按延迟降序排序</button>
+                  <button class="btn ghost" onclick="toggleSelectAllProxyNodes()">全选/反选</button>
+                  <button class="btn ghost btn-green" onclick="batchEnableSelectedProxyNodes()">批量启用</button>
+                  <button class="btn ghost btn-red" onclick="batchDisableSelectedProxyNodes()">批量禁用</button>
+                  <button class="btn danger" onclick="batchDeleteSelectedProxyNodes()">批量删除</button>
+                </div>
+                <div id="proxyTestProgress" class="test-progress">
+                  <div id="proxyTestProgressText" class="test-progress-text">准备测试...</div>
+                  <div class="progress-track"><div id="proxyTestProgressFill" class="progress-fill"></div></div>
+                  <div id="proxyTestProgressDetail" class="test-progress-detail"></div>
+                </div>
                 <div class="table-wrap">
                   <table id="proxyCandidatesTable">
                     <thead>
                       <tr>
+                        <th class="th-center"><label for="selectAllProxyNodesCheckbox" class="sr-only">全选</label><input
+                            type="checkbox" id="selectAllProxyNodesCheckbox" onclick="toggleSelectAllProxyNodesCheckbox(this)"></th>
                         <th>名称</th>
                         <th>类型</th>
                         <th>状态</th>
