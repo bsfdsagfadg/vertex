@@ -573,19 +573,30 @@ td code { background: rgba(0, 0, 0, .3); padding: 2px 9px; border-radius: 8px; f
   }
   
   /* 移动端节点操作按钮排列 */
-  #page-nodes td:nth-of-type(5) {
+  #nodesTable td:nth-of-type(5) {
     display: flex !important;
     flex-wrap: wrap !important;
     gap: 6px !important;
     padding-left: 32% !important;
   }
-  #page-nodes td:nth-of-type(5) .node-actions {
+  #nodesTable td:nth-of-type(5) .node-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
     width: 100%;
   }
-  #page-nodes td:nth-of-type(5) .btn {
+  #nodesTable td:nth-of-type(5) .btn {
+    margin: 0 !important;
+    font-size: calc(var(--base-font-size) * 11 / 14) !important;
+    padding: 5px 8px !important;
+  }
+  #proxyCandidatesTable td:nth-of-type(6) {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    gap: 6px !important;
+    padding-left: 32% !important;
+  }
+  #proxyCandidatesTable td:nth-of-type(6) .btn {
     margin: 0 !important;
     font-size: calc(var(--base-font-size) * 11 / 14) !important;
     padding: 5px 8px !important;
