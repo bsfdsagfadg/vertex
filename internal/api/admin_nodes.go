@@ -302,6 +302,10 @@ func (adm *AdminHandler) adminDedupNodes(w http.ResponseWriter, _ *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed_count": nodes.DedupNodes()})
 }
 
+func (adm *AdminHandler) adminPreviewDedupNodes(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, nodes.PreviewDedupNodes())
+}
+
 func (adm *AdminHandler) adminDeleteDisabledNodes(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted_count": nodes.DeleteDisabled()})
 }

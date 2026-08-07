@@ -427,7 +427,56 @@ function startTestProgressPolling() {
   }, 1000);
 }
 
-async function dedupNodes() { await API.nodes.dedup(); loadNodes(); toast('去重完成'); }
+function showNodeDedupConfirm(preview) {
+  const modal = document.getElementById('nodeDedupModal');
+  const text = document.getElementById('nodeDedupModalText');
+  const okButton = document.getElementById('nodeDedupOkBtn');
+  const cancelButton = document.getElementById('nodeDedupCancelBtn');
+  if (!modal || !text || !okButton || !cancelButton) return;
+  const previousFocus = document.activeElement;
+
+  text.textContent = `发现 ${preview.groups} 组安全重复节点，可合并 ${preview.duplicate_count} 个节点。仅显示名称不同、连接参数完全一致的节点会被合并。`;
+  modal.classList.remove('hidden');
+  cancelButton.focus();
+  const cleanup = () => {
+    modal.classList.add('hidden');
+    okButton.onclick = null;
+    cancelButton.onclick = null;
+    if (previousFocus && typeof previousFocus.focus === 'function') previousFocus.focus();
+  };
+  cancelButton.onclick = cleanup;
+  okButton.onclick = async () => {
+    cleanup();
+    try {
+      const result = await API.nodes.dedup();
+      await loadNodes();
+      toast(`去重完成，已合并 ${result.removed_count || 0} 个节点`);
+    } catch (error) {
+      toast('去重失败: ' + error, 'err');
+    }
+  };
+}
+
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  const modal = document.getElementById('nodeDedupModal');
+  if (modal && !modal.classList.contains('hidden')) {
+    document.getElementById('nodeDedupCancelBtn').click();
+  }
+});
+
+async function dedupNodes() {
+  try {
+    const preview = await API.nodes.dedupPreview();
+    if (!preview || preview.duplicate_count === 0) {
+      toast('未发现可安全合并的重复节点');
+      return;
+    }
+    showNodeDedupConfirm(preview);
+  } catch (error) {
+    toast('去重预览失败: ' + error, 'err');
+  }
+}
 async function deleteDisabledNodes() { await API.nodes.deleteDisabled(); loadNodes(); toast('清理完成'); }
 async function sortNodesByLatency() { await API.nodes.sort(false); await loadNodes(); toast('已按延迟顺序重排节点'); }
 async function sortNodesByLatencyDesc() { await API.nodes.sort(true); await loadNodes(); toast('已按延迟降序重排节点'); }

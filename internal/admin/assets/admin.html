@@ -282,7 +282,7 @@
                   <tr>
                     <th>名称</th>
                     <th>User-Agent</th>
-                    <th style="width:100px; text-align:right;">操作</th>
+                    <th class="subscription-actions-header">操作</th>
                   </tr>
                 </thead>
                 <tbody id="customUAsBody"></tbody>
@@ -305,7 +305,7 @@
                     <th>User-Agent</th>
                     <th>自动更新(分)</th>
                     <th>最后更新</th>
-                    <th style="text-align:right;">操作</th>
+                    <th class="subscription-actions-header">操作</th>
                   </tr>
                 </thead>
                 <tbody id="subscriptionsBody"></tbody>
@@ -554,7 +554,7 @@
     style="position:fixed;inset:0;display:grid;place-items:center;z-index:9999;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:opacity .3s var(--ease);">
     <div class="box glass" style="width:360px;padding:32px 24px;text-align:left;animation:pop .4s var(--ease);">
       <h3 style="margin-bottom:18px;font-size:16px;text-align:center;" id="addUATitle">添加自定义 User-Agent</h3>
-      <input type="hidden" id="uaOriginalName">
+      <input type="hidden" id="uaIdInput">
       <div class="field" style="margin-bottom:14px;">
         <label for="uaNameInput">名称</label>
         <input type="text" id="uaNameInput">
@@ -571,16 +571,30 @@
     </div>
   </div>
 
-  <div id="subDeleteModal" class="hidden"
+  <div id="subDeleteModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="subDeleteModalTitle"
     style="position:fixed;inset:0;display:grid;place-items:center;z-index:9999;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:opacity .3s var(--ease);">
     <div class="box glass" style="width:400px;padding:32px 24px;text-align:left;animation:pop .4s var(--ease);">
       <h3 style="margin-bottom:16px;font-size:16px;text-align:center;" id="subDeleteModalTitle">确认删除</h3>
-      <div style="color:var(--text-dim);margin-bottom:24px;font-size:14px;line-height:1.5;" id="subDeleteModalText">
-        确定要删除吗？
-      </div>
+      <div style="color:var(--text-dim);margin-bottom:12px;font-size:14px;line-height:1.5;" id="subDeleteModalText">确定要删除吗？</div>
+      <label id="subDeleteNodesOption" class="subscription-delete-option hidden">
+        <input type="checkbox" id="delSubNodesCheck" checked>
+        <span>同时删除该订阅独占的节点；取消勾选后节点转为手动管理</span>
+      </label>
       <div style="display:flex;gap:12px;justify-content:flex-end;">
         <button class="btn ghost" id="subDeleteCancelBtn">取消</button>
         <button class="btn danger" id="subDeleteOkBtn">确认删除</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="nodeDedupModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="nodeDedupModalTitle"
+    style="position:fixed;inset:0;display:grid;place-items:center;z-index:9999;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:opacity .3s var(--ease);">
+    <div class="box glass" style="width:400px;padding:32px 24px;text-align:left;animation:pop .4s var(--ease);">
+      <h3 style="margin-bottom:16px;font-size:16px;text-align:center;" id="nodeDedupModalTitle">确认节点去重</h3>
+      <div style="color:var(--text-dim);margin-bottom:24px;font-size:14px;line-height:1.5;" id="nodeDedupModalText"></div>
+      <div style="display:flex;gap:12px;justify-content:flex-end;">
+        <button class="btn ghost" id="nodeDedupCancelBtn">取消</button>
+        <button class="btn danger" id="nodeDedupOkBtn">合并重复节点</button>
       </div>
     </div>
   </div>

@@ -83,6 +83,9 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 	case "/nodes/deduplicate":
 		adm.adminDedupNodes(w, r)
 		return
+	case "/nodes/deduplicate/preview":
+		adm.adminPreviewDedupNodes(w, r)
+		return
 	case "/nodes/disabled":
 		adm.adminDeleteDisabledNodes(w, r)
 		return

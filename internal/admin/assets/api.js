@@ -37,6 +37,7 @@ const API = {
     testResume() { return API.raw('/api/admin/nodes/test-resume', { method: 'POST' }); },
     testTerminate() { return API.raw('/api/admin/nodes/test-terminate', { method: 'POST' }); },
     dedup() { return API.raw('/api/admin/nodes/deduplicate', { method: 'POST' }); },
+    dedupPreview() { return API.raw('/api/admin/nodes/deduplicate/preview'); },
     deleteDisabled() { return API.raw('/api/admin/nodes/disabled', { method: 'DELETE' }); },
     import(text, replace) { return API.raw('/api/admin/nodes/import', { method: 'POST', body: JSON.stringify({ text, replace }) }); },
     importJson(text, replace) { return API.raw('/api/admin/nodes/import-json', { method: 'POST', body: JSON.stringify({ text, replace }) }); },

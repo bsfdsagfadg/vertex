@@ -148,6 +148,39 @@ td code { background: rgba(0, 0, 0, .3); padding: 2px 9px; border-radius: 8px; f
 
 .table-wrap { overflow-x: auto; }
 
+.subscription-actions-header,
+.subscription-actions-cell {
+  min-width: 120px;
+  text-align: right;
+}
+.subscription-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 4px;
+  white-space: nowrap;
+}
+.subscription-actions .btn {
+  flex-shrink: 0;
+}
+.compact-action {
+  padding: 2px 6px !important;
+  font-size: 12px !important;
+}
+.subscription-break-all { word-break: break-all; }
+.subscription-error { color: var(--red); font-size: 12px; margin-top: 4px; }
+.subscription-time { font-size: 12px; }
+.subscription-delete-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 24px;
+  color: var(--text-dim-custom, var(--text-dim));
+  cursor: pointer;
+  line-height: 1.5;
+}
+.subscription-delete-option input { margin-top: 3px; flex: none; }
+
 /* ── 【仅在电脑端桌面视图启用的布局锁定 (锁定列宽，防止撑开挤压)】 ── */
 @media (min-width: 769px) {
   #nodesTable {
