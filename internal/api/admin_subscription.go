@@ -78,10 +78,15 @@ func (adm *AdminHandler) adminDeleteSubscription(w http.ResponseWriter, r *http.
 	if adm.subscriptionService != nil {
 		err = adm.subscriptionService.DeleteSubscription(req.ID, req.DeleteNodes)
 	} else {
+		var deleted config.Subscription
 		if _, getErr := config.GetSubscription(req.ID); !getErr {
 			err = config.ErrSubscriptionNotFound
-		} else if err = nodes.RemoveSubscriptionSource(req.ID, req.DeleteNodes); err == nil {
-			_, err = config.DeleteSubscription(req.ID)
+		} else if deleted, err = config.DeleteSubscription(req.ID); err == nil {
+			if err = nodes.RemoveSubscriptionSource(req.ID, req.DeleteNodes); err != nil {
+				if restoreErr := config.UpdateSubscription(deleted); restoreErr != nil {
+					err = fmt.Errorf("remove subscription nodes: %v; restore subscription: %w", err, restoreErr)
+				}
+			}
 		}
 	}
 	if errors.Is(err, config.ErrSubscriptionNotFound) {

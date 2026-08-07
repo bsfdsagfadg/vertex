@@ -33,9 +33,11 @@ type Subscription struct {
 	UserAgent      string `json:"user_agent,omitempty"`
 	CustomUAID     string `json:"custom_ua_id,omitempty"`
 	UpdateInterval int    `json:"update_interval"` // In minutes
+	AdoptManual    bool   `json:"adopt_manual,omitempty"`
 	LastUpdateTime int64  `json:"last_update_time"`
 	LastError      string `json:"last_error"`
 	Revision       uint64 `json:"revision"`
+	Generation     string `json:"generation"`
 }
 
 type SubscriptionConfig struct {
@@ -117,6 +119,10 @@ func normalizeSubscriptionConfig(conf *SubscriptionConfig) (bool, error) {
 
 	for i := range conf.Subscriptions {
 		sub := &conf.Subscriptions[i]
+		if sub.Generation == "" {
+			sub.Generation = newConfigID("subgen_")
+			changed = true
+		}
 		if sub.Revision == 0 {
 			sub.Revision = 1
 			changed = true
@@ -225,12 +231,12 @@ func UpdateSubscription(sub Subscription) error {
 			sub.LastUpdateTime = current.LastUpdateTime
 			sub.LastError = current.LastError
 			sub.Revision = current.Revision + 1
+			sub.Generation = current.Generation
 			conf.Subscriptions[i] = sub
 			return nil
 		}
-		if sub.Revision == 0 {
-			sub.Revision = 1
-		}
+		sub.Revision = 1
+		sub.Generation = newConfigID("subgen_")
 		conf.Subscriptions = append(conf.Subscriptions, sub)
 		return nil
 	})
@@ -269,13 +275,16 @@ func DeleteSubscription(id string) (Subscription, error) {
 	return deleted, err
 }
 
-func UpdateSubscriptionStatus(id string, revision uint64, lastUpdate int64, lastError string) (bool, error) {
+func UpdateSubscriptionStatus(id, generation string, revision uint64, lastUpdate int64, lastError string) (bool, error) {
 	updated := false
 	err := MutateSubscriptionConfig(func(conf *SubscriptionConfig) error {
 		for i := range conf.Subscriptions {
 			sub := &conf.Subscriptions[i]
 			if sub.ID != id {
 				continue
+			}
+			if generation != "" && sub.Generation != generation {
+				return nil
 			}
 			if revision != 0 && sub.Revision != revision {
 				return nil

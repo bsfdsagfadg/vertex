@@ -339,7 +339,7 @@ func TestSubscriptionAdoptsLegacySource(t *testing.T) {
 	if err := UpsertNodesWithSource([]Node{node}, SourceLegacy, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReplaceSubscriptionNodes("sub-a", []Node{node}); err != nil {
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{node}, false); err != nil {
 		t.Fatal(err)
 	}
 	sources := GetNodeSources(node.RawURI)
@@ -356,10 +356,10 @@ func TestManualSourceRemainsIndependentFromSubscriptions(t *testing.T) {
 	if err := ImportManualNodes([]Node{node}, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReplaceSubscriptionNodes("sub-a", []Node{node}); err != nil {
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{node}, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReplaceSubscriptionNodes("sub-b", []Node{node}); err != nil {
+	if err := ReplaceSubscriptionNodes("sub-b", []Node{node}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := RemoveSubscriptionSource("sub-a", true); err != nil {
@@ -372,15 +372,15 @@ func TestManualSourceRemainsIndependentFromSubscriptions(t *testing.T) {
 	}
 }
 
-func TestSubscriptionRefreshUpdatesOwnedMetadataButPreservesManualMetadata(t *testing.T) {
+func TestSubscriptionRefreshCanAdoptManualMetadata(t *testing.T) {
 	resetState()
 	defer resetState()
 
 	rawURI := "vless://id@example.com:443?security=tls#name"
-	if err := ReplaceSubscriptionNodes("sub-a", []Node{{RawURI: rawURI, Name: "old", Type: "vless", Disabled: true}}); err != nil {
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{{RawURI: rawURI, Name: "old", Type: "vless", Disabled: true}}, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReplaceSubscriptionNodes("sub-a", []Node{{RawURI: rawURI, Name: "new", Type: "vless"}}); err != nil {
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{{RawURI: rawURI, Name: "new", Type: "vless"}}, false); err != nil {
 		t.Fatal(err)
 	}
 	got := LoadNodes()
@@ -392,12 +392,23 @@ func TestSubscriptionRefreshUpdatesOwnedMetadataButPreservesManualMetadata(t *te
 	if err := ImportManualNodes([]Node{manual}, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReplaceSubscriptionNodes("sub-a", []Node{{RawURI: rawURI, Name: "subscription", Type: "vless"}}); err != nil {
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{{RawURI: rawURI, Name: "subscription", Type: "vless"}}, false); err != nil {
 		t.Fatal(err)
 	}
 	got = LoadNodes()
 	if len(got) != 1 || got[0].Name != "manual" || !got[0].Disabled {
 		t.Fatalf("subscription must not overwrite manual metadata: %+v", got)
+	}
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{{RawURI: rawURI, Name: "subscription", Type: "vless"}}, true); err != nil {
+		t.Fatal(err)
+	}
+	got = LoadNodes()
+	if len(got) != 1 || got[0].Name != "subscription" || got[0].Disabled {
+		t.Fatalf("authorized adoption must use subscription metadata: %+v", got)
+	}
+	sources := GetNodeSources(rawURI)
+	if len(sources) != 1 || sources[0] != (NodeSource{Type: SourceSubscription, ID: "sub-a"}) {
+		t.Fatalf("authorized adoption must remove manual ownership: %+v", sources)
 	}
 }
 
@@ -435,7 +446,7 @@ func TestKeepingDeletedSubscriptionNodesConvertsThemToManual(t *testing.T) {
 	defer resetState()
 
 	node := Node{RawURI: "vless://id@example.com:443?security=tls#name", Name: "name"}
-	if err := ReplaceSubscriptionNodes("sub-a", []Node{node}); err != nil {
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{node}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := RemoveSubscriptionSource("sub-a", false); err != nil {

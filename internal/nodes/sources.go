@@ -212,7 +212,7 @@ func GetNodeSources(rawURI string) []NodeSource {
 	return sources
 }
 
-func upsertNodesUnsafe(newNodes []Node, source NodeSource) {
+func upsertNodesUnsafe(newNodes []Node, source NodeSource, adoptManual bool) {
 	existing := make(map[string]int, len(nodeList))
 	for index, node := range nodeList {
 		existing[node.RawURI] = index
@@ -225,11 +225,14 @@ func upsertNodesUnsafe(newNodes []Node, source NodeSource) {
 		if !ok {
 			nodeList = append(nodeList, node)
 			existing[node.RawURI] = len(nodeList) - 1
-		} else if source.Type != SourceSubscription || !hasSourceTypeUnsafe(node.RawURI, SourceManual) {
+		} else if source.Type != SourceSubscription || adoptManual || !hasSourceTypeUnsafe(node.RawURI, SourceManual) {
 			nodeList[index] = node
 		}
 		addNodeSourceUnsafe(node.RawURI, source)
 		if source.Type == SourceSubscription {
+			if adoptManual {
+				removeNodeSourceUnsafe(node.RawURI, NodeSource{Type: SourceManual})
+			}
 			reconcileLegacySourceUnsafe(node.RawURI)
 		}
 	}
@@ -241,7 +244,7 @@ func UpsertNodesWithSource(newNodes []Node, sourceType, sourceID string) error {
 	oldNodes := append([]Node(nil), nodeList...)
 	oldSources := cloneNodeSourcesUnsafe()
 	oldHealth := cloneHealthMapUnsafe()
-	upsertNodesUnsafe(newNodes, NodeSource{Type: sourceType, ID: sourceID})
+	upsertNodesUnsafe(newNodes, NodeSource{Type: sourceType, ID: sourceID}, false)
 	pruneHealthUnsafe()
 	if err := saveNodeStateUnsafe(); err != nil {
 		nodeList = oldNodes
@@ -291,7 +294,7 @@ func notifyRemovedNodes(removed []string, callback func(string)) {
 	}
 }
 
-func ReplaceSubscriptionNodes(subscriptionID string, newNodes []Node) error {
+func ReplaceSubscriptionNodes(subscriptionID string, newNodes []Node, adoptManual bool) error {
 	if strings.TrimSpace(subscriptionID) == "" {
 		return fmt.Errorf("subscription ID is required")
 	}
@@ -315,7 +318,7 @@ func ReplaceSubscriptionNodes(subscriptionID string, newNodes []Node) error {
 			removeNodeSourceUnsafe(rawURI, source)
 		}
 	}
-	upsertNodesUnsafe(newNodes, source)
+	upsertNodesUnsafe(newNodes, source, adoptManual)
 	removed := pruneNodesWithoutSourcesUnsafe()
 	if err := saveNodeStateUnsafe(); err != nil {
 		nodeList = oldNodes
@@ -378,7 +381,7 @@ func ImportManualNodes(newNodes []Node, replace bool) error {
 			removeNodeSourceUnsafe(rawURI, NodeSource{Type: SourceManual})
 		}
 	}
-	upsertNodesUnsafe(newNodes, NodeSource{Type: SourceManual})
+	upsertNodesUnsafe(newNodes, NodeSource{Type: SourceManual}, false)
 	removed := pruneNodesWithoutSourcesUnsafe()
 	if err := saveNodeStateUnsafe(); err != nil {
 		nodeList = oldNodes

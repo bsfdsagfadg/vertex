@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/db"
@@ -105,5 +106,144 @@ func TestCustomUAEditInvalidatesInFlightUpdate(t *testing.T) {
 	close(release)
 	if err = <-errCh; !errors.Is(err, ErrStaleResult) {
 		t.Fatalf("UA edit must invalidate in-flight result, got %v", err)
+	}
+}
+
+func TestDeleteAndRecreateRejectsOldInFlightResult(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("VPROXY_CONFIG", filepath.Join(dir, "config.json"))
+	if err := config.LoadSubscriptions(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InitDB(filepath.Join(dir, "data.db")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.CloseDB)
+
+	sub := config.Subscription{ID: "sub-reused", Name: "Old", URL: "https://example.com/old"}
+	if err := config.UpdateSubscription(sub); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := config.GetSubscription(sub.ID)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	staleURI := "vless://stale@example.com:443#stale-recreate"
+	service := New(func(_ context.Context, _, _ string) ([]nodes.Node, error) {
+		close(started)
+		<-release
+		return []nodes.Node{{RawURI: staleURI, Name: "stale"}}, nil
+	})
+	errCh := make(chan error, 1)
+	go func() { errCh <- service.Update(context.Background(), sub.ID) }()
+	<-started
+	if err := service.DeleteSubscription(sub.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SaveSubscription(config.Subscription{ID: sub.ID, Name: "New", URL: "https://example.com/new"}); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := config.GetSubscription(sub.ID)
+	if current.Generation == old.Generation {
+		t.Fatal("recreated subscription generation must change")
+	}
+	close(release)
+	if err := <-errCh; !errors.Is(err, ErrStaleResult) {
+		t.Fatalf("old in-flight result must be stale after recreation: %v", err)
+	}
+	for _, node := range nodes.LoadNodes() {
+		if node.RawURI == staleURI {
+			t.Fatal("old in-flight result imported a node into the recreated subscription")
+		}
+	}
+}
+
+func TestStopRejectsRestartUntilWorkersExit(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("VPROXY_CONFIG", filepath.Join(dir, "config.json"))
+	if err := config.LoadSubscriptions(); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.UpdateSubscription(config.Subscription{ID: "sub-stop", Name: "Stop", URL: "https://example.com/stop"}); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	service := New(func(ctx context.Context, _, _ string) ([]nodes.Node, error) {
+		close(started)
+		<-release
+		return nil, ctx.Err()
+	})
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !service.Trigger("sub-stop") {
+		t.Fatal("expected update trigger")
+	}
+	<-started
+	stopped := make(chan struct{})
+	go func() {
+		service.Stop()
+		close(stopped)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		service.lifecycleMu.Lock()
+		stopping := service.stopping
+		service.lifecycleMu.Unlock()
+		if stopping {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("service did not enter stopping state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := service.Start(context.Background()); !errors.Is(err, ErrServiceStopping) {
+		t.Fatalf("restart during stop must fail with ErrServiceStopping: %v", err)
+	}
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("service stop did not finish")
+	}
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatalf("service must restart after stop completes: %v", err)
+	}
+	service.Stop()
+}
+
+func TestDeleteRestoresSubscriptionWhenNodeCleanupFails(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("VPROXY_CONFIG", filepath.Join(dir, "config.json"))
+	if err := config.LoadSubscriptions(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InitDB(filepath.Join(dir, "data.db")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.CloseDB)
+
+	sub := config.Subscription{ID: "sub-restore", Name: "Restore", URL: "https://example.com/restore"}
+	if err := config.UpdateSubscription(sub); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := config.GetSubscription(sub.ID)
+	if err := nodes.ReplaceSubscriptionNodes(sub.ID, []nodes.Node{{RawURI: "vless://restore@example.com:443#restore", Name: "restore"}}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.GlobalDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service := New(nil)
+	if err := service.DeleteSubscription(sub.ID, true); err == nil {
+		t.Fatal("closed database must make node cleanup fail")
+	}
+	restored, ok := config.GetSubscription(sub.ID)
+	if !ok {
+		t.Fatal("subscription config must be restored after node cleanup failure")
+	}
+	if restored.Generation == before.Generation {
+		t.Fatal("restored subscription must use a new generation to invalidate in-flight work")
 	}
 }

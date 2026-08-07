@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	ErrAlreadyRunning = errors.New("subscription update already running")
-	ErrStaleResult    = errors.New("subscription changed while update was running")
+	ErrAlreadyRunning  = errors.New("subscription update already running")
+	ErrServiceStopping = errors.New("subscription service is stopping")
+	ErrStaleResult     = errors.New("subscription changed while update was running")
 )
 
 type FetchFunc func(ctx context.Context, rawURL, userAgent string) ([]nodes.Node, error)
@@ -30,6 +31,7 @@ type Service struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	stopping    bool
+	stopDone    chan struct{}
 	wg          sync.WaitGroup
 }
 
@@ -43,6 +45,9 @@ func (s *Service) Start(parent context.Context) error {
 	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
+	if s.stopping {
+		return ErrServiceStopping
+	}
 	if s.cancel != nil {
 		return nil
 	}
@@ -69,15 +74,30 @@ func (s *Service) Start(parent context.Context) error {
 
 func (s *Service) Stop() {
 	s.lifecycleMu.Lock()
+	if s.stopping {
+		done := s.stopDone
+		s.lifecycleMu.Unlock()
+		if done != nil {
+			<-done
+		}
+		return
+	}
 	cancel := s.cancel
 	s.stopping = true
+	done := make(chan struct{})
+	s.stopDone = done
 	s.ctx = nil
-	s.cancel = nil
 	s.lifecycleMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	s.wg.Wait()
+	s.lifecycleMu.Lock()
+	s.cancel = nil
+	s.stopping = false
+	s.stopDone = nil
+	close(done)
+	s.lifecycleMu.Unlock()
 }
 
 func (s *Service) beginUpdate(id string) bool {
@@ -130,14 +150,14 @@ func (s *Service) updateReserved(ctx context.Context, id string) error {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
 	current, ok := config.GetSubscription(id)
-	if !ok || current.Revision != sub.Revision {
+	if !ok || current.Generation != sub.Generation || current.Revision != sub.Revision {
 		return ErrStaleResult
 	}
-	if err := nodes.ReplaceSubscriptionNodes(id, parsedNodes); err != nil {
-		_, _ = config.UpdateSubscriptionStatus(id, sub.Revision, sub.LastUpdateTime, "替换订阅节点失败: "+err.Error())
+	if err := nodes.ReplaceSubscriptionNodes(id, parsedNodes, sub.AdoptManual); err != nil {
+		_, _ = config.UpdateSubscriptionStatus(id, sub.Generation, sub.Revision, sub.LastUpdateTime, "替换订阅节点失败: "+err.Error())
 		return err
 	}
-	updated, err := config.UpdateSubscriptionStatus(id, sub.Revision, time.Now().Unix(), "")
+	updated, err := config.UpdateSubscriptionStatus(id, sub.Generation, sub.Revision, time.Now().Unix(), "")
 	if err != nil {
 		return err
 	}
@@ -150,7 +170,7 @@ func (s *Service) updateReserved(ctx context.Context, id string) error {
 func (s *Service) recordFailure(sub config.Subscription, updateErr error) error {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	updated, err := config.UpdateSubscriptionStatus(sub.ID, sub.Revision, sub.LastUpdateTime, updateErr.Error())
+	updated, err := config.UpdateSubscriptionStatus(sub.ID, sub.Generation, sub.Revision, sub.LastUpdateTime, updateErr.Error())
 	if err != nil {
 		return fmt.Errorf("%v; save status: %w", updateErr, err)
 	}
@@ -226,10 +246,16 @@ func (s *Service) DeleteSubscription(id string, deleteNodes bool) error {
 	if _, ok := config.GetSubscription(id); !ok {
 		return config.ErrSubscriptionNotFound
 	}
-	if err := nodes.RemoveSubscriptionSource(id, deleteNodes); err != nil {
+	deleted, err := config.DeleteSubscription(id)
+	if err != nil {
 		return err
 	}
-	_, err := config.DeleteSubscription(id)
+	if err = nodes.RemoveSubscriptionSource(id, deleteNodes); err == nil {
+		return nil
+	}
+	if restoreErr := config.UpdateSubscription(deleted); restoreErr != nil {
+		return fmt.Errorf("remove subscription nodes: %v; restore subscription: %w", err, restoreErr)
+	}
 	return err
 }
 

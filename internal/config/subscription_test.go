@@ -161,7 +161,7 @@ func TestSubscriptionStatusRejectsStaleRevision(t *testing.T) {
 	if err := UpdateSubscription(first); err != nil {
 		t.Fatal(err)
 	}
-	updated, err := UpdateSubscriptionStatus(sub.ID, first.Revision, 123, "stale")
+	updated, err := UpdateSubscriptionStatus(sub.ID, first.Generation, first.Revision, 123, "stale")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,6 +171,35 @@ func TestSubscriptionStatusRejectsStaleRevision(t *testing.T) {
 	stored, _ := GetSubscription(sub.ID)
 	if stored.URL != first.URL || stored.LastError != "" {
 		t.Fatalf("stale status overwrote edited subscription: %+v", stored)
+	}
+}
+
+func TestRecreatedSubscriptionGetsNewGeneration(t *testing.T) {
+	setupSubscriptionConfigTest(t)
+	if err := LoadSubscriptions(); err != nil {
+		t.Fatal(err)
+	}
+	sub := Subscription{ID: "sub-a", Name: "A", URL: "https://example.com/a"}
+	if err := UpdateSubscription(sub); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := GetSubscription(sub.ID)
+	if _, err := DeleteSubscription(sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateSubscription(sub); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := GetSubscription(sub.ID)
+	if first.Generation == "" || second.Generation == "" || first.Generation == second.Generation {
+		t.Fatalf("recreated subscription must get a new generation: first=%q second=%q", first.Generation, second.Generation)
+	}
+	updated, err := UpdateSubscriptionStatus(sub.ID, first.Generation, first.Revision, 123, "stale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated {
+		t.Fatal("status from deleted subscription generation must be rejected")
 	}
 }
 
