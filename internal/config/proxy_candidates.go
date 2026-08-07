@@ -134,6 +134,45 @@ func RemoveProxyCandidate(rawURI string) (wasActive bool, err error) {
 	return wasActive, nil
 }
 
+func RemoveDisabledProxyCandidates() ([]string, error) {
+	proxyCandidatesMu.Lock()
+	defer proxyCandidatesMu.Unlock()
+
+	store, err := candidateStore()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := store.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("开始清理禁用入口代理: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query("SELECT raw_uri FROM entry_proxy_candidates WHERE disabled = 1 ORDER BY rowid")
+	if err != nil {
+		return nil, fmt.Errorf("读取禁用入口代理: %w", err)
+	}
+	var removed []string
+	for rows.Next() {
+		var rawURI string
+		if err := rows.Scan(&rawURI); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("扫描禁用入口代理: %w", err)
+		}
+		removed = append(removed, rawURI)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("关闭禁用入口代理结果集: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM entry_proxy_candidates WHERE disabled = 1"); err != nil {
+		return nil, fmt.Errorf("删除禁用入口代理: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("提交禁用入口代理清理: %w", err)
+	}
+	return removed, nil
+}
+
 func UpdateProxyCandidateTest(rawURI string, ok bool, elapsedMs float64, errText string) error {
 	proxyCandidatesMu.Lock()
 	defer proxyCandidatesMu.Unlock()

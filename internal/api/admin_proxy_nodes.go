@@ -192,6 +192,18 @@ func (adm *AdminHandler) adminDeleteProxyNodesBatch(w http.ResponseWriter, r *ht
 	writeJSON(w, http.StatusOK, map[string]any{"ok": len(invalid) == 0, "deleted": deleted, "invalid": invalid})
 }
 
+func (adm *AdminHandler) adminDeleteDisabledProxyNodes(w http.ResponseWriter, _ *http.Request) {
+	deleted, err := config.RemoveDisabledProxyCandidates()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr(err.Error()))
+		return
+	}
+	for _, rawURI := range deleted {
+		transport.RemoveProxy(rawURI)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted, "deleted_count": len(deleted)})
+}
+
 func (adm *AdminHandler) adminDeleteProxyNode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		RawURI string `json:"raw_uri"`

@@ -123,3 +123,28 @@ func TestAddProxyCandidateUsesCaseSensitiveEncodedIdentity(t *testing.T) {
 		t.Fatalf("candidate count = %d, want 2: %+v", len(items), items)
 	}
 }
+
+func TestRemoveDisabledProxyCandidatesKeepsEnabledEntries(t *testing.T) {
+	setupEntryProxyTest(t, `{"proxy_url":""}`)
+	enabled := "socks5://127.0.0.1:1081#enabled"
+	disabled := "socks5://127.0.0.1:1082#disabled"
+	for _, rawURI := range []string{enabled, disabled} {
+		if _, err := AddProxyCandidate(rawURI); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := SetProxyCandidateEnabled(disabled, false); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := RemoveDisabledProxyCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != disabled {
+		t.Fatalf("removed=%#v, want [%q]", removed, disabled)
+	}
+	items := ListProxyCandidates()
+	if len(items) != 1 || items[0].RawURI != enabled {
+		t.Fatalf("enabled entries changed during cleanup: %+v", items)
+	}
+}

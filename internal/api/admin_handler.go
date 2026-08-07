@@ -143,6 +143,13 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 			adm.adminMethodNotAllowed(w)
 		}
 		return
+	case "/proxy-nodes/disabled":
+		if r.Method == http.MethodDelete {
+			adm.adminDeleteDisabledProxyNodes(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
 	case "/proxy-nodes/enable":
 		if r.Method == http.MethodPost {
 			adm.adminEnableProxyNode(w, r)
