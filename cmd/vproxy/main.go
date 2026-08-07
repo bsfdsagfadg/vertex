@@ -185,6 +185,8 @@ func main() {
 	api.StartAdminSessionCleanup(time.Hour)
 
 	vc := vertex.NewVertexAIClient(cfg)
+	stopEntryProxyProbe := api.StartEntryProxyProbeLoop(vc.Net())
+	defer stopEntryProxyProbe()
 
 	telemetryEnabled := true
 	if cfg.TelemetryEnabled() != nil {

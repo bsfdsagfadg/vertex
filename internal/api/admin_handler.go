@@ -115,6 +115,34 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 			adm.adminMethodNotAllowed(w)
 		}
 		return
+	case "/proxy-nodes/import-batch":
+		if r.Method == http.MethodPost {
+			adm.adminImportProxyNodesBatch(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
+	case "/proxy-nodes/enable-batch":
+		if r.Method == http.MethodPost {
+			adm.adminSetProxyNodesEnabled(w, r, true)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
+	case "/proxy-nodes/disable-batch":
+		if r.Method == http.MethodPost {
+			adm.adminSetProxyNodesEnabled(w, r, false)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
+	case "/proxy-nodes/delete-batch":
+		if r.Method == http.MethodPost {
+			adm.adminDeleteProxyNodesBatch(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
 	case "/proxy-nodes/enable":
 		if r.Method == http.MethodPost {
 			adm.adminEnableProxyNode(w, r)
@@ -137,7 +165,9 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 		}
 		return
 	case "/proxy-nodes":
-		if r.Method == http.MethodDelete {
+		if r.Method == http.MethodGet {
+			adm.adminListProxyNodes(w, r)
+		} else if r.Method == http.MethodDelete {
 			adm.adminDeleteProxyNode(w, r)
 		} else {
 			adm.adminMethodNotAllowed(w)
