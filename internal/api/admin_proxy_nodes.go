@@ -14,9 +14,25 @@ import (
 )
 
 const (
-	entryProxyProbeURL      = "https://www.google.com/recaptcha/enterprise.js"
-	entryProxyProbeInterval = 5 * time.Minute
-	entryProxyProbeTimeout  = 20 * time.Second
+	entryProxyProbeURL        = "https://www.google.com/recaptcha/enterprise.js"
+	entryProxyProbeInterval   = 5 * time.Minute
+	entryProxyProbeTimeout    = 20 * time.Second
+	entryProxyTestConcurrency = 50
+)
+
+type entryProxyTestProgress struct {
+	Running     bool   `json:"running"`
+	Total       int    `json:"total"`
+	Done        int    `json:"done"`
+	OKCount     int    `json:"ok_count"`
+	FailCount   int    `json:"fail_count"`
+	CurrentNode string `json:"current_node"`
+}
+
+var (
+	entryProxyTestMu         sync.Mutex             //nolint:gochecknoglobals
+	entryProxyTestState      entryProxyTestProgress //nolint:gochecknoglobals
+	entryProxyTestGeneration uint64                 //nolint:gochecknoglobals
 )
 
 func redactProxyURI(rawURI string) string {
@@ -252,6 +268,140 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": err == nil, "elapsed_ms": elapsed, "error": errText})
+}
+
+func (adm *AdminHandler) adminGetProxyTestProgress(w http.ResponseWriter, _ *http.Request) {
+	entryProxyTestMu.Lock()
+	state := entryProxyTestState
+	entryProxyTestMu.Unlock()
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (adm *AdminHandler) adminBatchTestProxyNodes(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URIs           []string `json:"uris"`
+		TimeoutSeconds float64  `json:"timeout_seconds"`
+	}
+	if !adm.decodeAdminBody(w, r, &body) {
+		return
+	}
+	if body.TimeoutSeconds <= 0 || body.TimeoutSeconds > 60 {
+		body.TimeoutSeconds = 25
+	}
+
+	known := make(map[string]config.ProxyCandidate)
+	for _, candidate := range config.ListProxyCandidates() {
+		known[candidate.RawURI] = candidate
+	}
+	selected := make([]config.ProxyCandidate, 0, len(body.URIs))
+	seen := make(map[string]struct{}, len(body.URIs))
+	for _, rawURI := range body.URIs {
+		rawURI = strings.TrimSpace(rawURI)
+		candidate, ok := known[rawURI]
+		if !ok {
+			continue
+		}
+		if _, duplicate := seen[rawURI]; duplicate {
+			continue
+		}
+		seen[rawURI] = struct{}{}
+		selected = append(selected, candidate)
+	}
+	if len(selected) == 0 {
+		writeJSON(w, http.StatusBadRequest, adminErr("没有有效的入口代理可测试"))
+		return
+	}
+
+	entryProxyTestMu.Lock()
+	if entryProxyTestState.Running {
+		entryProxyTestMu.Unlock()
+		writeJSON(w, http.StatusConflict, adminErr("已有入口代理批量测试正在进行中"))
+		return
+	}
+	entryProxyTestGeneration++
+	generation := entryProxyTestGeneration
+	entryProxyTestState = entryProxyTestProgress{Running: true, Total: len(selected)} //nolint:exhaustruct
+	entryProxyTestMu.Unlock()
+
+	perItemTimeout := time.Duration(body.TimeoutSeconds * float64(time.Second))
+	rounds := (len(selected) + entryProxyTestConcurrency - 1) / entryProxyTestConcurrency
+	totalTimeout := time.Duration(rounds*2)*perItemTimeout + 2*time.Minute
+	if totalTimeout < 5*time.Minute {
+		totalTimeout = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), totalTimeout)
+	go adm.runProxyBatchTest(ctx, cancel, generation, selected, perItemTimeout)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "total": len(selected)})
+}
+
+func (adm *AdminHandler) runProxyBatchTest(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	generation uint64,
+	candidates []config.ProxyCandidate,
+	perItemTimeout time.Duration,
+) {
+	defer cancel()
+	defer func() {
+		entryProxyTestMu.Lock()
+		if entryProxyTestGeneration == generation {
+			entryProxyTestState.Running = false
+			entryProxyTestState.CurrentNode = ""
+		}
+		entryProxyTestMu.Unlock()
+	}()
+
+	sem := make(chan struct{}, entryProxyTestConcurrency)
+	var wg sync.WaitGroup
+	for _, candidate := range candidates {
+		candidate := candidate
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+
+			entryProxyTestMu.Lock()
+			if entryProxyTestGeneration == generation {
+				entryProxyTestState.CurrentNode = candidate.Name
+			}
+			entryProxyTestMu.Unlock()
+
+			probeCtx, probeCancel := context.WithTimeout(ctx, perItemTimeout)
+			elapsed, err := probeEntryProxyCandidate(probeCtx, adm.vc.Net(), candidate.RawURI, int(perItemTimeout.Seconds()))
+			probeCtxErr := probeCtx.Err()
+			probeCancel()
+			if ctx.Err() != nil {
+				return
+			}
+			errText := ""
+			if err != nil {
+				errText = err.Error()
+				if probeCtxErr != nil {
+					errText = "timeout"
+				}
+			}
+			if updateErr := config.UpdateProxyCandidateTest(candidate.RawURI, err == nil, elapsed, errText); updateErr != nil {
+				err = updateErr
+			}
+
+			entryProxyTestMu.Lock()
+			if entryProxyTestGeneration == generation {
+				entryProxyTestState.Done++
+				if err == nil {
+					entryProxyTestState.OKCount++
+				} else {
+					entryProxyTestState.FailCount++
+				}
+			}
+			entryProxyTestMu.Unlock()
+		}()
+	}
+	wg.Wait()
 }
 
 func probeEntryProxyCandidate(ctx context.Context, netClient *transport.NetworkClient, rawURI string, timeoutSeconds int) (float64, error) {

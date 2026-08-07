@@ -171,6 +171,20 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 			adm.adminMethodNotAllowed(w)
 		}
 		return
+	case "/proxy-nodes/test-batch":
+		if r.Method == http.MethodPost {
+			adm.adminBatchTestProxyNodes(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
+	case "/proxy-nodes/test-progress":
+		if r.Method == http.MethodGet {
+			adm.adminGetProxyTestProgress(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+		return
 	case "/proxy-nodes":
 		if r.Method == http.MethodGet {
 			adm.adminListProxyNodes(w, r)
