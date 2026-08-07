@@ -627,6 +627,10 @@
         <label for="subIntervalInput">自动更新 (分钟;填 0 禁用自动更新)</label>
         <input type="number" id="subIntervalInput" placeholder="0 表示不自动更新" value="0">
       </div>
+      <label class="subscription-adopt-option">
+        <input type="checkbox" id="subAdoptManualCheck">
+        <span>允许订阅接管相同 URI 的手动节点；接管后节点将采用订阅元数据，并随订阅更新和删除规则管理</span>
+      </label>
       <div class="err" id="subErr" style="color:#ff5f56;font-size:12px;margin-bottom:12px;text-align:center;"></div>
       <div style="display:flex;gap:12px;justify-content:flex-end;">
         <button class="btn ghost" onclick="closeSubModal()">取消</button>

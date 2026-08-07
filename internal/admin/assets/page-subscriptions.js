@@ -237,6 +237,7 @@ function showAddSubModal() {
   document.getElementById('subUrlInput').value = '';
   document.getElementById('subUaSelect').value = 'Chrome';
   document.getElementById('subIntervalInput').value = '0';
+  document.getElementById('subAdoptManualCheck').checked = false;
   document.getElementById('subErr').textContent = '';
   document.getElementById('addSubModal').classList.remove('hidden');
 }
@@ -257,6 +258,7 @@ function editSub(sub) {
   }
   select.value = selectedValue;
   document.getElementById('subIntervalInput').value = sub.update_interval || 0;
+  document.getElementById('subAdoptManualCheck').checked = Boolean(sub.adopt_manual);
   document.getElementById('subErr').textContent = '';
   document.getElementById('addSubModal').classList.remove('hidden');
 }
@@ -271,6 +273,7 @@ function submitSub() {
   const url = document.getElementById('subUrlInput').value.trim();
   const uaSelection = document.getElementById('subUaSelect').value;
   const interval = parseInt(document.getElementById('subIntervalInput').value, 10) || 0;
+  const adoptManual = document.getElementById('subAdoptManualCheck').checked;
   if (!name || !url) {
     document.getElementById('subErr').textContent = '名称和链接不能为空';
     return;
@@ -283,7 +286,8 @@ function submitSub() {
     url,
     user_agent: isCustomUA ? '' : uaSelection,
     custom_ua_id: isCustomUA ? uaSelection.slice('custom:'.length) : '',
-    update_interval: interval
+    update_interval: interval,
+    adopt_manual: adoptManual
   };
   API.raw('/api/admin/subscriptions/save', { method: 'POST', body: JSON.stringify(payload) })
     .then(() => {
