@@ -178,9 +178,11 @@
                   style="margin-top: 12px; justify-content: space-between; align-items: center;">
                   <div id="proxyNodesPaginationInfo" style="font-size: 13px; color: var(--text-dim);"></div>
                   <div class="flex-gap-11" style="display: flex; gap: 8px; align-items: center;">
+                    <button class="btn ghost" id="btnProxyPageFirst" onclick="changeProxyPage(1)">首页</button>
                     <button class="btn ghost" id="btnProxyPagePrev" onclick="changeProxyPage(curProxyPage - 1)">上一页</button>
                     <span id="proxyNodesPageNumDisplay" style="font-size: 13px; font-weight: 600; padding: 0 6px;">1 / 1</span>
                     <button class="btn ghost" id="btnProxyPageNext" onclick="changeProxyPage(curProxyPage + 1)">下一页</button>
+                    <button class="btn ghost" id="btnProxyPageLast" onclick="changeProxyPage(totalProxyPages)">末页</button>
                   </div>
                 </div>
               </div>

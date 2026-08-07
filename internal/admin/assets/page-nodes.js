@@ -820,10 +820,14 @@ async function loadProxyNodes(fallbackCandidates) {
   if (info) info.textContent = total ? ('显示第 ' + startIndex + ' - ' + endIndex + ' 条，共 ' + total + ' 条') : '共 0 条';
   var display = document.getElementById('proxyNodesPageNumDisplay');
   if (display) display.textContent = curProxyPage + ' / ' + totalProxyPages;
+  var first = document.getElementById('btnProxyPageFirst');
   var prev = document.getElementById('btnProxyPagePrev');
   var next = document.getElementById('btnProxyPageNext');
+  var last = document.getElementById('btnProxyPageLast');
+  if (first) first.disabled = curProxyPage <= 1;
   if (prev) prev.disabled = curProxyPage <= 1;
   if (next) next.disabled = curProxyPage >= totalProxyPages;
+  if (last) last.disabled = curProxyPage >= totalProxyPages;
 }
 
 function renderProxyNodes(candidates) {
