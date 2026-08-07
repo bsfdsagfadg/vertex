@@ -224,6 +224,29 @@ td code { background: rgba(0, 0, 0, .3); padding: 2px 9px; border-radius: 8px; f
 }
 /* ── 【仅在电脑端桌面视图启用的布局锁定 (锁定列宽，防止撑开挤压)】 ── */
 @media (min-width: 769px) {
+  #proxyCandidatesTable {
+    table-layout: fixed !important;
+  }
+
+  #proxyCandidatesTable th:nth-child(1), #proxyCandidatesTable td:nth-child(1) {
+    width: 48% !important;
+  }
+  #proxyCandidatesTable th:nth-child(2), #proxyCandidatesTable td:nth-child(2) {
+    width: 90px !important;
+  }
+  #proxyCandidatesTable th:nth-child(3), #proxyCandidatesTable td:nth-child(3) {
+    width: 90px !important;
+  }
+  #proxyCandidatesTable th:nth-child(4), #proxyCandidatesTable td:nth-child(4) {
+    width: 180px !important;
+  }
+  #proxyCandidatesTable th:nth-child(5), #proxyCandidatesTable td:nth-child(5) {
+    width: 220px !important;
+  }
+  #proxyCandidatesTable td:first-child {
+    word-break: break-all;
+  }
+
   #nodesTable {
     table-layout: fixed !important;
   }
@@ -516,6 +539,13 @@ td code { background: rgba(0, 0, 0, .3); padding: 2px 9px; border-radius: 8px; f
   #page-nodes td:nth-of-type(3):not([colspan]):before { content: "协议类型"; }
   #page-nodes td:nth-of-type(4):not([colspan]):before { content: "状态延迟"; }
   #page-nodes td:nth-of-type(5):not([colspan]):before { content: "管理操作"; }
+
+  #proxyCandidatesTable td:nth-of-type(1):not([colspan]) { padding-left: 32% !important; }
+  #proxyCandidatesTable td:nth-of-type(1):not([colspan]):before { content: "名称"; }
+  #proxyCandidatesTable td:nth-of-type(2):not([colspan]):before { content: "类型"; }
+  #proxyCandidatesTable td:nth-of-type(3):not([colspan]):before { content: "状态"; }
+  #proxyCandidatesTable td:nth-of-type(4):not([colspan]):before { content: "测试状态"; }
+  #proxyCandidatesTable td:nth-of-type(5):not([colspan]):before { content: "操作"; }
 
   /* 修复手机端无节点时暂无节点 td padding */
   #page-nodes td[colspan="5"] { padding-left: 14px !important; text-align: center !important; }

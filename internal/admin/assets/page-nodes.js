@@ -305,7 +305,7 @@ async function loadNodes() {
       var entryBtn = document.createElement('button');
       var alreadyEntry = cachedEntryProxyURIs.has(entryProxyIdentity(n.raw_uri));
       entryBtn.className = 'btn ghost';
-      entryBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;color:var(--gold);';
+      entryBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;';
       entryBtn.dataset.action = 'add-entry-proxy';
       entryBtn.dataset.uri = n.raw_uri;
       entryBtn.textContent = alreadyEntry ? '已在入口池' : '添加至全局入口代理';
@@ -833,7 +833,7 @@ function renderProxyNodes(candidates) {
   if (!candidates.length) {
     var emptyRow = document.createElement('tr');
     var emptyCell = document.createElement('td');
-    emptyCell.colSpan = 4;
+    emptyCell.colSpan = 5;
     emptyCell.style.cssText = 'color:var(--text-dim);text-align:center;';
     emptyCell.textContent = '暂无入口代理候选';
     emptyRow.appendChild(emptyCell);
@@ -847,23 +847,14 @@ function renderProxyNodes(candidates) {
     var nameSpan = document.createElement('span');
     nameSpan.textContent = candidate.name || candidate.raw_uri;
     nameContainer.appendChild(nameSpan);
-    var availability = document.createElement('span');
-    availability.style.cssText = 'font-size:10px;padding:2px 8px;white-space:nowrap;flex-shrink:0;';
-    var cooling = !candidate.disabled && candidate.cooldown_until > Math.floor(Date.now() / 1000);
-    if (candidate.disabled) {
-      availability.className = 'pill off';
-      availability.textContent = '已禁用';
-    } else if (cooling) {
-      availability.className = 'pill off';
-      availability.textContent = '冷却中';
-    } else {
-      availability.className = 'pill on';
-      availability.textContent = '轮询中';
-    }
-    nameContainer.appendChild(availability);
     nameCell.appendChild(nameContainer);
     var typeCell = document.createElement('td');
     typeCell.textContent = candidate.type || '-';
+    var enabledCell = document.createElement('td');
+    var enabledPill = document.createElement('span');
+    enabledPill.className = candidate.disabled ? 'pill off' : 'pill on';
+    enabledPill.textContent = candidate.disabled ? '禁用' : '启用';
+    enabledCell.appendChild(enabledPill);
     var stateCell = document.createElement('td');
     stateCell.style.cssText = 'white-space:nowrap;';
     if (!candidate.last_test_at) {
@@ -884,6 +875,7 @@ function renderProxyNodes(candidates) {
     actionCell.appendChild(proxyActionButton('删除', 'btn danger', function () { deleteProxyNode(candidate.raw_uri); }));
     row.appendChild(nameCell);
     row.appendChild(typeCell);
+    row.appendChild(enabledCell);
     row.appendChild(stateCell);
     row.appendChild(actionCell);
     fragment.appendChild(row);
