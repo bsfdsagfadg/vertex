@@ -2,6 +2,7 @@ package cli
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -65,6 +66,58 @@ func TestPadOrTrunc(t *testing.T) {
 					tt.s, tt.maxCol, got, stringWidth(got), tt.want, stringWidth(tt.want))
 			}
 		})
+	}
+}
+
+func TestSetInitialAdminPassword(t *testing.T) {
+	m := TuiModel{
+		width:      80,
+		height:     24,
+		activeReqs: make(map[string]*ReqState),
+	}
+	model, _ := m.Update(setAdminPasswordMsg("testPw123"))
+	updated, ok := model.(TuiModel)
+	if !ok {
+		t.Fatalf("Update 应返回 TuiModel")
+	}
+	if updated.initialAdminPassword != "testPw123" {
+		t.Fatalf("initialAdminPassword 应为 %q，实际 %q", "testPw123", updated.initialAdminPassword)
+	}
+
+	content := updated.buildContent(80)
+	if !strings.Contains(content, "testPw123") {
+		t.Fatalf("Banner 应包含初始管理员密码")
+	}
+	if !strings.Contains(content, "初始管理员密码") {
+		t.Fatalf("Banner 应包含密码提示文案")
+	}
+
+	plain := updated.buildContent(80)
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.Contains(line, "testPw123") {
+			strip := stripANSI(line)
+			if !strings.HasPrefix(strip, "│ ") || !strings.HasSuffix(strip, " │") {
+				t.Fatalf("密码行应保持 Banner 边框对齐: %q", strip)
+			}
+		}
+	}
+}
+
+func TestNoAdminPasswordLineByDefault(t *testing.T) {
+	m := TuiModel{
+		width:      80,
+		height:     24,
+		activeReqs: make(map[string]*ReqState),
+	}
+	content := m.buildContent(80)
+	if strings.Contains(content, "初始管理员密码") {
+		t.Fatalf("未设置初始密码时 Banner 不应包含密码提示")
+	}
+}
+
+func TestIsTUIEnabledDefaultsFalse(t *testing.T) {
+	if IsTUIEnabled() {
+		t.Fatalf("非 TTY 测试环境下 TUI 应处于禁用状态")
 	}
 }
 

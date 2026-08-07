@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"os"
@@ -234,5 +235,56 @@ func TestAPIKeyManagerAddListDelete(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("alice 应仍在列表中")
+	}
+}
+
+// TestAdminLogin_Success 验证正确密码登录成功并种下 admin_token cookie。
+func TestAdminLogin_Success(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fx := newTestServer(t)
+
+	loginBody := map[string]any{"password": "test-admin-pw"}
+	resp := doPost(t, fx.server.URL+"/api/admin/login", "", loginBody)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200", resp.StatusCode)
+	}
+	var loginResp map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if loginResp["ok"] != true {
+		t.Errorf("ok=%v, want true", loginResp["ok"])
+	}
+	var hasCookie bool
+	for _, c := range resp.Cookies() {
+		if c.Name == adminCookieName && c.Value != "" {
+			hasCookie = true
+			break
+		}
+	}
+	if !hasCookie {
+		t.Error("response should set admin_token cookie")
+	}
+}
+
+// TestAdminLogin_WrongPassword 验证错误密码登录返回 401。
+func TestAdminLogin_WrongPassword(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fx := newTestServer(t)
+
+	loginBody := map[string]any{"password": "wrong-pw"}
+	resp := doPost(t, fx.server.URL+"/api/admin/login", "", loginBody)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want 401", resp.StatusCode)
 	}
 }

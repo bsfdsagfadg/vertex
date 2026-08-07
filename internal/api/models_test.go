@@ -1,6 +1,10 @@
 package api
 
-import "testing"
+import (
+	"encoding/json"
+	"net/http"
+	"testing"
+)
 
 // ---- stripFakePrefix：剥离 "假非流-" 前缀 ----
 
@@ -27,5 +31,45 @@ func TestStripFakePrefix(t *testing.T) {
 					c.in, gotModel, gotFake, c.wantModel, c.wantFake)
 			}
 		})
+	}
+}
+
+// TestModelsOAI 验证 /v1/models 返回 OpenAI 兼容的模型列表。
+func TestModelsOAI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fx := newTestServer(t)
+
+	req, _ := http.NewRequest("GET", fx.server.URL+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer sk-test-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /v1/models: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200", resp.StatusCode)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["object"] != "list" {
+		t.Errorf(`object=%q, want "list"`, body["object"])
+	}
+	data, ok := body["data"].([]any)
+	if !ok {
+		t.Fatal("data is not an array")
+	}
+	if len(data) == 0 {
+		t.Fatal("data is empty")
+	}
+	first := data[0].(map[string]any)
+	if first["object"] != "model" {
+		t.Errorf(`first object=%q, want "model"`, first["object"])
 	}
 }

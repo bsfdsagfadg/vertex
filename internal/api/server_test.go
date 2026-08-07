@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -92,5 +93,53 @@ func TestStatusWriterFlush(t *testing.T) {
 	sw.Flush()
 	if !rec.Flushed {
 		t.Fatal("Flush 应透传到底层 ResponseRecorder")
+	}
+}
+
+// TestHealth 验证 /health 端点返回 healthy 状态与时间戳。
+func TestHealth(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fx := newTestServer(t)
+
+	resp, err := http.Get(fx.server.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200", resp.StatusCode)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "healthy" {
+		t.Errorf(`status=%q, want "healthy"`, body["status"])
+	}
+	if _, ok := body["timestamp"]; !ok {
+		t.Error("missing timestamp")
+	}
+}
+
+// TestHealth_WithoutAuth 验证 health 端点无需 API key 认证。
+func TestHealth_WithoutAuth(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fx := newTestServer(t)
+
+	resp, err := http.Get(fx.server.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200", resp.StatusCode)
 	}
 }

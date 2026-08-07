@@ -5,14 +5,13 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
-	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/config"
 )
 
@@ -121,20 +120,11 @@ func EnsureAdminPassword() {
 		log.Printf("[Admin] 写入管理员密码到 config.json 失败：%v", err)
 		return
 	}
-	bar := strings.Repeat("=", 60)
-	fmt.Fprintf(os.Stderr, "\n%s\n", bar)
-	fmt.Fprintf(os.Stderr, "[Admin] 首次启动，已自动生成管理员密码：\n")
-	fmt.Fprintf(os.Stderr, "[Admin]     密码: %s\n", pw)
-	fmt.Fprintf(os.Stderr, "[Admin]     访问: http://<host>:<port>/admin\n")
-	fmt.Fprintf(os.Stderr, "[Admin]     密码已写入 config/config.json，登录后可在面板修改\n")
-	fmt.Fprintf(os.Stderr, "%s\n\n", bar)
-
-	log.Printf("%s", bar)
-	log.Printf("[Admin] 首次启动，已自动生成管理员密码：")
-	log.Printf("[Admin]     密码: %s", pw)
-	log.Printf("[Admin]     访问: http://<host>:<port>/admin")
-	log.Printf("[Admin]     密码已写入 config/config.json，登录后可在面板修改")
-	log.Printf("%s", bar)
+	if cli.IsTUIEnabled() {
+		cli.SetInitialAdminPassword(pw)
+	} else {
+		log.Printf("[Admin] 首次启动，已自动生成管理员密码: %s (访问: http://<host>:<port>/admin)", pw)
+	}
 }
 
 func (adm *AdminHandler) adminLogin(w http.ResponseWriter, r *http.Request) {

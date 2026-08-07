@@ -60,6 +60,14 @@ func SetAppInfo(ver, commit, bTime, goos, goarch string) {
 	sendMsg(logLineMsg(fmt.Sprintf("[vproxy] 运行平台: %s/%s", goos, goarch)))
 }
 
+func SetInitialAdminPassword(pw string) {
+	sendMsg(setAdminPasswordMsg(pw))
+}
+
+func IsTUIEnabled() bool {
+	return enabled.Load()
+}
+
 func InitTracker(fileLogger io.Writer) {
 	additionalLogWriter = fileLogger
 	programDone = make(chan struct{})

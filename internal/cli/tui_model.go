@@ -20,26 +20,28 @@ func stripANSI(s string) string {
 var spinnerFrames = []rune(`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`)
 
 type TuiModel struct {
-	logBuffer    []string
-	activeReqs   map[string]*ReqState
-	appVersion   string
-	buildInfo    string
-	platformInfo string
-	spinnerIdx   int
-	width        int
-	height       int
-	scrollOffset int
+	logBuffer            []string
+	activeReqs           map[string]*ReqState
+	appVersion           string
+	buildInfo            string
+	platformInfo         string
+	initialAdminPassword string
+	spinnerIdx           int
+	width                int
+	height               int
+	scrollOffset         int
 }
 
 type (
-	logLineMsg         string
-	startReqMsg        struct{ id string }
-	finishReqMsg       struct{ id string }
-	updateReqModelMsg  struct{ id, model string }
-	updateReqStateMsg  struct{ id, state, color, detail string }
-	updateReqWinnerMsg struct{ id, nodeName string }
-	spinnerTickMsg     struct{}
-	setAppInfoMsg      struct{ version, buildInfo, platformInfo string }
+	logLineMsg          string
+	startReqMsg         struct{ id string }
+	finishReqMsg        struct{ id string }
+	updateReqModelMsg   struct{ id, model string }
+	updateReqStateMsg   struct{ id, state, color, detail string }
+	updateReqWinnerMsg  struct{ id, nodeName string }
+	spinnerTickMsg      struct{}
+	setAppInfoMsg       struct{ version, buildInfo, platformInfo string }
+	setAdminPasswordMsg string
 )
 
 func (m TuiModel) Init() tea.Cmd {
@@ -135,6 +137,10 @@ func (m TuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.platformInfo = msg.platformInfo
 		return m, nil
 
+	case setAdminPasswordMsg:
+		m.initialAdminPassword = string(msg)
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -213,6 +219,10 @@ func (m TuiModel) buildContent(bw int) string {
 		line1 := fmt.Sprintf("Version: %s | %s", m.appVersion, m.platformInfo)
 		sb.WriteString(yellowStyle.Render("│") + " " + padOrTrunc(line1, biw) + " " + yellowStyle.Render("│") + "\n")
 		sb.WriteString(yellowStyle.Render("│") + " " + padOrTrunc(m.buildInfo, biw) + " " + yellowStyle.Render("│") + "\n")
+		if m.initialAdminPassword != "" {
+			pwLine := fmt.Sprintf("🔑 初始管理员密码: %s (登录后可在面板修改)", m.initialAdminPassword)
+			sb.WriteString(yellowStyle.Render("│") + " " + cyanStyle.Render(padOrTrunc(pwLine, biw)) + " " + yellowStyle.Render("│") + "\n")
+		}
 
 		warn := "⚠️  本软件完全免费！付费即被骗，请退款。"
 		sb.WriteString(yellowStyle.Render("│") + " " + redStyle.Render(padOrTrunc(warn, biw)) + " " + yellowStyle.Render("│") + "\n")
