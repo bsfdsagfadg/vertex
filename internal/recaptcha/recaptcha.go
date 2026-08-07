@@ -167,7 +167,8 @@ func FetchRecaptchaToken(ctx context.Context, net *transport.NetworkClient, prox
 }
 
 func fetchOnce(ctx context.Context, net *transport.NetworkClient, proxyURI string) (string, error) {
-	sess, err := net.CreateSession(15, proxyURI, "recaptcha")
+	// rT 的获取路线由调用方明确指定；不能再次从全局入口选择器挂载第二个入口。
+	sess, err := net.CreateSessionWithoutEntryProxy(15, proxyURI, "recaptcha")
 	if err != nil {
 		return "", fmt.Errorf("创建 reCAPTCHA Session 失败: %w", err)
 	}
