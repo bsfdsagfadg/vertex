@@ -81,10 +81,18 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 		adm.adminTestTerminate(w, r)
 		return
 	case "/nodes/deduplicate":
-		adm.adminDedupNodes(w, r)
+		if r.Method == http.MethodPost {
+			adm.adminDedupNodes(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
 		return
 	case "/nodes/deduplicate/preview":
-		adm.adminPreviewDedupNodes(w, r)
+		if r.Method == http.MethodGet {
+			adm.adminPreviewDedupNodes(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
 		return
 	case "/nodes/disabled":
 		adm.adminDeleteDisabledNodes(w, r)

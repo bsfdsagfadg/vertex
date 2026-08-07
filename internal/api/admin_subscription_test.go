@@ -71,6 +71,8 @@ func TestSubscriptionRoutesRejectUnexpectedMethods(t *testing.T) {
 		{http.MethodGet, "/api/admin/subscriptions/update"},
 		{http.MethodGet, "/api/admin/subscriptions/custom_ua/save"},
 		{http.MethodGet, "/api/admin/subscriptions/custom_ua/delete"},
+		{http.MethodGet, "/api/admin/nodes/deduplicate"},
+		{http.MethodPost, "/api/admin/nodes/deduplicate/preview"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
