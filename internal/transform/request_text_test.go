@@ -2,7 +2,6 @@ package transform
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
@@ -161,8 +160,8 @@ func TestMatchTrailingFixModel(t *testing.T) {
 }
 
 func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
-	// 场景1: toggle ON + 命中模型 + 纯 functionResponse → role 修正 + 追加
-	t.Run("命中模型+纯functionResponse→role修正+追加", func(t *testing.T) {
+	// 场景1: toggle ON + 命中模型 + 末尾 model (无论含何种 parts) → 追加 user:继续
+	t.Run("命中模型+末尾model→追加user继续", func(t *testing.T) {
 		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
@@ -173,24 +172,13 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 		}
 		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
 		contents := vars["contents"].([]any)
-		// 第3项 role→function，末尾含 functionResponse part → 视为 model turn 未闭合，追加 → 4 项
+		// 末尾 role 为 model → 追加第 4 项 user:继续
 		if len(contents) != 4 {
-			t.Fatalf("len(contents)=%d, want 4 (3项+追加)", len(contents))
-		}
-		third := contents[2].(map[string]any)
-		if third["role"] != "function" {
-			t.Errorf("third content role=%q, want function", third["role"])
+			t.Fatalf("len(contents)=%d, want 4 (追加 user:继续)", len(contents))
 		}
 		last := contents[3].(map[string]any)
 		if last["role"] != "user" {
 			t.Errorf("last content role=%q, want user", last["role"])
-		}
-		lastParts := last["parts"].([]any)
-		if len(lastParts) != 1 {
-			t.Fatalf("last parts len=%d, want 1", len(lastParts))
-		}
-		if text, _ := lastParts[0].(map[string]any)["text"].(string); text != "继续" {
-			t.Errorf("last parts[0].text=%q, want 继续", text)
 		}
 	})
 
@@ -313,8 +301,8 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 		}
 	})
 
-	// 场景8: toggle ON + 命中模型 + 末尾 function → 追加
-	t.Run("命中模型+末尾function→追加", func(t *testing.T) {
+	// 场景8: toggle ON + 命中模型 + 末尾 function → 不属于 model/assistant → 不追加
+	t.Run("命中模型+末尾function→不属于model/assistant→不追加", func(t *testing.T) {
 		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
@@ -325,13 +313,13 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 		}
 		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
 		contents := vars["contents"].([]any)
-		// 末尾 role="function" 但含 functionResponse part → 视为 model turn 未闭合，追加 → 4 项
-		if len(contents) != 4 {
-			t.Fatalf("len(contents)=%d, want 4 (3项+追加)", len(contents))
+		// 末尾 role="function" 非 model/assistant → 不追加，保持 3 项
+		if len(contents) != 3 {
+			t.Fatalf("len(contents)=%d, want 3 (不追加)", len(contents))
 		}
-		last := contents[3].(map[string]any)
-		if last["role"] != "user" {
-			t.Errorf("last content role=%q, want user", last["role"])
+		last := contents[2].(map[string]any)
+		if last["role"] != "function" {
+			t.Errorf("last content role=%q, want function", last["role"])
 		}
 	})
 
@@ -349,7 +337,7 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 		}
 		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
 		contents := vars["contents"].([]any)
-		// 混合 parts 不被 normalizeFunctionResponseRoles 修正，role 仍为 model → 条件追加
+		// 混合 parts 的末尾 role 仍为 model → 追加
 		if len(contents) != 3 {
 			t.Fatalf("len(contents)=%d, want 3 (2项+追加)", len(contents))
 		}
@@ -359,8 +347,8 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 		}
 	})
 
-	// 场景10: toggle ON + 真实 bug 复现（OpenCode"继续"场景，user/model 交替，与生产日志结构一致）→ 末尾 user 含 functionResponse → 追加
-	t.Run("命中模型+user含functionResponse→追加", func(t *testing.T) {
+	// 场景10: toggle ON + 真实 bug 复现（OpenCode"继续"场景，user/model 交替，与生产日志结构一致）→ 末尾 user 含 functionResponse → 不追加
+	t.Run("命中模型+user含functionResponse→不追加", func(t *testing.T) {
 		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
@@ -376,22 +364,18 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 		}
 		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
 		contents := vars["contents"].([]any)
-		// 最后一条 role=user 但含 functionResponse part → 必须追加
-		if len(contents) != 6 {
-			t.Fatalf("len(contents)=%d, want 6 (5项+追加)", len(contents))
+		// 最后一条 role=user 含 functionResponse → 合法闭合，不追加
+		if len(contents) != 5 {
+			t.Fatalf("len(contents)=%d, want 5 (不追加)", len(contents))
 		}
-		last := contents[5].(map[string]any)
+		last := contents[4].(map[string]any)
 		if last["role"] != "user" {
 			t.Errorf("last content role=%q, want user", last["role"])
 		}
-		lastParts := last["parts"].([]any)
-		if len(lastParts) != 1 {
-			t.Fatalf("last parts len=%d, want 1 (纯文本)", len(lastParts))
-		}
 	})
 
-	// 场景11: toggle ON + 纯 functionResponse 结尾（路径A：中断后无用户文本）→ 追加
-	t.Run("命中模型+纯functionResponse末尾→追加", func(t *testing.T) {
+	// 场景11: toggle ON + 纯 functionResponse 结尾（路径A：中断后无用户文本）→ 不追加
+	t.Run("命中模型+纯functionResponse末尾→不追加", func(t *testing.T) {
 		cfg := config.StaticProvider(config.AppConfig{TrailingModelFixEnabled: true, TrailingFixModels: []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}})
 		payload := map[string]any{
 			"contents": []any{
@@ -402,10 +386,11 @@ func TestBuildVertexVariables_TrailingModelFix(t *testing.T) {
 		}
 		vars := BuildVertexVariables("gemini-3.6-flash", payload, cfg)
 		contents := vars["contents"].([]any)
-		if len(contents) != 4 {
-			t.Fatalf("len(contents)=%d, want 4 (3项+追加)", len(contents))
+		// 末尾 user 含 functionResponse → 合法闭合，不追加
+		if len(contents) != 3 {
+			t.Fatalf("len(contents)=%d, want 3 (不追加)", len(contents))
 		}
-		last := contents[3].(map[string]any)
+		last := contents[2].(map[string]any)
 		if last["role"] != "user" {
 			t.Errorf("last content role=%q, want user", last["role"])
 		}
@@ -485,83 +470,37 @@ func TestMergeContiguousRoles_FunctionResponse(t *testing.T) {
 	}
 }
 
-func TestNormalizeFunctionResponseRoles(t *testing.T) {
-	tests := []struct {
-		name string
-		in   any
-		want any
-	}{
-		{
-			name: "纯 functionResponse 修正 role",
-			in:   []any{map[string]any{"role": "model", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "get_weather"}}}}},
-			want: []any{map[string]any{"role": "function", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "get_weather"}}}}},
-		},
-		{
-			name: "纯 functionResponse 多个 part",
-			in: []any{map[string]any{"role": "model", "parts": []any{
-				map[string]any{"functionResponse": map[string]any{"name": "a"}},
-				map[string]any{"functionResponse": map[string]any{"name": "b"}},
-			}}},
-			want: []any{map[string]any{"role": "function", "parts": []any{
-				map[string]any{"functionResponse": map[string]any{"name": "a"}},
-				map[string]any{"functionResponse": map[string]any{"name": "b"}},
-			}}},
-		},
-		{
-			name: "混合 text + functionResponse 不改",
-			in: []any{map[string]any{"role": "model", "parts": []any{
-				map[string]any{"text": "hi"},
-				map[string]any{"functionResponse": map[string]any{"name": "a"}},
-			}}},
-			want: []any{map[string]any{"role": "model", "parts": []any{
-				map[string]any{"text": "hi"},
-				map[string]any{"functionResponse": map[string]any{"name": "a"}},
-			}}},
-		},
-		{
-			name: "纯 text 不改",
-			in:   []any{map[string]any{"role": "model", "parts": []any{map[string]any{"text": "hi"}}}},
-			want: []any{map[string]any{"role": "model", "parts": []any{map[string]any{"text": "hi"}}}},
-		},
-		{
-			name: "纯 functionCall 不改",
-			in:   []any{map[string]any{"role": "model", "parts": []any{map[string]any{"functionCall": map[string]any{"name": "get_weather"}}}}},
-			want: []any{map[string]any{"role": "model", "parts": []any{map[string]any{"functionCall": map[string]any{"name": "get_weather"}}}}},
-		},
-		{
-			name: "role 已是 function 不改",
-			in:   []any{map[string]any{"role": "function", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "a"}}}}},
-			want: []any{map[string]any{"role": "function", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "a"}}}}},
-		},
-		{
-			name: "空 parts 不改",
-			in:   []any{map[string]any{"role": "model", "parts": []any{}}},
-			want: []any{map[string]any{"role": "model", "parts": []any{}}},
-		},
-		{
-			name: "非 map element 保留",
-			in:   []any{"string-elem", map[string]any{"role": "model", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "a"}}}}},
-			want: []any{"string-elem", map[string]any{"role": "function", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "a"}}}}},
-		},
-		{
-			name: "contents 不是数组",
-			in:   "not an array",
-			want: "not an array",
-		},
-		{
-			name: "nil contents",
-			in:   nil,
-			want: nil,
-		},
+// TestMergeContiguousRoles_MixedFunctionResponseText 混合 fResp + text 同 role 不得合并。
+func TestMergeContiguousRoles_MixedFunctionResponseText(t *testing.T) {
+	contents := []any{
+		map[string]any{"role": "user", "parts": []any{
+			map[string]any{"functionResponse": map[string]any{"name": "get_weather", "response": map[string]any{"temp": 20}}},
+		}},
+		map[string]any{"role": "user", "parts": []any{map[string]any{"text": "继续啊"}}},
 	}
+	merged := mergeContiguousRoles(contents).([]any)
+	if len(merged) != 2 {
+		t.Fatalf("混合 fResp+text 不应合并，应 2 条 content，实际 %d", len(merged))
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeFunctionResponseRoles(tt.in)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("normalizeFunctionResponseRoles() = %#v, want %#v", got, tt.want)
-			}
-		})
+// TestMergeContiguousRoles_FunctionResponseOnly 纯 functionResponse 同 role 仍合并（并行工具结果）。
+func TestMergeContiguousRoles_FunctionResponseOnly(t *testing.T) {
+	contents := []any{
+		map[string]any{"role": "user", "parts": []any{
+			map[string]any{"functionResponse": map[string]any{"name": "get_weather", "response": map[string]any{"temp": 20}}},
+		}},
+		map[string]any{"role": "user", "parts": []any{
+			map[string]any{"functionResponse": map[string]any{"name": "get_time", "response": map[string]any{"time": "10:00"}}},
+		}},
+	}
+	merged := mergeContiguousRoles(contents).([]any)
+	if len(merged) != 1 {
+		t.Fatalf("纯 functionResponse 应合并为 1 条 content，实际 %d", len(merged))
+	}
+	parts := merged[0].(map[string]any)["parts"].([]any)
+	if len(parts) != 2 {
+		t.Errorf("合并后应 2 个 parts，实际 %d", len(parts))
 	}
 }
 
@@ -572,14 +511,15 @@ func TestEndsWithModelTurn(t *testing.T) {
 		want bool
 	}{
 		{"纯文本user", map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}}, false},
-		{"user含functionResponse", map[string]any{"role": "user", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "a"}}}}, true},
-		{"user含functionCall", map[string]any{"role": "user", "parts": []any{map[string]any{"functionCall": map[string]any{"name": "a"}}}}, true},
-		{"user混合parts", map[string]any{"role": "user", "parts": []any{map[string]any{"text": "继续"}, map[string]any{"functionResponse": map[string]any{"name": "a"}}}}, true},
+		{"user含functionResponse", map[string]any{"role": "user", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "a"}}}}, false},
+		{"user含functionCall", map[string]any{"role": "user", "parts": []any{map[string]any{"functionCall": map[string]any{"name": "a"}}}}, false},
+		{"user混合parts", map[string]any{"role": "user", "parts": []any{map[string]any{"text": "继续"}, map[string]any{"functionResponse": map[string]any{"name": "a"}}}}, false},
 		{"model文本", map[string]any{"role": "model", "parts": []any{map[string]any{"text": "hello"}}}, true},
-		{"function角色", map[string]any{"role": "function", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "a"}}}}, true},
+		{"assistant角色", map[string]any{"role": "assistant", "parts": []any{map[string]any{"text": "hello"}}}, true},
+		{"function角色", map[string]any{"role": "function", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "a"}}}}, false},
 		{"system文本", map[string]any{"role": "system", "parts": []any{map[string]any{"text": "sys"}}}, false},
 		{"空parts", map[string]any{"role": "user", "parts": []any{}}, false},
-		{"role缺失", map[string]any{"parts": []any{map[string]any{"text": "hi"}}}, true},
+		{"role缺失", map[string]any{"parts": []any{map[string]any{"text": "hi"}}}, false},
 		{"非map part", map[string]any{"role": "user", "parts": []any{"not-a-map"}}, false},
 	}
 	for _, tc := range cases {

@@ -413,6 +413,29 @@ func TestIsValidContentChunk_BlockReason(t *testing.T) {
 	}
 }
 
+func TestIsValidContentChunk_BlockReasonUnspecified(t *testing.T) {
+	chunk := map[string]any{"promptFeedback": map[string]any{"blockReason": "BLOCKED_REASON_UNSPECIFIED"}}
+	if isValidContentChunk(chunk) {
+		t.Error("UNSPECIFIED blockReason should NOT be valid")
+	}
+}
+
+func TestIsValidContentChunk_EmptyStopFrame(t *testing.T) {
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{
+			"finishReason": "STOP",
+			"content": map[string]any{
+				"role":  "model",
+				"parts": []any{map[string]any{"text": ""}},
+			},
+		}},
+		"promptFeedback": map[string]any{"blockReason": "BLOCKED_REASON_UNSPECIFIED"},
+	}
+	if isValidContentChunk(chunk) {
+		t.Error("空 STOP 帧不应判为有效内容")
+	}
+}
+
 func TestIsValidContentChunk_ExecutableCode(t *testing.T) {
 	chunk := map[string]any{
 		"candidates": []any{map[string]any{

@@ -147,7 +147,7 @@ func finalizeCleanedPart(cleaned map[string]any) {
 		_, hasFC := cleaned["functionCall"]
 		_, hasThought := cleaned["thought"]
 		_, hasSig := cleaned["thoughtSignature"]
-		if hasFC || hasThought || hasSig {
+		if (hasFC || hasThought) && !hasSig {
 			cleaned["thoughtSignature"] = skipThoughtSentinel
 		}
 	}

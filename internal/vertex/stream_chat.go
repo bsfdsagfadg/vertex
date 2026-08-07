@@ -396,8 +396,20 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 
 	// 增量扫描上游流，逐个完整 JSON 对象提取 chunk。
 	var seenFinish bool
+
+	emitSink := emit
+	if cfg.DebugMode() {
+		emitSink = func(ch map[string]any) bool {
+			log.Printf("[DEBUG] [Stream] 转发帧摘要: %s, 请求ID=%s, 节点=%s", summarizeChunk(ch), reqID, nodes.GetNodeName(sess.ProxyURI))
+			return emit(ch)
+		}
+	}
+
 	scanErr := scanStream(ctx, sr.Body, func(obj map[string]any) (stop bool, err error) {
-		return processStreamingObject(obj, emit, &seenFinish)
+		if cfg.DebugMode() {
+			log.Printf("[DEBUG] [Stream] 上游帧摘要: %s, 请求ID=%s, 节点=%s", summarizeUpstreamObject(obj), reqID, nodes.GetNodeName(sess.ProxyURI))
+		}
+		return processStreamingObject(obj, emitSink, &seenFinish)
 	}, touchActivity)
 
 	if scanErr != nil && cfg.DebugMode() && !errors.Is(scanErr, context.Canceled) {

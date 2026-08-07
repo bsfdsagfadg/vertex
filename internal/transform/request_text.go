@@ -144,10 +144,6 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 		trailingFixActive := cfg.TrailingModelFixEnabled() &&
 			matchTrailingFixModel(modelName, cfg.TrailingFixModels())
 
-		if trailingFixActive {
-			c = normalizeFunctionResponseRoles(c)
-		}
-
 		c = mergeContiguousRoles(c)
 		c = filterEmptyContents(c)
 
@@ -300,68 +296,11 @@ func normalizeContent(content map[string]any) map[string]any {
 	return n
 }
 
-// endsWithModelTurn 判断 content 是否会被上游视为 "以 model turn 结尾"。
-// Google 服务端按 part 类型判定：非 user 角色（system 除外，system 结尾不属模型回合），
-// 或 user 消息中含 functionResponse/functionCall part，均被视为模型回合未闭合。
+// endsWithModelTurn 判断对话历史是否以 "model 回合" 结尾。
+// 仅当 role 为 model 或 assistant（如用户中断后重发导致历史以模型输出结尾）时才视为未闭合。
 func endsWithModelTurn(content map[string]any) bool {
 	role, _ := content["role"].(string)
-	if !strings.EqualFold(role, "user") && !strings.EqualFold(role, "system") {
-		return true
-	}
-	parts, _ := content["parts"].([]any)
-	for _, p := range parts {
-		pm, ok := p.(map[string]any)
-		if !ok {
-			continue
-		}
-		if pm["functionResponse"] != nil || pm["functionCall"] != nil {
-			return true
-		}
-	}
-	return false
-}
-
-// normalizeFunctionResponseRoles 将 contents 中纯 functionResponse 的 model role 修正为 function。
-// 必须在 mergeContiguousRoles 之前调用，否则相邻同 role 合并后无法单独特定 functionResponse。
-func normalizeFunctionResponseRoles(contents any) any {
-	list, ok := contents.([]any)
-	if !ok || len(list) == 0 {
-		return contents
-	}
-	result := make([]any, len(list))
-	for i, c := range list {
-		cm, ok := c.(map[string]any)
-		if !ok {
-			result[i] = c
-			continue
-		}
-		role, _ := cm["role"].(string)
-		if role != "model" {
-			result[i] = c
-			continue
-		}
-		parts, _ := cm["parts"].([]any)
-		if len(parts) == 0 {
-			result[i] = c
-			continue
-		}
-		allFuncResp := true
-		for _, p := range parts {
-			pm, ok := p.(map[string]any)
-			if !ok || pm["functionResponse"] == nil {
-				allFuncResp = false
-				break
-			}
-		}
-		if !allFuncResp {
-			result[i] = c
-			continue
-		}
-		nc := copyMap(cm)
-		nc["role"] = "function"
-		result[i] = nc
-	}
-	return result
+	return strings.EqualFold(role, "model") || strings.EqualFold(role, "assistant")
 }
 
 // filterEmptyContents 对每个 content 的 parts 逐个清洗。
@@ -447,9 +386,19 @@ func mergeContiguousRoles(contents any) any {
 		role, _ := cm["role"].(string)
 		prevRole, _ := prev["role"].(string)
 		if role == prevRole {
-			prevCopy := copyMap(prev)
-			prevParts := asAnySlice(prevCopy["parts"])
+			prevParts := asAnySlice(prev["parts"])
 			curParts := asAnySlice(cm["parts"])
+			// functionResponse 与 text 等其他 part 混合时不得合并：
+			// 合并后会产生 "user 含工具结果 + 纯文本" 的混合 content，触发上游
+			// 400 "Requests ending with a model turn are not supported."。
+			// 仅当双方 parts 全部为 functionResponse（并行工具结果）才允许合并。
+			if partsContainFunctionResponse(prevParts) || partsContainFunctionResponse(curParts) {
+				if !(allPartsAreFunctionResponse(prevParts) && allPartsAreFunctionResponse(curParts)) {
+					merged = append(merged, cm)
+					continue
+				}
+			}
+			prevCopy := copyMap(prev)
 			prevCopy["parts"] = append(prevParts, curParts...)
 			merged[len(merged)-1] = prevCopy
 		} else {
@@ -457,4 +406,30 @@ func mergeContiguousRoles(contents any) any {
 		}
 	}
 	return merged
+}
+
+// partsContainFunctionResponse 判断 parts 中是否存在含 functionResponse 的 part。
+func partsContainFunctionResponse(parts []any) bool {
+	for _, p := range parts {
+		if pm, ok := p.(map[string]any); ok {
+			if pm["functionResponse"] != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// allPartsAreFunctionResponse 判断 parts 非空且每个 part 都含 functionResponse。
+func allPartsAreFunctionResponse(parts []any) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	for _, p := range parts {
+		pm, ok := p.(map[string]any)
+		if !ok || pm["functionResponse"] == nil {
+			return false
+		}
+	}
+	return true
 }
