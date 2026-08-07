@@ -1,17 +1,24 @@
+let subscriptionUpdatePollToken = 0;
+
 function initSubscriptions() {
   loadSubscriptions();
 }
 
 function loadSubscriptions() {
-  API.raw('/api/admin/subscriptions/list')
+  return API.raw('/api/admin/subscriptions/list')
     .then(data => {
-      if (!data) return;
+      if (!data) return null;
       const customUAs = data.custom_uas || [];
+      const updatingIDs = new Set(data.updating_ids || []);
       renderCustomUAs(customUAs);
-      renderSubscriptions(data.subscriptions || [], customUAs);
+      renderSubscriptions(data.subscriptions || [], customUAs, updatingIDs);
       updateUaSelect(customUAs);
+      return data;
     })
-    .catch(err => toast('加载订阅配置失败: ' + err, 'err'));
+    .catch(err => {
+      toast('加载订阅配置失败: ' + err, 'err');
+      return null;
+    });
 }
 
 function updateUaSelect(customUAs) {
@@ -72,7 +79,7 @@ function renderCustomUAs(customUAs) {
   });
 }
 
-function renderSubscriptions(subscriptions, customUAs) {
+function renderSubscriptions(subscriptions, customUAs, updatingIDs = new Set()) {
   const tbody = document.getElementById('subscriptionsBody');
   if (!tbody) return;
   tbody.replaceChildren();
@@ -116,7 +123,14 @@ function renderSubscriptions(subscriptions, customUAs) {
     const actions = document.createElement('div');
     actions.className = 'subscription-actions';
     actions.appendChild(createSubscriptionAction('编辑', 'btn ghost btn-blue compact-action', () => editSub(sub)));
-    actions.appendChild(createSubscriptionAction('更新', 'btn ghost btn-green compact-action', () => updateSub(sub.id)));
+    const updating = updatingIDs.has(sub.id);
+    const updateButton = createSubscriptionAction(
+      updating ? '更新中...' : '更新',
+      'btn ghost btn-green compact-action',
+      () => updateSub(sub.id)
+    );
+    updateButton.disabled = updating;
+    actions.appendChild(updateButton);
     actions.appendChild(createSubscriptionAction('删除', 'btn danger compact-action', () => deleteSub(sub.id)));
     actionCell.appendChild(actions);
     row.appendChild(actionCell);
@@ -210,6 +224,65 @@ document.addEventListener('keydown', event => {
     document.getElementById('subDeleteCancelBtn').click();
   }
 });
+
+function subscriptionUpdateSummary(targetIDs, data, updateAll) {
+  const subscriptions = data.subscriptions || [];
+  const byID = new Map(subscriptions.map(sub => [sub.id, sub]));
+  const targets = targetIDs.map(id => byID.get(id)).filter(Boolean);
+  const failed = targets.filter(sub => sub.last_error);
+
+  if (!updateAll && targetIDs.length === 1) {
+    const sub = byID.get(targetIDs[0]);
+    if (!sub) {
+      return '目标订阅已不存在。';
+    }
+    if (sub.last_error) {
+      return `订阅“${sub.name}”更新失败：\n${sub.last_error}`;
+    }
+    return `订阅“${sub.name}”已更新，节点数据已刷新。`;
+  }
+
+  if (failed.length > 0) {
+    return `本次更新完成 ${targets.length} 个订阅，其中 ${failed.length} 个失败。失败原因已显示在订阅表格中。`;
+  }
+  return `已完成 ${targets.length} 个订阅更新，节点数据已刷新。`;
+}
+
+async function monitorSubscriptionUpdates(targetIDs, updateAll) {
+  const token = ++subscriptionUpdatePollToken;
+  const ids = [...new Set(targetIDs.filter(Boolean))];
+  if (ids.length === 0) {
+    await loadSubscriptions();
+    toast(updateAll ? '没有可更新的订阅。' : '该订阅未能启动更新任务。');
+    return;
+  }
+
+  const deadline = Date.now() + 5 * 60 * 1000;
+  let consecutiveFailures = 0;
+  while (token === subscriptionUpdatePollToken) {
+    const data = await loadSubscriptions();
+    if (!data) {
+      consecutiveFailures++;
+      if (consecutiveFailures >= 3) {
+        toast('无法确认订阅更新结果，请稍后重新打开订阅管理页面。');
+        return;
+      }
+    } else {
+      consecutiveFailures = 0;
+      const running = new Set(data.updating_ids || []);
+      if (!ids.some(id => running.has(id))) {
+        toast(subscriptionUpdateSummary(ids, data, updateAll));
+        return;
+      }
+    }
+
+    if (Date.now() >= deadline) {
+      toast('等待超过 5 分钟，已停止自动刷新。任务可能仍在后台执行。');
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+}
 
 function deleteUA(ua) {
   showDeleteConfirm({
@@ -323,7 +396,7 @@ function updateSub(id) {
   API.raw('/api/admin/subscriptions/update', { method: 'POST', body: JSON.stringify({ id }) })
     .then(result => {
       toast(result.triggered ? '已触发后台更新' : '该订阅正在更新', 'ok');
-      setTimeout(loadSubscriptions, 2000);
+      monitorSubscriptionUpdates(result.target_ids || [id], false);
     })
     .catch(err => toast('更新请求失败: ' + err, 'err'));
 }
@@ -332,7 +405,7 @@ function updateAllSubs() {
   API.raw('/api/admin/subscriptions/update', { method: 'POST', body: JSON.stringify({ id: '' }) })
     .then(result => {
       toast(`已触发 ${result.triggered || 0} 个订阅更新`, 'ok');
-      setTimeout(loadSubscriptions, 3000);
+      monitorSubscriptionUpdates(result.target_ids || [], true);
     })
     .catch(err => toast('更新请求失败: ' + err, 'err'));
 }

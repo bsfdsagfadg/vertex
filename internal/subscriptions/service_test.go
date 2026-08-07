@@ -213,6 +213,43 @@ func TestStopRejectsRestartUntilWorkersExit(t *testing.T) {
 	service.Stop()
 }
 
+func TestRunningIDsReportsActiveUpdates(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("VPROXY_CONFIG", filepath.Join(dir, "config.json"))
+	if err := config.LoadSubscriptions(); err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []config.Subscription{
+		{ID: "sub-b", Name: "B", URL: "https://example.com/b"},
+		{ID: "sub-a", Name: "A", URL: "https://example.com/a"},
+	} {
+		if err := config.UpdateSubscription(sub); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	service := New(func(_ context.Context, _, _ string) ([]nodes.Node, error) {
+		started <- struct{}{}
+		<-release
+		return nil, errors.New("done")
+	})
+	if !service.Trigger("sub-b") || !service.Trigger("sub-a") {
+		t.Fatal("expected both updates to start")
+	}
+	<-started
+	<-started
+	ids := service.RunningIDs()
+	if len(ids) != 2 || ids[0] != "sub-a" || ids[1] != "sub-b" {
+		t.Fatalf("unexpected running IDs: %v", ids)
+	}
+	close(release)
+	service.Stop()
+	if ids = service.RunningIDs(); len(ids) != 0 {
+		t.Fatalf("completed updates must be removed: %v", ids)
+	}
+}
+
 func TestDeleteRestoresSubscriptionWhenNodeCleanupFails(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("VPROXY_CONFIG", filepath.Join(dir, "config.json"))

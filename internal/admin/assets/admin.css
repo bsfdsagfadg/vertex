@@ -205,7 +205,21 @@ td code { background: rgba(0, 0, 0, .3); padding: 2px 9px; border-radius: 8px; f
   flex: 1;
   min-width: 0;
 }
-
+.subscription-option-copy strong,
+.subscription-option-copy small {
+  display: block;
+}
+.subscription-option-copy strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+.subscription-option-copy small {
+  margin-top: 2px;
+  color: var(--text-dim-custom, var(--text-dim));
+  font-size: 12px;
+  line-height: 1.5;
+}
 /* ── 【仅在电脑端桌面视图启用的布局锁定 (锁定列宽，防止撑开挤压)】 ── */
 @media (min-width: 769px) {
   #nodesTable {

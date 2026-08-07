@@ -29,7 +29,16 @@ func (adm *AdminHandler) adminListSubscriptions(w http.ResponseWriter, _ *http.R
 	if err != nil {
 		log.Printf("[Admin] [ListSubscriptions] 无法加载订阅配置: %v", err)
 	}
-	writeJSON(w, http.StatusOK, config.GetSubscriptionConfig())
+	conf := config.GetSubscriptionConfig()
+	updatingIDs := []string{}
+	if adm.subscriptionService != nil {
+		updatingIDs = adm.subscriptionService.RunningIDs()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"subscriptions": conf.Subscriptions,
+		"custom_uas":    conf.CustomUAs,
+		"updating_ids":  updatingIDs,
+	})
 }
 
 func (adm *AdminHandler) adminSaveSubscription(w http.ResponseWriter, r *http.Request) {
@@ -196,14 +205,29 @@ func (adm *AdminHandler) adminUpdateSubscriptions(w http.ResponseWriter, r *http
 		return
 	}
 	if req.ID == "" {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "triggered": adm.subscriptionService.TriggerAll()})
+		conf := config.GetSubscriptionConfig()
+		targetIDs := make([]string, 0, len(conf.Subscriptions))
+		for _, sub := range conf.Subscriptions {
+			targetIDs = append(targetIDs, sub.ID)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":           true,
+			"triggered":    adm.subscriptionService.TriggerAll(),
+			"target_ids":   targetIDs,
+			"updating_ids": adm.subscriptionService.RunningIDs(),
+		})
 		return
 	}
 	if _, ok := config.GetSubscription(req.ID); !ok {
 		writeJSON(w, http.StatusNotFound, adminErr("订阅不存在"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "triggered": adm.subscriptionService.Trigger(req.ID)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"triggered":    adm.subscriptionService.Trigger(req.ID),
+		"target_ids":   []string{req.ID},
+		"updating_ids": adm.subscriptionService.RunningIDs(),
+	})
 }
 
 func (adm *AdminHandler) fetchSubWithFallback(ctx context.Context, rawURL, primaryUA string) (string, error) {

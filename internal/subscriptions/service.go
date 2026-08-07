@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -114,6 +115,17 @@ func (s *Service) finishUpdate(id string) {
 	s.runningMu.Lock()
 	delete(s.running, id)
 	s.runningMu.Unlock()
+}
+
+func (s *Service) RunningIDs() []string {
+	s.runningMu.Lock()
+	defer s.runningMu.Unlock()
+	ids := make([]string, 0, len(s.running))
+	for id := range s.running {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func (s *Service) Update(ctx context.Context, id string) error {

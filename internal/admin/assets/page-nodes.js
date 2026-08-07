@@ -435,7 +435,7 @@ function showNodeDedupConfirm(preview) {
   if (!modal || !text || !okButton || !cancelButton) return;
   const previousFocus = document.activeElement;
 
-  text.textContent = `发现 ${preview.groups} 组安全重复节点，可合并 ${preview.duplicate_count} 个节点。仅显示名称不同、连接参数完全一致的节点会被合并。`;
+  text.textContent = `发现 ${preview.groups} 组重复节点，可合并 ${preview.duplicate_count} 个节点。(仅显示名称不同、连接参数完全一致的节点会被合并。)`;
   modal.classList.remove('hidden');
   cancelButton.focus();
   const cleanup = () => {
@@ -469,7 +469,7 @@ async function dedupNodes() {
   try {
     const preview = await API.nodes.dedupPreview();
     if (!preview || preview.duplicate_count === 0) {
-      toast('未发现可安全合并的重复节点');
+      toast('未发现可合并的重复节点');
       return;
     }
     showNodeDedupConfirm(preview);
