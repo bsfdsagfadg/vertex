@@ -537,7 +537,7 @@ func TestConvertChatRequestGemini36TurnGuard(t *testing.T) {
 	}
 }
 
-func TestBuildVertexVariablesTurnGuardUsesPartType(t *testing.T) {
+func TestBuildVertexVariablesTurnGuardUsesModelRole(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelTurnGuardEnabled = true
 	provider := config.StaticProvider(cfg)
@@ -552,13 +552,19 @@ func TestBuildVertexVariablesTurnGuardUsesPartType(t *testing.T) {
 			name:       "function role",
 			model:      "gemini-3.6-flash",
 			last:       map[string]any{"role": "function", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "f", "response": map[string]any{}}}}},
-			wantAppend: true,
+			wantAppend: false,
 		},
 		{
 			name:       "user function response",
 			model:      "gemini-3.6-flash",
 			last:       map[string]any{"role": "user", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "f", "response": map[string]any{}}}}},
-			wantAppend: true,
+			wantAppend: false,
+		},
+		{
+			name:       "user function call",
+			model:      "gemini-3.6-flash",
+			last:       map[string]any{"role": "user", "parts": []any{map[string]any{"functionCall": map[string]any{"name": "f", "args": map[string]any{}}}}},
+			wantAppend: false,
 		},
 		{
 			name:       "ordinary user text",
@@ -591,7 +597,7 @@ func TestBuildVertexVariablesTurnGuardUsesPartType(t *testing.T) {
 	}
 }
 
-func TestBuildVertexVariablesTurnGuardNormalizesModelFunctionResponse(t *testing.T) {
+func TestBuildVertexVariablesTurnGuardKeepsModelFunctionResponse(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelTurnGuardEnabled = true
 	payload := map[string]any{"contents": []any{
@@ -601,11 +607,11 @@ func TestBuildVertexVariablesTurnGuardNormalizesModelFunctionResponse(t *testing
 	vars := BuildVertexVariables("gemini-3.6-flash", payload, config.StaticProvider(cfg))
 	contents := vars["contents"].([]any)
 	if len(contents) != 2 {
-		t.Fatalf("contents=%#v, want normalized function turn plus trailing user", contents)
+		t.Fatalf("contents=%#v, want model turn plus trailing user", contents)
 	}
-	functionTurn := contents[0].(map[string]any)
-	if functionTurn["role"] != "function" {
-		t.Fatalf("functionResponse role=%#v, want function", functionTurn["role"])
+	modelTurn := contents[0].(map[string]any)
+	if modelTurn["role"] != "model" {
+		t.Fatalf("functionResponse role=%#v, want model", modelTurn["role"])
 	}
 }
 
