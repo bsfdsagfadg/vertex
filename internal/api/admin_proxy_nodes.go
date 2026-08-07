@@ -37,6 +37,10 @@ func (adm *AdminHandler) adminImportProxyNode(w http.ResponseWriter, r *http.Req
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
+	if err := transport.ValidateProxyURI(body.RawURI); err != nil {
+		writeJSON(w, http.StatusBadRequest, adminErr("代理构造失败: "+err.Error()))
+		return
+	}
 	candidate, err := config.AddProxyCandidate(body.RawURI)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
@@ -131,6 +135,10 @@ func (adm *AdminHandler) adminImportProxyNodesBatch(w http.ResponseWriter, r *ht
 	}
 	added, existing, invalid := make([]config.ProxyCandidate, 0), make([]string, 0), make([]string, 0)
 	for _, rawURI := range body.URIs {
+		if err := transport.ValidateProxyURI(rawURI); err != nil {
+			invalid = append(invalid, strings.TrimSpace(rawURI))
+			continue
+		}
 		candidate, err := config.AddProxyCandidate(rawURI)
 		if err == nil {
 			added = append(added, candidate)
