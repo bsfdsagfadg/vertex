@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"strings"
+	"sync/atomic"
 
 	http "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
@@ -92,14 +93,37 @@ type pinnedEntryProxy struct {
 	uri string
 }
 
+type entryProxyPool struct {
+	uris []string
+	next atomic.Uint64
+}
+
 // WithEntryProxy pins a selected entry proxy to one top-level request.
 func WithEntryProxy(ctx context.Context, entryURI string) context.Context {
 	return context.WithValue(ctx, entryProxyContextKey{}, pinnedEntryProxy{uri: strings.TrimSpace(entryURI)})
 }
 
+// WithEntryProxyPool assigns one stable first-hop sequence to a top-level request.
+// An empty sequence is an explicit direct route and must not fall back to the
+// NetworkClient's dynamic selector.
+func WithEntryProxyPool(ctx context.Context, entryURIs []string) context.Context {
+	clean := make([]string, 0, len(entryURIs))
+	for _, uri := range entryURIs {
+		clean = append(clean, strings.TrimSpace(uri))
+	}
+	return context.WithValue(ctx, entryProxyContextKey{}, &entryProxyPool{uris: clean})
+}
+
 func entryProxyFromContext(ctx context.Context) (string, bool) {
 	if value, ok := ctx.Value(entryProxyContextKey{}).(pinnedEntryProxy); ok {
 		return value.uri, true
+	}
+	if pool, ok := ctx.Value(entryProxyContextKey{}).(*entryProxyPool); ok {
+		if len(pool.uris) == 0 {
+			return "", true
+		}
+		index := pool.next.Add(1) - 1
+		return pool.uris[index%uint64(len(pool.uris))], true
 	}
 	return "", false
 }
