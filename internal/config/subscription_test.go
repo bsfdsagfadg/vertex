@@ -82,6 +82,9 @@ func TestCustomUAReferencesUseStableID(t *testing.T) {
 	if err != nil || resolved != "agent-b" {
 		t.Fatalf("subscription should resolve edited UA content, got %q, %v", resolved, err)
 	}
+	if stored.Revision < 2 {
+		t.Fatalf("editing referenced UA must invalidate in-flight subscription updates: %+v", stored)
+	}
 }
 
 func TestSubscriptionConfigReadsAreDeepCopies(t *testing.T) {

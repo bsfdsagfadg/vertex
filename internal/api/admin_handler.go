@@ -13,10 +13,12 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/admin"
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/subscriptions"
 )
 
 type AdminHandler struct {
 	handler
+	subscriptionService *subscriptions.Service
 }
 
 func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {

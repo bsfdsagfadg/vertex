@@ -44,7 +44,17 @@ func (adm *AdminHandler) adminSaveSubscription(w http.ResponseWriter, r *http.Re
 		sub.ID = fmt.Sprintf("sub_%d", time.Now().UnixNano())
 	}
 
-	if err := config.UpdateSubscription(sub); err != nil {
+	var err error
+	if adm.subscriptionService != nil {
+		err = adm.subscriptionService.SaveSubscription(sub)
+	} else {
+		err = config.UpdateSubscription(sub)
+	}
+	if err != nil {
+		if errors.Is(err, config.ErrCustomUANotFound) {
+			writeJSON(w, http.StatusBadRequest, adminErr("选择的自定义 UA 不存在"))
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, adminErr("保存订阅失败: "+err.Error()))
 		return
 	}
@@ -61,22 +71,23 @@ func (adm *AdminHandler) adminDeleteSubscription(w http.ResponseWriter, r *http.
 		return
 	}
 
-	conf := config.GetSubscriptionConfig()
-	var newSubs []config.Subscription
-	for _, s := range conf.Subscriptions {
-		if s.ID != req.ID {
-			newSubs = append(newSubs, s)
+	var err error
+	if adm.subscriptionService != nil {
+		err = adm.subscriptionService.DeleteSubscription(req.ID, req.DeleteNodes)
+	} else {
+		if _, getErr := config.GetSubscription(req.ID); !getErr {
+			err = config.ErrSubscriptionNotFound
+		} else if err = nodes.RemoveSubscriptionSource(req.ID, req.DeleteNodes); err == nil {
+			_, err = config.DeleteSubscription(req.ID)
 		}
 	}
-	conf.Subscriptions = newSubs
-	if err := config.SaveSubscriptions(conf); err != nil {
-		writeJSON(w, http.StatusInternalServerError, adminErr("删除订阅失败: "+err.Error()))
+	if errors.Is(err, config.ErrSubscriptionNotFound) {
+		writeJSON(w, http.StatusNotFound, adminErr("订阅不存在"))
 		return
 	}
-
-	// 清理节点 (可选)
-	if req.DeleteNodes {
-		nodes.DeleteNodesBySource(req.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("删除订阅失败: "+err.Error()))
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -106,7 +117,13 @@ func (adm *AdminHandler) adminSaveCustomUA(w http.ResponseWriter, r *http.Reques
 			cua.ID = existing.ID
 		}
 	}
-	saved, err := config.SaveCustomUA(cua)
+	var saved config.CustomUA
+	var err error
+	if adm.subscriptionService != nil {
+		saved, err = adm.subscriptionService.SaveCustomUA(cua)
+	} else {
+		saved, err = config.SaveCustomUA(cua)
+	}
 	if errors.Is(err, config.ErrCustomUANameConflict) {
 		writeJSON(w, http.StatusConflict, adminErr("自定义 UA 名称不能重复"))
 		return
@@ -137,7 +154,12 @@ func (adm *AdminHandler) adminDeleteCustomUA(w http.ResponseWriter, r *http.Requ
 			id = existing.ID
 		}
 	}
-	err := config.DeleteCustomUA(id)
+	var err error
+	if adm.subscriptionService != nil {
+		err = adm.subscriptionService.DeleteCustomUA(id)
+	} else {
+		err = config.DeleteCustomUA(id)
+	}
 	if errors.Is(err, config.ErrCustomUAInUse) {
 		writeJSON(w, http.StatusBadRequest, adminErr("无法删除：仍有订阅正在使用此自定义 UA"))
 		return
@@ -161,42 +183,19 @@ func (adm *AdminHandler) adminUpdateSubscriptions(w http.ResponseWriter, r *http
 		return
 	}
 
-	conf := config.GetSubscriptionConfig()
-
-	go func() {
-		for i, sub := range conf.Subscriptions {
-			if req.ID != "" && sub.ID != req.ID {
-				continue
-			}
-
-			log.Printf("[Admin] [UpdateSubscription] 开始拉取订阅: %s (%s)", sub.Name, sub.URL)
-
-			text, err := adm.fetchSubWithFallback(context.Background(), sub.URL, sub.UserAgent)
-
-			if err != nil {
-				log.Printf("[Admin] [UpdateSubscription] 订阅 %s 拉取失败: %v", sub.Name, err)
-				sub.LastError = err.Error()
-			} else {
-				parsedNodes := parseImportedNodes(text)
-				if len(parsedNodes) == 0 {
-					sub.LastError = "未解析到有效节点"
-				} else {
-					if err := nodes.ReplaceSubscriptionNodes(sub.ID, parsedNodes); err != nil {
-						sub.LastError = "替换订阅节点失败: " + err.Error()
-					} else {
-						sub.LastError = ""
-						sub.LastUpdateTime = time.Now().Unix()
-						log.Printf("[Admin] [UpdateSubscription] 订阅 %s 更新成功，解析出 %d 个节点", sub.Name, len(parsedNodes))
-					}
-				}
-			}
-			conf.Subscriptions[i] = sub
-		}
-		_ = config.SaveSubscriptions(conf)
-		// We might need to ensure nodes are saved if MergeNodes doesn't save them. I'll verify store.go later.
-	}()
-
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	if adm.subscriptionService == nil {
+		writeJSON(w, http.StatusServiceUnavailable, adminErr("订阅更新服务不可用"))
+		return
+	}
+	if req.ID == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "triggered": adm.subscriptionService.TriggerAll()})
+		return
+	}
+	if _, ok := config.GetSubscription(req.ID); !ok {
+		writeJSON(w, http.StatusNotFound, adminErr("订阅不存在"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "triggered": adm.subscriptionService.Trigger(req.ID)})
 }
 
 func (adm *AdminHandler) fetchSubWithFallback(ctx context.Context, rawURL, primaryUA string) (string, error) {
@@ -207,10 +206,15 @@ func (adm *AdminHandler) fetchSubWithFallback(ctx context.Context, rawURL, prima
 	uasToTry = append(uasToTry, fallbackUAs...)
 
 	var lastErr error
+	seen := make(map[string]struct{}, len(uasToTry))
 	for _, ua := range uasToTry {
 		if ua == "" {
 			continue
 		}
+		if _, duplicate := seen[ua]; duplicate {
+			continue
+		}
+		seen[ua] = struct{}{}
 		data, err := adm.fetchSubDataWithUA(ctx, rawURL, ua)
 		if err == nil {
 			text := strings.TrimSpace(string(data))
@@ -297,98 +301,4 @@ func (adm *AdminHandler) fetchSubscriptionDataViaProxyWithUA(ctx context.Context
 		return nil, fmt.Errorf("status code %d", statusCode)
 	}
 	return data, nil
-}
-
-var (
-	subUpdaterTicker *time.Ticker
-	subUpdaterQuit   chan struct{}
-)
-
-func (adm *AdminHandler) StartSubscriptionUpdater() {
-	if subUpdaterTicker != nil {
-		return
-	}
-	subUpdaterTicker = time.NewTicker(1 * time.Minute)
-	subUpdaterQuit = make(chan struct{})
-
-	go func() {
-		for {
-			select {
-			case <-subUpdaterTicker.C:
-				adm.checkAndUpdateSubscriptions()
-			case <-subUpdaterQuit:
-				return
-			}
-		}
-	}()
-}
-
-func (adm *AdminHandler) StopSubscriptionUpdater() {
-	if subUpdaterTicker != nil {
-		subUpdaterTicker.Stop()
-		close(subUpdaterQuit)
-		subUpdaterTicker = nil
-	}
-}
-
-func (adm *AdminHandler) checkAndUpdateSubscriptions() {
-	conf := config.GetSubscriptionConfig()
-	if len(conf.Subscriptions) == 0 {
-		return
-	}
-
-	now := time.Now().Unix()
-	var toUpdate []string // store IDs to update
-
-	for _, sub := range conf.Subscriptions {
-		if sub.UpdateInterval <= 0 {
-			continue // Auto-update disabled
-		}
-		intervalSec := int64(sub.UpdateInterval * 60)
-		if now >= sub.LastUpdateTime+intervalSec {
-			toUpdate = append(toUpdate, sub.ID)
-		}
-	}
-
-	if len(toUpdate) > 0 {
-		// Create a mock request payload to call adminUpdateSubscriptions logic
-		go func(ids []string) {
-			for _, id := range ids {
-				adm.doUpdateSubscription(id)
-			}
-		}(toUpdate)
-	}
-}
-
-func (adm *AdminHandler) doUpdateSubscription(id string) {
-	conf := config.GetSubscriptionConfig()
-	for i, sub := range conf.Subscriptions {
-		if sub.ID != id {
-			continue
-		}
-		log.Printf("[Admin] [UpdateSubscription] 开始后台拉取订阅: %s (%s)", sub.Name, sub.URL)
-
-		text, err := adm.fetchSubWithFallback(context.Background(), sub.URL, sub.UserAgent)
-
-		if err != nil {
-			log.Printf("[Admin] [UpdateSubscription] 订阅 %s 拉取失败: %v", sub.Name, err)
-			sub.LastError = err.Error()
-		} else {
-			parsedNodes := parseImportedNodes(text)
-			if len(parsedNodes) == 0 {
-				sub.LastError = "未解析到有效节点"
-			} else {
-				if err := nodes.ReplaceSubscriptionNodes(sub.ID, parsedNodes); err != nil {
-					sub.LastError = "替换订阅节点失败: " + err.Error()
-				} else {
-					sub.LastError = ""
-					sub.LastUpdateTime = time.Now().Unix()
-					log.Printf("[Admin] [UpdateSubscription] 订阅 %s 更新成功，解析出 %d 个节点", sub.Name, len(parsedNodes))
-				}
-			}
-		}
-		conf.Subscriptions[i] = sub
-		_ = config.SaveSubscriptions(conf)
-		break
-	}
 }

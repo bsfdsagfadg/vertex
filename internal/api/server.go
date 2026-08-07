@@ -5,37 +5,59 @@
 package api
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"path/filepath"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/subscriptions"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
 type Server struct {
-	chat   *ChatHandler
-	image  *ImageHandler
-	audio  *AudioHandler
-	gemini *GeminiHandler
-	admin  *AdminHandler
-	mw     *middleware
+	chat          *ChatHandler
+	image         *ImageHandler
+	audio         *AudioHandler
+	gemini        *GeminiHandler
+	admin         *AdminHandler
+	subscriptions *subscriptions.Service
+	mw            *middleware
 }
 
 func NewServer(vc *vertex.VertexAIClient, keys *APIKeyManager, cfg config.ConfigProvider) *Server {
 	h := handler{vc: vc, keys: keys, cfg: cfg}
+	adminHandler := &AdminHandler{handler: h}
+	subscriptionService := subscriptions.New(func(ctx context.Context, rawURL, userAgent string) ([]nodes.Node, error) {
+		text, err := adminHandler.fetchSubWithFallback(ctx, rawURL, userAgent)
+		if err != nil {
+			return nil, err
+		}
+		return parseImportedNodes(text), nil
+	})
+	adminHandler.subscriptionService = subscriptionService
 	srv := &Server{
-		chat:   &ChatHandler{handler: h, reqConv: transform.DefaultRequestConverter(), respConv: transform.DefaultResponseConverter()},
-		image:  &ImageHandler{h},
-		audio:  &AudioHandler{h},
-		gemini: &GeminiHandler{h},
-		admin:  &AdminHandler{h},
-		mw:     &middleware{cfg: cfg, keys: keys},
+		chat:          &ChatHandler{handler: h, reqConv: transform.DefaultRequestConverter(), respConv: transform.DefaultResponseConverter()},
+		image:         &ImageHandler{h},
+		audio:         &AudioHandler{h},
+		gemini:        &GeminiHandler{h},
+		admin:         adminHandler,
+		subscriptions: subscriptionService,
+		mw:            &middleware{cfg: cfg, keys: keys},
 	}
-	srv.admin.StartSubscriptionUpdater()
+	if err := subscriptionService.Start(context.Background()); err != nil {
+		log.Printf("[Subscriptions] 启动自动更新服务失败: %v", err)
+	}
 	return srv
+}
+
+func (s *Server) Close() {
+	if s.subscriptions != nil {
+		s.subscriptions.Stop()
+	}
 }
 
 func (s *Server) Handler() http.Handler {

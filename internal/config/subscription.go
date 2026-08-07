@@ -304,7 +304,15 @@ func SaveCustomUA(ua CustomUA) (CustomUA, error) {
 		}
 		for i := range conf.CustomUAs {
 			if conf.CustomUAs[i].ID == ua.ID {
+				changed := conf.CustomUAs[i].Name != ua.Name || conf.CustomUAs[i].UserAgent != ua.UserAgent
 				conf.CustomUAs[i] = ua
+				if changed {
+					for subIndex := range conf.Subscriptions {
+						if conf.Subscriptions[subIndex].CustomUAID == ua.ID {
+							conf.Subscriptions[subIndex].Revision++
+						}
+					}
+				}
 				return nil
 			}
 		}

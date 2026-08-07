@@ -221,6 +221,7 @@ func main() {
 				log.Printf("[vproxy] 关闭超时/出错：%v(强制结束)", err)
 			}
 			cancel()
+			srv.Close()
 			transport.StopAllProxies()
 			telemetry.Stop()
 			_ = dailyLogger.Close()

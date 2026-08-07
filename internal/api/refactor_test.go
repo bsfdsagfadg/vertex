@@ -100,6 +100,7 @@ func newTestServer(t *testing.T) *testFixture {
 
 	// ── HTTP server ──
 	srv := NewServer(vc, keys, config.StaticProvider(cfg))
+	t.Cleanup(srv.Close)
 	ts := httptest.NewServer(srv.Handler())
 
 	t.Cleanup(func() {
