@@ -266,14 +266,16 @@ async function loadNodes() {
       tr.appendChild(statusTd);
 
       var actionTd = document.createElement('td');
-      actionTd.style.cssText = 'text-align:right;white-space:nowrap;';
+      actionTd.className = 'node-actions-cell';
+      var actionWrap = document.createElement('div');
+      actionWrap.className = 'node-actions';
       var testBtn = document.createElement('button');
       testBtn.className = 'btn ghost';
       testBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;';
       testBtn.dataset.action = 'test-node';
       testBtn.dataset.uri = n.raw_uri;
       testBtn.textContent = '\u6D4B\u8BD5';
-      actionTd.appendChild(testBtn);
+      actionWrap.appendChild(testBtn);
       if (n.disabled) {
         var enableBtn = document.createElement('button');
         enableBtn.className = 'btn ghost';
@@ -281,7 +283,7 @@ async function loadNodes() {
         enableBtn.dataset.action = 'enable-node';
         enableBtn.dataset.uri = n.raw_uri;
         enableBtn.textContent = '\u542F\u7528';
-        actionTd.appendChild(enableBtn);
+        actionWrap.appendChild(enableBtn);
       }
       if (isLocked) {
         var unuseBtn = document.createElement('button');
@@ -290,7 +292,7 @@ async function loadNodes() {
         unuseBtn.dataset.action = 'unuse-node';
         unuseBtn.dataset.uri = n.raw_uri;
         unuseBtn.textContent = '取消锁定';
-        actionTd.appendChild(unuseBtn);
+        actionWrap.appendChild(unuseBtn);
       } else {
         var useBtn = document.createElement('button');
         useBtn.className = 'btn ghost';
@@ -298,7 +300,7 @@ async function loadNodes() {
         useBtn.dataset.action = 'use-node';
         useBtn.dataset.uri = n.raw_uri;
         useBtn.textContent = '\u9501\u5B9A\u4F7F\u7528';
-        actionTd.appendChild(useBtn);
+        actionWrap.appendChild(useBtn);
       }
       var entryBtn = document.createElement('button');
       var alreadyEntry = cachedEntryProxyURIs.has(entryProxyIdentity(n.raw_uri));
@@ -308,14 +310,15 @@ async function loadNodes() {
       entryBtn.dataset.uri = n.raw_uri;
       entryBtn.textContent = alreadyEntry ? '已在入口池' : '添加至全局入口代理';
       entryBtn.disabled = alreadyEntry;
-      actionTd.appendChild(entryBtn);
+      actionWrap.appendChild(entryBtn);
       var delBtn = document.createElement('button');
       delBtn.className = 'btn danger';
       delBtn.style.cssText = 'padding:4px 10px;font-size:12px;';
       delBtn.dataset.action = 'delete-node';
       delBtn.dataset.uri = n.raw_uri;
       delBtn.textContent = '\u5220\u9664';
-      actionTd.appendChild(delBtn);
+      actionWrap.appendChild(delBtn);
+      actionTd.appendChild(actionWrap);
       tr.appendChild(actionTd);
       frag.appendChild(tr);
     }

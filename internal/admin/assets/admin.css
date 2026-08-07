@@ -229,7 +229,7 @@ td code { background: rgba(0, 0, 0, .3); padding: 2px 9px; border-radius: 8px; f
   }
 
   #nodesTable th:nth-child(1), #nodesTable td:nth-child(1) {
-    width: 50px !important;
+    width: 44px !important;
     text-align: center;
   }
   #nodesTable th:nth-child(2), #nodesTable td:nth-child(2) {
@@ -237,14 +237,27 @@ td code { background: rgba(0, 0, 0, .3); padding: 2px 9px; border-radius: 8px; f
     min-width: 180px !important;
   }
   #nodesTable th:nth-child(3), #nodesTable td:nth-child(3) {
-    width: 110px !important;
+    width: 90px !important;
   }
   #nodesTable th:nth-child(4), #nodesTable td:nth-child(4) {
-    width: 240px !important;
+    width: 180px !important;
   }
   #nodesTable th:nth-child(5), #nodesTable td:nth-child(5) {
-    width: 290px !important;
+    width: 280px !important;
     text-align: right !important;
+    white-space: normal !important;
+  }
+
+  #nodesTable .node-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  #nodesTable .node-actions .btn {
+    margin: 0 !important;
+    white-space: nowrap;
   }
 
   .node-error-wrap, .node-err-msg {
@@ -529,6 +542,12 @@ td code { background: rgba(0, 0, 0, .3); padding: 2px 9px; border-radius: 8px; f
     flex-wrap: wrap !important;
     gap: 6px !important;
     padding-left: 32% !important;
+  }
+  #page-nodes td:nth-of-type(5) .node-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    width: 100%;
   }
   #page-nodes td:nth-of-type(5) .btn {
     margin: 0 !important;
