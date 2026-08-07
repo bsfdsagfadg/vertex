@@ -213,17 +213,20 @@ func GetNodeSources(rawURI string) []NodeSource {
 }
 
 func upsertNodesUnsafe(newNodes []Node, source NodeSource) {
-	existing := make(map[string]struct{}, len(nodeList))
-	for _, node := range nodeList {
-		existing[node.RawURI] = struct{}{}
+	existing := make(map[string]int, len(nodeList))
+	for index, node := range nodeList {
+		existing[node.RawURI] = index
 	}
 	for _, node := range newNodes {
 		if strings.TrimSpace(node.RawURI) == "" {
 			continue
 		}
-		if _, ok := existing[node.RawURI]; !ok {
+		index, ok := existing[node.RawURI]
+		if !ok {
 			nodeList = append(nodeList, node)
-			existing[node.RawURI] = struct{}{}
+			existing[node.RawURI] = len(nodeList) - 1
+		} else if source.Type != SourceSubscription || !hasSourceTypeUnsafe(node.RawURI, SourceManual) {
+			nodeList[index] = node
 		}
 		addNodeSourceUnsafe(node.RawURI, source)
 		if source.Type == SourceSubscription {
@@ -237,11 +240,13 @@ func UpsertNodesWithSource(newNodes []Node, sourceType, sourceID string) error {
 	ensureLoaded()
 	oldNodes := append([]Node(nil), nodeList...)
 	oldSources := cloneNodeSourcesUnsafe()
+	oldHealth := cloneHealthMapUnsafe()
 	upsertNodesUnsafe(newNodes, NodeSource{Type: sourceType, ID: sourceID})
 	pruneHealthUnsafe()
 	if err := saveNodeStateUnsafe(); err != nil {
 		nodeList = oldNodes
 		nodeSources = oldSources
+		healthMap = oldHealth
 		mu.Unlock()
 		return err
 	}

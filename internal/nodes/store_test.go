@@ -372,6 +372,64 @@ func TestManualSourceRemainsIndependentFromSubscriptions(t *testing.T) {
 	}
 }
 
+func TestSubscriptionRefreshUpdatesOwnedMetadataButPreservesManualMetadata(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	rawURI := "vless://id@example.com:443?security=tls#name"
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{{RawURI: rawURI, Name: "old", Type: "vless", Disabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{{RawURI: rawURI, Name: "new", Type: "vless"}}); err != nil {
+		t.Fatal(err)
+	}
+	got := LoadNodes()
+	if len(got) != 1 || got[0].Name != "new" || got[0].Disabled {
+		t.Fatalf("subscription refresh must update owned metadata: %+v", got)
+	}
+
+	manual := Node{RawURI: rawURI, Name: "manual", Type: "vless", Disabled: true}
+	if err := ImportManualNodes([]Node{manual}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{{RawURI: rawURI, Name: "subscription", Type: "vless"}}); err != nil {
+		t.Fatal(err)
+	}
+	got = LoadNodes()
+	if len(got) != 1 || got[0].Name != "manual" || !got[0].Disabled {
+		t.Fatalf("subscription must not overwrite manual metadata: %+v", got)
+	}
+}
+
+func TestUpsertFailureRestoresPrunedHealth(t *testing.T) {
+	db.CloseDB()
+	resetState()
+	defer func() {
+		db.CloseDB()
+		resetState()
+	}()
+	if err := db.InitDB(filepath.Join(t.TempDir(), "data.db")); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertNodesWithSource([]Node{{RawURI: "uri1", Name: "one"}}, SourceManual, ""); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	healthMap["orphan"] = &NodeHealth{SuccessCount: 7}
+	mu.Unlock()
+	if err := db.GlobalDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertNodesWithSource([]Node{{RawURI: "uri2", Name: "two"}}, SourceManual, ""); err == nil {
+		t.Fatal("closed database must make upsert fail")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if healthMap["orphan"] == nil || healthMap["orphan"].SuccessCount != 7 {
+		t.Fatalf("failed upsert must restore pruned health: %+v", healthMap["orphan"])
+	}
+}
+
 func TestKeepingDeletedSubscriptionNodesConvertsThemToManual(t *testing.T) {
 	resetState()
 	defer resetState()
