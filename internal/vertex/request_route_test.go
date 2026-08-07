@@ -228,15 +228,59 @@ func TestPrepareRequestFallsBackWithoutClearingEntryCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(routes) != 2 || routes[0] != entryURI || routes[1] == "" || routes[1] == entryURI {
+	entryCalls := 0
+	fallbackCalls := 0
+	for _, route := range routes {
+		switch route {
+		case entryURI:
+			entryCalls++
+		case fallbackURI:
+			fallbackCalls++
+		}
+	}
+	if entryCalls != requestConcurrency(config.StaticProvider(cfg)) || fallbackCalls != 1 {
 		t.Fatalf("unexpected token acquisition routes: %#v", routes)
 	}
 	route := routeFromContext(routedCtx)
-	if route == nil || route.entryURI != entryURI || route.token.proxyURI != routes[1] {
-		t.Fatalf("request route was not fixed correctly: %+v", route)
+	if route == nil || route.entryURI != "" || route.token.proxyURI != "" {
+		t.Fatalf("request route unexpectedly bound token to a proxy: %+v", route)
 	}
 	items := config.ListProxyCandidates()
 	if len(items) != 1 || items[0].CooldownUntil <= time.Now().Unix() {
 		t.Fatalf("entry cooldown was cleared by fallback success: %+v", items)
+	}
+}
+
+func TestPrepareRequestFallsBackToDirectWhenEntriesAreCooling(t *testing.T) {
+	db.CloseDB()
+	if err := db.InitDB(filepath.Join(t.TempDir(), "request-route.db")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.CloseDB)
+
+	entryURI := "socks5://127.0.0.1:18082#cooling"
+	if _, err := config.AddProxyCandidate(entryURI); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.MarkEntryProxyFailure(entryURI, "unavailable"); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var routes []string
+	pool := recaptcha.NewTokenPoolCustomContext(func(_ context.Context, proxyURI string) (string, error) {
+		mu.Lock()
+		routes = append(routes, proxyURI)
+		mu.Unlock()
+		return "direct-token", nil
+	})
+	cfg := config.DefaultConfig()
+	cfg.ProxyURL = ""
+	client := &VertexAIClient{pool: pool, cfg: config.StaticProvider(cfg)} //nolint:exhaustruct
+	if _, err := client.prepareRequest(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0] != "" {
+		t.Fatalf("expected one direct token attempt, got %#v", routes)
 	}
 }
