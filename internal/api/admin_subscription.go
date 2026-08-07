@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -83,6 +84,7 @@ func (adm *AdminHandler) adminDeleteSubscription(w http.ResponseWriter, r *http.
 
 func (adm *AdminHandler) adminSaveCustomUA(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		ID           string `json:"id"`
 		Name         string `json:"name"`
 		UserAgent    string `json:"user_agent"`
 		OriginalName string `json:"original_name"`
@@ -91,93 +93,60 @@ func (adm *AdminHandler) adminSaveCustomUA(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	cua := config.CustomUA{
+		ID:        strings.TrimSpace(req.ID),
 		Name:      strings.TrimSpace(req.Name),
 		UserAgent: strings.TrimSpace(req.UserAgent),
 	}
-	cua.Name = strings.TrimSpace(cua.Name)
-	cua.UserAgent = strings.TrimSpace(cua.UserAgent)
 	if cua.Name == "" || cua.UserAgent == "" {
 		writeJSON(w, http.StatusBadRequest, adminErr("UA名称和内容不能为空"))
 		return
 	}
-
-	conf := config.GetSubscriptionConfig()
-	found := false
-	var oldUAString string
-
-	// 查找并替换
-	searchName := cua.Name
-	if req.OriginalName != "" {
-		searchName = req.OriginalName
-	}
-
-	for i, u := range conf.CustomUAs {
-		if u.Name == searchName {
-			oldUAString = u.UserAgent
-			conf.CustomUAs[i] = cua
-			found = true
-			break
+	if cua.ID == "" && strings.TrimSpace(req.OriginalName) != "" {
+		if existing, ok := config.FindCustomUAByName(req.OriginalName); ok {
+			cua.ID = existing.ID
 		}
 	}
-	if !found {
-		conf.CustomUAs = append(conf.CustomUAs, cua)
+	saved, err := config.SaveCustomUA(cua)
+	if errors.Is(err, config.ErrCustomUANameConflict) {
+		writeJSON(w, http.StatusConflict, adminErr("自定义 UA 名称不能重复"))
+		return
 	}
-
-	// 如果 UserAgent 内容被修改了，且有旧的 UA 记录，则级联更新对应的订阅
-	if found && oldUAString != "" && oldUAString != cua.UserAgent {
-		for i, sub := range conf.Subscriptions {
-			if sub.UserAgent == oldUAString {
-				conf.Subscriptions[i].UserAgent = cua.UserAgent
-			}
-		}
+	if errors.Is(err, config.ErrCustomUANotFound) {
+		writeJSON(w, http.StatusNotFound, adminErr("要编辑的自定义 UA 不存在"))
+		return
 	}
-
-	if err := config.SaveSubscriptions(conf); err != nil {
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr("保存自定义UA失败: "+err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": saved.ID})
 }
 
 func (adm *AdminHandler) adminDeleteCustomUA(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
 	if !adm.decodeAdminBody(w, r, &req) {
 		return
 	}
 
-	conf := config.GetSubscriptionConfig()
-
-	// 查找即将删除的 UA 的内容
-	var targetUA string
-	for _, u := range conf.CustomUAs {
-		if u.Name == req.Name {
-			targetUA = u.UserAgent
-			break
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		if existing, ok := config.FindCustomUAByName(req.Name); ok {
+			id = existing.ID
 		}
 	}
-	if targetUA == "" {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	err := config.DeleteCustomUA(id)
+	if errors.Is(err, config.ErrCustomUAInUse) {
+		writeJSON(w, http.StatusBadRequest, adminErr("无法删除：仍有订阅正在使用此自定义 UA"))
 		return
 	}
-
-	// 检查是否有订阅正在使用该 UA
-	for _, sub := range conf.Subscriptions {
-		if sub.UserAgent == targetUA {
-			writeJSON(w, http.StatusBadRequest, adminErr(fmt.Sprintf("无法删除：订阅 '%s' 正在使用此自定义 UA", sub.Name)))
-			return
-		}
+	if errors.Is(err, config.ErrCustomUANotFound) {
+		writeJSON(w, http.StatusNotFound, adminErr("自定义 UA 不存在"))
+		return
 	}
-
-	var newUAs []config.CustomUA
-	for _, u := range conf.CustomUAs {
-		if u.Name != req.Name {
-			newUAs = append(newUAs, u)
-		}
-	}
-	conf.CustomUAs = newUAs
-	if err := config.SaveSubscriptions(conf); err != nil {
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr("删除自定义UA失败: "+err.Error()))
 		return
 	}
