@@ -88,3 +88,38 @@ func TestSelectEntryProxyRotatesAndFiltersUnavailableCandidates(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeProxyURIPreservesEncodedPayloadCase(t *testing.T) {
+	got, err := NormalizeProxyURI("VMESS://AbCdEf012_-#display-name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "vmess://AbCdEf012_-"; got != want {
+		t.Fatalf("NormalizeProxyURI() = %q, want %q", got, want)
+	}
+
+	got, err = NormalizeProxyURI("SOCKS5://User:Pass@EXAMPLE.COM:1080#display-name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "socks5://User:Pass@example.com:1080"; got != want {
+		t.Fatalf("NormalizeProxyURI() = %q, want %q", got, want)
+	}
+}
+
+func TestAddProxyCandidateUsesCaseSensitiveEncodedIdentity(t *testing.T) {
+	setupEntryProxyTest(t, `{"proxy_url":""}`)
+	first := "vmess://AbCdEf012_-#first"
+	if _, err := AddProxyCandidate(first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AddProxyCandidate("vmess://AbCdEf012_-#renamed"); err == nil {
+		t.Fatal("fragment-only change should be treated as a duplicate")
+	}
+	if _, err := AddProxyCandidate("vmess://aBcDeF012_-#different-payload"); err != nil {
+		t.Fatalf("case-distinct payload was rejected as a duplicate: %v", err)
+	}
+	if items := ListProxyCandidates(); len(items) != 2 {
+		t.Fatalf("candidate count = %d, want 2: %+v", len(items), items)
+	}
+}

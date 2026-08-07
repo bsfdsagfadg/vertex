@@ -19,10 +19,21 @@ func NormalizeProxyURI(rawURI string) (string, error) {
 		return "", fmt.Errorf("URI 格式无效")
 	}
 	parsed.Scheme = strings.ToLower(parsed.Scheme)
-	parsed.Host = strings.ToLower(parsed.Host)
+	if !hasCaseSensitiveProxyPayload(parsed.Scheme) {
+		parsed.Host = strings.ToLower(parsed.Host)
+	}
 	parsed.Fragment = ""
 	parsed.RawFragment = ""
 	return parsed.String(), nil
+}
+
+func hasCaseSensitiveProxyPayload(scheme string) bool {
+	switch scheme {
+	case "vmess", "clash", "ssr", "shadowsocksr":
+		return true
+	default:
+		return false
+	}
 }
 
 // SelectEntryProxy selects one enabled, non-cooling entry in stable database order.
