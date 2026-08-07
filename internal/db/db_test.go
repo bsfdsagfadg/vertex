@@ -52,6 +52,11 @@ func TestInitDBAndMigrate(t *testing.T) {
 	if err != nil || count != 1 {
 		t.Errorf("Expected 1 node, got %d, error: %v", count, err)
 	}
+	var sourceType, sourceID string
+	err = GlobalDB.QueryRow("SELECT source_type, source_id FROM node_sources WHERE raw_uri = 'http://127.0.0.1:8080'").Scan(&sourceType, &sourceID)
+	if err != nil || sourceType != "legacy" || sourceID != "" {
+		t.Errorf("migrated node should be marked legacy, got %q/%q, error: %v", sourceType, sourceID, err)
+	}
 
 	// Verify node_health table
 	var successCount int
@@ -99,5 +104,59 @@ func TestInitDBAddsNodeHealthStateColumnsToExistingDatabase(t *testing.T) {
 		if count != 1 {
 			t.Fatalf("旧数据库未补齐列 %s", column)
 		}
+	}
+}
+
+func TestInitDBMigratesDevelopmentSourceColumnOnce(t *testing.T) {
+	CloseDB()
+	path := filepath.Join(t.TempDir(), "data.db")
+	legacyDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = legacyDB.Exec(`CREATE TABLE nodes (
+		raw_uri TEXT PRIMARY KEY,
+		type TEXT NOT NULL,
+		name TEXT NOT NULL,
+		disabled BOOLEAN NOT NULL DEFAULT 0,
+		source TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = legacyDB.Exec("INSERT INTO nodes (raw_uri, type, name, source) VALUES ('uri-a', 'vless', 'A', 'sub-a')"); err != nil {
+		t.Fatal(err)
+	}
+	if err = legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = InitDB(path); err != nil {
+		t.Fatal(err)
+	}
+	var sourceType, sourceID, oldColumn string
+	if err = GlobalDB.QueryRow("SELECT source_type, source_id FROM node_sources WHERE raw_uri = 'uri-a'").Scan(&sourceType, &sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if sourceType != "subscription" || sourceID != "sub-a" {
+		t.Fatalf("unexpected migrated source: %q/%q", sourceType, sourceID)
+	}
+	if err = GlobalDB.QueryRow("SELECT source FROM nodes WHERE raw_uri = 'uri-a'").Scan(&oldColumn); err != nil {
+		t.Fatal(err)
+	}
+	if oldColumn != "" {
+		t.Fatalf("legacy source column must be cleared after migration: %q", oldColumn)
+	}
+	CloseDB()
+
+	if err = InitDB(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(CloseDB)
+	var count int
+	if err = GlobalDB.QueryRow("SELECT COUNT(*) FROM node_sources WHERE raw_uri = 'uri-a'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("source migration must be idempotent, got %d rows", count)
 	}
 }

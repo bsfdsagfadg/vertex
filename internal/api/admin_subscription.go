@@ -131,7 +131,7 @@ func (adm *AdminHandler) adminSaveCustomUA(w http.ResponseWriter, r *http.Reques
 			}
 		}
 	}
-	
+
 	if err := config.SaveSubscriptions(conf); err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr("保存自定义UA失败: "+err.Error()))
 		return
@@ -148,7 +148,7 @@ func (adm *AdminHandler) adminDeleteCustomUA(w http.ResponseWriter, r *http.Requ
 	}
 
 	conf := config.GetSubscriptionConfig()
-	
+
 	// 查找即将删除的 UA 的内容
 	var targetUA string
 	for _, u := range conf.CustomUAs {
@@ -193,17 +193,17 @@ func (adm *AdminHandler) adminUpdateSubscriptions(w http.ResponseWriter, r *http
 	}
 
 	conf := config.GetSubscriptionConfig()
-	
+
 	go func() {
 		for i, sub := range conf.Subscriptions {
 			if req.ID != "" && sub.ID != req.ID {
 				continue
 			}
-			
+
 			log.Printf("[Admin] [UpdateSubscription] 开始拉取订阅: %s (%s)", sub.Name, sub.URL)
-			
+
 			text, err := adm.fetchSubWithFallback(context.Background(), sub.URL, sub.UserAgent)
-			
+
 			if err != nil {
 				log.Printf("[Admin] [UpdateSubscription] 订阅 %s 拉取失败: %v", sub.Name, err)
 				sub.LastError = err.Error()
@@ -212,14 +212,13 @@ func (adm *AdminHandler) adminUpdateSubscriptions(w http.ResponseWriter, r *http
 				if len(parsedNodes) == 0 {
 					sub.LastError = "未解析到有效节点"
 				} else {
-					for idx := range parsedNodes {
-						parsedNodes[idx].Source = sub.ID
+					if err := nodes.ReplaceSubscriptionNodes(sub.ID, parsedNodes); err != nil {
+						sub.LastError = "替换订阅节点失败: " + err.Error()
+					} else {
+						sub.LastError = ""
+						sub.LastUpdateTime = time.Now().Unix()
+						log.Printf("[Admin] [UpdateSubscription] 订阅 %s 更新成功，解析出 %d 个节点", sub.Name, len(parsedNodes))
 					}
-					nodes.DeleteNodesBySource(sub.ID)
-					nodes.MergeNodes(parsedNodes)
-					sub.LastError = ""
-					sub.LastUpdateTime = time.Now().Unix()
-					log.Printf("[Admin] [UpdateSubscription] 订阅 %s 更新成功，解析出 %d 个节点", sub.Name, len(parsedNodes))
 				}
 			}
 			conf.Subscriptions[i] = sub
@@ -399,9 +398,9 @@ func (adm *AdminHandler) doUpdateSubscription(id string) {
 			continue
 		}
 		log.Printf("[Admin] [UpdateSubscription] 开始后台拉取订阅: %s (%s)", sub.Name, sub.URL)
-		
+
 		text, err := adm.fetchSubWithFallback(context.Background(), sub.URL, sub.UserAgent)
-		
+
 		if err != nil {
 			log.Printf("[Admin] [UpdateSubscription] 订阅 %s 拉取失败: %v", sub.Name, err)
 			sub.LastError = err.Error()
@@ -410,14 +409,13 @@ func (adm *AdminHandler) doUpdateSubscription(id string) {
 			if len(parsedNodes) == 0 {
 				sub.LastError = "未解析到有效节点"
 			} else {
-				for idx := range parsedNodes {
-					parsedNodes[idx].Source = sub.ID
+				if err := nodes.ReplaceSubscriptionNodes(sub.ID, parsedNodes); err != nil {
+					sub.LastError = "替换订阅节点失败: " + err.Error()
+				} else {
+					sub.LastError = ""
+					sub.LastUpdateTime = time.Now().Unix()
+					log.Printf("[Admin] [UpdateSubscription] 订阅 %s 更新成功，解析出 %d 个节点", sub.Name, len(parsedNodes))
 				}
-				nodes.DeleteNodesBySource(sub.ID)
-				nodes.MergeNodes(parsedNodes)
-				sub.LastError = ""
-				sub.LastUpdateTime = time.Now().Unix()
-				log.Printf("[Admin] [UpdateSubscription] 订阅 %s 更新成功，解析出 %d 个节点", sub.Name, len(parsedNodes))
 			}
 		}
 		conf.Subscriptions[i] = sub

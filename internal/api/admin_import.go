@@ -141,15 +141,11 @@ func (adm *AdminHandler) adminImportNodes(w http.ResponseWriter, r *http.Request
 	log.Printf("[Admin] [ImportNodes] 收到优选节点文件导入请求, 替换模式: %v", body.Replace)
 
 	newNodes := parseImportedNodes(strings.TrimSpace(body.Text))
-	if body.Replace {
-		log.Printf("[Admin] [ImportNodes] 替换模式，正在清除全部已有候选节点")
-		for _, cn := range nodes.LoadNodes() {
-			nodes.DeleteNode(cn.RawURI)
-		}
-	}
-
 	log.Printf("[Admin] [ImportNodes] 正在合并导入的新节点数量: %d", len(newNodes))
-	nodes.MergeNodes(newNodes)
+	if err := nodes.ImportManualNodes(newNodes, body.Replace); err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("导入节点失败: "+err.Error()))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(newNodes)})
 }
 
@@ -171,14 +167,10 @@ func (adm *AdminHandler) adminImportNodesJson(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if body.Replace {
-		log.Printf("[Admin] [ImportNodesJson] 替换模式，正在清除全部已有候选节点")
-		for _, cn := range nodes.LoadNodes() {
-			nodes.DeleteNode(cn.RawURI)
-		}
-	}
-
 	log.Printf("[Admin] [ImportNodesJson] 正在合并导入的新节点数量: %d", len(d.Nodes))
-	nodes.MergeNodes(d.Nodes)
+	if err := nodes.ImportManualNodes(d.Nodes, body.Replace); err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("导入旧版节点失败: "+err.Error()))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(d.Nodes)})
 }

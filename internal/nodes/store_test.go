@@ -16,6 +16,7 @@ func resetState() {
 	defer mu.Unlock()
 	nodeList = nil
 	healthMap = make(map[string]*NodeHealth)
+	nodeSources = make(map[string]map[NodeSource]struct{})
 	globalStickyPool = NewStickyNodePool()
 	loaded = false
 	// 彻底清除物理磁盘缓存，防止测试间的数据污染
@@ -327,6 +328,98 @@ func TestDedupNodesSemantic(t *testing.T) {
 	result := LoadNodes()
 	if len(result) != 1 {
 		t.Errorf("Expected 1 node after dedup, got %d", len(result))
+	}
+}
+
+func TestSubscriptionAdoptsLegacySource(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	node := Node{RawURI: "vless://id@example.com:443?security=tls#name", Name: "name"}
+	if err := UpsertNodesWithSource([]Node{node}, SourceLegacy, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	sources := GetNodeSources(node.RawURI)
+	if len(sources) != 1 || sources[0] != (NodeSource{Type: SourceSubscription, ID: "sub-a"}) {
+		t.Fatalf("legacy 节点应由订阅接管: %+v", sources)
+	}
+}
+
+func TestManualSourceRemainsIndependentFromSubscriptions(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	node := Node{RawURI: "vless://id@example.com:443?security=tls#name", Name: "name"}
+	if err := ImportManualNodes([]Node{node}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceSubscriptionNodes("sub-b", []Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveSubscriptionSource("sub-a", true); err != nil {
+		t.Fatal(err)
+	}
+	sources := GetNodeSources(node.RawURI)
+	want := []NodeSource{{Type: SourceManual}, {Type: SourceSubscription, ID: "sub-b"}}
+	if len(sources) != len(want) || sources[0] != want[0] || sources[1] != want[1] {
+		t.Fatalf("manual 和其他订阅来源必须保留: got %+v want %+v", sources, want)
+	}
+}
+
+func TestKeepingDeletedSubscriptionNodesConvertsThemToManual(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	node := Node{RawURI: "vless://id@example.com:443?security=tls#name", Name: "name"}
+	if err := ReplaceSubscriptionNodes("sub-a", []Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveSubscriptionSource("sub-a", false); err != nil {
+		t.Fatal(err)
+	}
+	sources := GetNodeSources(node.RawURI)
+	if len(sources) != 1 || sources[0] != (NodeSource{Type: SourceManual}) {
+		t.Fatalf("保留的订阅节点应转为 manual: %+v", sources)
+	}
+}
+
+func TestDedupNodesPreservesConnectionParametersAndMergesSources(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	first := Node{RawURI: "vless://id@example.com:443?security=tls&type=ws#one", Name: "one"}
+	second := Node{RawURI: "vless://id@example.com:443?security=reality&type=grpc#two", Name: "two"}
+	if err := UpsertNodesWithSource([]Node{first}, SourceManual, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertNodesWithSource([]Node{second}, SourceSubscription, "sub-a"); err != nil {
+		t.Fatal(err)
+	}
+	if removed := DedupNodes(); removed != 0 {
+		t.Fatalf("连接参数不同的节点不得自动合并, removed=%d", removed)
+	}
+
+	sameAsFirst := Node{RawURI: "vless://id@example.com:443?security=tls&type=ws#renamed", Name: "renamed"}
+	if err := UpsertNodesWithSource([]Node{sameAsFirst}, SourceSubscription, "sub-b"); err != nil {
+		t.Fatal(err)
+	}
+	preview := PreviewDedupNodes()
+	if preview.Groups != 1 || preview.DuplicateCount != 1 {
+		t.Fatalf("去重预览不正确: %+v", preview)
+	}
+	if removed := DedupNodes(); removed != 1 {
+		t.Fatalf("仅名称不同的节点应合并, removed=%d", removed)
+	}
+	sources := GetNodeSources(first.RawURI)
+	want := []NodeSource{{Type: SourceManual}, {Type: SourceSubscription, ID: "sub-b"}}
+	if len(sources) != len(want) || sources[0] != want[0] || sources[1] != want[1] {
+		t.Fatalf("去重后来源应取并集: got %+v want %+v", sources, want)
 	}
 }
 

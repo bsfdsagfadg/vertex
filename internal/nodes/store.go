@@ -22,7 +22,6 @@ type Node struct {
 	Name     string `json:"name"`
 	RawURI   string `json:"raw_uri"`
 	Disabled bool   `json:"disabled"`
-	Source   string `json:"source"`
 }
 
 type NodeHealth struct { //nolint:govet
@@ -43,11 +42,12 @@ type NodeHealth struct { //nolint:govet
 }
 
 var (
-	mu                 sync.Mutex                     //nolint:gochecknoglobals
-	nodeList           []Node                         //nolint:gochecknoglobals
-	healthMap          = make(map[string]*NodeHealth) //nolint:gochecknoglobals
-	loaded             bool                           //nolint:gochecknoglobals
-	DeleteNodeCallback func(uri string)               //nolint:gochecknoglobals
+	mu                 sync.Mutex                                 //nolint:gochecknoglobals
+	nodeList           []Node                                     //nolint:gochecknoglobals
+	healthMap          = make(map[string]*NodeHealth)             //nolint:gochecknoglobals
+	nodeSources        = make(map[string]map[NodeSource]struct{}) //nolint:gochecknoglobals
+	loaded             bool                                       //nolint:gochecknoglobals
+	DeleteNodeCallback func(uri string)                           //nolint:gochecknoglobals
 )
 
 func ensureLoaded() {
@@ -61,7 +61,7 @@ func ensureLoaded() {
 	}
 
 	// Load nodes
-	rows, err := db.GlobalDB.Query("SELECT raw_uri, type, name, disabled, source FROM nodes")
+	rows, err := db.GlobalDB.Query("SELECT raw_uri, type, name, disabled FROM nodes")
 	if err == nil {
 		defer func() {
 			_ = rows.Close()
@@ -69,11 +69,25 @@ func ensureLoaded() {
 		nodes := []Node{}
 		for rows.Next() {
 			var n Node
-			if err := rows.Scan(&n.RawURI, &n.Type, &n.Name, &n.Disabled, &n.Source); err == nil {
+			if err := rows.Scan(&n.RawURI, &n.Type, &n.Name, &n.Disabled); err == nil {
 				nodes = append(nodes, n)
 			}
 		}
 		nodeList = nodes
+	}
+
+	sourceRows, err := db.GlobalDB.Query("SELECT raw_uri, source_type, source_id FROM node_sources")
+	if err == nil {
+		defer func() {
+			_ = sourceRows.Close()
+		}()
+		for sourceRows.Next() {
+			var rawURI string
+			var source NodeSource
+			if err := sourceRows.Scan(&rawURI, &source.Type, &source.ID); err == nil {
+				addNodeSourceUnsafe(rawURI, source)
+			}
+		}
 	}
 
 	// Load health
@@ -112,26 +126,9 @@ func LoadHealth() map[string]*NodeHealth {
 // writeAtomicJSON has been removed because it is unused
 
 func saveNodesUnsafe() {
-	if db.GlobalDB == nil {
-		return
+	if err := saveNodeStateUnsafe(); err != nil {
+		log.Printf("[ERROR] Failed to save nodes: %v", err)
 	}
-	tx, err := db.GlobalDB.Begin()
-	if err != nil {
-		return
-	}
-	// 为了简单起见，可以先全量删除再插入，但最好的方式是逐个插入或在添加删除时调用单个 SQL
-	// 这里保持原来 saveNodesUnsafe 的全量保存语义，执行全量同步
-	_, _ = tx.Exec("DELETE FROM nodes")
-	stmt, _ := tx.Prepare("INSERT INTO nodes (raw_uri, type, name, disabled, source) VALUES (?, ?, ?, ?, ?)")
-	for _, n := range nodeList {
-		if stmt != nil {
-			_, _ = stmt.Exec(n.RawURI, n.Type, n.Name, n.Disabled, n.Source)
-		}
-	}
-	if stmt != nil {
-		_ = stmt.Close()
-	}
-	_ = tx.Commit()
 }
 
 type healthUpdate struct {
@@ -253,28 +250,6 @@ func updateSingleNodeDisabledUnsafe(uri string, disabled bool) {
 		return
 	}
 	_, _ = db.GlobalDB.Exec("UPDATE nodes SET disabled = ? WHERE raw_uri = ?", disabled, uri)
-}
-
-func DeleteNodesBySource(source string) {
-	mu.Lock()
-	defer mu.Unlock()
-	ensureLoaded()
-	
-	if source == "" {
-		return
-	}
-
-	var newList []Node
-	for _, n := range nodeList {
-		if n.Source != source {
-			newList = append(newList, n)
-		}
-	}
-	nodeList = newList
-
-	if db.GlobalDB != nil {
-		_, _ = db.GlobalDB.Exec("DELETE FROM nodes WHERE source = ?", source)
-	}
 }
 
 type TestProgress struct {
@@ -410,24 +385,6 @@ func pruneHealthUnsafe() {
 	}
 }
 
-func MergeNodes(newNodes []Node) {
-	mu.Lock()
-	defer mu.Unlock()
-	ensureLoaded()
-	existing := make(map[string]bool)
-	for _, n := range nodeList {
-		existing[n.RawURI] = true
-	}
-	for _, n := range newNodes {
-		if !existing[n.RawURI] {
-			nodeList = append(nodeList, n)
-			existing[n.RawURI] = true
-		}
-	}
-	pruneHealthUnsafe()
-	saveNodesUnsafe()
-}
-
 func DeleteNode(uri string) {
 	mu.Lock()
 	ensureLoaded()
@@ -438,6 +395,7 @@ func DeleteNode(uri string) {
 		}
 	}
 	nodeList = kept
+	delete(nodeSources, uri)
 	delete(healthMap, uri)
 	globalStickyPool.Evict(uri)
 	saveNodesUnsafe()
@@ -447,42 +405,6 @@ func DeleteNode(uri string) {
 	if cb != nil {
 		cb(uri)
 	}
-}
-
-func DedupNodes() int {
-	mu.Lock()
-	ensureLoaded()
-	keepMap := make(map[string]bool)
-	var kept []Node
-	removed := 0
-	var removedURIs []string
-	for _, n := range nodeList {
-		key := n.RawURI
-		if scheme, userinfo, host, port, ok := parseNodeIdentity(n.RawURI); ok {
-			key = scheme + "://" + userinfo + "@" + host + ":" + strconv.Itoa(port)
-		}
-		if !keepMap[key] {
-			keepMap[key] = true
-			kept = append(kept, n)
-		} else {
-			removed++
-			removedURIs = append(removedURIs, n.RawURI)
-			delete(healthMap, n.RawURI)
-			globalStickyPool.Evict(n.RawURI)
-		}
-	}
-	nodeList = kept
-	saveNodesUnsafe()
-	saveHealthUnsafe()
-	cb := DeleteNodeCallback
-	mu.Unlock() // 先解锁再通知销毁连接池
-
-	if cb != nil {
-		for _, u := range removedURIs {
-			cb(u)
-		}
-	}
-	return removed
 }
 
 func DeleteDisabled() int {
@@ -497,6 +419,7 @@ func DeleteDisabled() int {
 		} else {
 			removed++
 			removedURIs = append(removedURIs, n.RawURI)
+			delete(nodeSources, n.RawURI)
 			delete(healthMap, n.RawURI)
 			globalStickyPool.Evict(n.RawURI)
 		}
@@ -549,6 +472,7 @@ func BatchDeleteNodes(uris []string) {
 	targets := make(map[string]bool)
 	for _, u := range uris {
 		targets[u] = true
+		delete(nodeSources, u)
 		delete(healthMap, u)
 		globalStickyPool.Evict(u)
 	}

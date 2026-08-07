@@ -39,7 +39,7 @@ func InitDB(dbPath string) error {
 	}
 
 	// Use WAL mode for better concurrency
-	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("error: %w", err)
@@ -93,16 +93,76 @@ func createTables(db *sql.DB) error {
 		last_sub_healthy_at INTEGER NOT NULL DEFAULT 0,
 		FOREIGN KEY(raw_uri) REFERENCES nodes(raw_uri) ON DELETE CASCADE
 	);
+
+	CREATE TABLE IF NOT EXISTS node_sources (
+		raw_uri TEXT NOT NULL,
+		source_type TEXT NOT NULL,
+		source_id TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (raw_uri, source_type, source_id),
+		FOREIGN KEY(raw_uri) REFERENCES nodes(raw_uri) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_node_sources_owner
+	ON node_sources(source_type, source_id);
 	`
 	_, err := db.Exec(schema)
 	if err != nil {
 		return fmt.Errorf("error: %w", err)
 	}
 
-	// Migrate schema for existing databases seamlessly
-	_, _ = db.Exec("ALTER TABLE nodes ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+	if err := ensureNodeHealthColumns(db); err != nil {
+		return err
+	}
+	return ensureNodeSources(db)
+}
 
-	return ensureNodeHealthColumns(db)
+func ensureNodeSources(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(nodes)")
+	if err != nil {
+		return fmt.Errorf("read nodes schema: %w", err)
+	}
+	hasLegacySourceColumn := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if errScan := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); errScan != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan nodes schema: %w", errScan)
+		}
+		if name == "source" {
+			hasLegacySourceColumn = true
+		}
+	}
+	if errClose := rows.Close(); errClose != nil {
+		return fmt.Errorf("close nodes schema rows: %w", errClose)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin node source migration: %w", err)
+	}
+	if hasLegacySourceColumn {
+		if _, err = tx.Exec(`INSERT OR IGNORE INTO node_sources (raw_uri, source_type, source_id)
+			SELECT raw_uri, 'subscription', source FROM nodes WHERE source <> ''`); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migrate subscription node sources: %w", err)
+		}
+		if _, err = tx.Exec("UPDATE nodes SET source = '' WHERE source <> ''"); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("clear legacy node source column: %w", err)
+		}
+	}
+	if _, err = tx.Exec(`INSERT OR IGNORE INTO node_sources (raw_uri, source_type, source_id)
+		SELECT n.raw_uri, 'legacy', '' FROM nodes n
+		WHERE NOT EXISTS (SELECT 1 FROM node_sources s WHERE s.raw_uri = n.raw_uri)`); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("mark legacy node sources: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit node source migration: %w", err)
+	}
+	return nil
 }
 
 func ensureNodeHealthColumns(db *sql.DB) error {
@@ -163,11 +223,26 @@ func migrateFromFiles(db *sql.DB, configDir string) {
 		}
 		if errUnm := json.Unmarshal(data, &d); errUnm == nil { //nolint:govet
 			tx, _ := db.Begin()
-			stmt, _ := tx.Prepare("INSERT OR IGNORE INTO nodes (raw_uri, type, name, disabled, source) VALUES (?, ?, ?, ?, ?)")
+			stmt, _ := tx.Prepare("INSERT OR IGNORE INTO nodes (raw_uri, type, name, disabled) VALUES (?, ?, ?, ?)")
+			sourceStmt, _ := tx.Prepare("INSERT OR IGNORE INTO node_sources (raw_uri, source_type, source_id) VALUES (?, ?, ?)")
 			for _, n := range d.Nodes {
-				_, _ = stmt.Exec(n.RawURI, n.Type, n.Name, n.Disabled, n.Source)
+				_, _ = stmt.Exec(n.RawURI, n.Type, n.Name, n.Disabled)
+				sourceType := "legacy"
+				sourceID := ""
+				if n.Source != "" {
+					sourceType = "subscription"
+					sourceID = n.Source
+				}
+				if sourceStmt != nil {
+					_, _ = sourceStmt.Exec(n.RawURI, sourceType, sourceID)
+				}
 			}
-			_ = stmt.Close()
+			if stmt != nil {
+				_ = stmt.Close()
+			}
+			if sourceStmt != nil {
+				_ = sourceStmt.Close()
+			}
 			_ = tx.Commit()
 			log.Printf("[DB] Migrated %d nodes from nodes.json", len(d.Nodes))
 
