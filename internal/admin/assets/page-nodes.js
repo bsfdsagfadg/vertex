@@ -9,6 +9,7 @@ document.getElementById('nodesBody').addEventListener('click', function (e) {
   else if (action === 'test-node') testSingleNode(uri);
   else if (action === 'enable-node') enableNode(uri);
   else if (action === 'add-entry-proxy') addNodeToEntryProxies(uri);
+  else if (action === 'remove-entry-proxy') removeNodeFromEntryProxies(uri);
 });
 
 var curNodePage = 1;
@@ -317,10 +318,9 @@ async function loadNodes() {
       var alreadyEntry = cachedEntryProxyURIs.has(entryProxyIdentity(n.raw_uri));
       entryBtn.className = 'btn ghost';
       entryBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;';
-      entryBtn.dataset.action = 'add-entry-proxy';
+      entryBtn.dataset.action = alreadyEntry ? 'remove-entry-proxy' : 'add-entry-proxy';
       entryBtn.dataset.uri = n.raw_uri;
-      entryBtn.textContent = alreadyEntry ? '已在入口池' : '添加至全局入口代理';
-      entryBtn.disabled = alreadyEntry;
+      entryBtn.textContent = alreadyEntry ? '移出入口池' : '添加至全局入口代理';
       actionWrap.appendChild(entryBtn);
       var delBtn = document.createElement('button');
       delBtn.className = 'btn danger';
@@ -663,6 +663,17 @@ async function addNodeToEntryProxies(uri) {
     }
   } catch (e) {
     toast('加入入口代理失败：' + e.message);
+  }
+}
+
+async function removeNodeFromEntryProxies(uri) {
+  if (!confirm('确定要将该节点移出全局入口代理池吗？')) return;
+  try {
+    await API.proxyNodes.delete(uri);
+    await loadNodes();
+    toast('已移出全局入口代理池');
+  } catch (e) {
+    toast('移出入口代理失败：' + e.message);
   }
 }
 
