@@ -157,8 +157,6 @@
               <div class="field m-0">
                 <div class="field-heading" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
                   <span>入口代理候选</span>
-                  <button class="btn danger" style="padding:5px 10px;font-size:12px;"
-                    onclick="deleteDisabledProxyNodes()">删除禁用入口</button>
                 </div>
                 <div class="actions proxy-actions">
                   <button class="btn ghost" onclick="batchTestSelectedProxyNodes()">批量测试</button>
@@ -168,6 +166,7 @@
                   <button class="btn ghost btn-green" onclick="batchEnableSelectedProxyNodes()">批量启用</button>
                   <button class="btn ghost btn-red" onclick="batchDisableSelectedProxyNodes()">批量禁用</button>
                   <button class="btn danger" onclick="batchDeleteSelectedProxyNodes()">批量删除</button>
+                  <button class="btn danger" onclick="deleteDisabledProxyNodes()">删除禁用入口</button>
                 </div>
                 <div id="proxyTestProgress" class="test-progress">
                   <div id="proxyTestProgressText" class="test-progress-text">准备测试...</div>
@@ -213,7 +212,8 @@
                 <button class="btn ghost" onclick="dedupNodes()">一键去重</button>
                 <button class="btn ghost" onclick="exportNodes()">导出节点</button>
                 <button class="btn danger" onclick="deleteDisabledNodes()">删除禁用节点</button>
-                <button class="btn ghost" onclick="addSelectedNodesToEntryProxies()">将已选节点加入到全局入口代理</button>
+                <button class="btn ghost" onclick="addSelectedNodesToEntryProxies()">将已选节点加入全局入口代理</button>
+                <button class="btn ghost" onclick="removeSelectedNodesFromEntryProxies()">将已选节点移出全局入口代理</button>
                 <span class="flex-1"></span>
                 <button class="btn ghost btn-blue" onclick="toggleSelectAllNodes()">全选/反选</button>
                 <button class="btn ghost btn-green" onclick="batchEnableSelectedNodes()">批量启用</button>

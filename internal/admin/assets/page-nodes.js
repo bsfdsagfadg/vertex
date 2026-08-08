@@ -8,6 +8,7 @@ document.getElementById('nodesBody').addEventListener('click', function (e) {
   else if (action === 'delete-node') delNode(uri);
   else if (action === 'test-node') testSingleNode(uri);
   else if (action === 'enable-node') enableNode(uri);
+  else if (action === 'disable-node') disableNode(uri);
   else if (action === 'add-entry-proxy') addNodeToEntryProxies(uri);
   else if (action === 'remove-entry-proxy') removeNodeFromEntryProxies(uri);
 });
@@ -296,6 +297,14 @@ async function loadNodes() {
         enableBtn.dataset.uri = n.raw_uri;
         enableBtn.textContent = '\u542F\u7528';
         actionWrap.appendChild(enableBtn);
+      } else {
+        var disableBtn = document.createElement('button');
+        disableBtn.className = 'btn ghost';
+        disableBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;color:var(--red);';
+        disableBtn.dataset.action = 'disable-node';
+        disableBtn.dataset.uri = n.raw_uri;
+        disableBtn.textContent = '\u7981\u7528';
+        actionWrap.appendChild(disableBtn);
       }
       if (isLocked) {
         var unuseBtn = document.createElement('button');
@@ -694,6 +703,21 @@ async function addSelectedNodesToEntryProxies() {
     toast(message);
   } catch (e) {
     toast('批量加入入口代理失败：' + e.message);
+  }
+}
+
+async function removeSelectedNodesFromEntryProxies() {
+  var uris = getSelectedNodeURIs();
+  if (!uris.length) return toast('请先勾选需要移出入口代理池的节点');
+  if (!confirm('确定要将选中 ' + uris.length + ' 个节点移出全局入口代理池吗？')) return;
+  toast('正在移出全局入口代理池...');
+  try {
+    await API.proxyNodes.deleteBatch(uris);
+    window.selectedNodeURIs.clear();
+    await loadNodes();
+    toast('已移出 ' + uris.length + ' 个节点');
+  } catch (e) {
+    toast('移出入口代理失败：' + e.message);
   }
 }
 
