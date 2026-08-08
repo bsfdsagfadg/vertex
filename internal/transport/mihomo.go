@@ -93,7 +93,7 @@ func getOrStartProxyDialerWithBuilder(uri string, reqID string, debugMode bool, 
 	proxyInitMap[cacheKey] = pending
 	proxyMutex.Unlock()
 
-	log.Printf("[Transport] 请求ID=%s 触发代理初始化: %s", reqID, nodes.GetNodeName(uri))
+	log.Printf("[Transport] 请求ID=%s 触发代理初始化: %s", reqID, proxyDisplayName(uri))
 	proxy, dependencies, initErr := buildMihomoProxy(uri, entryURI, builder)
 
 	proxyMutex.Lock()
@@ -252,7 +252,7 @@ func RemoveProxy(uri string) {
 		closeMihomoProxies(item.proxy, item.dependencies)
 	}
 	if len(proxies) > 0 {
-		log.Printf("[Transport] 代理节点已清理释放: %s", nodes.GetNodeName(uri))
+		log.Printf("[Transport] 代理节点已清理释放: %s", proxyDisplayName(uri))
 	}
 }
 
@@ -281,20 +281,32 @@ func cleanupIdleProxies(maxIdle time.Duration) {
 	var idle []idleProxy
 	proxyMutex.Lock()
 	now := time.Now()
-	for uri, info := range proxyMap {
+	for cacheKey, info := range proxyMap {
 		if now.Sub(info.lastUsedAt) > maxIdle {
 			if !info.closed {
 				info.closed = true
-				idle = append(idle, idleProxy{uri: uri, proxy: info.proxy, dependencies: info.dependencies})
+				idle = append(idle, idleProxy{uri: info.proxyURI, proxy: info.proxy, dependencies: info.dependencies})
 			}
-			delete(proxyMap, uri)
+			delete(proxyMap, cacheKey)
 		}
 	}
 	proxyMutex.Unlock()
 	for _, item := range idle {
 		closeMihomoProxies(item.proxy, item.dependencies)
-		log.Printf("[Transport] 空闲代理已清理释放: %s", nodes.GetNodeName(item.uri))
+		log.Printf("[Transport] 空闲代理已清理释放: %s", proxyDisplayName(item.uri))
 	}
+}
+
+func proxyDisplayName(uri string) string {
+	if name := nodes.GetNodeName(uri); name != "Unknown" {
+		return name
+	}
+	for _, candidate := range config.ListProxyCandidates() {
+		if proxyIdentity(candidate.RawURI) == proxyIdentity(uri) && strings.TrimSpace(candidate.Name) != "" {
+			return candidate.Name
+		}
+	}
+	return "Unknown"
 }
 
 // StopAllProxies 程序优雅退出时清理全部实例
