@@ -62,25 +62,23 @@ type raceResult[T any] struct {
 }
 
 // errorPriority 返回错误的优先级数值（越小优先级越高）。
-// 请求级硬错误优先，其次保留可诊断上游错误，再到网络与空响应。
+// 可重试错误优先于不可重试错误，避免一个节点的参数/安全错误掩盖
+// 另一个节点返回的临时认证、限流或上游故障。
 func errorPriority(err error) int {
 	var ve *VertexError
 	if errors.As(err, &ve) {
-		if ve.IsGlobalHardError() {
-			return 1
-		}
-		switch ve.Kind {
-		case "auth", "permission", "ratelimit", "client", "server", "unavailable":
+		if ve.IsRetryable() {
+			if ve.Kind == "ratelimit" || ve.Code == 429 {
+				return 1
+			}
 			return 2
-		case "network":
-			return 3
-		case "empty":
-			return 4
-		default:
-			return 5
 		}
+		if ve.IsGlobalHardError() {
+			return 3
+		}
+		return 4
 	}
-	return 6
+	return 5
 }
 
 // pickBestError 从多个错误中挑选优先级最高（数值最小）的一个返回。
