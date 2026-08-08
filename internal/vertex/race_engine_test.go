@@ -217,11 +217,11 @@ func TestRunRace_RequestTokenRefreshRetiresReportingCandidate(t *testing.T) {
 
 	var fetches atomic.Int32
 	state := &requestTokenState{fetchToken: func(context.Context) (string, error) {
-		generation := fetches.Add(1)
-		return fmt.Sprintf("token-%d", generation), nil
+		attempt := fetches.Add(1)
+		return fmt.Sprintf("token-%d", attempt), nil
 	}} //nolint:exhaustruct
 	state.setRefreshLimit(2)
-	initial, err := state.getLease(context.Background(), nil)
+	initial, err := state.get(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,18 +232,22 @@ func TestRunRace_RequestTokenRefreshRetiresReportingCandidate(t *testing.T) {
 
 	var first atomic.Bool
 	var mu sync.Mutex
-	var generations map[string][]uint64 = make(map[string][]uint64)
+	tokens := make(map[string][]string)
+	reporter := ""
 	run := func(candidateCtx context.Context, uri string) (string, error) {
-		lease, getErr := routeFromContext(candidateCtx).token.getLease(candidateCtx, nil)
+		token, getErr := routeFromContext(candidateCtx).token.get(candidateCtx, nil)
 		if getErr != nil {
 			return "", getErr
 		}
 		mu.Lock()
-		generations[uri] = append(generations[uri], lease.generation)
+		tokens[uri] = append(tokens[uri], token)
 		mu.Unlock()
-		if lease.generation == initial.generation {
+		if token == initial {
 			if first.CompareAndSwap(false, true) {
-				return "", NewAuthenticationError("Recaptcha token is invalid").markRequestTokenInvalid(lease)
+				mu.Lock()
+				reporter = uri
+				mu.Unlock()
+				return "", NewAuthenticationError("Recaptcha token is invalid").markRequestTokenInvalid(token)
 			}
 			<-candidateCtx.Done()
 			return "", candidateCtx.Err()
@@ -258,13 +262,24 @@ func TestRunRace_RequestTokenRefreshRetiresReportingCandidate(t *testing.T) {
 	if got := fetches.Load(); got != 2 {
 		t.Fatalf("request fetched %d tokens, want initial plus one refresh", got)
 	}
-	for uri, gens := range generations {
-		if len(gens) > 1 && gens[0] == initial.generation && gens[1] != initial.generation {
+	mu.Lock()
+	defer mu.Unlock()
+	if reporter == "" || len(tokens[reporter]) != 1 || tokens[reporter][0] != initial {
+		t.Fatalf("reporting candidate was relaunched: reporter=%q attempts=%v", reporter, tokens[reporter])
+	}
+	usedRefreshedToken := false
+	for uri, attemptedTokens := range tokens {
+		if uri == reporter {
 			continue
 		}
-		if len(gens) > 1 && gens[1] == initial.generation {
-			t.Fatalf("reporting candidate %s was relaunched with refreshed token: %v", uri, gens)
+		for _, token := range attemptedTokens {
+			if token == "token-2" {
+				usedRefreshedToken = true
+			}
 		}
+	}
+	if !usedRefreshedToken {
+		t.Fatalf("remaining candidates did not use refreshed token: %v", tokens)
 	}
 }
 
@@ -280,28 +295,23 @@ func TestRunRace_RequestTokenRefreshStopsAfterCandidatesExhausted(t *testing.T) 
 
 	var fetches atomic.Int32
 	state := &requestTokenState{fetchToken: func(context.Context) (string, error) {
-		generation := fetches.Add(1)
-		return fmt.Sprintf("token-%d", generation), nil
+		attempt := fetches.Add(1)
+		return fmt.Sprintf("token-%d", attempt), nil
 	}} //nolint:exhaustruct
 	state.setRefreshLimit(2)
-	if _, err := state.getLease(context.Background(), nil); err != nil {
+	if _, err := state.get(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.WithValue(context.Background(), requestRouteKey{}, &requestRoute{
 		token:              state,
 		authCandidateBound: true,
 	})
-	var leaders sync.Map
 	run := func(candidateCtx context.Context, _ string) (string, error) {
-		lease, err := routeFromContext(candidateCtx).token.getLease(candidateCtx, nil)
+		token, err := routeFromContext(candidateCtx).token.get(candidateCtx, nil)
 		if err != nil {
 			return "", err
 		}
-		if _, loaded := leaders.LoadOrStore(lease.generation, struct{}{}); !loaded {
-			return "", NewAuthenticationError("Recaptcha token is invalid").markRequestTokenInvalid(lease)
-		}
-		<-candidateCtx.Done()
-		return "", candidateCtx.Err()
+		return "", NewAuthenticationError("Recaptcha token is invalid").markRequestTokenInvalid(token)
 	}
 
 	_, err := RunRace(ctx, cfg, run)
@@ -313,7 +323,7 @@ func TestRunRace_RequestTokenRefreshStopsAfterCandidatesExhausted(t *testing.T) 
 		t.Fatalf("final auth exhaustion should be an internal request error, got %T %v", err, err)
 	}
 	if got := fetches.Load(); got != 3 {
-		t.Fatalf("request fetched %d tokens, want exactly three generations and no fourth", got)
+		t.Fatalf("request fetched %d tokens, want exactly three attempts and no fourth", got)
 	}
 }
 

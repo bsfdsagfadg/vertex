@@ -163,7 +163,7 @@ func TestRequestTokenStateIgnoresStaleInvalidation(t *testing.T) {
 		t.Fatalf("refresh failed: token=%q err=%v", second, err)
 	}
 	if !state.invalidate(first) {
-		t.Fatal("stale invalidation should observe the refreshed generation")
+		t.Fatal("stale invalidation should observe that the token was already refreshed")
 	}
 	stillSecond, err := state.get(context.Background(), pool)
 	if err != nil || stillSecond != second || fetches.Load() != 2 {
@@ -248,7 +248,7 @@ func TestRequestTokenStateConcurrentInvalidationSharesRefresh(t *testing.T) {
 	}
 	refreshWG.Wait()
 	if got, _ := state.get(context.Background(), pool); got != "token-new" || fetches.Load() != 2 {
-		t.Fatalf("stale second-generation invalidations changed state: token=%q fetches=%d", got, fetches.Load())
+		t.Fatalf("stale refreshed-token invalidations changed state: token=%q fetches=%d", got, fetches.Load())
 	}
 }
 

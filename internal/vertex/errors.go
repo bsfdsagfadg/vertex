@@ -37,7 +37,7 @@ type VertexError struct { //nolint:govet
 	cause                error // 保留底层 context/网络错误，供 errors.Is/As 穿透
 	requestTokenInvalid  bool
 	requestTokenTerminal bool
-	requestTokenLease    tokenLease
+	requestToken         string
 }
 
 // Error 实现 error 接口。
@@ -50,9 +50,9 @@ func (e *VertexError) WithCause(cause error) *VertexError {
 	return e
 }
 
-func (e *VertexError) markRequestTokenInvalid(lease tokenLease) *VertexError {
+func (e *VertexError) markRequestTokenInvalid(token string) *VertexError {
 	e.requestTokenInvalid = true
-	e.requestTokenLease = lease
+	e.requestToken = token
 	return e
 }
 
@@ -170,6 +170,12 @@ func isRecaptchaAuthError(message string) bool {
 		}
 	}
 	return false
+}
+
+func isRecaptchaWarmupError(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "failed to verify action") ||
+		strings.Contains(message, "the caller does not have permission")
 }
 
 // raiseForStatus 根据 HTTP/gRPC 状态创建对应错误。

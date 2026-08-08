@@ -437,7 +437,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 								failedErrors = append(failedErrors, res.err)
 								continue
 							}
-							invalidated := route.token.invalidateLease(ve.requestTokenLease)
+							invalidated := route.token.invalidateToken(ve.requestToken)
 							if invalidated.exhausted {
 								cancel()
 								return zero, NewInternalError("recaptcha token remained invalid after request recovery").markRequestTokenTerminal()
@@ -464,7 +464,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 								timer.Stop()
 								break InnerLoop
 							}
-							// A late error from an already invalidated generation has no
+							// A late error from an already replaced token has no
 							// bearing on the current token and must not retire a node.
 							continue
 						}
