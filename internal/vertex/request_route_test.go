@@ -196,6 +196,62 @@ func TestRequestTokenStateRefreshesAtMostOnce(t *testing.T) {
 	}
 }
 
+func TestRequestTokenStateConcurrentInvalidationSharesRefresh(t *testing.T) {
+	var fetches atomic.Int32
+	pool := recaptcha.NewTokenPoolCustomContext(func(context.Context, string) (string, error) {
+		if fetches.Add(1) == 1 {
+			return "token-old", nil
+		}
+		time.Sleep(20 * time.Millisecond)
+		return "token-new", nil
+	})
+	state := &requestTokenState{} //nolint:exhaustruct
+	old, err := state.get(context.Background(), pool)
+	if err != nil || old != "token-old" {
+		t.Fatalf("initial token=%q err=%v", old, err)
+	}
+
+	const callers = 12
+	var wg sync.WaitGroup
+	results := make(chan string, callers)
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if !state.invalidate(old) {
+				return
+			}
+			token, getErr := state.get(context.Background(), pool)
+			if getErr == nil {
+				results <- token
+			}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	for token := range results {
+		if token != "token-new" {
+			t.Fatalf("waiter received token %q, want token-new", token)
+		}
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("concurrent invalidation fetched %d tokens, want exactly 2", got)
+	}
+
+	var refreshWG sync.WaitGroup
+	for range callers {
+		refreshWG.Add(1)
+		go func() {
+			defer refreshWG.Done()
+			_ = state.invalidate("token-new")
+		}()
+	}
+	refreshWG.Wait()
+	if got, _ := state.get(context.Background(), pool); got != "token-new" || fetches.Load() != 2 {
+		t.Fatalf("stale second-generation invalidations changed state: token=%q fetches=%d", got, fetches.Load())
+	}
+}
+
 func TestPrepareRequestFallsBackWithoutClearingEntryCooldown(t *testing.T) {
 	db.CloseDB()
 	if err := db.InitDB(filepath.Join(t.TempDir(), "request-route.db")); err != nil {

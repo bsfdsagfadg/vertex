@@ -81,6 +81,28 @@ func TestClassifyUpstreamHTTPErrorDistinguishesPermissionAndRecaptcha(t *testing
 	}
 }
 
+func TestRecaptchaAuthClassificationPrecedesGraphQLCode3(t *testing.T) {
+	plain := parseErrorResponse(map[string]any{"errors": []any{
+		map[string]any{"message": "invalid argument", "extensions": map[string]any{"status": map[string]any{"code": float64(3)}}},
+	}})
+	if plain == nil || plain.Code != 400 || plain.Kind != "invalid" {
+		t.Fatalf("ordinary GraphQL code=3 changed classification: %+v", plain)
+	}
+
+	for _, message := range []string{
+		"Recaptcha token is invalid, please refresh the page or log in, and try again.",
+		"Failed to verify action",
+		"The caller does not have permission",
+	} {
+		e := parseErrorResponse(map[string]any{"errors": []any{
+			map[string]any{"message": message, "extensions": map[string]any{"status": map[string]any{"code": float64(3)}}},
+		}})
+		if e == nil || e.Code != 502 || e.Kind != "auth" || !e.IsRetryable() {
+			t.Errorf("%q classified as %+v, want auth/502/retryable", message, e)
+		}
+	}
+}
+
 func TestAuthError502(t *testing.T) {
 	e := NewAuthenticationError("x")
 	if e.Code != 502 {

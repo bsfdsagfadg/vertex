@@ -219,24 +219,18 @@ retryLoop:
 		ve := asVertexError(attemptErr)
 		switch {
 		case ve != nil && ve.Kind == "auth":
-			isVerifyFail := strings.Contains(ve.Message, "Failed to verify action") ||
-				strings.Contains(ve.Message, "The caller does not have permission")
-			if isFirstAuth && isVerifyFail {
-				// 首次认证重试：token 不清空，同一 token 再打一次（匿名端点首帧预期 verify-fail）。
-				isFirstAuth = false
-				if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
+			// A stale request-scoped token is an internal recovery signal. It is
+			// deliberately independent from maxRetries: the whole candidate race
+			// shares one refresh and retries once even when maxRetries is zero.
+			if route != nil && route.token != nil && isRecaptchaAuthError(ve.Message) {
+				lastError = ve
+				if contentYielded || !route.token.invalidate(recaptchaToken) {
 					break retryLoop
 				}
+				recaptchaToken = ""
+				isFirstAuth = true
 				continue
 			}
-			if route != nil && route.token != nil {
-				if !route.token.invalidate(recaptchaToken) {
-					lastError = ve
-					break retryLoop
-				}
-			}
-			recaptchaToken = ""
-			isFirstAuth = true
 			lastError = ve
 			if contentYielded || attempt >= maxRetries {
 				break retryLoop
@@ -472,8 +466,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 }
 
 func classifyUpstreamHTTPError(statusCode int, body string) *VertexError {
-	if strings.Contains(body, "Failed to verify action") ||
-		strings.Contains(body, "The caller does not have permission") {
+	if isRecaptchaAuthError(body) {
 		return NewAuthenticationError("Authentication/Recaptcha failed: " + body)
 	}
 	if json.Valid([]byte(body)) {
@@ -640,16 +633,6 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool, 
 
 		// results 内的错误处理。
 		if errs, ok := result["errors"].([]any); ok && len(errs) > 0 {
-			errMsg := ""
-			if first, ok := errs[0].(map[string]any); ok {
-				errMsg = toStr(first["message"])
-			} else {
-				errMsg = toStr(errs[0])
-			}
-			if strings.Contains(errMsg, "Failed to verify action") ||
-				strings.Contains(errMsg, "The caller does not have permission") {
-				return false, NewAuthenticationError(errMsg)
-			}
 			if parsed := parseErrorResponse(map[string]any{"errors": errs}); parsed != nil {
 				return false, parsed
 			}

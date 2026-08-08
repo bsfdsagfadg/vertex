@@ -136,10 +136,30 @@ func NewUnavailableError(msg string, causes ...error) *VertexError {
 	return &VertexError{Message: msg, Code: 503, Status: StatusUnavailable, Kind: "unavailable", cause: firstCause(causes)}
 }
 
+// isRecaptchaAuthError identifies upstream messages that mean the request-scoped
+// reCAPTCHA token is stale. These messages can arrive with HTTP 400, GraphQL
+// code=3, or inside a streaming results.errors object, so classification must
+// happen before generic status handling.
+func isRecaptchaAuthError(message string) bool {
+	message = strings.ToLower(message)
+	for _, marker := range []string{
+		"recaptcha token is invalid",
+		"failed to verify action",
+		"the caller does not have permission",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // raiseForStatus 根据 HTTP/gRPC 状态创建对应错误。
 func raiseForStatus(code int, status, message string, details map[string]any, upstream string) *VertexError {
 	var e *VertexError
 	switch {
+	case isRecaptchaAuthError(message) || isRecaptchaAuthError(upstream):
+		e = NewAuthenticationError(message)
 	case status == StatusResourceExhausted || code == 8 || code == 429:
 		e = NewRateLimitError(message, 0)
 	case status == StatusUnauthenticated || code == 16 || code == 401:
