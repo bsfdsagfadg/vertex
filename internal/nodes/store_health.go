@@ -109,6 +109,13 @@ func RecordTest(uri string, ok bool, ms float64, errStr string) {
 		if strings.Contains(errLower, "dial") || strings.Contains(errLower, "refused") ||
 			strings.Contains(errLower, "i/o timeout") || strings.Contains(errLower, "deadline exceeded") ||
 			strings.Contains(errLower, "connection") {
+			// 同步内存中的禁用状态，确保 LoadNodes / SelectForParallel 无需重启即可感知
+			for i := range nodeList {
+				if nodeList[i].RawURI == uri {
+					nodeList[i].Disabled = true
+					break
+				}
+			}
 			updateSingleNodeDisabledUnsafe(uri, true)
 		} else {
 			h.LastSubHealthyAt = time.Now().Unix()

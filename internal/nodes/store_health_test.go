@@ -499,3 +499,38 @@ func TestSelectForParallel_Tier2SkipsCooldown(t *testing.T) {
 		t.Errorf("Expected 2 nodes even when k=3 (uri-a in cooldown), got %d", len(selected2))
 	}
 }
+
+func TestRecordTest_AutoDisableSyncsMemory(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	n1 := Node{RawURI: "uri1", Name: "node1"}
+	n2 := Node{RawURI: "uri2", Name: "node2"}
+	MergeNodes([]Node{n1, n2})
+
+	// 触发网络类故障（dial），应同步禁用内存中的节点
+	RecordTest("uri1", false, 0, "dial tcp timeout")
+
+	// LoadNodes 读取内存节点列表，须实时反映禁用状态
+	nodes := LoadNodes()
+	found := false
+	for _, n := range nodes {
+		if n.RawURI == "uri1" {
+			found = true
+			if !n.Disabled {
+				t.Errorf("Expected uri1 Disabled=true after network failure, got false")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Expected uri1 in node list")
+	}
+
+	// SelectForParallel 不得再选中被自动禁用的节点
+	selected := SelectForParallel(2, false)
+	for _, s := range selected {
+		if s.RawURI == "uri1" {
+			t.Errorf("Disabled node uri1 must not be selected by SelectForParallel")
+		}
+	}
+}
