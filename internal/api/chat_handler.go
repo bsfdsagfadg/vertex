@@ -205,7 +205,13 @@ func (c *ChatHandler) writeStreamError(write func(string) bool, e *vertex.Vertex
 		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "content_filter"}}
 		_ = write(sseEvent(base))
 	} else {
-		_ = write(sseEvent(vertexErrorToOAI(e)))
+		// SSE headers are already committed once a stream has emitted content.
+		// Keep the terminal packet valid for OpenAI clients by including choices
+		// with finish_reason=error alongside the normal error object.
+		base := streamChunkBase(model, requestID)
+		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "error"}}
+		base["error"] = vertexErrorToOAI(e)["error"]
+		_ = write(sseEvent(base))
 	}
 	_ = write("data: [DONE]\n\n")
 }
