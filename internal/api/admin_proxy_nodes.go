@@ -437,6 +437,9 @@ func StartEntryProxyProbeLoop(netClient *transport.NetworkClient) func() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if !config.GetProvider().EntryProxyProbeEnabled() {
+					continue
+				}
 				probeAllEnabledProxyCandidates(ctx, netClient)
 			}
 		}
