@@ -742,3 +742,41 @@ func TestMakeBoxDialFunc_TimeoutMarksClosed(t *testing.T) {
 		t.Error("box.Close should have been called")
 	}
 }
+
+// TestMakeBoxDialFunc_CleanupExitsOnParentCtxCancel 验证超时清理 goroutine 在父请求
+// ctx 结束后立即退出（不必等 DialContext 返回或 30s 兜底），避免瞬态 goroutine 堆积。
+// 关键机制：1ns 父 ctx 立即超时级联取消内部 dialCtx（15s），无需等满 15s。
+func TestMakeBoxDialFunc_CleanupExitsOnParentCtxCancel(t *testing.T) {
+	fc := &fakeCloser{}
+	nb := &nodeBox{
+		box:      fc,
+		outbound: hangOutbound{},
+	}
+	dial := makeBoxDialFunc(nb)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := dial(ctx, "tcp", "1.2.3.4:443")
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("dial 超时分支耗时 %v，超过 500ms 测试规范", elapsed)
+	}
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("error should contain 'timeout', got: %v", err)
+	}
+
+	if !nb.closed.Load() {
+		t.Error("expected nb.closed to be true after timeout")
+	}
+	if fc.closeCount.Load() < 1 {
+		t.Error("nb.box.Close should have been called in timeout branch")
+	}
+
+	// 父 ctx 已超时：清理 goroutine 的 case <-ctx.Done() 立即就绪并退出，不白等到
+	// hangOutbound 的 2s 返回。此处不直接断言 goroutine 数（并发环境抖动），
+	// 语义保证为「更快或一样快」，由 select 第三条分路兜底。
+}

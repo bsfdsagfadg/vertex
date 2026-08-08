@@ -92,10 +92,10 @@ func (m *middleware) withMetrics(next http.Handler) http.Handler {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		ctx := context.WithValue(r.Context(), vertex.RequestIDKey{}, reqID)
 		cli.StartReq(reqID)
+		defer cli.FinishReq(reqID) // panic 展开时 defer 先于 withRecover 的 recover 执行，保证 TUI 表项必清理
 		start := time.Now()
 		next.ServeHTTP(sw, r.WithContext(ctx))
 		elapsed := time.Since(start)
-		cli.FinishReq(reqID)
 		log.Printf("[Server] %s %s - %d (%.3fs) 请求ID=%s", r.Method, r.URL.Path, sw.status, elapsed.Seconds(), reqID)
 	})
 }

@@ -28,6 +28,12 @@ const (
 	minPreStreamTimeout  = 2 * minPostStreamTimeout // 首包前防御性下限：与 post 下限 *2 联动，单一原则
 )
 
+// maxPendingMetadataChunks 是首内容帧前缓存元数据帧的防御性上限。
+// 正常 Gemini 流式响应首内容帧前仅 1~3 个元数据帧；超额时静默丢弃后续元数据帧，
+// 仅保留前 maxPendingMetadataChunks 帧待首内容帧到来时一并 flush。
+// 丢弃的帧为纯元数据（promptFeedback/usageMetadata 等），不影响客户端内容解析正确性。
+const maxPendingMetadataChunks = 128
+
 // sessionTimeoutFromContext 从 context 的 deadline 推导 Session 的超时秒数。
 // 至少返回 1 秒（tls-client.WithTimeoutSeconds 只接受正秒），但 context 的 deadline
 // 仍由 Session.Do 优先检查；该值仅用于构造传输层超时。
@@ -143,7 +149,9 @@ retryLoop:
 			if contentYielded {
 				return yield(StreamChunk{Data: ch})
 			}
-			pendingChunks = append(pendingChunks, ch)
+			if len(pendingChunks) < maxPendingMetadataChunks {
+				pendingChunks = append(pendingChunks, ch)
+			}
 			return true
 		})
 

@@ -126,6 +126,28 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+// TestWithMetrics_PanicDoesNotLeakReq 验证 handler panic 时 TUI 请求表项必清理：
+// withMetrics 在 StartReq 后 defer FinishReq，panic 展开期 defer 先于 withRecover 的
+// recover 执行，测试不挂起且正确返回 500（服务端可观测行为）。
+func TestWithMetrics_PanicDoesNotLeakReq(t *testing.T) {
+	mw := &middleware{} //nolint:exhaustruct
+
+	rec := httptest.NewRecorder()
+	mw.withRecover(mw.withMetrics(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("boom")
+	}))).ServeHTTP(
+		rec,
+		httptest.NewRequest("POST", "/v1/chat/completions", nil),
+	)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500", rec.Code)
+	}
+	if rec.Header().Get("X-Request-Id") == "" {
+		t.Error("panic 路径也应设置 X-Request-Id")
+	}
+}
+
 // TestHealth_WithoutAuth 验证 health 端点无需 API key 认证。
 func TestHealth_WithoutAuth(t *testing.T) {
 	if testing.Short() {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -278,5 +279,84 @@ func TestExecuteStreamingWithRetries_NetworkError_RecreatesSession(t *testing.T)
 	}
 	if requestCount < 2 {
 		t.Errorf("预期发生重试（>=2 次请求），实际 %d 次", requestCount)
+	}
+}
+
+// TestExecuteStreamingAttempt_PendingChunksCap 验证 pendingChunks 封顶丢弃：
+// 首内容帧前上游持续推送远超 maxPendingMetadataChunks 的纯元数据帧时，
+// 仅缓存前 128 帧（其余静默丢弃），首内容帧正常 flush 与 yield，不崩溃不 OOM。
+func TestExecuteStreamingAttempt_PendingChunksCap(t *testing.T) {
+	start := time.Now()
+	defer func() {
+		if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+			t.Errorf("测试超过 500ms 规范, 实际 %v", elapsed)
+		}
+	}()
+
+	metaFrame := `{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}}}]}`
+	contentFrame := `{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"STOP"}]}}}}]}`
+
+	// 200 个无有效内容的元数据帧 + 1 个内容帧（远超 128 封顶）。
+	var payload strings.Builder
+	for i := 0; i < 200; i++ {
+		payload.WriteString(metaFrame)
+	}
+	payload.WriteString(contentFrame)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(payload.String()))
+	}))
+	defer server.Close()
+
+	origURL := batchGraphqlURL
+	batchGraphqlURL = server.URL + "/batchGraphql"
+	defer func() { batchGraphqlURL = origURL }()
+
+	cfg := config.DefaultConfig()
+	cfg.ParallelPoolEnabled = false
+	cfg.MaxRetries = 0
+	cfg.StreamIdleTimeoutSeconds = 360
+	provider := config.StaticProvider(cfg)
+
+	netClient := transport.NewNetworkClient(nil)
+	vc := &VertexAIClient{
+		net:  netClient,
+		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
+			return "test-token", nil
+		}),
+		cfg: provider,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var emitted []map[string]any
+	var gotErr *VertexError
+	vc.executeStreamingWithRetries(ctx, "test-model", map[string]any{}, "", func(chunk StreamChunk) bool {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+			return true
+		}
+		emitted = append(emitted, chunk.Data)
+		return true
+	})
+
+	if gotErr != nil {
+		t.Fatalf("unexpected error chunk: %v", gotErr)
+	}
+	if len(emitted) != maxPendingMetadataChunks+1 {
+		t.Errorf("期望 yield %d 帧（128 元数据 + 1 内容），实际 %d", maxPendingMetadataChunks+1, len(emitted))
+	}
+	found := false
+	for _, ch := range emitted {
+		if firstPartText(ch) == "hello" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("内容帧 text=hello 应被正常 yield")
 	}
 }
