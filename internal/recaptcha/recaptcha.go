@@ -168,7 +168,11 @@ func FetchRecaptchaToken(ctx context.Context, net *transport.NetworkClient, prox
 
 func fetchOnce(ctx context.Context, net *transport.NetworkClient, proxyURI string) (string, error) {
 	// rT 的获取路线由调用方明确指定；不能再次从全局入口选择器挂载第二个入口。
-	sess, err := net.CreateSessionWithoutEntryProxy(15, proxyURI, "recaptcha")
+	reqID := transport.RequestIDFromContext(ctx)
+	if reqID == "" {
+		reqID = "recaptcha"
+	}
+	sess, err := net.CreateSessionWithoutEntryProxy(15, proxyURI, reqID)
 	if err != nil {
 		return "", fmt.Errorf("创建 reCAPTCHA Session 失败: %w", err)
 	}

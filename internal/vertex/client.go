@@ -157,6 +157,7 @@ func (s *requestTokenState) invalidate(token string) bool {
 }
 
 func (c *VertexAIClient) prepareRequest(ctx context.Context) (context.Context, error) {
+	ctx = transport.WithRequestID(ctx, RequestIDFromContext(ctx))
 	state := &requestTokenState{fetchToken: c.fetchRequestToken} //nolint:exhaustruct
 	token, err := state.get(ctx, c.pool)
 	if err != nil || token == "" {

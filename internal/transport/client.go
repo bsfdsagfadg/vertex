@@ -99,6 +99,19 @@ type NetworkClient struct {
 
 type entryProxyContextKey struct{}
 
+type requestIDContextKey struct{}
+
+// WithRequestID carries the top-level request ID into lower-level transports.
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+	return context.WithValue(ctx, requestIDContextKey{}, strings.TrimSpace(requestID))
+}
+
+// RequestIDFromContext returns the request ID propagated by the API layer.
+func RequestIDFromContext(ctx context.Context) string {
+	requestID, _ := ctx.Value(requestIDContextKey{}).(string)
+	return requestID
+}
+
 type pinnedEntryProxy struct {
 	uri string
 }
@@ -203,7 +216,7 @@ func (c *NetworkClient) CreateSessionWithoutEntryProxy(timeoutSec int, proxyURI 
 
 func (c *NetworkClient) createSession(timeoutSec int, proxyURI, entryProxyURI, reqID string) (*Session, error) {
 	prof := pickProfile()
-	log.Printf("[Transport] reqID: %s, Assigned TLS Profile: %s", reqID, prof.GetClientHelloStr())
+	log.Printf("[Transport] 请求ID=%s，已分配 TLS 配置：%s", reqID, prof.GetClientHelloStr())
 
 	opts := []tls_client.HttpClientOption{
 		tls_client.WithTimeoutSeconds(timeoutSec),

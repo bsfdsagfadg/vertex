@@ -406,7 +406,11 @@ func (adm *AdminHandler) runProxyBatchTest(
 
 func probeEntryProxyCandidate(ctx context.Context, netClient *transport.NetworkClient, rawURI string, timeoutSeconds int) (float64, error) {
 	start := time.Now()
-	session, err := netClient.CreateSessionWithoutEntryProxy(timeoutSeconds, rawURI, "probe-entry-proxy")
+	reqID := transport.RequestIDFromContext(ctx)
+	if reqID == "" {
+		reqID = "entry-probe-loop"
+	}
+	session, err := netClient.CreateSessionWithoutEntryProxy(timeoutSeconds, rawURI, reqID)
 	if err != nil {
 		return float64(time.Since(start).Milliseconds()), err
 	}
