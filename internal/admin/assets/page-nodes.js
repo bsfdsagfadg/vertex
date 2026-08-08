@@ -1039,8 +1039,18 @@ function renderProxyNodes(candidates) {
     typeCell.textContent = candidate.type || '-';
     var enabledCell = document.createElement('td');
     var enabledPill = document.createElement('span');
-    enabledPill.className = candidate.disabled ? 'pill off' : 'pill on';
-    enabledPill.textContent = candidate.disabled ? '禁用' : '启用';
+    var cooldownRemaining = Math.max(0, Number(candidate.cooldown_until || 0) - Math.floor(Date.now() / 1000));
+    var cooling = !candidate.disabled && cooldownRemaining > 0;
+    enabledPill.className = candidate.disabled || cooling ? 'pill off' : 'pill on';
+    if (candidate.disabled) {
+      enabledPill.textContent = '禁用';
+    } else if (cooling) {
+      enabledPill.textContent = '冷却';
+      enabledPill.style.color = 'var(--gold)';
+      enabledPill.title = '剩余约 ' + cooldownRemaining + ' 秒';
+    } else {
+      enabledPill.textContent = '启用';
+    }
     enabledCell.appendChild(enabledPill);
     var stateCell = document.createElement('td');
     stateCell.style.cssText = 'white-space:normal;overflow-wrap:anywhere;word-break:break-word;max-width:420px;';

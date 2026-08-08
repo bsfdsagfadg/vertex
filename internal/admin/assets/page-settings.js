@@ -6,6 +6,10 @@ const SETTINGS_FIELDS = [
   { k: 'parallel_pool_size', label: '并发数', type: 'number', max: 20, min: 1, group: 'pool', desc: '每轮并发抢跑的节点数 (默认 15，最大 20)' },
   { k: 'race_timeout', label: '单节点竞速超时 (秒)', type: 'number', max: 1800, min: 0, group: 'pool', desc: '单个节点在该时间内未返回首包即单独淘汰，避免卡死节点拖住整轮竞速 (0 = 不限制)' },
   { k: 'entry_proxy_probe_enabled', label: '入口代理周期拨测', type: 'bool', group: 'pool', desc: '按周期自动测试已启用的入口代理；默认关闭，需要时手动开启。' },
+  { k: 'entry_proxy_probe_interval_seconds', label: '入口代理拨测间隔 (秒)', type: 'number', max: 86400, min: 60, group: 'pool', desc: '自动拨测的执行间隔，默认 300 秒' },
+  { k: 'entry_proxy_probe_cooldown_seconds', label: '入口代理失败冷却 (秒)', type: 'number', max: 86400, min: 0, group: 'pool', desc: '拨测或业务请求失败后暂停使用入口代理的时间，0 表示不冷却' },
+  { k: 'entry_proxy_probe_auto_disable_enabled', label: '连续失败自动禁用', type: 'bool', group: 'pool', desc: '只统计自动周期拨测失败；任意一次成功都会清零' },
+  { k: 'entry_proxy_probe_auto_disable_failures', label: '自动禁用失败次数', type: 'number', max: 100, min: 1, group: 'pool', desc: '达到连续失败次数后自动禁用，默认 10 次' },
 
   // 🛠 Group: core (核心控制与基础参数)
   { k: 'max_retries', label: '上游重试次数', type: 'number', group: 'core', desc: '上游请求失败时的重试次数；总尝试 = 此值 + 1' },
@@ -131,6 +135,32 @@ async function loadSettings() {
     };
     updateStickyDisabled();
     parallelEl.addEventListener('change', updateStickyDisabled);
+  }
+
+  const probeEnabledEl = $('#set_entry_proxy_probe_enabled');
+  const probeIntervalEl = $('#set_entry_proxy_probe_interval_seconds');
+  const probeCooldownEl = $('#set_entry_proxy_probe_cooldown_seconds');
+  const probeAutoDisableEl = $('#set_entry_proxy_probe_auto_disable_enabled');
+  const probeFailureLimitEl = $('#set_entry_proxy_probe_auto_disable_failures');
+  if (probeEnabledEl && probeIntervalEl && probeCooldownEl && probeAutoDisableEl && probeFailureLimitEl) {
+    const setFieldDisabled = (el, disabled) => {
+      el.disabled = disabled;
+      const container = el.closest('.field');
+      if (container) {
+        container.style.opacity = disabled ? '0.5' : '1';
+        container.style.pointerEvents = disabled ? 'none' : '';
+      }
+    };
+    const updateProbeDisabled = () => {
+      const probeDisabled = !probeEnabledEl.checked;
+      setFieldDisabled(probeIntervalEl, probeDisabled);
+      setFieldDisabled(probeCooldownEl, probeDisabled);
+      setFieldDisabled(probeAutoDisableEl, probeDisabled);
+      setFieldDisabled(probeFailureLimitEl, probeDisabled || !probeAutoDisableEl.checked);
+    };
+    updateProbeDisabled();
+    probeEnabledEl.addEventListener('change', updateProbeDisabled);
+    probeAutoDisableEl.addEventListener('change', updateProbeDisabled);
   }
 }
 
