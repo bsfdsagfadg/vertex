@@ -591,6 +591,12 @@ async function enableNode(uri) {
   toast('已启用该节点');
 }
 
+async function disableNode(uri) {
+  await API.nodes.batchDisable([uri]);
+  await loadNodes();
+  toast('已禁用该节点');
+}
+
 async function useNode(uri) { await API.useNode(uri); loadSettings(); loadNodes(); toast('已锁定使用该节点，并关闭并发池'); }
 async function unuseNode(uri) { await API.useNode(''); loadSettings(); loadNodes(); toast('已取消锁定，并恢复并发池'); }
 async function delNode(uri) { if (!confirm('删除该节点？')) return; await API.nodes.delete(uri); loadNodes(); toast('已删除'); }
@@ -676,7 +682,6 @@ async function addNodeToEntryProxies(uri) {
 }
 
 async function removeNodeFromEntryProxies(uri) {
-  if (!confirm('确定要将该节点移出全局入口代理池吗？')) return;
   try {
     await API.proxyNodes.delete(uri);
     await loadNodes();
