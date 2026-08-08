@@ -1043,7 +1043,7 @@ function renderProxyNodes(candidates) {
     enabledPill.textContent = candidate.disabled ? '禁用' : '启用';
     enabledCell.appendChild(enabledPill);
     var stateCell = document.createElement('td');
-    stateCell.style.cssText = 'white-space:nowrap;';
+    stateCell.style.cssText = 'white-space:normal;overflow-wrap:anywhere;word-break:break-word;max-width:420px;';
     if (!candidate.last_test_at) {
       stateCell.textContent = '未测试';
     } else if (candidate.last_test_ok) {
