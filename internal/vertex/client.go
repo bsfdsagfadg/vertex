@@ -55,19 +55,33 @@ type VertexAIClient struct {
 type requestRouteKey struct{}
 
 type requestTokenState struct {
-	mu         sync.Mutex
+	mu           sync.Mutex
+	token        string
+	generation   uint64
+	proxyURI     string
+	fetchToken   func(context.Context) (string, error)
+	refreshing   bool
+	wait         chan struct{}
+	lastErr      error
+	refreshes    int
+	refreshLimit int
+	limitSet     bool
+}
+
+type tokenLease struct {
 	token      string
-	proxyURI   string
-	fetchToken func(context.Context) (string, error)
-	refreshing bool
-	wait       chan struct{}
-	lastErr    error
-	refreshes  int
+	generation uint64
+}
+
+type tokenInvalidationResult struct {
+	refreshed bool
+	exhausted bool
 }
 
 type requestRoute struct {
-	entryURI string
-	token    *requestTokenState
+	entryURI           string
+	token              *requestTokenState
+	authCandidateBound bool
 }
 
 func routeFromContext(ctx context.Context) *requestRoute {
@@ -75,31 +89,31 @@ func routeFromContext(ctx context.Context) *requestRoute {
 	return route
 }
 
-func (s *requestTokenState) get(ctx context.Context, pool *recaptcha.TokenPool) (string, error) {
+func (s *requestTokenState) getLease(ctx context.Context, pool *recaptcha.TokenPool) (tokenLease, error) {
 	for {
 		s.mu.Lock()
 		if s.token != "" {
-			token := s.token
+			lease := tokenLease{token: s.token, generation: s.generation}
 			s.mu.Unlock()
-			return token, nil
+			return lease, nil
 		}
 		if s.refreshing {
 			wait := s.wait
 			s.mu.Unlock()
 			select {
 			case <-ctx.Done():
-				return "", ctx.Err()
+				return tokenLease{}, ctx.Err()
 			case <-wait:
 				s.mu.Lock()
-				token, err := s.token, s.lastErr
+				lease, err := tokenLease{token: s.token, generation: s.generation}, s.lastErr
 				s.mu.Unlock()
-				return token, err
+				return lease, err
 			}
 		}
 		if s.lastErr != nil {
 			err := s.lastErr
 			s.mu.Unlock()
-			return "", err
+			return tokenLease{}, err
 		}
 		s.refreshing = true
 		s.wait = make(chan struct{})
@@ -121,44 +135,86 @@ func (s *requestTokenState) get(ctx context.Context, pool *recaptcha.TokenPool) 
 		s.mu.Lock()
 		if err == nil {
 			s.token = token
+			s.generation++
 		}
 		s.lastErr = err
 		s.refreshing = false
 		close(wait)
 		s.mu.Unlock()
-		return token, err
+		return tokenLease{token: token, generation: s.generation}, err
 	}
+}
+
+func (s *requestTokenState) get(ctx context.Context, pool *recaptcha.TokenPool) (string, error) {
+	lease, err := s.getLease(ctx, pool)
+	return lease.token, err
+}
+
+func (s *requestTokenState) setRefreshLimit(limit int) {
+	if limit < 0 {
+		limit = 0
+	}
+	s.mu.Lock()
+	s.refreshLimit = limit
+	s.limitSet = true
+	s.mu.Unlock()
 }
 
 func (s *requestTokenState) setProxyURI(proxyURI string) {
 	s.mu.Lock()
 	s.proxyURI = proxyURI
 	s.token = ""
+	s.generation = 0
 	s.lastErr = nil
 	s.refreshes = 0
 	s.mu.Unlock()
 }
 
-// invalidate clears the token only if the caller used the current generation.
-// A request may synchronously refresh at most once after its initial acquisition.
-func (s *requestTokenState) invalidate(token string) bool {
+func (s *requestTokenState) invalidateLease(lease tokenLease) tokenInvalidationResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.token != token {
-		return true
+	if s.token != lease.token || s.generation != lease.generation {
+		return tokenInvalidationResult{}
 	}
-	if s.refreshes >= 1 {
-		return false
+	limit := s.refreshLimit
+	if !s.limitSet {
+		// Preserve the standalone state helper's historical one-refresh default;
+		// request paths always set an explicit policy during prepareRequest.
+		limit = 1
+	}
+	if s.refreshes >= limit {
+		return tokenInvalidationResult{exhausted: true}
 	}
 	s.token = ""
 	s.lastErr = nil
 	s.refreshes++
-	return true
+	return tokenInvalidationResult{refreshed: true}
+}
+
+// invalidate clears the current token. A stale lease is treated as already handled.
+func (s *requestTokenState) invalidate(token string) bool {
+	s.mu.Lock()
+	lease := tokenLease{token: token, generation: s.generation}
+	if s.token != token {
+		s.mu.Unlock()
+		return true
+	}
+	s.mu.Unlock()
+	result := s.invalidateLease(lease)
+	return !result.exhausted
 }
 
 func (c *VertexAIClient) prepareRequest(ctx context.Context) (context.Context, error) {
 	ctx = transport.WithRequestID(ctx, RequestIDFromContext(ctx))
 	state := &requestTokenState{fetchToken: c.fetchRequestToken} //nolint:exhaustruct
+	authCandidateBound := c.cfg.ParallelPoolEnabled() && !c.cfg.ParallelPoolRetryEnabled()
+	refreshLimit := c.cfg.MaxRetries()
+	if authCandidateBound {
+		// RunRace replaces this provisional value with the actual number of
+		// candidates selected for the request. The initial token is generation 1.
+		refreshLimit = max(0, requestConcurrency(c.cfg)-1)
+	}
+	state.setRefreshLimit(refreshLimit)
 	token, err := state.get(ctx, c.pool)
 	if err != nil || token == "" {
 		if err == nil {
@@ -166,7 +222,7 @@ func (c *VertexAIClient) prepareRequest(ctx context.Context) (context.Context, e
 		}
 		return ctx, err
 	}
-	route := &requestRoute{token: state}
+	route := &requestRoute{token: state, authCandidateBound: authCandidateBound}
 	modelEntries := config.SelectEntryProxySequence(requestConcurrency(c.cfg), c.cfg)
 	return transport.WithEntryProxyPool(context.WithValue(ctx, requestRouteKey{}, route), modelEntries), nil
 }

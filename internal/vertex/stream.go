@@ -118,9 +118,11 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 	defer sess.Close()
 
 	recaptchaToken := ""
+	var recaptchaLease tokenLease
 	route := routeFromContext(ctx)
 	if route != nil && route.token != nil {
-		recaptchaToken, err = route.token.get(ctx, c.pool)
+		recaptchaLease, err = route.token.getLease(ctx, c.pool)
+		recaptchaToken = recaptchaLease.token
 		if err != nil {
 			yield(StreamChunk{Err: NewAuthenticationError("Could not fetch recaptcha token: "+err.Error(), err)})
 			return
@@ -138,7 +140,7 @@ retryLoop:
 	for attempt <= maxRetries {
 		log.Printf("[Vertex] [StreamChat] 开始尝试 (Attempt %d/%d), 模型=%s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, reqID, nodes.GetNodeName(proxyURI))
 		if recaptchaToken == "" && route != nil && route.token != nil {
-			tok, tokenErr := route.token.get(ctx, c.pool)
+			lease, tokenErr := route.token.getLease(ctx, c.pool)
 			if tokenErr != nil && ctx.Err() != nil {
 				lastError = NewContextError(ctx.Err())
 				break retryLoop
@@ -146,7 +148,8 @@ retryLoop:
 			if tokenErr != nil {
 				lastError = NewAuthenticationError("Could not fetch recaptcha token: "+tokenErr.Error(), tokenErr)
 			} else {
-				recaptchaToken = tok
+				recaptchaLease = lease
+				recaptchaToken = lease.token
 				isFirstAuth = true
 			}
 		}
@@ -219,15 +222,26 @@ retryLoop:
 		ve := asVertexError(attemptErr)
 		switch {
 		case ve != nil && ve.Kind == "auth":
-			// A stale request-scoped token is an internal recovery signal. It is
-			// deliberately independent from maxRetries: the whole candidate race
-			// shares one refresh and retries once even when maxRetries is zero.
+			// In multi-node mode with per-node retry disabled, the first candidate
+			// reporting a stale shared token hands control to RunRace. That layer
+			// retires this candidate, cancels the remaining old-generation work,
+			// and starts the next race round with one shared refreshed token.
 			if route != nil && route.token != nil && isRecaptchaAuthError(ve.Message) {
 				lastError = ve
-				if contentYielded || !route.token.invalidate(recaptchaToken) {
+				if contentYielded {
+					break retryLoop
+				}
+				if route.authCandidateBound {
+					ve.markRequestTokenInvalid(recaptchaLease)
+					break retryLoop
+				}
+				result := route.token.invalidateLease(recaptchaLease)
+				if result.exhausted {
+					lastError = NewInternalError("recaptcha token remained invalid after request recovery").markRequestTokenTerminal()
 					break retryLoop
 				}
 				recaptchaToken = ""
+				recaptchaLease = tokenLease{}
 				isFirstAuth = true
 				continue
 			}

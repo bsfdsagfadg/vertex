@@ -205,6 +205,118 @@ func TestRunRace_RoundRelaySwitchesToFreshNodes(t *testing.T) {
 	}
 }
 
+func TestRunRace_RequestTokenRefreshRetiresReportingCandidate(t *testing.T) {
+	raceTestNodes(t)
+	cfg := config.StaticProvider(config.AppConfig{ //nolint:exhaustruct
+		ParallelPoolEnabled:      true,
+		ParallelPoolSize:         3,
+		ParallelNodeTopK:         80,
+		ParallelPoolRetryEnabled: false,
+		MaxRetries:               0,
+	})
+
+	var fetches atomic.Int32
+	state := &requestTokenState{fetchToken: func(context.Context) (string, error) {
+		generation := fetches.Add(1)
+		return fmt.Sprintf("token-%d", generation), nil
+	}} //nolint:exhaustruct
+	state.setRefreshLimit(2)
+	initial, err := state.getLease(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), requestRouteKey{}, &requestRoute{
+		token:              state,
+		authCandidateBound: true,
+	})
+
+	var first atomic.Bool
+	var mu sync.Mutex
+	var generations map[string][]uint64 = make(map[string][]uint64)
+	run := func(candidateCtx context.Context, uri string) (string, error) {
+		lease, getErr := routeFromContext(candidateCtx).token.getLease(candidateCtx, nil)
+		if getErr != nil {
+			return "", getErr
+		}
+		mu.Lock()
+		generations[uri] = append(generations[uri], lease.generation)
+		mu.Unlock()
+		if lease.generation == initial.generation {
+			if first.CompareAndSwap(false, true) {
+				return "", NewAuthenticationError("Recaptcha token is invalid").markRequestTokenInvalid(lease)
+			}
+			<-candidateCtx.Done()
+			return "", candidateCtx.Err()
+		}
+		return "ok", nil
+	}
+
+	value, err := RunRace(ctx, cfg, run)
+	if err != nil || value != "ok" {
+		t.Fatalf("refreshed candidates should win, value=%q err=%v", value, err)
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("request fetched %d tokens, want initial plus one refresh", got)
+	}
+	for uri, gens := range generations {
+		if len(gens) > 1 && gens[0] == initial.generation && gens[1] != initial.generation {
+			continue
+		}
+		if len(gens) > 1 && gens[1] == initial.generation {
+			t.Fatalf("reporting candidate %s was relaunched with refreshed token: %v", uri, gens)
+		}
+	}
+}
+
+func TestRunRace_RequestTokenRefreshStopsAfterCandidatesExhausted(t *testing.T) {
+	raceTestNodes(t)
+	cfg := config.StaticProvider(config.AppConfig{ //nolint:exhaustruct
+		ParallelPoolEnabled:      true,
+		ParallelPoolSize:         3,
+		ParallelNodeTopK:         80,
+		ParallelPoolRetryEnabled: false,
+		MaxRetries:               0,
+	})
+
+	var fetches atomic.Int32
+	state := &requestTokenState{fetchToken: func(context.Context) (string, error) {
+		generation := fetches.Add(1)
+		return fmt.Sprintf("token-%d", generation), nil
+	}} //nolint:exhaustruct
+	state.setRefreshLimit(2)
+	if _, err := state.getLease(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), requestRouteKey{}, &requestRoute{
+		token:              state,
+		authCandidateBound: true,
+	})
+	var leaders sync.Map
+	run := func(candidateCtx context.Context, _ string) (string, error) {
+		lease, err := routeFromContext(candidateCtx).token.getLease(candidateCtx, nil)
+		if err != nil {
+			return "", err
+		}
+		if _, loaded := leaders.LoadOrStore(lease.generation, struct{}{}); !loaded {
+			return "", NewAuthenticationError("Recaptcha token is invalid").markRequestTokenInvalid(lease)
+		}
+		<-candidateCtx.Done()
+		return "", candidateCtx.Err()
+	}
+
+	_, err := RunRace(ctx, cfg, run)
+	if err == nil {
+		t.Fatal("repeated token-invalid responses should terminate the request")
+	}
+	ve, ok := err.(*VertexError)
+	if !ok || ve.Kind != "internal" || !ve.isRequestTokenControl() {
+		t.Fatalf("final auth exhaustion should be an internal request error, got %T %v", err, err)
+	}
+	if got := fetches.Load(); got != 3 {
+		t.Fatalf("request fetched %d tokens, want exactly three generations and no fourth", got)
+	}
+}
+
 func TestStreamParallelWinnerContinuesBeyondRaceTimeout(t *testing.T) {
 	raceTestNodes(t)
 
