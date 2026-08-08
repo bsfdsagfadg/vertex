@@ -6,32 +6,44 @@ type staticConfig struct {
 
 func StaticProvider(c AppConfig) ConfigProvider { return staticConfig{c} }
 
-func (s staticConfig) PortAPI() int                             { return s.c.PortAPI }
-func (s staticConfig) MaxRetries() int                          { return s.c.MaxRetries }
-func (s staticConfig) AdminPassword() string                    { return s.c.AdminPassword }
-func (s staticConfig) ProxyURL() string                         { return s.c.ProxyURL }
-func (s staticConfig) DebugPprof() bool                         { return s.c.DebugPprof }
-func (s staticConfig) DebugMode() bool                          { return s.c.DebugMode }
-func (s staticConfig) DropMaxTokens() bool                      { return s.c.DropMaxTokens }
-func (s staticConfig) AggregateStream() bool                    { return s.c.AggregateStream }
-func (s staticConfig) FakeStreamEnabled() bool                  { return s.c.FakeStreamEnabled }
-func (s staticConfig) MaxN() int                                { return s.c.MaxN }
-func (s staticConfig) MaxRequestMB() int                        { return s.c.MaxRequestMB }
-func (s staticConfig) MaxSpillMB() int                          { return s.c.MaxSpillMB }
-func (s staticConfig) RequestTimeout() int                      { return s.c.RequestTimeout }
-func (s staticConfig) RaceTimeout() int                         { return s.c.RaceTimeout }
-func (s staticConfig) StreamIdleTimeoutSeconds() int            { return s.c.StreamIdleTimeoutSeconds }
-func (s staticConfig) ModelTurnGuardEnabled() bool              { return s.c.ModelTurnGuardEnabled }
-func (s staticConfig) VertexAPIKey() string                     { return s.c.VertexAPIKey }
-func (s staticConfig) CountTokensQuerySignature() string        { return s.c.CountTokensQuerySignature }
-func (s staticConfig) SafetySettings() map[string]string        { return s.c.SafetySettings }
-func (s staticConfig) ParallelPoolEnabled() bool                { return s.c.ParallelPoolEnabled }
-func (s staticConfig) StickyNodePriority() bool                 { return s.c.StickyNodePriority }
-func (s staticConfig) ParallelPoolRetryEnabled() bool           { return s.c.ParallelPoolRetryEnabled }
-func (s staticConfig) ParallelPoolSize() int                    { return s.c.ParallelPoolSize }
-func (s staticConfig) ParallelPoolDelayDynamic() bool           { return s.c.ParallelPoolDelayDynamic }
-func (s staticConfig) ParallelPoolDelayMs() int                 { return s.c.ParallelPoolDelayMs }
-func (s staticConfig) EntryProxyProbeEnabled() bool             { return s.c.EntryProxyProbeEnabled }
+func (s staticConfig) PortAPI() int                      { return s.c.PortAPI }
+func (s staticConfig) MaxRetries() int                   { return s.c.MaxRetries }
+func (s staticConfig) AdminPassword() string             { return s.c.AdminPassword }
+func (s staticConfig) ProxyURL() string                  { return s.c.ProxyURL }
+func (s staticConfig) DebugPprof() bool                  { return s.c.DebugPprof }
+func (s staticConfig) DebugMode() bool                   { return s.c.DebugMode }
+func (s staticConfig) DropMaxTokens() bool               { return s.c.DropMaxTokens }
+func (s staticConfig) AggregateStream() bool             { return s.c.AggregateStream }
+func (s staticConfig) FakeStreamEnabled() bool           { return s.c.FakeStreamEnabled }
+func (s staticConfig) MaxN() int                         { return s.c.MaxN }
+func (s staticConfig) MaxRequestMB() int                 { return s.c.MaxRequestMB }
+func (s staticConfig) MaxSpillMB() int                   { return s.c.MaxSpillMB }
+func (s staticConfig) RequestTimeout() int               { return s.c.RequestTimeout }
+func (s staticConfig) RaceTimeout() int                  { return s.c.RaceTimeout }
+func (s staticConfig) StreamIdleTimeoutSeconds() int     { return s.c.StreamIdleTimeoutSeconds }
+func (s staticConfig) ModelTurnGuardEnabled() bool       { return s.c.ModelTurnGuardEnabled }
+func (s staticConfig) VertexAPIKey() string              { return s.c.VertexAPIKey }
+func (s staticConfig) CountTokensQuerySignature() string { return s.c.CountTokensQuerySignature }
+func (s staticConfig) SafetySettings() map[string]string { return s.c.SafetySettings }
+func (s staticConfig) ParallelPoolEnabled() bool         { return s.c.ParallelPoolEnabled }
+func (s staticConfig) StickyNodePriority() bool          { return s.c.StickyNodePriority }
+func (s staticConfig) ParallelPoolRetryEnabled() bool    { return s.c.ParallelPoolRetryEnabled }
+func (s staticConfig) ParallelPoolSize() int             { return s.c.ParallelPoolSize }
+func (s staticConfig) ParallelPoolDelayDynamic() bool    { return s.c.ParallelPoolDelayDynamic }
+func (s staticConfig) ParallelPoolDelayMs() int          { return s.c.ParallelPoolDelayMs }
+func (s staticConfig) EntryProxyProbeEnabled() bool      { return s.c.EntryProxyProbeEnabled }
+func (s staticConfig) EntryProxyProbeIntervalSeconds() int {
+	return s.c.EntryProxyProbeIntervalSeconds
+}
+func (s staticConfig) EntryProxyProbeCooldownSeconds() int {
+	return s.c.EntryProxyProbeCooldownSeconds
+}
+func (s staticConfig) EntryProxyProbeAutoDisableEnabled() bool {
+	return s.c.EntryProxyProbeAutoDisableEnabled
+}
+func (s staticConfig) EntryProxyProbeAutoDisableFailures() int {
+	return s.c.EntryProxyProbeAutoDisableFailures
+}
 func (s staticConfig) ActiveNodeURI() string                    { return s.c.ActiveNodeURI }
 func (s staticConfig) ParallelNodeTopK() int                    { return s.c.ParallelNodeTopK }
 func (s staticConfig) BackgroundImage() string                  { return s.c.BackgroundImage }

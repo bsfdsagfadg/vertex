@@ -97,7 +97,13 @@ func SetProxyCandidateEnabled(rawURI string, enabled bool) error {
 	if err != nil {
 		return err
 	}
-	result, err := store.Exec("UPDATE entry_proxy_candidates SET disabled = ? WHERE normalized_uri = ?", !enabled, normalized)
+	query := "UPDATE entry_proxy_candidates SET disabled = ? WHERE normalized_uri = ?"
+	args := []any{!enabled, normalized}
+	if enabled {
+		query = "UPDATE entry_proxy_candidates SET disabled = 0, cooldown_until = 0, consecutive_failures = 0 WHERE normalized_uri = ?"
+		args = []any{normalized}
+	}
+	result, err := store.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("更新入口代理状态: %w", err)
 	}

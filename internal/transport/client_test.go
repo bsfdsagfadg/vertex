@@ -1,12 +1,43 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestCreateSessionLogsTLSProfileOnlyInDebugMode(t *testing.T) {
+	var logs bytes.Buffer
+	oldWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(oldWriter) })
+
+	normal := NewNetworkClient(false)
+	session, err := normal.CreateSessionWithoutEntryProxy(1, "", "normal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Close()
+	if strings.Contains(logs.String(), "已分配 TLS 配置") {
+		t.Fatalf("normal mode logged TLS profile: %s", logs.String())
+	}
+
+	logs.Reset()
+	debug := NewNetworkClient(true)
+	session, err = debug.CreateSessionWithoutEntryProxy(1, "", "debug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Close()
+	if !strings.Contains(logs.String(), "请求ID=debug，已分配 TLS 配置") {
+		t.Fatalf("debug mode did not log TLS profile: %s", logs.String())
+	}
+}
 
 func TestWithEntryProxyPinsExplicitDirectRoute(t *testing.T) {
 	ctx := WithEntryProxy(context.Background(), "")

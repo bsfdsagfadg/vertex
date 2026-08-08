@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	entryProxyProbeURL        = "https://www.google.com/recaptcha/enterprise.js"
-	entryProxyProbeInterval   = 5 * time.Minute
-	entryProxyProbeTimeout    = 20 * time.Second
-	entryProxyTestConcurrency = 50
+	entryProxyProbeURL          = "https://www.google.com/recaptcha/enterprise.js"
+	entryProxyProbeTimeout      = 20 * time.Second
+	entryProxyProbePollInterval = time.Second
+	entryProxyTestConcurrency   = 50
 )
 
 type entryProxyTestProgress struct {
@@ -27,6 +27,37 @@ type entryProxyTestProgress struct {
 	OKCount     int    `json:"ok_count"`
 	FailCount   int    `json:"fail_count"`
 	CurrentNode string `json:"current_node"`
+}
+
+type entryProxyProbeSummary struct {
+	Total        int
+	Success      int
+	Failed       int
+	Cooling      int
+	AutoDisabled int
+}
+
+type entryProxyProbeSchedule struct {
+	interval time.Duration
+	next     time.Time
+}
+
+func (s *entryProxyProbeSchedule) due(now time.Time, enabled bool, interval time.Duration) bool {
+	if !enabled {
+		s.interval = 0
+		s.next = time.Time{}
+		return false
+	}
+	if s.next.IsZero() || s.interval != interval {
+		s.interval = interval
+		s.next = now.Add(interval)
+		return false
+	}
+	return !now.Before(s.next)
+}
+
+func (s *entryProxyProbeSchedule) completed(now time.Time) {
+	s.next = now.Add(s.interval)
 }
 
 var (
@@ -423,51 +454,110 @@ func probeEntryProxyCandidate(ctx context.Context, netClient *transport.NetworkC
 }
 
 // StartEntryProxyProbeLoop periodically probes enabled entries and returns a stop function.
-// Manual Disabled state is never changed; successful probes only clear transient cooldown.
+// The interval and automatic-disable policy are read from config without requiring a restart.
 func StartEntryProxyProbeLoop(netClient *transport.NetworkClient) func() {
 	if netClient == nil {
 		return func() {}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		ticker := time.NewTicker(entryProxyProbeInterval)
+		ticker := time.NewTicker(entryProxyProbePollInterval)
 		defer ticker.Stop()
+		var schedule entryProxyProbeSchedule
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if !config.GetProvider().EntryProxyProbeEnabled() {
+				cfg := config.GetProvider()
+				interval := time.Duration(cfg.EntryProxyProbeIntervalSeconds()) * time.Second
+				if !schedule.due(time.Now(), cfg.EntryProxyProbeEnabled(), interval) {
 					continue
 				}
-				probeAllEnabledProxyCandidates(ctx, netClient)
+				probeAllEnabledProxyCandidates(ctx, netClient, cfg)
+				schedule.completed(time.Now())
 			}
 		}
 	}()
 	return cancel
 }
 
-func probeAllEnabledProxyCandidates(ctx context.Context, netClient *transport.NetworkClient) {
-	var wg sync.WaitGroup
+func probeAllEnabledProxyCandidates(ctx context.Context, netClient *transport.NetworkClient, cfg config.ConfigProvider) entryProxyProbeSummary {
+	return runEntryProxyProbeRound(ctx, cfg, func(probeCtx context.Context, rawURI string) (float64, error) {
+		return probeEntryProxyCandidate(probeCtx, netClient, rawURI, int(entryProxyProbeTimeout.Seconds()))
+	})
+}
+
+func runEntryProxyProbeRound(
+	ctx context.Context,
+	cfg config.ConfigProvider,
+	probe func(context.Context, string) (float64, error),
+) entryProxyProbeSummary {
+	candidates := make([]config.ProxyCandidate, 0)
 	for _, candidate := range config.ListProxyCandidates() {
 		if candidate.Disabled || strings.TrimSpace(candidate.RawURI) == "" {
 			continue
 		}
+		candidates = append(candidates, candidate)
+	}
+
+	log.Printf("[EntryProxy] 自动拨测开始: %d 个节点测试", len(candidates))
+	debugMode := cfg.DebugMode()
+	cooldownSeconds := cfg.EntryProxyProbeCooldownSeconds()
+	autoDisable := cfg.EntryProxyProbeAutoDisableEnabled()
+	failureLimit := cfg.EntryProxyProbeAutoDisableFailures()
+	var resultMu sync.Mutex
+	summary := entryProxyProbeSummary{Total: len(candidates)}
+
+	var wg sync.WaitGroup
+	for _, candidate := range candidates {
 		wg.Add(1)
 		go func(rawURI string) {
 			defer wg.Done()
 			probeCtx, cancel := context.WithTimeout(ctx, entryProxyProbeTimeout)
 			defer cancel()
-			elapsed, err := probeEntryProxyCandidate(probeCtx, netClient, rawURI, int(entryProxyProbeTimeout.Seconds()))
+			elapsed, err := probe(probeCtx, rawURI)
 			errText := ""
 			if err != nil {
 				errText = err.Error()
-				log.Printf("[EntryProxy] 候选 %s 周期拨测失败: %v", redactProxyURI(rawURI), err)
 			}
-			if updateErr := config.UpdateProxyCandidateTest(rawURI, err == nil, elapsed, errText); updateErr != nil {
+			autoDisabled, updateErr := config.UpdateProxyCandidateProbeResult(
+				rawURI, err == nil, elapsed, errText, cooldownSeconds, autoDisable, failureLimit,
+			)
+			if updateErr != nil {
 				log.Printf("[EntryProxy] 更新候选 %s 拨测状态失败: %v", redactProxyURI(rawURI), updateErr)
 			}
+			if err != nil {
+				if autoDisabled {
+					log.Printf(
+						"[EntryProxy] 候选 %s 周期拨测失败: %v（连续失败 %d 次，已自动禁用）",
+						redactProxyURI(rawURI), err, failureLimit,
+					)
+				} else {
+					log.Printf("[EntryProxy] 候选 %s 周期拨测失败: %v", redactProxyURI(rawURI), err)
+				}
+			} else if debugMode {
+				log.Printf("[EntryProxy] 候选 %s 周期拨测成功: %.0fms", redactProxyURI(rawURI), elapsed)
+			}
+
+			resultMu.Lock()
+			if err == nil {
+				summary.Success++
+			} else {
+				summary.Failed++
+				if autoDisabled {
+					summary.AutoDisabled++
+				} else if updateErr == nil && cooldownSeconds > 0 {
+					summary.Cooling++
+				}
+			}
+			resultMu.Unlock()
 		}(candidate.RawURI)
 	}
 	wg.Wait()
+	log.Printf(
+		"[EntryProxy] 自动拨测结束: %d 个节点自动测试完毕，%d 个成功，%d 个失败，%d 个冷却，%d 个自动禁用",
+		summary.Total, summary.Success, summary.Failed, summary.Cooling, summary.AutoDisabled,
+	)
+	return summary
 }

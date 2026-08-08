@@ -216,7 +216,9 @@ func (c *NetworkClient) CreateSessionWithoutEntryProxy(timeoutSec int, proxyURI 
 
 func (c *NetworkClient) createSession(timeoutSec int, proxyURI, entryProxyURI, reqID string) (*Session, error) {
 	prof := pickProfile()
-	log.Printf("[Transport] 请求ID=%s，已分配 TLS 配置：%s", reqID, prof.GetClientHelloStr())
+	if c.debugMode {
+		log.Printf("[Transport] 请求ID=%s，已分配 TLS 配置：%s", reqID, prof.GetClientHelloStr())
+	}
 
 	opts := []tls_client.HttpClientOption{
 		tls_client.WithTimeoutSeconds(timeoutSec),

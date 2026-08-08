@@ -12,9 +12,15 @@ import (
 )
 
 const (
-	defaultAnonAPIKey          = "AIzaSyCI-zsRP85UVOi0DjtiCwWBwQ1djDy741g"
-	defaultCountTokensQuerySig = "2/mENOSldfC+HZM+tGhVuJLrl8M6gEyK3HRjUKuA5AM58="
-	maxTimeoutSeconds          = 1800
+	defaultAnonAPIKey                     = "AIzaSyCI-zsRP85UVOi0DjtiCwWBwQ1djDy741g"
+	defaultCountTokensQuerySig            = "2/mENOSldfC+HZM+tGhVuJLrl8M6gEyK3HRjUKuA5AM58="
+	maxTimeoutSeconds                     = 1800
+	DefaultEntryProxyProbeIntervalSeconds = 300
+	DefaultEntryProxyProbeCooldownSeconds = 60
+	DefaultEntryProxyAutoDisableFailures  = 10
+	MinEntryProxyProbeIntervalSeconds     = 60
+	MaxEntryProxyProbeSeconds             = 86400
+	MaxEntryProxyAutoDisableFailures      = 100
 )
 
 type AppConfig struct { //nolint:govet
@@ -37,17 +43,21 @@ type AppConfig struct { //nolint:govet
 	ModelTurnGuardEnabled     bool              `json:"model_turn_guard_enabled"`
 
 	// 并发池与节点锁定配置
-	ActiveNodeURI            string `json:"active_node_uri"`
-	ParallelPoolEnabled      bool   `json:"parallel_pool_enabled"`
-	StickyNodePriority       bool   `json:"sticky_node_priority"`
-	ParallelPoolRetryEnabled bool   `json:"parallel_pool_retry_enabled"`
-	ParallelPoolSize         int    `json:"parallel_pool_size"`
-	DebugPprof               bool   `json:"debug_pprof"`
-	ParallelNodeTopK         int    `json:"parallel_node_top_k"`
-	DebugMode                bool   `json:"debug_mode"`
-	ParallelPoolDelayDynamic bool   `json:"parallel_pool_delay_dynamic"`
-	ParallelPoolDelayMs      int    `json:"parallel_pool_delay_ms"`
-	EntryProxyProbeEnabled   bool   `json:"entry_proxy_probe_enabled"`
+	ActiveNodeURI                      string `json:"active_node_uri"`
+	ParallelPoolEnabled                bool   `json:"parallel_pool_enabled"`
+	StickyNodePriority                 bool   `json:"sticky_node_priority"`
+	ParallelPoolRetryEnabled           bool   `json:"parallel_pool_retry_enabled"`
+	ParallelPoolSize                   int    `json:"parallel_pool_size"`
+	DebugPprof                         bool   `json:"debug_pprof"`
+	ParallelNodeTopK                   int    `json:"parallel_node_top_k"`
+	DebugMode                          bool   `json:"debug_mode"`
+	ParallelPoolDelayDynamic           bool   `json:"parallel_pool_delay_dynamic"`
+	ParallelPoolDelayMs                int    `json:"parallel_pool_delay_ms"`
+	EntryProxyProbeEnabled             bool   `json:"entry_proxy_probe_enabled"`
+	EntryProxyProbeIntervalSeconds     int    `json:"entry_proxy_probe_interval_seconds"`
+	EntryProxyProbeCooldownSeconds     int    `json:"entry_proxy_probe_cooldown_seconds"`
+	EntryProxyProbeAutoDisableEnabled  bool   `json:"entry_proxy_probe_auto_disable_enabled"`
+	EntryProxyProbeAutoDisableFailures int    `json:"entry_proxy_probe_auto_disable_failures"`
 
 	// 匿名遥测：仅发送实例 ID + 版本 + 平台，不含任何用户/网络/隐私数据。
 	// 用于了解软件的版本分布和活跃数。指针类型区分"未设置"和"显式 false"，未设置时默认开启。
@@ -67,31 +77,35 @@ type AppConfig struct { //nolint:govet
 
 func DefaultConfig() AppConfig {
 	return AppConfig{ //nolint:exhaustruct
-		PortAPI:                   2156,
-		MaxRetries:                1, // 默认为 1 次
-		VertexAPIKey:              defaultAnonAPIKey,
-		CountTokensQuerySignature: defaultCountTokensQuerySig,
-		MaxN:                      8,
-		MaxSpillMB:                2048,
-		RequestTimeout:            180,
-		FakeStreamEnabled:         true,
-		RaceTimeout:               0,
-		StreamIdleTimeoutSeconds:  30,
-		ModelTurnGuardEnabled:     true,
-		ParallelPoolEnabled:       true,
-		StickyNodePriority:        false,
-		ParallelPoolSize:          15, // 默认为 15 并发
-		ParallelNodeTopK:          80,
-		ParallelPoolDelayDynamic:  false, // 建议默认关闭动态对冲，改为稳定的秒级接力
-		ParallelPoolDelayMs:       2500,  // 固定对冲间隔设为 2500ms（2.5秒），单节点撞墙后触发接力
-		EntryProxyProbeEnabled:    false, // 周期拨测默认关闭，避免后台自动产生入口代理流量
-		BackgroundImage:           "url('background.jpg')",
-		FontSize:                  "14px",
-		FontColorType:             "adaptive",
-		FontColor:                 "#f6f1e9",
-		CustomBgPresets:           []string{},
-		DefaultImageSize:          "1K",
-		DefaultResponseModalities: "图文",
+		PortAPI:                            2156,
+		MaxRetries:                         1, // 默认为 1 次
+		VertexAPIKey:                       defaultAnonAPIKey,
+		CountTokensQuerySignature:          defaultCountTokensQuerySig,
+		MaxN:                               8,
+		MaxSpillMB:                         2048,
+		RequestTimeout:                     180,
+		FakeStreamEnabled:                  true,
+		RaceTimeout:                        0,
+		StreamIdleTimeoutSeconds:           30,
+		ModelTurnGuardEnabled:              true,
+		ParallelPoolEnabled:                true,
+		StickyNodePriority:                 false,
+		ParallelPoolSize:                   15, // 默认为 15 并发
+		ParallelNodeTopK:                   80,
+		ParallelPoolDelayDynamic:           false, // 建议默认关闭动态对冲，改为稳定的秒级接力
+		ParallelPoolDelayMs:                2500,  // 固定对冲间隔设为 2500ms（2.5秒），单节点撞墙后触发接力
+		EntryProxyProbeEnabled:             false, // 周期拨测默认关闭，避免后台自动产生入口代理流量
+		EntryProxyProbeIntervalSeconds:     DefaultEntryProxyProbeIntervalSeconds,
+		EntryProxyProbeCooldownSeconds:     DefaultEntryProxyProbeCooldownSeconds,
+		EntryProxyProbeAutoDisableEnabled:  false,
+		EntryProxyProbeAutoDisableFailures: DefaultEntryProxyAutoDisableFailures,
+		BackgroundImage:                    "url('background.jpg')",
+		FontSize:                           "14px",
+		FontColorType:                      "adaptive",
+		FontColor:                          "#f6f1e9",
+		CustomBgPresets:                    []string{},
+		DefaultImageSize:                   "1K",
+		DefaultResponseModalities:          "图文",
 	}
 }
 
@@ -208,6 +222,30 @@ func Load() AppConfig {
 				cfg.StreamIdleTimeoutSeconds = 30
 				needsSave = true
 			}
+			if cfg.EntryProxyProbeIntervalSeconds <= 0 {
+				cfg.EntryProxyProbeIntervalSeconds = DefaultEntryProxyProbeIntervalSeconds
+				needsSave = true
+			} else if cfg.EntryProxyProbeIntervalSeconds < MinEntryProxyProbeIntervalSeconds {
+				cfg.EntryProxyProbeIntervalSeconds = MinEntryProxyProbeIntervalSeconds
+				needsSave = true
+			} else if cfg.EntryProxyProbeIntervalSeconds > MaxEntryProxyProbeSeconds {
+				cfg.EntryProxyProbeIntervalSeconds = MaxEntryProxyProbeSeconds
+				needsSave = true
+			}
+			if cfg.EntryProxyProbeCooldownSeconds < 0 {
+				cfg.EntryProxyProbeCooldownSeconds = 0
+				needsSave = true
+			} else if cfg.EntryProxyProbeCooldownSeconds > MaxEntryProxyProbeSeconds {
+				cfg.EntryProxyProbeCooldownSeconds = MaxEntryProxyProbeSeconds
+				needsSave = true
+			}
+			if cfg.EntryProxyProbeAutoDisableFailures <= 0 {
+				cfg.EntryProxyProbeAutoDisableFailures = DefaultEntryProxyAutoDisableFailures
+				needsSave = true
+			} else if cfg.EntryProxyProbeAutoDisableFailures > MaxEntryProxyAutoDisableFailures {
+				cfg.EntryProxyProbeAutoDisableFailures = MaxEntryProxyAutoDisableFailures
+				needsSave = true
+			}
 			if normalized := normalizeImageSizeTier(cfg.DefaultImageSize); normalized == "" {
 				if cfg.DefaultImageSize != "" {
 					log.Printf("[Config] default_image_size 非法 (%q)，回退 1K", cfg.DefaultImageSize)
@@ -233,12 +271,15 @@ func Load() AppConfig {
 			if needsSave {
 				// 在返回配置前完成回写，避免调用方读到已修正值但文件仍保留非法值。
 				if errSave := writeSettings(map[string]any{
-					"request_timeout":             cfg.RequestTimeout,
-					"race_timeout":                cfg.RaceTimeout,
-					"stream_idle_timeout_seconds": cfg.StreamIdleTimeoutSeconds,
-					"parallel_pool_size":          cfg.ParallelPoolSize,
-					"default_image_size":          cfg.DefaultImageSize,
-					"default_response_modalities": cfg.DefaultResponseModalities,
+					"request_timeout":                         cfg.RequestTimeout,
+					"race_timeout":                            cfg.RaceTimeout,
+					"stream_idle_timeout_seconds":             cfg.StreamIdleTimeoutSeconds,
+					"parallel_pool_size":                      cfg.ParallelPoolSize,
+					"entry_proxy_probe_interval_seconds":      cfg.EntryProxyProbeIntervalSeconds,
+					"entry_proxy_probe_cooldown_seconds":      cfg.EntryProxyProbeCooldownSeconds,
+					"entry_proxy_probe_auto_disable_failures": cfg.EntryProxyProbeAutoDisableFailures,
+					"default_image_size":                      cfg.DefaultImageSize,
+					"default_response_modalities":             cfg.DefaultResponseModalities,
 				}); errSave != nil {
 					log.Printf("[Config] 自动回写规范化配置失败: %v", errSave)
 				}

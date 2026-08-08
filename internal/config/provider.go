@@ -32,6 +32,10 @@ type ConfigProvider interface {
 	ParallelPoolDelayDynamic() bool
 	ParallelPoolDelayMs() int
 	EntryProxyProbeEnabled() bool
+	EntryProxyProbeIntervalSeconds() int
+	EntryProxyProbeCooldownSeconds() int
+	EntryProxyProbeAutoDisableEnabled() bool
+	EntryProxyProbeAutoDisableFailures() int
 	ActiveNodeURI() string
 	ParallelNodeTopK() int
 
@@ -100,12 +104,24 @@ func (d dynamicConfig) ParallelPoolSize() int          { return Load().ParallelP
 func (d dynamicConfig) ParallelPoolDelayDynamic() bool { return Load().ParallelPoolDelayDynamic }
 func (d dynamicConfig) ParallelPoolDelayMs() int       { return Load().ParallelPoolDelayMs }
 func (d dynamicConfig) EntryProxyProbeEnabled() bool   { return Load().EntryProxyProbeEnabled }
-func (d dynamicConfig) ActiveNodeURI() string          { return Load().ActiveNodeURI }
-func (d dynamicConfig) ParallelNodeTopK() int          { return Load().ParallelNodeTopK }
-func (d dynamicConfig) BackgroundImage() string        { return Load().BackgroundImage }
-func (d dynamicConfig) FontSize() string               { return Load().FontSize }
-func (d dynamicConfig) FontColorType() string          { return Load().FontColorType }
-func (d dynamicConfig) FontColor() string              { return Load().FontColor }
+func (d dynamicConfig) EntryProxyProbeIntervalSeconds() int {
+	return Load().EntryProxyProbeIntervalSeconds
+}
+func (d dynamicConfig) EntryProxyProbeCooldownSeconds() int {
+	return Load().EntryProxyProbeCooldownSeconds
+}
+func (d dynamicConfig) EntryProxyProbeAutoDisableEnabled() bool {
+	return Load().EntryProxyProbeAutoDisableEnabled
+}
+func (d dynamicConfig) EntryProxyProbeAutoDisableFailures() int {
+	return Load().EntryProxyProbeAutoDisableFailures
+}
+func (d dynamicConfig) ActiveNodeURI() string   { return Load().ActiveNodeURI }
+func (d dynamicConfig) ParallelNodeTopK() int   { return Load().ParallelNodeTopK }
+func (d dynamicConfig) BackgroundImage() string { return Load().BackgroundImage }
+func (d dynamicConfig) FontSize() string        { return Load().FontSize }
+func (d dynamicConfig) FontColorType() string   { return Load().FontColorType }
+func (d dynamicConfig) FontColor() string       { return Load().FontColor }
 func (d dynamicConfig) CustomBgPresets() []string {
 	c := Load()
 	out := make([]string, len(c.CustomBgPresets))

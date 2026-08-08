@@ -14,15 +14,16 @@ import (
 )
 
 type ProxyCandidate struct {
-	RawURI        string  `json:"raw_uri"`
-	Name          string  `json:"name"`
-	Type          string  `json:"type"`
-	Disabled      bool    `json:"disabled"`
-	CooldownUntil int64   `json:"cooldown_until"`
-	LastTestOK    bool    `json:"last_test_ok"`
-	LastTestMs    float64 `json:"last_test_ms"`
-	LastTestAt    int64   `json:"last_test_at"`
-	LastTestError string  `json:"last_test_error"`
+	RawURI              string  `json:"raw_uri"`
+	Name                string  `json:"name"`
+	Type                string  `json:"type"`
+	Disabled            bool    `json:"disabled"`
+	CooldownUntil       int64   `json:"cooldown_until"`
+	LastTestOK          bool    `json:"last_test_ok"`
+	LastTestMs          float64 `json:"last_test_ms"`
+	LastTestAt          int64   `json:"last_test_at"`
+	LastTestError       string  `json:"last_test_error"`
+	ConsecutiveFailures int     `json:"consecutive_failures"`
 }
 
 //nolint:gochecknoglobals // Serializes candidate read-modify-write operations.
@@ -40,7 +41,7 @@ func ListProxyCandidates() []ProxyCandidate {
 	if err != nil {
 		return nil
 	}
-	rows, err := store.Query(`SELECT raw_uri, name, type, disabled, cooldown_until, last_test_ok, last_test_ms, last_test_at, last_test_error
+	rows, err := store.Query(`SELECT raw_uri, name, type, disabled, cooldown_until, last_test_ok, last_test_ms, last_test_at, last_test_error, consecutive_failures
 		FROM entry_proxy_candidates ORDER BY rowid`)
 	if err != nil {
 		return nil
@@ -51,7 +52,7 @@ func ListProxyCandidates() []ProxyCandidate {
 		var candidate ProxyCandidate
 		if err := rows.Scan(&candidate.RawURI, &candidate.Name, &candidate.Type, &candidate.Disabled,
 			&candidate.CooldownUntil, &candidate.LastTestOK, &candidate.LastTestMs,
-			&candidate.LastTestAt, &candidate.LastTestError); err == nil {
+			&candidate.LastTestAt, &candidate.LastTestError, &candidate.ConsecutiveFailures); err == nil {
 			result = append(result, candidate)
 		}
 	}
@@ -174,31 +175,86 @@ func RemoveDisabledProxyCandidates() ([]string, error) {
 }
 
 func UpdateProxyCandidateTest(rawURI string, ok bool, elapsedMs float64, errText string) error {
+	cfg := Load()
+	_, err := updateProxyCandidateResult(rawURI, ok, elapsedMs, errText, cfg.EntryProxyProbeCooldownSeconds, false, false, 0)
+	return err
+}
+
+// UpdateProxyCandidateProbeResult records one scheduled health probe. Only
+// scheduled failures contribute to automatic disablement.
+func UpdateProxyCandidateProbeResult(
+	rawURI string,
+	ok bool,
+	elapsedMs float64,
+	errText string,
+	cooldownSeconds int,
+	autoDisable bool,
+	failureLimit int,
+) (bool, error) {
+	return updateProxyCandidateResult(rawURI, ok, elapsedMs, errText, cooldownSeconds, true, autoDisable, failureLimit)
+}
+
+func updateProxyCandidateResult(
+	rawURI string,
+	ok bool,
+	elapsedMs float64,
+	errText string,
+	cooldownSeconds int,
+	countScheduledFailure bool,
+	autoDisable bool,
+	failureLimit int,
+) (bool, error) {
 	proxyCandidatesMu.Lock()
 	defer proxyCandidatesMu.Unlock()
 	normalized, err := NormalizeProxyURI(rawURI)
 	if err != nil {
-		return err
+		return false, err
 	}
 	store, err := candidateStore()
 	if err != nil {
-		return err
+		return false, err
+	}
+	var consecutiveFailures int
+	var disabled bool
+	if err := store.QueryRow(
+		"SELECT consecutive_failures, disabled FROM entry_proxy_candidates WHERE normalized_uri = ?", normalized,
+	).Scan(&consecutiveFailures, &disabled); err != nil {
+		if err == sql.ErrNoRows {
+			return false, fmt.Errorf("未找到该候选 URI")
+		}
+		return false, fmt.Errorf("读取候选代理测试状态: %w", err)
+	}
+
+	if cooldownSeconds < 0 {
+		cooldownSeconds = 0
 	}
 	cooldown := int64(0)
-	if !ok {
-		cooldown = time.Now().Add(60 * time.Second).Unix()
+	autoDisabled := false
+	if ok {
+		consecutiveFailures = 0
+	} else {
+		cooldown = time.Now().Add(time.Duration(cooldownSeconds) * time.Second).Unix()
+		if countScheduledFailure {
+			consecutiveFailures++
+			if autoDisable && failureLimit > 0 && consecutiveFailures >= failureLimit && !disabled {
+				disabled = true
+				autoDisabled = true
+				cooldown = 0
+			}
+		}
 	}
 	result, err := store.Exec(`UPDATE entry_proxy_candidates
-		SET last_test_ok = ?, last_test_ms = ?, last_test_at = ?, last_test_error = ?, cooldown_until = ?
-		WHERE normalized_uri = ?`, ok, elapsedMs, time.Now().Unix(), errText, cooldown, normalized)
+		SET last_test_ok = ?, last_test_ms = ?, last_test_at = ?, last_test_error = ?, cooldown_until = ?,
+			consecutive_failures = ?, disabled = ?
+		WHERE normalized_uri = ?`, ok, elapsedMs, time.Now().Unix(), errText, cooldown, consecutiveFailures, disabled, normalized)
 	if err != nil {
-		return fmt.Errorf("保存候选代理测试结果: %w", err)
+		return false, fmt.Errorf("保存候选代理测试结果: %w", err)
 	}
 	count, _ := result.RowsAffected()
 	if count == 0 {
-		return fmt.Errorf("未找到该候选 URI")
+		return false, fmt.Errorf("未找到该候选 URI")
 	}
-	return nil
+	return autoDisabled, nil
 }
 
 func HasProxyCandidate(rawURI string) bool {
@@ -238,7 +294,7 @@ func MigrateLegacyProxy(rawURI string) error {
 	_, err = store.Exec(`INSERT INTO entry_proxy_candidates
 		(raw_uri, normalized_uri, name, type, disabled)
 		VALUES (?, ?, ?, ?, 0)
-		ON CONFLICT(normalized_uri) DO UPDATE SET disabled = 0, cooldown_until = 0`, rawURI, normalized, name, strings.ToLower(parsed.Scheme))
+		ON CONFLICT(normalized_uri) DO UPDATE SET disabled = 0, cooldown_until = 0, consecutive_failures = 0`, rawURI, normalized, name, strings.ToLower(parsed.Scheme))
 	if err != nil {
 		return fmt.Errorf("迁移旧 proxy_url: %w", err)
 	}

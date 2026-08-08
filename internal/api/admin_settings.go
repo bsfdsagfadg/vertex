@@ -16,22 +16,26 @@ var adminAllowedSettings = map[string]bool{
 	"race_timeout":             true,
 	"model_turn_guard_enabled": true,
 	"parallel_pool_enabled":    true, "parallel_pool_size": true,
-	"telemetry_enabled":           true,
-	"parallel_pool_delay_dynamic": true,
-	"entry_proxy_probe_enabled":   true,
-	"parallel_pool_delay_ms":      true,
-	"active_node_uri":             true,
-	"sticky_node_priority":        true,
-	"parallel_pool_retry_enabled": true,
-	"background_image":            true,
-	"font_size":                   true,
-	"font_color_type":             true,
-	"font_color":                  true,
-	"custom_bg_presets":           true,
-	"debug_mode":                  true,
-	"auto_refresh_logs":           true,
-	"default_image_size":          true,
-	"default_response_modalities": true,
+	"telemetry_enabled":                       true,
+	"parallel_pool_delay_dynamic":             true,
+	"entry_proxy_probe_enabled":               true,
+	"entry_proxy_probe_interval_seconds":      true,
+	"entry_proxy_probe_cooldown_seconds":      true,
+	"entry_proxy_probe_auto_disable_enabled":  true,
+	"entry_proxy_probe_auto_disable_failures": true,
+	"parallel_pool_delay_ms":                  true,
+	"active_node_uri":                         true,
+	"sticky_node_priority":                    true,
+	"parallel_pool_retry_enabled":             true,
+	"background_image":                        true,
+	"font_size":                               true,
+	"font_color_type":                         true,
+	"font_color":                              true,
+	"custom_bg_presets":                       true,
+	"debug_mode":                              true,
+	"auto_refresh_logs":                       true,
+	"default_image_size":                      true,
+	"default_response_modalities":             true,
 }
 
 func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request) {
@@ -52,21 +56,25 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"race_timeout":             adm.cfg.RaceTimeout(),
 		"model_turn_guard_enabled": adm.cfg.ModelTurnGuardEnabled(),
 		"proxy_url":                adm.cfg.ProxyURL(), "parallel_pool_enabled": adm.cfg.ParallelPoolEnabled(), "parallel_pool_size": adm.cfg.ParallelPoolSize(), "active_node_uri": adm.cfg.ActiveNodeURI(),
-		"proxy_url_candidates":        config.ListProxyCandidates(),
-		"parallel_pool_delay_dynamic": adm.cfg.ParallelPoolDelayDynamic(),
-		"parallel_pool_delay_ms":      adm.cfg.ParallelPoolDelayMs(),
-		"entry_proxy_probe_enabled":   adm.cfg.EntryProxyProbeEnabled(),
-		"sticky_node_priority":        adm.cfg.StickyNodePriority(),
-		"parallel_pool_retry_enabled": adm.cfg.ParallelPoolRetryEnabled(),
-		"background_image":            adm.cfg.BackgroundImage(),
-		"font_size":                   adm.cfg.FontSize(),
-		"font_color_type":             adm.cfg.FontColorType(),
-		"font_color":                  adm.cfg.FontColor(),
-		"custom_bg_presets":           adm.cfg.CustomBgPresets(),
-		"debug_mode":                  adm.cfg.DebugMode(),
-		"auto_refresh_logs":           adm.cfg.AutoRefreshLogs(),
-		"default_image_size":          adm.cfg.DefaultImageSize(),
-		"default_response_modalities": adm.cfg.DefaultResponseModalities(),
+		"proxy_url_candidates":                    config.ListProxyCandidates(),
+		"parallel_pool_delay_dynamic":             adm.cfg.ParallelPoolDelayDynamic(),
+		"parallel_pool_delay_ms":                  adm.cfg.ParallelPoolDelayMs(),
+		"entry_proxy_probe_enabled":               adm.cfg.EntryProxyProbeEnabled(),
+		"entry_proxy_probe_interval_seconds":      adm.cfg.EntryProxyProbeIntervalSeconds(),
+		"entry_proxy_probe_cooldown_seconds":      adm.cfg.EntryProxyProbeCooldownSeconds(),
+		"entry_proxy_probe_auto_disable_enabled":  adm.cfg.EntryProxyProbeAutoDisableEnabled(),
+		"entry_proxy_probe_auto_disable_failures": adm.cfg.EntryProxyProbeAutoDisableFailures(),
+		"sticky_node_priority":                    adm.cfg.StickyNodePriority(),
+		"parallel_pool_retry_enabled":             adm.cfg.ParallelPoolRetryEnabled(),
+		"background_image":                        adm.cfg.BackgroundImage(),
+		"font_size":                               adm.cfg.FontSize(),
+		"font_color_type":                         adm.cfg.FontColorType(),
+		"font_color":                              adm.cfg.FontColor(),
+		"custom_bg_presets":                       adm.cfg.CustomBgPresets(),
+		"debug_mode":                              adm.cfg.DebugMode(),
+		"auto_refresh_logs":                       adm.cfg.AutoRefreshLogs(),
+		"default_image_size":                      adm.cfg.DefaultImageSize(),
+		"default_response_modalities":             adm.cfg.DefaultResponseModalities(),
 	}})
 }
 
@@ -89,7 +97,8 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 			continue
 		}
 		switch k {
-		case "max_retries", "max_spill_mb", "max_request_mb", "max_n", "parallel_pool_size", "parallel_pool_delay_ms", "request_timeout", "race_timeout":
+		case "max_retries", "max_spill_mb", "max_request_mb", "max_n", "parallel_pool_size", "parallel_pool_delay_ms", "request_timeout", "race_timeout",
+			"entry_proxy_probe_interval_seconds", "entry_proxy_probe_cooldown_seconds", "entry_proxy_probe_auto_disable_failures":
 			if f, ok := v.(float64); ok {
 				val := int(f)
 				switch k {
@@ -104,6 +113,26 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 						val = 0
 					} else if val > 1800 {
 						val = 1800
+					}
+				case "entry_proxy_probe_interval_seconds":
+					if val <= 0 {
+						val = config.DefaultEntryProxyProbeIntervalSeconds
+					} else if val < config.MinEntryProxyProbeIntervalSeconds {
+						val = config.MinEntryProxyProbeIntervalSeconds
+					} else if val > config.MaxEntryProxyProbeSeconds {
+						val = config.MaxEntryProxyProbeSeconds
+					}
+				case "entry_proxy_probe_cooldown_seconds":
+					if val < 0 {
+						val = 0
+					} else if val > config.MaxEntryProxyProbeSeconds {
+						val = config.MaxEntryProxyProbeSeconds
+					}
+				case "entry_proxy_probe_auto_disable_failures":
+					if val <= 0 {
+						val = config.DefaultEntryProxyAutoDisableFailures
+					} else if val > config.MaxEntryProxyAutoDisableFailures {
+						val = config.MaxEntryProxyAutoDisableFailures
 					}
 				}
 				updates[k] = val

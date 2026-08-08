@@ -114,7 +114,8 @@ func createTables(db *sql.DB) error {
 		last_test_ok BOOLEAN NOT NULL DEFAULT 0,
 		last_test_ms REAL NOT NULL DEFAULT 0,
 		last_test_at INTEGER NOT NULL DEFAULT 0,
-		last_test_error TEXT NOT NULL DEFAULT ''
+		last_test_error TEXT NOT NULL DEFAULT '',
+		consecutive_failures INTEGER NOT NULL DEFAULT 0
 	);
 	`
 	_, err := db.Exec(schema)
@@ -125,7 +126,24 @@ func createTables(db *sql.DB) error {
 	if err := ensureNodeHealthColumns(db); err != nil {
 		return err
 	}
+	if err := ensureEntryProxyCandidateColumns(db); err != nil {
+		return err
+	}
 	return ensureNodeSources(db)
+}
+
+func ensureEntryProxyCandidateColumns(db *sql.DB) error {
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('entry_proxy_candidates') WHERE name = 'consecutive_failures'").Scan(&count); err != nil {
+		return fmt.Errorf("read entry_proxy_candidates schema: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	if _, err := db.Exec("ALTER TABLE entry_proxy_candidates ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("add entry_proxy_candidates.consecutive_failures: %w", err)
+	}
+	return nil
 }
 
 func ensureNodeSources(db *sql.DB) error {

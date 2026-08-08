@@ -107,6 +107,45 @@ func TestInitDBAddsNodeHealthStateColumnsToExistingDatabase(t *testing.T) {
 	}
 }
 
+func TestInitDBAddsEntryProxyFailureCountToExistingDatabase(t *testing.T) {
+	CloseDB()
+	path := filepath.Join(t.TempDir(), "data.db")
+	legacyDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacyDB.Exec(`CREATE TABLE entry_proxy_candidates (
+		raw_uri TEXT PRIMARY KEY,
+		normalized_uri TEXT NOT NULL UNIQUE,
+		name TEXT NOT NULL DEFAULT '',
+		type TEXT NOT NULL DEFAULT '',
+		disabled BOOLEAN NOT NULL DEFAULT 0,
+		cooldown_until INTEGER NOT NULL DEFAULT 0,
+		last_test_ok BOOLEAN NOT NULL DEFAULT 0,
+		last_test_ms REAL NOT NULL DEFAULT 0,
+		last_test_at INTEGER NOT NULL DEFAULT 0,
+		last_test_error TEXT NOT NULL DEFAULT ''
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := InitDB(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(CloseDB)
+	var count int
+	if err := GlobalDB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('entry_proxy_candidates') WHERE name = 'consecutive_failures'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("旧数据库未补齐 entry_proxy_candidates.consecutive_failures")
+	}
+}
+
 func TestInitDBMigratesDevelopmentSourceColumnOnce(t *testing.T) {
 	CloseDB()
 	path := filepath.Join(t.TempDir(), "data.db")

@@ -66,6 +66,32 @@ func TestLoadNormalizesNegativeTimeouts(t *testing.T) {
 	}
 }
 
+func TestEntryProxyProbeDefaultsAndLimits(t *testing.T) {
+	defaults := DefaultConfig()
+	if defaults.EntryProxyProbeIntervalSeconds != 300 || defaults.EntryProxyProbeCooldownSeconds != 60 ||
+		defaults.EntryProxyProbeAutoDisableEnabled || defaults.EntryProxyProbeAutoDisableFailures != 10 {
+		t.Fatalf("unexpected entry probe defaults: %+v", defaults)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("VPROXY_CONFIG", path)
+	t.Cleanup(InvalidateCache)
+	if err := os.WriteFile(path, []byte(`{
+		"entry_proxy_probe_interval_seconds":1,
+		"entry_proxy_probe_cooldown_seconds":999999,
+		"entry_proxy_probe_auto_disable_failures":999
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateCache()
+	cfg := Load()
+	if cfg.EntryProxyProbeIntervalSeconds != MinEntryProxyProbeIntervalSeconds ||
+		cfg.EntryProxyProbeCooldownSeconds != MaxEntryProxyProbeSeconds ||
+		cfg.EntryProxyProbeAutoDisableFailures != MaxEntryProxyAutoDisableFailures {
+		t.Fatalf("entry probe limits not applied: %+v", cfg)
+	}
+}
+
 func TestLoadNormalizesImageDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("VPROXY_CONFIG", path)
