@@ -5,6 +5,7 @@ const SETTINGS_FIELDS = [
   { k: 'sticky_node_priority', label: '粘性节点优先轮询', type: 'bool', group: 'pool', desc: '启用后优先从粘性池中逐个尝试成功节点，失败即换下一个。粘性池本身始终在工作，此开关只影响优先级的分配。' },
   { k: 'parallel_pool_size', label: '并发数', type: 'number', max: 20, min: 1, group: 'pool', desc: '每轮并发抢跑的节点数 (默认 15，最大 20)' },
   { k: 'race_timeout', label: '单节点竞速超时 (秒)', type: 'number', max: 1800, min: 0, group: 'pool', desc: '单个节点在该时间内未返回首包即单独淘汰，避免卡死节点拖住整轮竞速 (0 = 不限制)' },
+  { k: 'entry_proxy_probe_enabled', label: '入口代理周期拨测', type: 'bool', group: 'pool', desc: '按周期自动测试已启用的入口代理；默认关闭，需要时手动开启。' },
 
   // 🛠 Group: core (核心控制与基础参数)
   { k: 'max_retries', label: '上游重试次数', type: 'number', group: 'core', desc: '上游请求失败时的重试次数；总尝试 = 此值 + 1' },
