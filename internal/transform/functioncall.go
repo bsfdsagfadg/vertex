@@ -176,7 +176,7 @@ func finalizeCleanedPart(cleaned map[string]any) {
 		_, hasFC := cleaned["functionCall"]
 		_, hasThought := cleaned["thought"]
 		_, hasSig := cleaned["thoughtSignature"]
-		if hasFC || hasThought || hasSig {
+		if (hasFC || hasThought) && !hasSig {
 			cleaned["thoughtSignature"] = skipThoughtSentinel
 		}
 	}
@@ -187,7 +187,19 @@ func finalizeCleanedPart(cleaned map[string]any) {
 	}
 }
 
-// EncodeThoughtSignature 递归把 thoughtSignature 的 sentinel 值 base64 编码。
+func ensureBase64Signature(signature string) string {
+	if signature == skipThoughtSentinel {
+		return base64.StdEncoding.EncodeToString([]byte(signature))
+	}
+	normalized := NormalizeBase64(signature)
+	decoded, err := base64.StdEncoding.DecodeString(normalized)
+	if err == nil && base64.StdEncoding.EncodeToString(decoded) == normalized {
+		return normalized
+	}
+	return base64.StdEncoding.EncodeToString([]byte(signature))
+}
+
+// EncodeThoughtSignature recursively normalizes thought signatures to standard Base64.
 func EncodeThoughtSignature(contents any, depth int) any {
 	const maxDepth = 64
 	if depth > maxDepth {
@@ -209,8 +221,8 @@ func EncodeThoughtSignature(contents any, depth int) any {
 					for i, p := range parts {
 						if pm, ok := p.(map[string]any); ok {
 							np := copyMap(pm)
-							if sig, ok := np["thoughtSignature"].(string); ok && sig == skipThoughtSentinel {
-								np["thoughtSignature"] = base64.StdEncoding.EncodeToString([]byte(sig))
+							if sig, ok := np["thoughtSignature"].(string); ok && sig != "" {
+								np["thoughtSignature"] = ensureBase64Signature(sig)
 							}
 							newParts[i] = np
 						} else {

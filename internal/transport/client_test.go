@@ -1,11 +1,36 @@
 package transport
 
 import (
+	"context"
 	"io"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestWithEntryProxyPinsExplicitDirectRoute(t *testing.T) {
+	ctx := WithEntryProxy(context.Background(), "")
+	entryURI, pinned := entryProxyFromContext(ctx)
+	if !pinned || entryURI != "" {
+		t.Fatalf("explicit direct route was not preserved: uri=%q pinned=%v", entryURI, pinned)
+	}
+}
+
+func TestWithEntryProxyPoolRoundRobinAndExplicitDirect(t *testing.T) {
+	entries := []string{"socks5://entry-a:1080", "socks5://entry-b:1080"}
+	ctx := WithEntryProxyPool(context.Background(), entries)
+	for i, want := range []string{entries[0], entries[1], entries[0], entries[1]} {
+		got, pinned := entryProxyFromContext(ctx)
+		if !pinned || got != want {
+			t.Fatalf("route[%d]=%q pinned=%v, want %q/true", i, got, pinned, want)
+		}
+	}
+
+	direct := WithEntryProxyPool(context.Background(), nil)
+	if got, pinned := entryProxyFromContext(direct); !pinned || got != "" {
+		t.Fatalf("empty pool route=%q pinned=%v, want direct/true", got, pinned)
+	}
+}
 
 type closeUnblocksReader struct {
 	readStarted chan struct{}

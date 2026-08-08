@@ -124,6 +124,64 @@ func TestProxyChainBuildsEntryAndSecondHop(t *testing.T) {
 	}
 }
 
+func TestGetOrStartProxyDialerForwardsEntryURI(t *testing.T) {
+	StopAllProxies()
+	t.Cleanup(StopAllProxies)
+
+	entryURI := "socks5://127.0.0.1:1080#entry"
+	secondURI := "http://127.0.0.1:8080#second"
+	if _, err := getOrStartProxyDialer(secondURI, "test", false, entryURI); err != nil {
+		t.Fatalf("build proxy chain through wrapper: %v", err)
+	}
+	proxyMutex.RLock()
+	_, chained := proxyMap[proxyCacheKey(secondURI, entryURI)]
+	_, unchained := proxyMap[proxyCacheKey(secondURI, "")]
+	proxyMutex.RUnlock()
+	if !chained || unchained {
+		t.Fatalf("entry URI was not forwarded: chained=%v unchained=%v", chained, unchained)
+	}
+}
+
+func TestProxyChainCacheUsesNormalizedTwoHopIdentity(t *testing.T) {
+	StopAllProxies()
+	t.Cleanup(StopAllProxies)
+
+	entryURI := "socks5://127.0.0.1:1080#entry"
+	secondURI := "http://127.0.0.1:8080#second"
+	var buildCount atomic.Int32
+	builder := func(mapping map[string]any, options ...adapter.ProxyOption) (constant.Proxy, error) {
+		buildCount.Add(1)
+		return adapter.ParseProxy(mapping, options...)
+	}
+	if _, err := getOrStartProxyDialerWithBuilder(secondURI, "test", false, builder, entryURI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := getOrStartProxyDialerWithBuilder("HTTP://127.0.0.1:8080#renamed", "test", false, builder, "SOCKS5://127.0.0.1:1080#renamed-entry"); err != nil {
+		t.Fatal(err)
+	}
+	if got := buildCount.Load(); got != 2 {
+		t.Fatalf("normalized URI variants initialized %d proxies, want 2", got)
+	}
+	RemoveProxy("socks5://127.0.0.1:1080#different-label")
+	proxyMutex.RLock()
+	defer proxyMutex.RUnlock()
+	if len(proxyMap) != 0 {
+		t.Fatalf("normalized entry removal left cached chains: %d", len(proxyMap))
+	}
+}
+
+func TestProxyChainRejectsSelfReference(t *testing.T) {
+	StopAllProxies()
+	t.Cleanup(StopAllProxies)
+
+	uri := "socks5://127.0.0.1:1080#entry"
+	if _, err := getOrStartProxyDialerWithBuilder(uri, "test", false, func(mapping map[string]any, options ...adapter.ProxyOption) (constant.Proxy, error) {
+		return adapter.ParseProxy(mapping, options...)
+	}, "SOCKS5://127.0.0.1:1080#candidate"); err == nil {
+		t.Fatal("self-referencing proxy chain was accepted")
+	}
+}
+
 func testClashProxyURI(t *testing.T, mapping map[string]any) string {
 	t.Helper()
 	body, err := json.Marshal(mapping)

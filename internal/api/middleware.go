@@ -10,6 +10,7 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
@@ -86,14 +87,15 @@ func (m *middleware) withBodyLimit(next http.Handler) http.Handler {
 func (m *middleware) withMetrics(next http.Handler) http.Handler {
 	skip := map[string]bool{"/": true, "/health": true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := reqID24()
+		ctx := context.WithValue(r.Context(), vertex.RequestIDKey{}, reqID)
+		ctx = transport.WithRequestID(ctx, reqID)
 		if skip[r.URL.Path] || isAdminPath(r.URL.Path) {
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
-		reqID := reqID24()
 		w.Header().Set("X-Request-Id", reqID)
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
-		ctx := context.WithValue(r.Context(), vertex.RequestIDKey{}, reqID)
 		cli.StartReq(reqID)
 		start := time.Now()
 		next.ServeHTTP(sw, r.WithContext(ctx))

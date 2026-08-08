@@ -18,6 +18,7 @@ var adminAllowedSettings = map[string]bool{
 	"parallel_pool_enabled":    true, "parallel_pool_size": true,
 	"telemetry_enabled":           true,
 	"parallel_pool_delay_dynamic": true,
+	"entry_proxy_probe_enabled":   true,
 	"parallel_pool_delay_ms":      true,
 	"active_node_uri":             true,
 	"sticky_node_priority":        true,
@@ -34,7 +35,6 @@ var adminAllowedSettings = map[string]bool{
 }
 
 func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request) {
-	loaded := config.Load()
 	telEnabled := true
 	if adm.cfg.TelemetryEnabled() != nil {
 		telEnabled = *adm.cfg.TelemetryEnabled()
@@ -52,9 +52,10 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"race_timeout":             adm.cfg.RaceTimeout(),
 		"model_turn_guard_enabled": adm.cfg.ModelTurnGuardEnabled(),
 		"proxy_url":                adm.cfg.ProxyURL(), "parallel_pool_enabled": adm.cfg.ParallelPoolEnabled(), "parallel_pool_size": adm.cfg.ParallelPoolSize(), "active_node_uri": adm.cfg.ActiveNodeURI(),
-		"proxy_url_candidates":        loaded.ProxyURLCandidates,
+		"proxy_url_candidates":        config.ListProxyCandidates(),
 		"parallel_pool_delay_dynamic": adm.cfg.ParallelPoolDelayDynamic(),
 		"parallel_pool_delay_ms":      adm.cfg.ParallelPoolDelayMs(),
+		"entry_proxy_probe_enabled":   adm.cfg.EntryProxyProbeEnabled(),
 		"sticky_node_priority":        adm.cfg.StickyNodePriority(),
 		"parallel_pool_retry_enabled": adm.cfg.ParallelPoolRetryEnabled(),
 		"background_image":            adm.cfg.BackgroundImage(),

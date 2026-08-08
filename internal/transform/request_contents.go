@@ -189,9 +189,6 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 		c = handleInlineDataCase(c)
 		c = normalizeContents(c)
 		c = HandleBase64InContents(c)
-		if trailingFix {
-			c = normalizeFunctionResponseRoles(c)
-		}
 		c = filterEmptyContents(c)
 		if trailingFix {
 			c = appendTrailingUserTurn(c)
@@ -584,24 +581,11 @@ func trailingModelFixActive(model string, cfg config.ConfigProvider) bool {
 	return ok && entry.TrailingFixEnabled
 }
 
-// endsWithModelTurn 判断 content 是否会被上游视为以 model turn 结尾。
-// 除 system 外，非 user 角色以及包含工具调用/结果的 user 消息都需要补一个 user 文本回合。
+// endsWithModelTurn 判断对话是否以未闭合的 model 回合结尾。
+// 工具响应本身是合法的 user/function 内容，不能靠追加占位 user 回合掩盖。
 func endsWithModelTurn(content map[string]any) bool {
 	role, _ := content["role"].(string)
-	if !strings.EqualFold(role, "user") && !strings.EqualFold(role, "system") {
-		return true
-	}
-	parts, _ := content["parts"].([]any)
-	for _, rawPart := range parts {
-		part, ok := rawPart.(map[string]any)
-		if !ok {
-			continue
-		}
-		if part["functionResponse"] != nil || part["functionCall"] != nil {
-			return true
-		}
-	}
-	return false
+	return strings.EqualFold(role, "model") || strings.EqualFold(role, "assistant")
 }
 
 func appendTrailingUserTurn(contents any) any {
@@ -617,45 +601,6 @@ func appendTrailingUserTurn(contents any) any {
 		"role":  "user",
 		"parts": []any{map[string]any{"text": "\n"}},
 	})
-}
-
-// normalizeFunctionResponseRoles 将仅含 functionResponse 的 model content 修正为 function，
-// 避免它与相邻的普通 model content 被上游视为同一回合。
-func normalizeFunctionResponseRoles(contents any) any {
-	list, ok := contents.([]any)
-	if !ok || len(list) == 0 {
-		return contents
-	}
-	result := make([]any, len(list))
-	for i, rawContent := range list {
-		content, ok := rawContent.(map[string]any)
-		if !ok {
-			result[i] = rawContent
-			continue
-		}
-		role, _ := content["role"].(string)
-		parts, _ := content["parts"].([]any)
-		if !strings.EqualFold(role, "model") || len(parts) == 0 {
-			result[i] = rawContent
-			continue
-		}
-		allFunctionResponses := true
-		for _, rawPart := range parts {
-			part, partOK := rawPart.(map[string]any)
-			if !partOK || part["functionResponse"] == nil {
-				allFunctionResponses = false
-				break
-			}
-		}
-		if !allFunctionResponses {
-			result[i] = rawContent
-			continue
-		}
-		normalized := copyMap(content)
-		normalized["role"] = "function"
-		result[i] = normalized
-	}
-	return result
 }
 
 func stripGeminiIDs(val any) {

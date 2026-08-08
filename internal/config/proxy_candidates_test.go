@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/bsfdsagfadg/vertex/internal/db"
 )
 
 func TestProxyCandidateLifecycleAndActiveRemoval(t *testing.T) {
@@ -14,6 +16,10 @@ func TestProxyCandidateLifecycleAndActiveRemoval(t *testing.T) {
 	}
 	InvalidateCache()
 	t.Cleanup(InvalidateCache)
+	if err := db.InitDB(filepath.Join(t.TempDir(), "entry.db")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.CloseDB)
 
 	uri := "socks5://user:pass@127.0.0.1:1080#%E5%85%A5%E5%8F%A3"
 	candidate, err := AddProxyCandidate(uri)
@@ -29,9 +35,9 @@ func TestProxyCandidateLifecycleAndActiveRemoval(t *testing.T) {
 	if err := UpdateProxyCandidateTest(uri, true, 12.5, ""); err != nil {
 		t.Fatalf("update test result: %v", err)
 	}
-	loaded := Load()
-	if len(loaded.ProxyURLCandidates) != 1 || !loaded.ProxyURLCandidates[0].LastTestOK {
-		t.Fatalf("test result was not persisted: %+v", loaded.ProxyURLCandidates)
+	loaded := ListProxyCandidates()
+	if len(loaded) != 1 || !loaded[0].LastTestOK {
+		t.Fatalf("test result was not persisted: %+v", loaded)
 	}
 	if err := WriteSettings(map[string]any{"proxy_url": uri}); err != nil {
 		t.Fatalf("activate candidate: %v", err)
@@ -40,8 +46,8 @@ func TestProxyCandidateLifecycleAndActiveRemoval(t *testing.T) {
 	if err != nil || !wasActive {
 		t.Fatalf("remove active candidate: active=%v err=%v", wasActive, err)
 	}
-	loaded = Load()
-	if loaded.ProxyURL != "" || len(loaded.ProxyURLCandidates) != 0 {
+	loaded = ListProxyCandidates()
+	if Load().ProxyURL != "" || len(loaded) != 0 {
 		t.Fatalf("active candidate removal did not clear config: %+v", loaded)
 	}
 }

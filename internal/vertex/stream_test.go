@@ -219,6 +219,28 @@ func TestExtractChunk_CompletelyEmpty(t *testing.T) {
 	}
 }
 
+func TestIsValidContentChunkRejectsDefaultBlockReasonAndEmptyStop(t *testing.T) {
+	chunk := map[string]any{
+		"candidates": []any{map[string]any{
+			"finishReason": "STOP",
+			"content": map[string]any{
+				"role":  "model",
+				"parts": []any{map[string]any{"text": ""}},
+			},
+		}},
+		"promptFeedback": map[string]any{"blockReason": blockReasonUnspecified},
+	}
+	if isValidContentChunk(chunk) {
+		t.Fatal("empty STOP frame with the default block reason must not count as content")
+	}
+}
+
+func TestIsValidContentChunkKeepsRealSafetyBlock(t *testing.T) {
+	if !isValidContentChunk(map[string]any{"promptFeedback": map[string]any{"blockReason": "SAFETY"}}) {
+		t.Fatal("real safety block must be emitted")
+	}
+}
+
 // _extract_chunk 附带元数据：usageMetadata/modelVersion 等非空时带上。
 func TestExtractChunk_AttachesMetadata(t *testing.T) {
 	data := map[string]any{

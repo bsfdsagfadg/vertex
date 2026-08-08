@@ -8,9 +8,11 @@ import (
 	"net"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/component/proxydialer"
@@ -48,7 +50,7 @@ var (
 func getOrStartProxyDialer(uri string, reqID string, debugMode bool, entryURIs ...string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
 	return getOrStartProxyDialerWithBuilder(uri, reqID, debugMode, func(mapping map[string]any, options ...adapter.ProxyOption) (constant.Proxy, error) {
 		return adapter.ParseProxy(mapping, options...)
-	})
+	}, entryURIs...)
 }
 
 // ValidateProxyURI verifies that the URI can construct a mihomo proxy in the current build.
@@ -65,8 +67,11 @@ func ValidateProxyURI(uri string) error {
 
 func getOrStartProxyDialerWithBuilder(uri string, reqID string, debugMode bool, builder proxyBuilder, entryURIs ...string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
 	entryURI := ""
-	if len(entryURIs) > 0 && entryURIs[0] != uri {
-		entryURI = entryURIs[0]
+	if len(entryURIs) > 0 {
+		entryURI = strings.TrimSpace(entryURIs[0])
+	}
+	if entryURI != "" && proxyIdentity(entryURI) == proxyIdentity(uri) {
+		return nil, fmt.Errorf("入口代理不能与候选节点相同")
 	}
 	cacheKey := proxyCacheKey(uri, entryURI)
 	proxyMutex.Lock()
@@ -88,7 +93,7 @@ func getOrStartProxyDialerWithBuilder(uri string, reqID string, debugMode bool, 
 	proxyInitMap[cacheKey] = pending
 	proxyMutex.Unlock()
 
-	log.Printf("[Transport] 请求ID=%s 触发代理初始化: %s", reqID, nodes.GetNodeName(uri))
+	log.Printf("[Transport] 请求ID=%s 触发代理初始化: %s", reqID, proxyDisplayName(uri))
 	proxy, dependencies, initErr := buildMihomoProxy(uri, entryURI, builder)
 
 	proxyMutex.Lock()
@@ -124,10 +129,23 @@ func getOrStartProxyDialerWithBuilder(uri string, reqID string, debugMode bool, 
 }
 
 func proxyCacheKey(uri, entryURI string) string {
-	if entryURI == "" || entryURI == uri {
-		return uri
+	proxyID := proxyIdentity(uri)
+	entryID := proxyIdentity(entryURI)
+	if entryID == "" {
+		return proxyID
 	}
-	return entryURI + "\x00" + uri
+	return entryID + "\x00" + proxyID
+}
+
+func proxyIdentity(uri string) string {
+	uri = strings.TrimSpace(uri)
+	if uri == "" {
+		return ""
+	}
+	if normalized, err := config.NormalizeProxyURI(uri); err == nil {
+		return normalized
+	}
+	return strings.SplitN(uri, "#", 2)[0]
 }
 
 func buildMihomoProxy(uri, entryURI string, builder proxyBuilder) (proxy constant.Proxy, dependencies []constant.Proxy, err error) {
@@ -144,12 +162,15 @@ func buildMihomoProxy(uri, entryURI string, builder proxyBuilder) (proxy constan
 		return nil, nil, fmt.Errorf("parse URI: %w", err)
 	}
 
-	if entryURI == "" || entryURI == uri {
+	if entryURI == "" {
 		proxy, err = builder(outMap)
 		if err != nil {
 			return nil, nil, fmt.Errorf("parse proxy: %w", err)
 		}
 		return proxy, nil, nil
+	}
+	if proxyIdentity(entryURI) == proxyIdentity(uri) {
+		return nil, nil, fmt.Errorf("入口代理不能与候选节点相同")
 	}
 
 	entryMap, err := ParseURI(entryURI)
@@ -213,12 +234,12 @@ func RemoveProxy(uri string) {
 	var proxies []proxySet
 	proxyMutex.Lock()
 	for _, pending := range proxyInitMap {
-		if pending.proxyURI == uri || pending.entryURI == uri {
+		if proxyIdentity(pending.proxyURI) == proxyIdentity(uri) || proxyIdentity(pending.entryURI) == proxyIdentity(uri) {
 			pending.canceled = true
 		}
 	}
 	for key, info := range proxyMap {
-		if info.proxyURI == uri || info.entryURI == uri {
+		if proxyIdentity(info.proxyURI) == proxyIdentity(uri) || proxyIdentity(info.entryURI) == proxyIdentity(uri) {
 			if !info.closed {
 				info.closed = true
 				proxies = append(proxies, proxySet{proxy: info.proxy, dependencies: info.dependencies})
@@ -231,7 +252,7 @@ func RemoveProxy(uri string) {
 		closeMihomoProxies(item.proxy, item.dependencies)
 	}
 	if len(proxies) > 0 {
-		log.Printf("[Transport] 代理节点已清理释放: %s", nodes.GetNodeName(uri))
+		log.Printf("[Transport] 代理节点已清理释放: %s", proxyDisplayName(uri))
 	}
 }
 
@@ -260,20 +281,32 @@ func cleanupIdleProxies(maxIdle time.Duration) {
 	var idle []idleProxy
 	proxyMutex.Lock()
 	now := time.Now()
-	for uri, info := range proxyMap {
+	for cacheKey, info := range proxyMap {
 		if now.Sub(info.lastUsedAt) > maxIdle {
 			if !info.closed {
 				info.closed = true
-				idle = append(idle, idleProxy{uri: uri, proxy: info.proxy, dependencies: info.dependencies})
+				idle = append(idle, idleProxy{uri: info.proxyURI, proxy: info.proxy, dependencies: info.dependencies})
 			}
-			delete(proxyMap, uri)
+			delete(proxyMap, cacheKey)
 		}
 	}
 	proxyMutex.Unlock()
 	for _, item := range idle {
 		closeMihomoProxies(item.proxy, item.dependencies)
-		log.Printf("[Transport] 空闲代理已清理释放: %s", nodes.GetNodeName(item.uri))
+		log.Printf("[Transport] 空闲代理已清理释放: %s", proxyDisplayName(item.uri))
 	}
+}
+
+func proxyDisplayName(uri string) string {
+	if name := nodes.GetNodeName(uri); name != "Unknown" {
+		return name
+	}
+	for _, candidate := range config.ListProxyCandidates() {
+		if proxyIdentity(candidate.RawURI) == proxyIdentity(uri) && strings.TrimSpace(candidate.Name) != "" {
+			return candidate.Name
+		}
+	}
+	return "Unknown"
 }
 
 // StopAllProxies 程序优雅退出时清理全部实例

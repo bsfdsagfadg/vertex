@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"strings"
+	"sync/atomic"
 
 	http "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
@@ -21,9 +22,19 @@ type Response = http.Response
 
 // Session 封装一个独立的 tls-client，服务于单次逻辑请求。
 type Session struct {
-	client   tls_client.HttpClient
-	ProxyURI string
+	client        tls_client.HttpClient
+	ProxyURI      string
+	EntryProxyURI string
 }
+
+// EntryProxyError preserves the first-hop URI when session construction fails.
+type EntryProxyError struct {
+	EntryURI string
+	Err      error
+}
+
+func (e *EntryProxyError) Error() string { return e.Err.Error() }
+func (e *EntryProxyError) Unwrap() error { return e.Err }
 
 func (s *Session) Do(ctx context.Context, method, url string, header http.Header, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest(method, url, body)
@@ -86,6 +97,60 @@ type NetworkClient struct {
 	entryProxyURI func() string
 }
 
+type entryProxyContextKey struct{}
+
+type requestIDContextKey struct{}
+
+// WithRequestID carries the top-level request ID into lower-level transports.
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+	return context.WithValue(ctx, requestIDContextKey{}, strings.TrimSpace(requestID))
+}
+
+// RequestIDFromContext returns the request ID propagated by the API layer.
+func RequestIDFromContext(ctx context.Context) string {
+	requestID, _ := ctx.Value(requestIDContextKey{}).(string)
+	return requestID
+}
+
+type pinnedEntryProxy struct {
+	uri string
+}
+
+type entryProxyPool struct {
+	uris []string
+	next atomic.Uint64
+}
+
+// WithEntryProxy pins a selected entry proxy to one top-level request.
+func WithEntryProxy(ctx context.Context, entryURI string) context.Context {
+	return context.WithValue(ctx, entryProxyContextKey{}, pinnedEntryProxy{uri: strings.TrimSpace(entryURI)})
+}
+
+// WithEntryProxyPool assigns one stable first-hop sequence to a top-level request.
+// An empty sequence is an explicit direct route and must not fall back to the
+// NetworkClient's dynamic selector.
+func WithEntryProxyPool(ctx context.Context, entryURIs []string) context.Context {
+	clean := make([]string, 0, len(entryURIs))
+	for _, uri := range entryURIs {
+		clean = append(clean, strings.TrimSpace(uri))
+	}
+	return context.WithValue(ctx, entryProxyContextKey{}, &entryProxyPool{uris: clean})
+}
+
+func entryProxyFromContext(ctx context.Context) (string, bool) {
+	if value, ok := ctx.Value(entryProxyContextKey{}).(pinnedEntryProxy); ok {
+		return value.uri, true
+	}
+	if pool, ok := ctx.Value(entryProxyContextKey{}).(*entryProxyPool); ok {
+		if len(pool.uris) == 0 {
+			return "", true
+		}
+		index := pool.next.Add(1) - 1
+		return pool.uris[index%uint64(len(pool.uris))], true
+	}
+	return "", false
+}
+
 func NewNetworkClient(debugMode bool, entryProxyURI ...func() string) *NetworkClient {
 	client := &NetworkClient{debugMode: debugMode}
 	if len(entryProxyURI) > 0 {
@@ -135,6 +200,15 @@ func (c *NetworkClient) CreateSession(timeoutSec int, proxyURI string, reqID str
 	return c.createSession(timeoutSec, proxyURI, entryProxyURI, reqID)
 }
 
+// CreateSessionContext is CreateSession with an explicit request route.
+func (c *NetworkClient) CreateSessionContext(ctx context.Context, timeoutSec int, proxyURI string, reqID string) (*Session, error) {
+	entryProxyURI, pinned := entryProxyFromContext(ctx)
+	if !pinned && proxyURI != "" && c.entryProxyURI != nil {
+		entryProxyURI = strings.TrimSpace(c.entryProxyURI())
+	}
+	return c.createSession(timeoutSec, proxyURI, entryProxyURI, reqID)
+}
+
 // CreateSessionWithoutEntryProxy 创建只经过指定代理的隔离会话，用于验证入口代理候选本身。
 func (c *NetworkClient) CreateSessionWithoutEntryProxy(timeoutSec int, proxyURI string, reqID string) (*Session, error) {
 	return c.createSession(timeoutSec, proxyURI, "", reqID)
@@ -142,7 +216,7 @@ func (c *NetworkClient) CreateSessionWithoutEntryProxy(timeoutSec int, proxyURI 
 
 func (c *NetworkClient) createSession(timeoutSec int, proxyURI, entryProxyURI, reqID string) (*Session, error) {
 	prof := pickProfile()
-	log.Printf("[Transport] reqID: %s, Assigned TLS Profile: %s", reqID, prof.GetClientHelloStr())
+	log.Printf("[Transport] 请求ID=%s，已分配 TLS 配置：%s", reqID, prof.GetClientHelloStr())
 
 	opts := []tls_client.HttpClientOption{
 		tls_client.WithTimeoutSeconds(timeoutSec),
@@ -154,6 +228,9 @@ func (c *NetworkClient) createSession(timeoutSec int, proxyURI, entryProxyURI, r
 	var err error
 	opts, err = injectProxy(opts, proxyURI, entryProxyURI, reqID, c.debugMode)
 	if err != nil {
+		if entryProxyURI != "" {
+			return nil, &EntryProxyError{EntryURI: entryProxyURI, Err: err}
+		}
 		return nil, err
 	}
 
@@ -162,5 +239,5 @@ func (c *NetworkClient) createSession(timeoutSec int, proxyURI, entryProxyURI, r
 		return nil, fmt.Errorf("error: %w", err)
 
 	}
-	return &Session{client: client, ProxyURI: proxyURI}, nil
+	return &Session{client: client, ProxyURI: proxyURI, EntryProxyURI: entryProxyURI}, nil
 }

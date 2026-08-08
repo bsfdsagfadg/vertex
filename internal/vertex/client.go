@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
@@ -51,6 +52,226 @@ type VertexAIClient struct {
 	cfg  config.ConfigProvider
 }
 
+type requestRouteKey struct{}
+
+type requestTokenState struct {
+	mu         sync.Mutex
+	token      string
+	proxyURI   string
+	fetchToken func(context.Context) (string, error)
+	refreshing bool
+	wait       chan struct{}
+	lastErr    error
+	refreshes  int
+}
+
+type requestRoute struct {
+	entryURI string
+	token    *requestTokenState
+}
+
+func routeFromContext(ctx context.Context) *requestRoute {
+	route, _ := ctx.Value(requestRouteKey{}).(*requestRoute)
+	return route
+}
+
+func (s *requestTokenState) get(ctx context.Context, pool *recaptcha.TokenPool) (string, error) {
+	for {
+		s.mu.Lock()
+		if s.token != "" {
+			token := s.token
+			s.mu.Unlock()
+			return token, nil
+		}
+		if s.refreshing {
+			wait := s.wait
+			s.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-wait:
+				s.mu.Lock()
+				token, err := s.token, s.lastErr
+				s.mu.Unlock()
+				return token, err
+			}
+		}
+		if s.lastErr != nil {
+			err := s.lastErr
+			s.mu.Unlock()
+			return "", err
+		}
+		s.refreshing = true
+		s.wait = make(chan struct{})
+		wait := s.wait
+		proxyURI := s.proxyURI
+		fetchToken := s.fetchToken
+		s.mu.Unlock()
+
+		var token string
+		var err error
+		if fetchToken != nil {
+			token, err = fetchToken(ctx)
+		} else {
+			token, err = pool.GetTokenWithProxyContext(ctx, proxyURI)
+		}
+		if err == nil && token == "" {
+			err = fmt.Errorf("empty recaptcha token")
+		}
+		s.mu.Lock()
+		if err == nil {
+			s.token = token
+		}
+		s.lastErr = err
+		s.refreshing = false
+		close(wait)
+		s.mu.Unlock()
+		return token, err
+	}
+}
+
+func (s *requestTokenState) setProxyURI(proxyURI string) {
+	s.mu.Lock()
+	s.proxyURI = proxyURI
+	s.token = ""
+	s.lastErr = nil
+	s.refreshes = 0
+	s.mu.Unlock()
+}
+
+// invalidate clears the token only if the caller used the current generation.
+// A request may synchronously refresh at most once after its initial acquisition.
+func (s *requestTokenState) invalidate(token string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.token != token {
+		return true
+	}
+	if s.refreshes >= 1 {
+		return false
+	}
+	s.token = ""
+	s.lastErr = nil
+	s.refreshes++
+	return true
+}
+
+func (c *VertexAIClient) prepareRequest(ctx context.Context) (context.Context, error) {
+	ctx = transport.WithRequestID(ctx, RequestIDFromContext(ctx))
+	state := &requestTokenState{fetchToken: c.fetchRequestToken} //nolint:exhaustruct
+	token, err := state.get(ctx, c.pool)
+	if err != nil || token == "" {
+		if err == nil {
+			err = fmt.Errorf("empty recaptcha token")
+		}
+		return ctx, err
+	}
+	route := &requestRoute{token: state}
+	modelEntries := config.SelectEntryProxySequence(requestConcurrency(c.cfg), c.cfg)
+	return transport.WithEntryProxyPool(context.WithValue(ctx, requestRouteKey{}, route), modelEntries), nil
+}
+
+func requestConcurrency(cfg config.ConfigProvider) int {
+	if cfg == nil || !cfg.ParallelPoolEnabled() {
+		return 1
+	}
+	if size := cfg.ParallelPoolSize(); size > 0 {
+		return size
+	}
+	return 1
+}
+
+type tokenAttempt struct {
+	route string
+	token string
+	err   error
+	entry bool
+}
+
+func (c *VertexAIClient) fetchRequestToken(ctx context.Context) (string, error) {
+	attempts := requestConcurrency(c.cfg)
+	entries := config.SelectEntryProxySequence(attempts, c.cfg)
+	if len(entries) > 0 {
+		if token, err := c.raceTokenAttempts(ctx, entries, true); err == nil {
+			return token, nil
+		} else if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+	}
+
+	var routes []string
+	if candidates := nodes.SelectForParallel(attempts, c.cfg.ParallelNodeTopK(), c.cfg.DebugMode(), false); len(candidates) > 0 {
+		routes = make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			routes = append(routes, candidate.RawURI)
+		}
+	}
+	if len(routes) == 0 {
+		routes = []string{""}
+	}
+	return c.raceTokenAttempts(ctx, routes, false)
+}
+
+func (c *VertexAIClient) raceTokenAttempts(ctx context.Context, routes []string, entry bool) (string, error) {
+	raceCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan tokenAttempt, len(routes))
+	for _, route := range routes {
+		route := route
+		go func() {
+			token, err := c.pool.GetTokenWithProxyContext(raceCtx, route)
+			if err == nil && token == "" {
+				err = fmt.Errorf("empty recaptcha token")
+			}
+			results <- tokenAttempt{route: route, token: token, err: err, entry: entry}
+		}()
+	}
+
+	var firstErr error
+	var winner string
+	gotWinner := false
+	failedEntries := make(map[string]string)
+	for range routes {
+		result := <-results
+		if result.err == nil && !gotWinner {
+			winner = result.token
+			gotWinner = true
+			cancel()
+			if result.entry {
+				_ = config.MarkEntryProxySuccess(result.route)
+			} else if result.route != "" {
+				nodes.RecordTest(result.route, true, 0, "")
+			}
+			continue
+		}
+		if result.err != nil {
+			if firstErr == nil {
+				firstErr = result.err
+			}
+			if ctx.Err() != nil || gotWinner && errors.Is(result.err, context.Canceled) {
+				continue
+			}
+			if result.entry {
+				if _, exists := failedEntries[result.route]; !exists {
+					failedEntries[result.route] = result.err.Error()
+				}
+			} else if result.route != "" {
+				nodes.RecordTest(result.route, false, 0, result.err.Error())
+			}
+		}
+	}
+	for route, errText := range failedEntries {
+		_ = config.MarkEntryProxyFailure(route, errText)
+	}
+	if gotWinner {
+		return winner, nil
+	}
+	if firstErr == nil {
+		firstErr = fmt.Errorf("all recaptcha token routes failed")
+	}
+	return "", firstErr
+}
+
 func NewVertexAIClient(cfg config.ConfigProvider) *VertexAIClient {
 	net := transport.NewNetworkClient(cfg.DebugMode(), cfg.ProxyURL)
 	return &VertexAIClient{
@@ -78,10 +299,18 @@ func (c *VertexAIClient) getBatchGraphqlURL() string {
 const largePayloadThreshold = 1 << 20 // 1MB
 
 func (c *VertexAIClient) CompleteChatN(ctx context.Context, model string, geminiPayload map[string]any, n int) ([]map[string]any, error) {
+	routedCtx, err := c.prepareRequest(ctx)
+	if err != nil {
+		return nil, NewAuthenticationError("Could not fetch recaptcha token: "+err.Error(), err)
+	}
+	return c.completeChatNWithRoute(routedCtx, model, geminiPayload, n)
+}
+
+func (c *VertexAIClient) completeChatNWithRoute(ctx context.Context, model string, geminiPayload map[string]any, n int) ([]map[string]any, error) {
 	if n > 1 {
 		if b, err := json.Marshal(geminiPayload); err == nil && len(b) > largePayloadThreshold {
 			log.Printf("[Vertex] [CompleteChatN] 大 payload (%d bytes) 降级为串行", len(b))
-			return c.completeChatNSerial(ctx, model, geminiPayload, n)
+			return c.completeChatNSerialWithRoute(ctx, model, geminiPayload, n)
 		}
 	}
 
@@ -100,7 +329,7 @@ func (c *VertexAIClient) CompleteChatN(ctx context.Context, model string, gemini
 					results[idx] = res{err: NewInternalError(fmt.Sprintf("candidate panic: %v", rec))} //nolint:exhaustruct
 				}
 			}()
-			r, err := c.CompleteChat(ctx, model, geminiPayload)
+			r, err := c.completeChatWithRoute(ctx, model, geminiPayload)
 			results[idx] = res{resp: r, err: err}
 		}(i)
 	}
@@ -126,11 +355,11 @@ func (c *VertexAIClient) CompleteChatN(ctx context.Context, model string, gemini
 	return ok, nil
 }
 
-func (c *VertexAIClient) completeChatNSerial(ctx context.Context, model string, geminiPayload map[string]any, n int) ([]map[string]any, error) {
+func (c *VertexAIClient) completeChatNSerialWithRoute(ctx context.Context, model string, geminiPayload map[string]any, n int) ([]map[string]any, error) {
 	var ok []map[string]any
 	var firstErr error
 	for i := 0; i < n; i++ {
-		r, err := c.CompleteChat(ctx, model, geminiPayload)
+		r, err := c.completeChatWithRoute(ctx, model, geminiPayload)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err

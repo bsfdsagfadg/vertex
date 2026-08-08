@@ -86,7 +86,14 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 	if u.User != nil {
 		username = u.User.Username()
 	}
-	if typ == "trojan" || typ == "hysteria2" {
+	if typ == "tuic" {
+		out["uuid"] = username
+		if u.User != nil {
+			if password, ok := u.User.Password(); ok {
+				out["password"] = password
+			}
+		}
+	} else if typ == "trojan" || typ == "hysteria2" {
 		out["password"] = username
 	} else {
 		out["uuid"] = username
@@ -107,6 +114,9 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 		if pubKey := firstNonEmpty(q.Get("pbk"), q.Get("public-key")); pubKey != "" {
 			out["reality-opts"] = map[string]any{"public-key": pubKey, "short-id": firstNonEmpty(q.Get("sid"), q.Get("short-id"))}
 		}
+		if firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")) == "" {
+			out["client-fingerprint"] = "chrome"
+		}
 	}
 
 	if typ == "vless" || typ == "trojan" {
@@ -115,17 +125,19 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 		}
 		if fp := firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")); fp != "" {
 			out["client-fingerprint"] = fp
+		} else if out["tls"] == true {
+			out["client-fingerprint"] = "chrome"
 		}
 		network := q.Get("type")
-		if network == "ws" || network == "grpc" || network == "http" || network == "xhttp" {
+		if network == "ws" || network == "grpc" || network == "http" || network == "h2" || network == "xhttp" {
 			out["network"] = network
+			path := q.Get("path")
+			if path == "" {
+				path = "/"
+			}
+			host := q.Get("host")
 			switch network {
 			case "ws":
-				path := q.Get("path")
-				if path == "" {
-					path = "/"
-				}
-				host := q.Get("host")
 				wsOpts := map[string]any{"path": path}
 				if host != "" {
 					wsOpts["headers"] = map[string]any{"Host": host}
@@ -135,6 +147,26 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 				if serviceName := q.Get("serviceName"); serviceName != "" {
 					out["grpc-opts"] = map[string]any{"grpc-service-name": serviceName}
 				}
+			case "http":
+				out["http-opts"] = map[string]any{
+					"method": "GET", "path": []string{path},
+					"headers": map[string][]string{"Host": {host}},
+				}
+			case "h2":
+				hosts := []string{}
+				if host != "" {
+					hosts = []string{host}
+				}
+				out["h2-opts"] = map[string]any{"path": path, "host": hosts}
+			case "xhttp":
+				xhttpOpts := map[string]any{"path": path}
+				if host != "" {
+					xhttpOpts["host"] = host
+				}
+				if mode := q.Get("mode"); mode != "" {
+					xhttpOpts["mode"] = mode
+				}
+				out["xhttp-opts"] = xhttpOpts
 			}
 		}
 		if alpn := q.Get("alpn"); alpn != "" {
@@ -162,13 +194,28 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 			out["obfs-password"] = obfsPassword
 		}
 		if fp := firstNonEmpty(q.Get("fp"), q.Get("fingerprint")); fp != "" {
-			out["fingerprint"] = fp
+			if isCertPinningFingerprint(fp) {
+				out["fingerprint"] = fp
+			}
 		}
 		if alpn := q.Get("alpn"); alpn != "" {
 			out["alpn"] = strings.Split(alpn, ",")
 		}
 	}
 	return out, nil
+}
+
+func isCertPinningFingerprint(fp string) bool {
+	cleaned := strings.ReplaceAll(strings.TrimSpace(fp), ":", "")
+	if len(cleaned) != 64 {
+		return false
+	}
+	for _, ch := range cleaned {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", ch) {
+			return false
+		}
+	}
+	return true
 }
 
 func firstNonEmpty(values ...string) string {
@@ -211,6 +258,11 @@ func parseVmess(uri string) (map[string]any, error) {
 	portStr := fmt.Sprintf("%v", d["port"])
 	port, _ := strconv.Atoi(portStr)
 
+	cipher := "auto"
+	if scy, ok := d["scy"].(string); ok && strings.TrimSpace(scy) != "" && !strings.EqualFold(scy, "auto") {
+		cipher = strings.TrimSpace(scy)
+	}
+
 	// 初始化 VMess 出站基本参数
 	out := map[string]any{
 		"name":   d["ps"],
@@ -218,7 +270,7 @@ func parseVmess(uri string) (map[string]any, error) {
 		"server": d["add"],
 		"port":   port,
 		"uuid":   d["id"],
-		"cipher": "auto",
+		"cipher": cipher,
 	}
 
 	// 1. 映射 alterId (aid)
@@ -235,9 +287,19 @@ func parseVmess(uri string) (map[string]any, error) {
 		}
 	}
 
-	// 2. 补全 TLS 配置（极关键，修复免费-日本1等节点的 TLS 缺失）
-	tlsStr, _ := d["tls"].(string)
-	if strings.ToLower(tlsStr) == "tls" {
+	// 2. 补全 TLS 配置（兼容 bool/string/number 三种订阅字段类型）
+	var tlsOn bool
+	switch value := d["tls"].(type) {
+	case string:
+		tlsOn = strings.EqualFold(value, "tls") || strings.EqualFold(value, "true") || value == "1"
+	case bool:
+		tlsOn = value
+	case float64:
+		tlsOn = value != 0
+	case int:
+		tlsOn = value != 0
+	}
+	if tlsOn {
 		host, _ := d["host"].(string)
 		sni, _ := d["sni"].(string)
 		if sni == "" {
@@ -251,14 +313,15 @@ func parseVmess(uri string) (map[string]any, error) {
 		out["servername"] = sni
 		if fp, ok := d["fp"].(string); ok && fp != "" {
 			out["client-fingerprint"] = fp
-			out["fingerprint"] = fp
+		} else {
+			out["client-fingerprint"] = "chrome"
 		}
 		if alpn, ok := d["alpn"].(string); ok && alpn != "" {
 			out["alpn"] = strings.Split(alpn, ",")
 		}
 		if insecure, ok := d["skip-cert-verify"].(bool); ok {
 			out["skip-cert-verify"] = insecure
-		} else if allowInsecure, ok := d["allowInsecure"].(string); ok && allowInsecure == "1" {
+		} else if allowInsecure, ok := d["allowInsecure"].(string); ok && (allowInsecure == "1" || strings.EqualFold(allowInsecure, "true")) {
 			out["skip-cert-verify"] = true
 		} else {
 			out["skip-cert-verify"] = false
@@ -286,7 +349,7 @@ func parseVmess(uri string) (map[string]any, error) {
 			out["grpc-opts"] = map[string]any{
 				"grpc-service-name": path,
 			}
-		case "http", "h2":
+		case "http":
 			hPath := path
 			if hPath == "" {
 				hPath = "/"
@@ -296,6 +359,16 @@ func parseVmess(uri string) (map[string]any, error) {
 				"path":    []string{hPath},
 				"headers": map[string][]string{"Host": {host}},
 			}
+		case "h2":
+			hPath := path
+			if hPath == "" {
+				hPath = "/"
+			}
+			hosts := []string{}
+			if host != "" {
+				hosts = []string{host}
+			}
+			out["h2-opts"] = map[string]any{"path": hPath, "host": hosts}
 		}
 	}
 
@@ -330,7 +403,7 @@ func parseShadowsocksURI(uri string) (map[string]any, error) {
 		"type":     "ss",
 		"server":   u.Hostname(),
 		"port":     port,
-		"cipher":   method,
+		"cipher":   normalizeSSCipher(method),
 		"password": password,
 	}
 	applySSPlugin(out, u.Query().Get("plugin"))
@@ -377,8 +450,13 @@ func applySSPlugin(out map[string]any, pluginRaw string) {
 	plugin := strings.ToLower(strings.TrimSpace(segments[0]))
 	rawOpts := map[string]string{}
 	for _, segment := range segments[1:] {
+		segment = strings.TrimSpace(segment)
+		if segment == "" {
+			continue
+		}
 		key, value, ok := strings.Cut(segment, "=")
 		if !ok {
+			rawOpts[strings.ToLower(segment)] = "true"
 			continue
 		}
 		rawOpts[strings.ToLower(strings.TrimSpace(key))] = strings.TrimSpace(value)
@@ -397,6 +475,25 @@ func applySSPlugin(out map[string]any, pluginRaw string) {
 		if len(opts) > 0 {
 			out["plugin-opts"] = opts
 		}
+	case "v2ray-plugin":
+		out["plugin"] = plugin
+		opts := map[string]any{}
+		mode := rawOpts["mode"]
+		if mode == "" {
+			mode = "websocket"
+		}
+		opts["mode"] = mode
+		for _, key := range []string{"host", "path", "fingerprint"} {
+			if value := rawOpts[key]; value != "" {
+				opts[key] = value
+			}
+		}
+		for _, key := range []string{"tls", "mux", "skip-cert-verify"} {
+			if value := rawOpts[key]; value == "true" || value == "1" {
+				opts[key] = true
+			}
+		}
+		out["plugin-opts"] = opts
 	default:
 		out["plugin"] = plugin
 		if len(rawOpts) > 0 {
@@ -407,6 +504,13 @@ func applySSPlugin(out map[string]any, pluginRaw string) {
 			out["plugin-opts"] = opts
 		}
 	}
+}
+
+func normalizeSSCipher(method string) string {
+	if strings.EqualFold(strings.TrimSpace(method), "chacha20-poly1305") {
+		return "chacha20-ietf-poly1305"
+	}
+	return method
 }
 
 func parseSS(uri string) (map[string]any, error) {
@@ -465,7 +569,7 @@ func parseSS(uri string) (map[string]any, error) {
 			"type":     "ss",
 			"server":   hp[0],
 			"port":     port,
-			"cipher":   method,
+			"cipher":   normalizeSSCipher(method),
 			"password": password,
 		}, nil
 	}
