@@ -5,6 +5,12 @@ import (
 	"strings"
 )
 
+// truthyStr 判断一个 any 是否为"非空字符串"。
+func truthyStr(v any) bool {
+	s, ok := v.(string)
+	return ok && strings.TrimSpace(s) != ""
+}
+
 // oaiToolCall 是从 OpenAI tool_call 提取出的归一结果。
 type oaiToolCall struct { //nolint:govet
 	id   string

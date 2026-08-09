@@ -9,18 +9,17 @@ import (
 
 type candidateResult struct {
 	proxyURI string
-	resp     map[string]any
+	resp     *transform.GeminiResponse
 	err      error
 }
 
-func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, geminiPayload map[string]any) (map[string]any, error) {
-	run := func(ctx context.Context, proxyURI string) (map[string]any, error) {
-		payloadCopy := transform.DeepCopyAny(geminiPayload).(map[string]any)
-		return c.runSingleCandidate(ctx, model, payloadCopy, proxyURI)
+func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, req *transform.GeminiRequest) (*transform.GeminiResponse, error) {
+	run := func(ctx context.Context, proxyURI string) (*transform.GeminiResponse, error) {
+		return c.runSingleCandidate(ctx, model, req, proxyURI)
 	}
-	return RunRace(ctx, c.cfg, run, WithWinningCheck(func(resp map[string]any) bool {
-		return candidateFinish(resp) == "STOP"
-	}), WithCollectedFinalizer(func(results []raceResult[map[string]any]) (map[string]any, error) {
+	return RunRace(ctx, c.cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
+		return candidateFinishTyped(resp) == "STOP"
+	}), WithCollectedFinalizer(func(results []raceResult[*transform.GeminiResponse]) (*transform.GeminiResponse, error) {
 		cr := make([]candidateResult, len(results))
 		for i, r := range results {
 			cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
@@ -29,11 +28,11 @@ func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, geminiP
 	}))
 }
 
-func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, geminiPayload map[string]any, proxyURI string) (map[string]any, error) {
-	var chunks []map[string]any
+func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, req *transform.GeminiRequest, proxyURI string) (*transform.GeminiResponse, error) {
+	var chunks []*transform.GeminiChunk
 	var firstErr *VertexError
 
-	c.executeStreamingWithRetries(ctx, model, geminiPayload, proxyURI, func(chunk StreamChunk) bool {
+	c.executeStreamingWithRetries(ctx, model, req, proxyURI, func(chunk StreamChunk) bool {
 		if chunk.Err != nil {
 			if firstErr == nil {
 				firstErr = chunk.Err
@@ -53,95 +52,83 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, g
 		return nil, NewEmptyResponseError("Upstream returned no data", nil)
 	}
 
-	result := collectChunksToParseResult(chunks)
-	resp, err := c.buildCompleteResponse(result)
+	result := collectChunksToParseResultTyped(chunks)
+	resp, err := c.buildCompleteResponseTyped(result)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, hasSafety := geminiPayload["safetySettings"]; candidateFinish(resp) == "SAFETY" && !hasSafety {
+	if req.SafetySettings == nil && candidateFinishTyped(resp) == "SAFETY" {
 		if ctx.Err() != nil {
 			return nil, context.Canceled
 		}
-		retryPayload := shallowCopy(geminiPayload)
-		retryPayload["safetySettings"] = defaultSafetySettings
-		return c.runSingleCandidate(ctx, model, retryPayload, proxyURI)
+		retryReq := *req
+		retryReq.SafetySettings = defaultSafetySettingsTyped
+		return c.runSingleCandidate(ctx, model, &retryReq, proxyURI)
 	}
 
 	return resp, nil
 }
 
-func pickBestResult(results []candidateResult) (map[string]any, error) {
+func pickBestResult(results []candidateResult) (*transform.GeminiResponse, error) {
 	if len(results) == 0 {
 		return nil, NewInternalError("no viable candidate results", nil)
 	}
 	sort.Slice(results, func(i, j int) bool {
-		fi := candidateFinish(results[i].resp)
-		fj := candidateFinish(results[j].resp)
+		fi := candidateFinishTyped(results[i].resp)
+		fj := candidateFinishTyped(results[j].resp)
 		if fi == "MAX_TOKENS" && fj != "MAX_TOKENS" {
 			return true
 		}
 		if fj == "MAX_TOKENS" && fi != "MAX_TOKENS" {
 			return false
 		}
-		return responseContentLength(results[i].resp) > responseContentLength(results[j].resp)
+		return responseContentLengthTyped(results[i].resp) > responseContentLengthTyped(results[j].resp)
 	})
 	for _, r := range results {
-		if hasViableResponse(r.resp) {
+		if hasViableResponseTyped(r.resp) {
 			return r.resp, nil
 		}
 	}
 	// 所有候选均无有效内容时：若任一候选被安全审查拦截（finishReason=SAFETY），
 	// 返回 safety 错误而非退化为 500 内部错误，避免网关误判为服务故障。
 	for _, r := range results {
-		if candidateFinish(r.resp) == "SAFETY" {
+		if candidateFinishTyped(r.resp) == "SAFETY" {
 			return nil, NewSafetyError("Blocked by safety filter", "SAFETY", nil)
 		}
 	}
 	return nil, NewInternalError("no viable candidate results", nil)
 }
 
-func hasViableResponse(resp map[string]any) bool {
-	cands, ok := resp["candidates"].([]any)
-	if !ok || len(cands) == 0 {
-		return false
+func candidateFinishTyped(resp *transform.GeminiResponse) string {
+	if resp == nil || len(resp.Candidates) == 0 {
+		return ""
 	}
-	c, ok := cands[0].(map[string]any)
-	if !ok {
-		return false
-	}
-	content, ok := c["content"].(map[string]any)
-	if !ok {
-		return false
-	}
-	parts, ok := content["parts"].([]any)
-	return ok && len(parts) > 0
+	return resp.Candidates[0].FinishReason
 }
 
-func responseContentLength(resp map[string]any) int {
-	cands, ok := resp["candidates"].([]any)
-	if !ok || len(cands) == 0 {
+func hasViableResponseTyped(resp *transform.GeminiResponse) bool {
+	if resp == nil || len(resp.Candidates) == 0 {
+		return false
+	}
+	c := resp.Candidates[0]
+	if c.Content == nil {
+		return false
+	}
+	return len(c.Content.Parts) > 0
+}
+
+func responseContentLengthTyped(resp *transform.GeminiResponse) int {
+	if resp == nil || len(resp.Candidates) == 0 {
 		return 0
 	}
-	c, ok := cands[0].(map[string]any)
-	if !ok {
-		return 0
-	}
-	content, ok := c["content"].(map[string]any)
-	if !ok {
-		return 0
-	}
-	parts, ok := content["parts"].([]any)
-	if !ok {
+	c := resp.Candidates[0]
+	if c.Content == nil {
 		return 0
 	}
 	total := 0
-	for _, pRaw := range parts {
-		p, ok := pRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-		total += len(toStr(p["text"]))
+	for _, p := range c.Content.Parts {
+		total += len(p.Text)
 	}
 	return total
 }

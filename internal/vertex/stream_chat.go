@@ -12,6 +12,7 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/spool"
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
@@ -53,28 +54,20 @@ func sessionTimeoutFromContext(ctx context.Context, defaultSec int) int {
 }
 
 // StreamChunk 是真流式中 yield 的单个增量。要么是 Gemini 数据 chunk，要么是错误。
-//
-// 正常 yield Gemini dict，所有重试耗尽时 yield {"error": {...}}（routes 层据此
-// 发 OAI error 事件 + [DONE]）。
 type StreamChunk struct {
 	// Data 是清洗后的 Gemini 增量（candidates/usageMetadata/...），Err==nil 时有效。
-	Data map[string]any
-	// Err 非 nil 表示重试耗尽、对外报错（yield error dict）。
+	Data *transform.GeminiChunk
+	// Err 非 nil 表示重试耗尽、对外报错。
 	Err *VertexError
 }
 
 // StreamChat 真流式入口。
-//
-// 通过 yield 回调推送增量：回调返回 false 表示客户端断开/上层要求停止，立即终止。
-// 单 session复用 + response 排干防串流。重试逻辑与非流式对齐，但 content_yielded 后
-// 不再重试（已发出的内容不能重来）。ctx 取消（客户端断开/优雅关闭）时干净结束流：
-// 重试退避被打断、上游流连接中断，不再空转。
-func (c *VertexAIClient) StreamChat(ctx context.Context, model string, geminiPayload map[string]any, yield func(StreamChunk) bool) {
+func (c *VertexAIClient) StreamChat(ctx context.Context, model string, req *transform.GeminiRequest, yield func(StreamChunk) bool) {
 	op := func(ctx context.Context, proxyURI string) <-chan StreamChunk {
 		ch := make(chan StreamChunk, 64)
 		go func() {
 			defer close(ch)
-			c.executeStreamingWithRetries(ctx, model, geminiPayload, proxyURI, func(chunk StreamChunk) bool {
+			c.executeStreamingWithRetries(ctx, model, req, proxyURI, func(chunk StreamChunk) bool {
 				select {
 				case ch <- chunk:
 					return true
@@ -88,7 +81,7 @@ func (c *VertexAIClient) StreamChat(ctx context.Context, model string, geminiPay
 	StreamParallel(ctx, c.cfg, op, yield)
 }
 
-func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model string, geminiPayload map[string]any, proxyURI string, yield func(StreamChunk) bool) {
+func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model string, req *transform.GeminiRequest, proxyURI string, yield func(StreamChunk) bool) {
 	if ctx.Err() != nil {
 		yield(StreamChunk{Err: NewContextError(ctx.Err())})
 		return
@@ -132,10 +125,10 @@ retryLoop:
 		}
 
 		validChunkCount := 0
-		var pendingChunks []map[string]any
+		var pendingChunks []*transform.GeminiChunk
 
-		attemptErr := c.executeStreamingAttempt(ctx, sess, model, geminiPayload, recaptchaToken, isFirstAuth, func(ch map[string]any) bool {
-			if isValidContentChunk(ch) {
+		attemptErr := c.executeStreamingAttempt(ctx, sess, model, req, recaptchaToken, isFirstAuth, func(ch *transform.GeminiChunk) bool {
+			if isValidContentChunkTyped(ch) {
 				for _, p := range pendingChunks {
 					if !yield(StreamChunk{Data: p}) {
 						return false
@@ -279,11 +272,11 @@ retryLoop:
 // emit 回调把清洗后的 Gemini chunk 推给上层；
 // emit 始终返回 true；客户端断开由 ctx 取消触发 read 报错，scanStream 干净结束。
 // ctx 绑定 to 上游流连接：ctx 取消时 Body.Read 报错，scanStream 干净结束（返回 nil，不 panic）。
-func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *transport.Session, model string, geminiPayload map[string]any, recaptchaToken string, _ bool, emit func(map[string]any) bool) error {
+func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *transport.Session, model string, req *transform.GeminiRequest, recaptchaToken string, _ bool, emit func(*transform.GeminiChunk) bool) error {
 	reqID := RequestIDFromContext(ctx)
 	log.Printf("[Vertex] [executeStreamingAttempt] 准备发送流式请求: 模型=%s, 请求ID=%s, 代理=%s", model, reqID, nodes.GetNodeName(sess.ProxyURI))
 	cfg := c.cfg
-	newBody := buildRequestPayload(model, geminiPayload, recaptchaToken, cfg)
+	newBody := buildTypedRequestPayload(model, req, recaptchaToken, cfg)
 	// 上游请求 payload 序列化到 spool 缓冲（大媒体自动落盘）。流式：请求体在 DoStream 发送期被读取，
 	// 缓冲存活到本函数返回（整个流消费完）后由 defer Close 删除临时文件。
 	buf, err := spool.EncodeJSON(newBody)
@@ -407,8 +400,8 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 
 	emitSink := emit
 	if cfg.DebugMode() {
-		emitSink = func(ch map[string]any) bool {
-			log.Printf("[DEBUG] [Stream] 转发帧摘要: %s, 请求ID=%s, 节点=%s", summarizeChunk(ch), reqID, nodes.GetNodeName(sess.ProxyURI))
+		emitSink = func(ch *transform.GeminiChunk) bool {
+			log.Printf("[DEBUG] [Stream] 转发帧, 请求ID=%s, 节点=%s", reqID, nodes.GetNodeName(sess.ProxyURI))
 			return emit(ch)
 		}
 	}

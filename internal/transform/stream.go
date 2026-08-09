@@ -1,12 +1,8 @@
 package transform
 
 import (
-	cryptorand "crypto/rand"
-	"encoding/hex"
-	"fmt"
 	"log"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
@@ -15,66 +11,9 @@ import (
 // FinishReasonUnspecified 是匿名端点每帧携带的 protobuf 默认值。
 const FinishReasonUnspecified = "FINISH_REASON_UNSPECIFIED"
 
-var (
-	streamReqIDFallback atomic.Bool
-	streamReqIDCounter  atomic.Uint64
-)
-
-// StreamToolCallTracker 跟踪流式工具调用 ID/Index，确保同一个 functionCall 在
-// 增量帧中 id 和 index 保持稳定（符合 OpenAI SSE 规范）。
-type StreamToolCallTracker struct {
-	entries   []toolCallEntry
-	nextIndex int
-}
-
-type toolCallEntry struct {
-	name   string
-	callID string
-	index  int
-}
-
-func NewStreamToolCallTracker() *StreamToolCallTracker {
-	return &StreamToolCallTracker{}
-}
-
-// ProcessFunctionCall 返回稳定 (index, callID, isNew)。首次遇到该 name 时生成
-// 新 ID 和 index；后续复用已有值。name 为空时始终按新调用处理。
-func (t *StreamToolCallTracker) ProcessFunctionCall(fcMap map[string]any) (int, string, bool) {
-	name, _ := fcMap["name"].(string)
-	if name != "" {
-		for _, entry := range t.entries {
-			if entry.name == name {
-				return entry.index, entry.callID, false
-			}
-		}
-	}
-	// 安全限制：防止空 name 或其他异常导致 entries 无限增长
-	if len(t.entries) > 64 {
-		t.entries = nil
-		t.nextIndex = 0
-	}
-	idx := t.nextIndex
-	t.nextIndex++
-	callID := "call_" + reqID()
-	t.entries = append(t.entries, toolCallEntry{
-		name:   name,
-		callID: callID,
-		index:  idx,
-	})
-	return idx, callID, true
-}
-
-// reqID 生成 24 位十六进制 ID。
-func reqID() string {
-	if !streamReqIDFallback.Load() {
-		b := make([]byte, 12)
-		if _, err := cryptorand.Read(b); err == nil {
-			return hex.EncodeToString(b)
-		}
-		streamReqIDFallback.Store(true)
-	}
-	return fmt.Sprintf("%016x%08x", uint64(time.Now().UnixNano()), streamReqIDCounter.Add(1))
-}
+// StreamToolCallTracker 定义已迁移至 stream_tracker.go（typed 载体，name 直传）。
+// 本文件（旧 map 链路）仅保留 map 形态的独立调用辅助：processFunctionCallMap
+// 以 map part 为输入，供 ExtractParts 等旧实现使用，避免回归。
 
 // sseLine 把对象序列化成一条 SSE 数据行。
 func sseLine(obj map[string]any) string {
@@ -169,7 +108,8 @@ func ExtractParts(parts []any, forStream bool, tracker *StreamToolCallTracker) (
 			index := len(toolCalls)
 			callID := "call_" + reqID()
 			if tracker != nil {
-				index, callID, _ = tracker.ProcessFunctionCall(fc)
+				name, _ := fc["name"].(string)
+				index, callID, _ = tracker.ProcessFunctionCall(name)
 			}
 			tc := map[string]any{
 				"index": index,

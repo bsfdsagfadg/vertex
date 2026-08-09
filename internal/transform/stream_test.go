@@ -204,10 +204,8 @@ func TestExtractParts_ThoughtOnlyPart(t *testing.T) {
 
 func TestStreamToolCallTracker_SameCallIDAcrossFrames(t *testing.T) {
 	tracker := NewStreamToolCallTracker()
-	fc1 := map[string]any{"name": "get_weather", "args": map[string]any{"city": "SF"}}
-	fc2 := map[string]any{"name": "get_weather", "args": map[string]any{"city": "SF", "unit": "celsius"}}
 
-	idx1, id1, isNew1 := tracker.ProcessFunctionCall(fc1)
+	idx1, id1, isNew1 := tracker.ProcessFunctionCall("get_weather")
 	if !isNew1 {
 		t.Error("首次调用应标记 isNew=true")
 	}
@@ -215,7 +213,7 @@ func TestStreamToolCallTracker_SameCallIDAcrossFrames(t *testing.T) {
 		t.Errorf("index=%d, want 0", idx1)
 	}
 
-	idx2, id2, isNew2 := tracker.ProcessFunctionCall(fc2)
+	idx2, id2, isNew2 := tracker.ProcessFunctionCall("get_weather")
 	if isNew2 {
 		t.Error("同名工具第二次调用不应是 isNew（漏洞2：稳定 ID）")
 	}
@@ -229,8 +227,8 @@ func TestStreamToolCallTracker_SameCallIDAcrossFrames(t *testing.T) {
 
 func TestStreamToolCallTracker_DifferentNames(t *testing.T) {
 	tracker := NewStreamToolCallTracker()
-	_, id1, _ := tracker.ProcessFunctionCall(map[string]any{"name": "get_weather"})
-	idx2, id2, isNew2 := tracker.ProcessFunctionCall(map[string]any{"name": "get_time"})
+	_, id1, _ := tracker.ProcessFunctionCall("get_weather")
+	idx2, id2, isNew2 := tracker.ProcessFunctionCall("get_time")
 	if !isNew2 {
 		t.Error("不同名工具应为新调用")
 	}
@@ -246,7 +244,7 @@ func TestStreamToolCallTracker_EmptyNameLimit(t *testing.T) {
 	// 空 name 每次生成新 entry，达到上限后应重置（防内存泄漏）
 	tracker := NewStreamToolCallTracker()
 	for i := 0; i < 70; i++ {
-		idx, _, isNew := tracker.ProcessFunctionCall(map[string]any{"name": "", "args": map[string]any{"x": i}})
+		idx, _, isNew := tracker.ProcessFunctionCall("")
 		if i < 65 && !isNew {
 			t.Errorf("空 name 第 %d 次应为新调用", i)
 		}

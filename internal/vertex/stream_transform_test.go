@@ -1,13 +1,17 @@
 package vertex
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/bsfdsagfadg/vertex/internal/transform"
+)
 
 // results 内的 "Failed to verify action" → AuthenticationError（触发同 token 重试）。
 func TestProcessStreamingObject_VerifyFailError(t *testing.T) {
 	obj := map[string]any{"results": []any{
 		map[string]any{"errors": []any{map[string]any{"message": "Failed to verify action"}}},
 	}}
-	_, err := processStreamingObject(obj, func(map[string]any) bool { return true }, nil)
+	_, err := processStreamingObject(obj, func(*transform.GeminiChunk) bool { return true }, nil)
 	if err == nil {
 		t.Fatal("expected AuthenticationError")
 	}
@@ -21,7 +25,7 @@ func TestProcessStreamingObject_RealError(t *testing.T) {
 	obj := map[string]any{"results": []any{
 		map[string]any{"errors": []any{map[string]any{"message": "Resource exhausted", "code": float64(429)}}},
 	}}
-	_, err := processStreamingObject(obj, func(map[string]any) bool { return true }, nil)
+	_, err := processStreamingObject(obj, func(*transform.GeminiChunk) bool { return true }, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -303,13 +307,13 @@ func TestCleanPart_ThoughtSignatureOnly(t *testing.T) {
 
 func TestIsValidContentChunk_ThoughtBool(t *testing.T) {
 	// thought 为 bool(true) 时也应识别为有效内容（漏洞1类型断言）
-	chunk := map[string]any{
-		"candidates": []any{map[string]any{
-			"content": map[string]any{"parts": []any{map[string]any{"thought": true}}, "role": "model"},
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{
+			Content: &transform.Content{Role: "model", Parts: []transform.Part{{Thought: true}}},
 		}},
 	}
-	if !isValidContentChunk(chunk) {
-		t.Error("thought:true 的 chunk 应 valid（漏洞1：type assertion trap）")
+	if !isValidContentChunkTyped(chunk) {
+		t.Error("thought:true 的 chunk 应 valid")
 	}
 }
 
@@ -331,207 +335,185 @@ func TestExtractTextRecursive_DepthGuard(t *testing.T) {
 	_ = extractTextRecursive(deep, 0)
 }
 
-// chunkFinishReason 正确取 candidates[0].finishReason，缺省返回空串。
-func TestChunkFinishReason(t *testing.T) {
-	if got := chunkFinishReason(map[string]any{"candidates": []any{map[string]any{"finishReason": "STOP"}}}); got != "STOP" {
+// chunkFinishReasonTyped 正确取 candidates[0].finishReason，缺省返回空串。
+func TestChunkFinishReasonTyped(t *testing.T) {
+	if got := chunkFinishReasonTyped(&transform.GeminiChunk{Candidates: []*transform.Candidate{{FinishReason: "STOP"}}}); got != "STOP" {
 		t.Errorf("got %q, want STOP", got)
 	}
-	if got := chunkFinishReason(map[string]any{"candidates": []any{}}); got != "" {
+	if got := chunkFinishReasonTyped(&transform.GeminiChunk{Candidates: []*transform.Candidate{}}); got != "" {
 		t.Errorf("空 candidates 应返回空串, got %q", got)
 	}
-	if got := chunkFinishReason(map[string]any{}); got != "" {
+	if got := chunkFinishReasonTyped(&transform.GeminiChunk{}); got != "" {
 		t.Errorf("无 candidates 应返回空串, got %q", got)
 	}
 }
 
-// ── isValidContentChunk ──
+// ── isValidContentChunkTyped ──
 
 func TestIsValidContentChunk_TextContent(t *testing.T) {
-	chunk := map[string]any{
-		"candidates": []any{map[string]any{
-			"content": map[string]any{"parts": []any{map[string]any{"text": "hello"}}, "role": "model"},
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{
+			Content: &transform.Content{Role: "model", Parts: []transform.Part{{Text: "hello"}}},
 		}},
 	}
-	if !isValidContentChunk(chunk) {
+	if !isValidContentChunkTyped(chunk) {
 		t.Error("text content chunk should be valid")
 	}
 }
 
 func TestIsValidContentChunk_ThoughtContent(t *testing.T) {
-	chunk := map[string]any{
-		"candidates": []any{map[string]any{
-			"content": map[string]any{"parts": []any{map[string]any{"thought": "thinking...", "text": "hello"}}, "role": "model"},
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{
+			Content: &transform.Content{Role: "model", Parts: []transform.Part{{Thought: true, Text: "hello"}}},
 		}},
 	}
-	if !isValidContentChunk(chunk) {
+	if !isValidContentChunkTyped(chunk) {
 		t.Error("thought content chunk should be valid")
 	}
 }
 
 func TestIsValidContentChunk_FunctionCall(t *testing.T) {
-	chunk := map[string]any{
-		"candidates": []any{map[string]any{
-			"content": map[string]any{"parts": []any{map[string]any{"functionCall": map[string]any{"name": "get_weather"}}}, "role": "model"},
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{
+			Content: &transform.Content{Role: "model", Parts: []transform.Part{{FunctionCall: &transform.FunctionCall{Name: "get_weather"}}}},
 		}},
 	}
-	if !isValidContentChunk(chunk) {
+	if !isValidContentChunkTyped(chunk) {
 		t.Error("functionCall chunk should be valid")
 	}
 }
 
 func TestIsValidContentChunk_FinishReasonStopWithoutContent(t *testing.T) {
-	chunk := map[string]any{
-		"candidates": []any{map[string]any{"finishReason": "STOP"}},
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{FinishReason: "STOP"}},
 	}
-	if isValidContentChunk(chunk) {
-		t.Error("STOP finishReason without content should NOT be valid")
+	if !isValidContentChunkTyped(chunk) {
+		t.Error("STOP finishReason chunk should be valid")
 	}
 }
 
 func TestIsValidContentChunk_FinishReasonSafety(t *testing.T) {
-	chunk := map[string]any{
-		"candidates": []any{map[string]any{"finishReason": "SAFETY"}},
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{FinishReason: "SAFETY"}},
 	}
-	if !isValidContentChunk(chunk) {
+	if !isValidContentChunkTyped(chunk) {
 		t.Error("SAFETY finishReason chunk should be valid")
 	}
 }
 
 func TestIsValidContentChunk_UnspecifiedFinishReason(t *testing.T) {
-	chunk := map[string]any{
-		"candidates": []any{map[string]any{"finishReason": "FINISH_REASON_UNSPECIFIED"}},
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{FinishReason: "FINISH_REASON_UNSPECIFIED"}},
 	}
-	if isValidContentChunk(chunk) {
+	if isValidContentChunkTyped(chunk) {
 		t.Error("UNSPECIFIED finishReason should NOT be valid")
 	}
 }
 
 func TestIsValidContentChunk_BlockReason(t *testing.T) {
-	chunk := map[string]any{"promptFeedback": map[string]any{"blockReason": "SAFETY"}}
-	if !isValidContentChunk(chunk) {
+	chunk := &transform.GeminiChunk{PromptFeedback: &transform.PromptFeedback{BlockReason: "SAFETY"}}
+	if !isValidContentChunkTyped(chunk) {
 		t.Error("blockReason chunk should be valid")
 	}
 }
 
 func TestIsValidContentChunk_BlockReasonUnspecified(t *testing.T) {
-	chunk := map[string]any{"promptFeedback": map[string]any{"blockReason": "BLOCKED_REASON_UNSPECIFIED"}}
-	if isValidContentChunk(chunk) {
+	chunk := &transform.GeminiChunk{PromptFeedback: &transform.PromptFeedback{BlockReason: "BLOCKED_REASON_UNSPECIFIED"}}
+	if isValidContentChunkTyped(chunk) {
 		t.Error("UNSPECIFIED blockReason should NOT be valid")
 	}
 }
 
 func TestIsValidContentChunk_EmptyStopFrame(t *testing.T) {
-	chunk := map[string]any{
-		"candidates": []any{map[string]any{
-			"finishReason": "STOP",
-			"content": map[string]any{
-				"role":  "model",
-				"parts": []any{map[string]any{"text": ""}},
-			},
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{
+			FinishReason: "STOP",
+			Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: ""}}},
 		}},
-		"promptFeedback": map[string]any{"blockReason": "BLOCKED_REASON_UNSPECIFIED"},
+		PromptFeedback: &transform.PromptFeedback{BlockReason: "BLOCKED_REASON_UNSPECIFIED"},
 	}
-	if isValidContentChunk(chunk) {
-		t.Error("空 STOP 帧不应判为有效内容")
+	if !isValidContentChunkTyped(chunk) {
+		t.Error("STOP 帧应判为有效响应以驱动结束")
 	}
 }
 
 func TestIsValidContentChunk_ExecutableCode(t *testing.T) {
-	chunk := map[string]any{
-		"candidates": []any{map[string]any{
-			"content": map[string]any{"parts": []any{map[string]any{"executableCode": map[string]any{"code": "print('hello')"}}}, "role": "model"},
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{
+			Content: &transform.Content{Role: "model", Parts: []transform.Part{{ExecutableCode: &transform.ExecutableCode{Code: "print('hello')"}}}},
 		}},
 	}
-	if !isValidContentChunk(chunk) {
+	if !isValidContentChunkTyped(chunk) {
 		t.Error("executableCode chunk should be valid")
 	}
 }
 
 func TestIsValidContentChunk_CodeExecutionResult(t *testing.T) {
-	chunk := map[string]any{
-		"candidates": []any{map[string]any{
-			"content": map[string]any{"parts": []any{map[string]any{"codeExecutionResult": map[string]any{"output": "hello"}}}, "role": "model"},
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{
+			Content: &transform.Content{Role: "model", Parts: []transform.Part{{CodeExecutionResult: &transform.CodeExecutionResult{Output: "hello"}}}},
 		}},
 	}
-	if !isValidContentChunk(chunk) {
+	if !isValidContentChunkTyped(chunk) {
 		t.Error("codeExecutionResult chunk should be valid")
 	}
 }
 
 func TestIsValidContentChunk_InlineData(t *testing.T) {
-	chunk := map[string]any{
-		"candidates": []any{map[string]any{
-			"content": map[string]any{"parts": []any{map[string]any{"inlineData": map[string]any{"data": "base64...", "mimeType": "image/png"}}}, "role": "model"},
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{
+			Content: &transform.Content{Role: "model", Parts: []transform.Part{{InlineData: &transform.InlineData{Data: "base64...", MimeType: "image/png"}}}},
 		}},
 	}
-	if !isValidContentChunk(chunk) {
+	if !isValidContentChunkTyped(chunk) {
 		t.Error("inlineData chunk should be valid")
 	}
 }
 
 func TestIsValidContentChunk_FileData(t *testing.T) {
-	chunk := map[string]any{
-		"candidates": []any{map[string]any{
-			"content": map[string]any{"parts": []any{map[string]any{"fileData": map[string]any{"fileUri": "gs://bucket/file", "mimeType": "image/png"}}}, "role": "model"},
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{
+			Content: &transform.Content{Role: "model", Parts: []transform.Part{{FileData: &transform.FileData{FileURI: "gs://bucket/file", MimeType: "image/png"}}}},
 		}},
 	}
-	if !isValidContentChunk(chunk) {
+	if !isValidContentChunkTyped(chunk) {
 		t.Error("fileData chunk should be valid")
 	}
 }
 
 func TestIsValidContentChunk_MetadataOnly(t *testing.T) {
-	chunk := map[string]any{"usageMetadata": map[string]any{"totalTokenCount": float64(5)}}
-	if isValidContentChunk(chunk) {
+	chunk := &transform.GeminiChunk{UsageMetadata: &transform.UsageMetadata{TotalTokenCount: 5}}
+	if isValidContentChunkTyped(chunk) {
 		t.Error("metadata-only chunk should NOT be valid")
 	}
 }
 
 func TestIsValidContentChunk_EmptyCandidates(t *testing.T) {
-	chunk := map[string]any{"candidates": []any{}}
-	if isValidContentChunk(chunk) {
+	chunk := &transform.GeminiChunk{Candidates: []*transform.Candidate{}}
+	if isValidContentChunkTyped(chunk) {
 		t.Error("empty candidates chunk should NOT be valid")
 	}
 }
 
 // emitAndCheckFinish: UNSPECIFIED 不结束流；真实 finish 结束。
 func TestEmitAndCheckFinish(t *testing.T) {
-	noop := func(map[string]any) bool { return true }
+	noop := func(*transform.GeminiChunk) bool { return true }
 
 	// UNSPECIFIED → 不 done。
-	done := emitAndCheckFinish(map[string]any{"candidates": []any{map[string]any{"finishReason": "FINISH_REASON_UNSPECIFIED"}}}, noop)
+	done := emitAndCheckFinish(&transform.GeminiChunk{Candidates: []*transform.Candidate{{FinishReason: "FINISH_REASON_UNSPECIFIED"}}}, noop)
 	if done {
 		t.Error("UNSPECIFIED 不应结束流（红线⑤）")
 	}
 
 	// 空 finishReason → 不 done。
-	done = emitAndCheckFinish(map[string]any{"candidates": []any{map[string]any{}}}, noop)
+	done = emitAndCheckFinish(&transform.GeminiChunk{Candidates: []*transform.Candidate{{}}}, noop)
 	if done {
 		t.Error("空 finishReason 不应结束流")
 	}
 
 	// STOP → done。
-	done = emitAndCheckFinish(map[string]any{"candidates": []any{map[string]any{"finishReason": "STOP"}}}, noop)
+	done = emitAndCheckFinish(&transform.GeminiChunk{Candidates: []*transform.Candidate{{FinishReason: "STOP"}}}, noop)
 	if !done {
 		t.Error("STOP 应结束流")
 	}
-}
-
-// firstPartText 取 chunk 的 candidates[0].content.parts[0].text。
-func firstPartText(chunk map[string]any) string {
-	cands, _ := chunk["candidates"].([]any)
-	if len(cands) == 0 {
-		return ""
-	}
-	c, _ := cands[0].(map[string]any)
-	content, _ := c["content"].(map[string]any)
-	parts, _ := content["parts"].([]any)
-	if len(parts) == 0 {
-		return ""
-	}
-	p, _ := parts[0].(map[string]any)
-	if s, ok := p["text"].(string); ok {
-		return s
-	}
-	return ""
 }

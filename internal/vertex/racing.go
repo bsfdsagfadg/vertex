@@ -17,15 +17,37 @@ func StreamParallel(ctx context.Context, cfg config.ConfigProvider,
 
 	wrappedOp := func(ctx context.Context, uri string) (<-chan StreamChunk, error) {
 		ch := op(ctx, uri)
-		first, ok := <-ch
-		if !ok {
-			return nil, NewEmptyResponseError(fmt.Sprintf("stream: %s closed with no data", nodes.GetNodeName(uri)), nil)
+
+		// 必须读到至少一个包含真正有效 Content/ToolCall 的 Chunk，或者包含错误的 Chunk，
+		// 才能判定本节点连通并可以作为竞速胜出者。如果读到的全是元数据包且通道随即关闭，
+		// 视作 EmptyResponseError 并继续对冲。
+		var buffered []StreamChunk
+		var hasValidContent bool
+		var firstErr error
+
+		for chunk := range ch {
+			buffered = append(buffered, chunk)
+			if chunk.Err != nil {
+				firstErr = chunk.Err
+				break
+			}
+			if chunk.Data != nil && isValidContentChunkTyped(chunk.Data) {
+				hasValidContent = true
+				break
+			}
 		}
-		if first.Err != nil {
-			return nil, first.Err
+
+		if firstErr != nil {
+			return nil, firstErr
 		}
+		if !hasValidContent || len(buffered) == 0 {
+			return nil, NewEmptyResponseError(fmt.Sprintf("stream: %s closed with no valid content", nodes.GetNodeName(uri)), nil)
+		}
+
 		rest := make(chan StreamChunk, 64)
-		rest <- first
+		for _, b := range buffered {
+			rest <- b
+		}
 		go func() {
 			defer close(rest)
 			for chunk := range ch {

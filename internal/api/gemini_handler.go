@@ -14,6 +14,9 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
+// GeminiHandler 提供 Gemini 原生 REST 入口。
+// 入站 Gemini JSON 解包为强类型 *transform.GeminiRequest，走统一的 typed 提交通道，
+// 响应侧保持 Gemini 协议字段（SSE 帧序列化后与旧 map 版一致）。
 type GeminiHandler struct {
 	handler
 }
@@ -67,7 +70,7 @@ func (g *GeminiHandler) requirePost(w http.ResponseWriter, r *http.Request, fn f
 	fn()
 }
 
-func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
+func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (*transform.GeminiRequest, bool) {
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		if _, ok := err.(*json.SyntaxError); ok && strings.Contains(err.Error(), "invalid UTF-8") {
@@ -80,11 +83,19 @@ func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (
 	if body == nil {
 		body = make(map[string]any)
 	}
-	return body, true
+	if reqObj, ok := body["generateContentRequest"].(map[string]any); ok {
+		body = reqObj
+	}
+	req, err := normalizeGeminiBodyTyped(body)
+	if err != nil {
+		g.geminiError(w, http.StatusBadRequest, "请求参数有误: "+err.Error()+" (invalid argument)", "INVALID_ARGUMENT")
+		return nil, false
+	}
+	return req, true
 }
 
 func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, model string) {
-	body, ok := g.readGeminiBody(w, r)
+	req, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
 	}
@@ -94,26 +105,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 	actualModel, _ := stripFakePrefix(model, g.cfg.FakePrefixes())
 	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
 
-	transform.ApplyImageConfig(body, nil, actualModel)
-	if strings.Contains(strings.ToLower(actualModel), "image") {
-		gc, gcOk := body["generationConfig"].(map[string]any)
-		if !gcOk {
-			gc = map[string]any{}
-			body["generationConfig"] = gc
-		}
-		ic, icOk := gc["imageConfig"].(map[string]any)
-		if !icOk {
-			ic = map[string]any{}
-			gc["imageConfig"] = ic
-		}
-		if _, has := ic["imageSize"]; !has {
-			ic["imageSize"] = transform.ResolveImageSize(g.cfg.DefaultImageSize(), actualModel)
-		}
-	}
-	transform.ApplyResponseModalities(body, g.cfg.DefaultResponseModalities(), actualModel)
-	transform.ApplyDefaultThinking(body, g.cfg.DefaultThinkingLevel(), actualModel)
-
-	resp, ve := g.coreGenerate(requestCtx, model, body)
+	resp, ve := g.coreGenerateTyped(requestCtx, model, req)
 	if ve != nil {
 		if isSafetyBlock(ve) {
 			writeJSON(w, http.StatusOK, geminiSafetyResponse(ve))
@@ -126,7 +118,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 }
 
 func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *http.Request, model string) {
-	body, ok := g.readGeminiBody(w, r)
+	req, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
 	}
@@ -136,29 +128,10 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	actualModel, useFake := stripFakePrefix(model, g.cfg.FakePrefixes())
 	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 假非流=%v, 聚合流=%v", model, actualModel, useFake, g.cfg.AggregateStream())
 
-	transform.ApplyImageConfig(body, nil, actualModel)
-	if strings.Contains(strings.ToLower(actualModel), "image") {
-		gc, gcOk := body["generationConfig"].(map[string]any)
-		if !gcOk {
-			gc = map[string]any{}
-			body["generationConfig"] = gc
-		}
-		ic, icOk := gc["imageConfig"].(map[string]any)
-		if !icOk {
-			ic = map[string]any{}
-			gc["imageConfig"] = ic
-		}
-		if _, has := ic["imageSize"]; !has {
-			ic["imageSize"] = transform.ResolveImageSize(g.cfg.DefaultImageSize(), actualModel)
-		}
-	}
-	transform.ApplyResponseModalities(body, g.cfg.DefaultResponseModalities(), actualModel)
-	transform.ApplyDefaultThinking(body, g.cfg.DefaultThinkingLevel(), actualModel)
-
 	sw := newSSEWriter(w, "text/event-stream")
 
 	if useFake || g.cfg.AggregateStream() {
-		resp, ve := g.coreGenerate(requestCtx, model, body)
+		resp, ve := g.coreGenerateTyped(requestCtx, model, req)
 		if ve != nil {
 			if !sw.hasWritten() {
 				writeJSON(w, ve.Code, vertexErrorToGemini(ve))
@@ -168,20 +141,17 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 				_ = sw.write(g.geminiSSE(geminiSafetyChunk(ve)))
 				return
 			}
-			_ = sw.write(g.geminiSSE(map[string]any{"error": map[string]any{
-				"code": ve.Code, "message": vertex.FriendlyErrorMessage(ve), "status": geminiStatusOf(ve),
-			}}))
+			_ = sw.write(g.geminiSSE(vertexErrorToGemini(ve)))
 			return
 		}
-		_ = sw.write(g.geminiSSE(resp))
+		_ = sw.write(g.geminiSSETyped(resp))
 		return
 	}
 
 	hasFinish := false
 	streamErrWritten := false
-	startTime := time.Now()
-	observer := newStreamObserver(startTime)
-	g.coreStreamGenerate(requestCtx, model, body, func(data map[string]any, err *vertex.VertexError) bool {
+
+	g.coreStreamGenerateTyped(requestCtx, model, req, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
 		if err != nil {
 			if !sw.hasWritten() {
 				writeJSON(w, err.Code, vertexErrorToGemini(err))
@@ -191,28 +161,56 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 			if isSafetyBlock(err) {
 				_ = sw.write(g.geminiSSE(geminiSafetyChunk(err)))
 			} else {
-				pkt := map[string]any{
-					"candidates": []any{map[string]any{"finishReason": "OTHER", "index": 0}},
-					"error": map[string]any{
-						"code": err.Code, "message": vertex.FriendlyErrorMessage(err), "status": geminiStatusOf(err),
-					},
-				}
+				pkt := finishReasonChunk(err)
 				_ = sw.write(g.geminiSSE(pkt))
 			}
 			streamErrWritten = true
 			return false
 		}
-		if hasGeminiValidOutput(data) {
-			observer.markTriggered(requestCtx)
+
+		if chunk == nil {
+			return true
 		}
-		if cands, _ := data["candidates"].([]any); len(cands) > 0 {
-			if c, ok := cands[0].(map[string]any); ok {
-				if fr, _ := c["finishReason"].(string); fr != "" && fr != "FINISH_REASON_UNSPECIFIED" {
-					hasFinish = true
+
+		if len(chunk.Candidates) == 0 {
+			// 如果没有 candidates，但包含元数据（例如 usageMetadata），补齐 Gemini 官方 SDK 规范的 candidates 骨架包
+			if chunk.UsageMetadata != nil || chunk.PromptFeedback != nil || chunk.ModelVersion != "" {
+				emptyCand := &transform.Candidate{
+					Index: 0,
+					Content: &transform.Content{
+						Role:  "model",
+						Parts: []transform.Part{},
+					},
 				}
+				if hasFinish {
+					emptyCand.FinishReason = "STOP"
+				}
+				chunk.Candidates = []*transform.Candidate{emptyCand}
+			} else {
+				return true
 			}
 		}
-		return sw.write(g.geminiSSE(data))
+
+		for _, cand := range chunk.Candidates {
+			if cand == nil {
+				continue
+			}
+			if cand.Content == nil {
+				cand.Content = &transform.Content{Role: "model", Parts: []transform.Part{}}
+			} else if cand.Content.Role == "" {
+				cand.Content.Role = "model"
+			}
+			if cand.Content.Parts == nil {
+				cand.Content.Parts = []transform.Part{}
+			}
+		}
+
+		if !hasFinish {
+			if fr := firstCandidateFinishReason(chunk); fr != "" && fr != transform.FinishReasonUnspecified {
+				hasFinish = true
+			}
+		}
+		return sw.write(g.geminiSSETyped(chunk))
 	})
 
 	if streamErrWritten {
@@ -221,7 +219,7 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	if !hasFinish {
 		_ = sw.write(g.geminiSSE(map[string]any{
 			"candidates": []any{map[string]any{
-				"content":      map[string]any{"parts": []any{}, "role": "model"},
+				"content":      map[string]any{"parts": []any{map[string]any{"text": ""}}, "role": "model"},
 				"finishReason": "STOP",
 				"index":        0,
 			}},
@@ -238,17 +236,8 @@ func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request
 	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 	log.Printf("[Server] [CountTokens] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
 
-	var contents []any
-	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {
-		contents, _ = reqObj["contents"].([]any)
-	} else {
-		contents, _ = body["contents"].([]any)
-	}
-	if contents == nil {
-		contents = []any{}
-	}
-
-	total := g.vc.CountTokens(r.Context(), actualModel, contents)
+	contents := body.Contents
+	total := g.vc.CountTokens(r.Context(), actualModel, geminiContentsToAny(contents))
 	writeJSON(w, http.StatusOK, map[string]any{"totalTokens": total})
 }
 
@@ -278,33 +267,18 @@ func (g *GeminiHandler) geminiSSE(obj map[string]any) string {
 	return "data: " + string(data) + "\n\n"
 }
 
+func (g *GeminiHandler) geminiSSETyped(obj *transform.GeminiResponse) string {
+	data, err := jsonx.Marshal(obj)
+	if err != nil {
+		return "data: {}\n\n"
+	}
+	return "data: " + string(data) + "\n\n"
+}
+
 func (g *GeminiHandler) geminiError(w http.ResponseWriter, status int, msg, geminiStatus string) {
 	writeJSON(w, status, map[string]any{"error": map[string]any{
 		"code": status, "message": msg, "status": geminiStatus,
 	}})
-}
-
-func cleanGeminiFinishReason(data map[string]any) string {
-	cands, ok := data["candidates"].([]any)
-	if !ok || len(cands) == 0 {
-		return ""
-	}
-	var realFR string
-	for _, candRaw := range cands {
-		cand, ok := candRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-		fr, _ := cand["finishReason"].(string)
-		if fr == "FINISH_REASON_UNSPECIFIED" {
-			delete(cand, "finishReason")
-		} else if fr != "" {
-			if realFR == "" {
-				realFR = fr
-			}
-		}
-	}
-	return realFR
 }
 
 func vertexErrorToGemini(e *vertex.VertexError) map[string]any {
@@ -362,4 +336,57 @@ func geminiSafetyChunk(e *vertex.VertexError) map[string]any {
 	}
 }
 
+// finishReasonChunk 构造一个仅带 finishReason 的 Gemini 错误帧。
+func finishReasonChunk(_ *vertex.VertexError) map[string]any {
+	return map[string]any{
+		"candidates": []any{map[string]any{"finishReason": "OTHER", "index": 0}},
+	}
+}
 
+// normalizeGeminiBodyTyped 把 Gemini 原生 JSON 请求体映射为强类型请求。
+func normalizeGeminiBodyTyped(raw map[string]any) (*transform.GeminiRequest, error) {
+	return transform.NormalizeGeminiRequestMap(raw)
+}
+
+// firstCandidateFinishReason 读取首候选 finishReason（原始未清洗）。
+func firstCandidateFinishReason(chunk *transform.GeminiResponse) string {
+	if chunk == nil {
+		return ""
+	}
+	for _, c := range chunk.Candidates {
+		if c != nil {
+			return c.FinishReason
+		}
+	}
+	return ""
+}
+
+// geminiContentsToAny 把强类型 contents 逐项 JSON 转回 []any（供 CountTokens 复用旧实现）。
+func geminiContentsToAny(contents []transform.Content) []any {
+	out := make([]any, 0, len(contents))
+	for _, c := range contents {
+		b, err := jsonx.Marshal(c)
+		if err != nil {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// toRawMap 便利序列化：map[string]map typed -> raw map（供 JsonxUnmarshal 使用）。
+func toRawMap(v any) map[string]any {
+	b, err := jsonx.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil
+	}
+	return m
+}

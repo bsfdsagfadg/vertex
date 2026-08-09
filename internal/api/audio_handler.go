@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"log"
@@ -9,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bsfdsagfadg/vertex/internal/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
 type AudioHandler struct {
@@ -18,6 +17,21 @@ type AudioHandler struct {
 
 const ttsDefaultModel = "gemini-3.1-flash-tts-preview"
 const ttsDefaultVoice = "Kore"
+
+type ttsFormat struct {
+	contentType string
+	wrapWAV     bool
+}
+
+//nolint:gochecknoglobals // Audio format formats
+var ttsFormatInfo = map[string]ttsFormat{
+	"mp3":  {"audio/wav", true},
+	"wav":  {"audio/wav", true},
+	"pcm":  {"audio/L16", false},
+	"opus": {"audio/wav", true},
+	"aac":  {"audio/wav", true},
+	"flac": {"audio/wav", true},
+}
 
 //nolint:gochecknoglobals // Voice translation map
 var ttsVoiceMap = map[string]string{
@@ -36,81 +50,59 @@ var ttsGeminiVoices = map[string]bool{
 	"Vindemiatrix": true, "Sadachbia": true, "Sadaltager": true, "Sulafat": true,
 }
 
-type ttsFormat struct {
-	contentType string
-	wrapWAV     bool
-}
-
-//nolint:gochecknoglobals // Audio format formats
-var ttsFormatInfo = map[string]ttsFormat{
-	"mp3":  {"audio/wav", true},
-	"wav":  {"audio/wav", true},
-	"pcm":  {"audio/L16", false},
-	"opus": {"audio/wav", true},
-	"aac":  {"audio/wav", true},
-	"flac": {"audio/wav", true},
-}
-
 func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		oaiError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
 		return
 	}
 
-	var body map[string]any
+	var body transform.SpeechRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": "请求体必须是合法JSON (invalid JSON)", "type": "invalid_request_error", "code": 400}})
 		return
 	}
 
-	actualModel, _ := stripFakePrefix(getStr(body, "model", ""), a.cfg.FakePrefixes())
-	if actualModel == "" || !strings.HasPrefix(actualModel, "gemini") {
-		actualModel = ttsDefaultModel
-	}
+	voice := ttsResolveVoice(body.Voice)
+	respFmt := strings.ToLower(firstNonEmptyStr(body.ResponseFormat, "mp3"))
 
-	text, _ := body["input"].(string)
-	if strings.TrimSpace(text) == "" {
+	geminiReq, model, convErr := transform.NewAudioAdaptor().ToGeminiRequest(&body, a.cfg)
+	if convErr != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-			"message": "缺少 input 字段 (missing input text)", "type": "invalid_request_error", "code": 400}})
+			"message": "请求参数有误: " + convErr.Error(), "type": "invalid_request_error", "code": 400}})
 		return
 	}
+	if model == "" {
+		model = ttsDefaultModel
+	}
 
-	voice := ttsResolveVoice(body["voice"])
-	respFmt := strings.ToLower(firstNonEmptyStr(getStr(body, "response_format", ""), "mp3"))
-
-	log.Printf("[Server] [AudioSpeech] 收到请求: 模型=%s, 语音=%s, 格式=%s", actualModel, voice, respFmt)
+	log.Printf("[Server] [AudioSpeech] 收到请求: 模型=%s, 语音=%s, 格式=%s", model, voice, respFmt)
 
 	fmtInfo, ok := ttsFormatInfo[respFmt]
 	if !ok {
 		fmtInfo = ttsFormat{"audio/wav", true}
 	}
 
-	geminiPayload := ttsBuildGeminiPayload(text, voice, body["speed"])
-
-	resp, ve := a.coreGenerate(r.Context(), actualModel, geminiPayload)
+	resp, ve := a.coreGenerateTyped(r.Context(), model, geminiReq)
 	if ve != nil {
 		writeJSON(w, ve.Code, vertexErrorToOAI(ve))
 		return
 	}
 
-	audio := vertex.ExtractAudioResponse(resp)
-	if audio.Data == "" {
+	audio := transform.ExtractAudioTyped(resp)
+	if len(audio.Bytes) == 0 {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{
 			"message": "上游未返回音频数据 (no audio returned)", "type": "server_error", "code": 502}})
 		return
 	}
-	raw, err := base64.StdEncoding.DecodeString(audio.Data)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{
-			"message": "音频解码失败 (audio decode failed)", "type": "server_error", "code": 502}})
-		return
-	}
 
-	out := raw
+	out := audio.Bytes
 	if fmtInfo.wrapWAV {
-		sampleRate := ttsParsePCMRate(audio.MimeType)
-		out = append(ttsWAVHeader(len(raw), sampleRate), raw...)
+		sampleRate := audio.SampleRate
+		if sampleRate <= 0 {
+			sampleRate = 24000
+		}
+		out = append(ttsWAVHeader(len(out), sampleRate), out...)
 	}
 
 	w.Header().Set("Content-Type", fmtInfo.contentType)
@@ -131,22 +123,6 @@ func ttsResolveVoice(voice any) string {
 		return mapped
 	}
 	return ttsDefaultVoice
-}
-
-func ttsParsePCMRate(mimeType string) int {
-	const def = 24000
-	if mimeType == "" {
-		return def
-	}
-	for _, token := range strings.Split(mimeType, ";") {
-		token = strings.ToLower(strings.TrimSpace(token))
-		if strings.HasPrefix(token, "rate=") {
-			if n, err := strconv.Atoi(token[5:]); err == nil {
-				return n
-			}
-		}
-	}
-	return def
 }
 
 func ttsWAVHeader(dataLen, sampleRate int) []byte {
@@ -183,6 +159,40 @@ func appendU16LE(b []byte, v uint16) []byte {
 	return append(b, tmp[:]...)
 }
 
+func coerceSpeed(speed any) float64 {
+	switch v := speed.(type) {
+	case nil:
+		return 1.0
+	case float64:
+		return v
+	case int:
+		return float64(v)
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			return f
+		}
+	}
+	return 1.0
+}
+
+// ttsParsePCMRate 从 mime 里的 rate= 取采样率，缺省 24000。
+func ttsParsePCMRate(mimeType string) int {
+	const def = 24000
+	if mimeType == "" {
+		return def
+	}
+	for _, token := range strings.Split(mimeType, ";") {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if strings.HasPrefix(token, "rate=") {
+			if n, err := strconv.Atoi(token[5:]); err == nil {
+				return n
+			}
+		}
+	}
+	return def
+}
+
+// ttsBuildGeminiPayload 构造 TTS Gemini 载荷（旧 map 版，供单元测试锁定结构语义）。
 func ttsBuildGeminiPayload(text, voice string, speed any) map[string]any {
 	prompt := text
 	spd := coerceSpeed(speed)
@@ -204,22 +214,6 @@ func ttsBuildGeminiPayload(text, voice string, speed any) map[string]any {
 			},
 		},
 	}
-}
-
-func coerceSpeed(speed any) float64 {
-	switch v := speed.(type) {
-	case nil:
-		return 1.0
-	case float64:
-		return v
-	case int:
-		return float64(v)
-	case string:
-		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
-			return f
-		}
-	}
-	return 1.0
 }
 
 func abs(f float64) float64 {

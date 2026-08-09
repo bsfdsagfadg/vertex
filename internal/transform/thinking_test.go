@@ -4,66 +4,43 @@ import (
 	"testing"
 )
 
-func TestApplyDefaultThinking_SkipWhenClientPassed(t *testing.T) {
-	payload := map[string]any{
-		"generationConfig": map[string]any{
-			"thinkingConfig": map[string]any{"thinkingLevel": "HIGH"},
-		},
-	}
-	ApplyDefaultThinking(payload, "高", "gemini-3.5-flash")
-	gc := payload["generationConfig"].(map[string]any)
-	tc := gc["thinkingConfig"].(map[string]any)
-	if tc["thinkingLevel"] != "HIGH" {
-		t.Errorf("client-passed thinkingConfig should not be overwritten, got %v", tc["thinkingLevel"])
+func TestResolveThinkingConfig_UnknownModel(t *testing.T) {
+	tc := ResolveThinkingConfig("高", "unknown-model-12345")
+	if tc != nil {
+		t.Error("unknown model should return nil ThinkingConfig")
 	}
 }
 
-func TestApplyDefaultThinking_UnknownModel(t *testing.T) {
-	payload := map[string]any{}
-	ApplyDefaultThinking(payload, "高", "unknown-model-12345")
-	_, ok := payload["generationConfig"]
-	if ok {
-		t.Error("unknown model should not create generationConfig")
-	}
-}
-
-func TestApplyDefaultThinking_AutoLevel(t *testing.T) {
+func TestResolveThinkingConfig_AutoLevel(t *testing.T) {
 	tests := []struct {
 		name    string
 		model   string
 		wantTC  bool
-		wantVal any
+		wantBudget int
 	}{
 		{"2.5-pro-budget-minus1", "gemini-2.5-pro", true, -1},
 		{"2.5-flash-budget-minus1", "gemini-2.5-flash", true, -1},
-		{"3.x-text-skip", "gemini-3.5-flash", false, nil},
-		{"3.1-flash-image-skip", "gemini-3.1-flash-image", false, nil},
-		{"unsupported-skip", "gemini-2.5-flash-image", false, nil},
+		{"3.x-text-skip", "gemini-3.5-flash", false, 0},
+		{"3.1-flash-image-skip", "gemini-3.1-flash-image", false, 0},
+		{"unsupported-skip", "gemini-2.5-flash-image", false, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			payload := map[string]any{}
-			ApplyDefaultThinking(payload, "自动", tt.model)
-			gc, _ := payload["generationConfig"].(map[string]any)
-			tc, ok := gc["thinkingConfig"].(map[string]any)
+			tc := ResolveThinkingConfig("自动", tt.model)
 			if tt.wantTC {
-				if !ok {
-					t.Fatal("expected thinkingConfig to be set")
-				}
-				budget, _ := tc["thinkingBudget"].(int)
-				if budget != tt.wantVal {
-					t.Errorf("expected thinkingBudget=%v, got %v", tt.wantVal, budget)
+				if tc == nil || tc.ThinkingBudget == nil || *tc.ThinkingBudget != tt.wantBudget {
+					t.Fatalf("expected budget=%d, got %v", tt.wantBudget, tc)
 				}
 			} else {
-				if ok {
-					t.Errorf("expected no thinkingConfig, got %v", tc)
+				if tc != nil {
+					t.Fatalf("expected nil thinkingConfig, got %v", tc)
 				}
 			}
 		})
 	}
 }
 
-func TestApplyDefaultThinking_ThinkingLevelModels(t *testing.T) {
+func TestResolveThinkingConfig_ThinkingLevelModels(t *testing.T) {
 	levels := []struct {
 		level string
 		want  string
@@ -75,49 +52,39 @@ func TestApplyDefaultThinking_ThinkingLevelModels(t *testing.T) {
 	}
 	for _, l := range levels {
 		t.Run("3.5-flash-"+l.level, func(t *testing.T) {
-			payload := map[string]any{}
-			ApplyDefaultThinking(payload, l.level, "gemini-3.5-flash")
-			gc := payload["generationConfig"].(map[string]any)
-			tc := gc["thinkingConfig"].(map[string]any)
-			if tc["thinkingLevel"] != l.want {
-				t.Errorf("expected thinkingLevel=%q, got %q", l.want, tc["thinkingLevel"])
+			tc := ResolveThinkingConfig(l.level, "gemini-3.5-flash")
+			if tc == nil || tc.ThinkingLevel != l.want {
+				t.Errorf("expected level=%q, got %v", l.want, tc)
 			}
 		})
 	}
 }
 
-func TestApplyDefaultThinking_ThinkingBudgetModels(t *testing.T) {
+func TestResolveThinkingConfig_ThinkingBudgetModels(t *testing.T) {
 	tests := []struct {
 		name   string
 		model  string
 		level  string
-		maxB   int
-		wantFn func(int) int
+		want   int
 	}{
-		{"2.5-pro-min-8192", "gemini-2.5-pro", "最低", 32768, func(max int) int { return max * 1 / 4 }},
-		{"2.5-pro-low-16384", "gemini-2.5-pro", "低", 32768, func(max int) int { return max * 2 / 4 }},
-		{"2.5-pro-med-24576", "gemini-2.5-pro", "中", 32768, func(max int) int { return max * 3 / 4 }},
-		{"2.5-pro-high-32768", "gemini-2.5-pro", "高", 32768, func(max int) int { return max * 4 / 4 }},
-		{"2.5-flash-min-6144", "gemini-2.5-flash", "最低", 24576, func(max int) int { return max * 1 / 4 }},
-		{"2.5-flash-high-24576", "gemini-2.5-flash", "高", 24576, func(max int) int { return max * 4 / 4 }},
-		{"2.5-flash-lite-min-6144", "gemini-2.5-flash-lite", "最低", 24576, func(max int) int { return max * 1 / 4 }},
+		{"2.5-pro-min", "gemini-2.5-pro", "最低", 8192},
+		{"2.5-pro-low", "gemini-2.5-pro", "低", 16384},
+		{"2.5-pro-med", "gemini-2.5-pro", "中", 24576},
+		{"2.5-pro-high", "gemini-2.5-pro", "高", 32768},
+		{"2.5-flash-min", "gemini-2.5-flash", "最低", 6144},
+		{"2.5-flash-high", "gemini-2.5-flash", "高", 24576},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			payload := map[string]any{}
-			ApplyDefaultThinking(payload, tt.level, tt.model)
-			gc := payload["generationConfig"].(map[string]any)
-			tc := gc["thinkingConfig"].(map[string]any)
-			want := tt.wantFn(tt.maxB)
-			budget, _ := tc["thinkingBudget"].(int)
-			if budget != want {
-				t.Errorf("expected thinkingBudget=%d, got %d", want, budget)
+			tc := ResolveThinkingConfig(tt.level, tt.model)
+			if tc == nil || tc.ThinkingBudget == nil || *tc.ThinkingBudget != tt.want {
+				t.Errorf("expected budget=%d, got %v", tt.want, tc)
 			}
 		})
 	}
 }
 
-func TestApplyDefaultThinking_ImageModelsLevelRestriction(t *testing.T) {
+func TestResolveThinkingConfig_ImageModelsLevelRestriction(t *testing.T) {
 	tests := []struct {
 		name   string
 		model  string
@@ -135,40 +102,99 @@ func TestApplyDefaultThinking_ImageModelsLevelRestriction(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			payload := map[string]any{}
-			ApplyDefaultThinking(payload, tt.level, tt.model)
-			gc, _ := payload["generationConfig"].(map[string]any)
-			tc, ok := gc["thinkingConfig"].(map[string]any)
+			tc := ResolveThinkingConfig(tt.level, tt.model)
 			if tt.wantTC {
-				if !ok {
-					t.Fatal("expected thinkingConfig to be set")
-				}
-				if tc["thinkingLevel"] != tt.want {
-					t.Errorf("expected thinkingLevel=%q, got %q", tt.want, tc["thinkingLevel"])
+				if tc == nil || tc.ThinkingLevel != tt.want {
+					t.Fatalf("expected thinkingLevel=%q, got %v", tt.want, tc)
 				}
 			} else {
-				if ok {
-					t.Errorf("expected no thinkingConfig, got %v", tc)
+				if tc != nil {
+					t.Fatalf("expected nil thinkingConfig, got %v", tc)
 				}
 			}
 		})
 	}
 }
 
-func TestApplyDefaultThinking_InvalidLevel(t *testing.T) {
-	payload := map[string]any{}
-	ApplyDefaultThinking(payload, "INVALID", "gemini-3.5-flash")
-	_, ok := payload["generationConfig"]
-	if ok {
-		t.Error("invalid level should not create generationConfig")
+func TestResolveThinkingConfig_InvalidLevel(t *testing.T) {
+	tc := ResolveThinkingConfig("INVALID", "gemini-3.5-flash")
+	if tc != nil {
+		t.Error("invalid level should return nil")
 	}
 }
 
-func TestApplyDefaultThinking_UnsupportedModel(t *testing.T) {
-	payload := map[string]any{}
-	ApplyDefaultThinking(payload, "高", "gemini-2.5-flash-image")
-	_, ok := payload["generationConfig"]
-	if ok {
-		t.Error("unsupported model should not create generationConfig")
+func TestResolveThinkingConfig_UnsupportedModel(t *testing.T) {
+	tc := ResolveThinkingConfig("高", "gemini-2.5-flash-image")
+	if tc != nil {
+		t.Error("unsupported model should return nil")
 	}
+}
+
+func TestNormalizeThinkingConfig(t *testing.T) {
+	intPtr := func(v int) *int { return &v }
+
+	t.Run("nil config", func(t *testing.T) {
+		if res := NormalizeThinkingConfig(nil, "gemini-3.6-flash"); res != nil {
+			t.Errorf("expected nil for nil input, got %v", res)
+		}
+	})
+
+	t.Run("unsupported model", func(t *testing.T) {
+		tc := &ThinkingConfig{ThinkingLevel: "high"}
+		if res := NormalizeThinkingConfig(tc, "gemini-2.5-flash-image"); res != nil {
+			t.Errorf("expected nil for unsupported model, got %v", res)
+		}
+	})
+
+	t.Run("2.5 pro - budget exact passthrough", func(t *testing.T) {
+		tc := &ThinkingConfig{ThinkingBudget: intPtr(8000), ThinkingLevel: "high"}
+		res := NormalizeThinkingConfig(tc, "gemini-2.5-pro")
+		if res == nil || res.ThinkingBudget == nil || *res.ThinkingBudget != 8000 {
+			t.Fatalf("expected exact budget 8000, got %v", res)
+		}
+		if res.ThinkingLevel != "" {
+			t.Errorf("expected empty thinkingLevel for 2.5 budget model, got %q", res.ThinkingLevel)
+		}
+	})
+
+	t.Run("2.5 flash - lowercase level to budget", func(t *testing.T) {
+		tc := &ThinkingConfig{ThinkingLevel: "high"}
+		res := NormalizeThinkingConfig(tc, "gemini-2.5-flash")
+		if res == nil || res.ThinkingBudget == nil || *res.ThinkingBudget != 24576 {
+			t.Fatalf("expected budget 24576 for flash high, got %v", res)
+		}
+		if res.ThinkingLevel != "" {
+			t.Errorf("expected empty thinkingLevel, got %q", res.ThinkingLevel)
+		}
+	})
+
+	t.Run("3.6 flash - lowercase level to uppercase enum", func(t *testing.T) {
+		tc := &ThinkingConfig{ThinkingLevel: "high"}
+		res := NormalizeThinkingConfig(tc, "gemini-3.6-flash")
+		if res == nil || res.ThinkingLevel != "HIGH" {
+			t.Fatalf("expected ThinkingLevel HIGH, got %v", res)
+		}
+		if res.ThinkingBudget != nil {
+			t.Errorf("expected nil budget for 3.x level model, got %v", res.ThinkingBudget)
+		}
+	})
+
+	t.Run("3.5 flash - budget to level enum", func(t *testing.T) {
+		tc := &ThinkingConfig{ThinkingBudget: intPtr(25000)}
+		res := NormalizeThinkingConfig(tc, "gemini-3.5-flash")
+		if res == nil || res.ThinkingLevel != "HIGH" {
+			t.Fatalf("expected ThinkingLevel HIGH for 25000 budget, got %v", res)
+		}
+		if res.ThinkingBudget != nil {
+			t.Errorf("expected nil budget, got %v", res.ThinkingBudget)
+		}
+	})
+
+	t.Run("3.1 flash image - uppercase level normalization", func(t *testing.T) {
+		tc := &ThinkingConfig{ThinkingLevel: "minimal"}
+		res := NormalizeThinkingConfig(tc, "gemini-3.1-flash-image")
+		if res == nil || res.ThinkingLevel != "MINIMAL" {
+			t.Fatalf("expected MINIMAL, got %v", res)
+		}
+	})
 }

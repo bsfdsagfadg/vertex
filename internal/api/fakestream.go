@@ -22,6 +22,7 @@ func (sw *sseWriter) ensureHeader() {
 	sw.w.Header().Set("Content-Type", sw.contentType)
 	sw.w.Header().Set("Cache-Control", "no-cache")
 	sw.w.Header().Set("Connection", "keep-alive")
+	sw.w.Header().Set("Transfer-Encoding", "chunked")
 	sw.w.Header().Set("X-Accel-Buffering", "no")
 	sw.w.WriteHeader(http.StatusOK)
 	sw.wroteHeader = true

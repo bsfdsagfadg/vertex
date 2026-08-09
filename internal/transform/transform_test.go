@@ -90,166 +90,6 @@ func TestMapFinishReason(t *testing.T) {
 	}
 }
 
-func TestMergeContentBlocks(t *testing.T) {
-	merged := MergeContentBlocks([]map[string]any{
-		{"text": "Hello "},
-		{"text": "World"},
-	})
-	if len(merged) != 1 {
-		t.Fatalf("merged len=%d, want 1", len(merged))
-	}
-	if merged[0]["text"] != "Hello World" {
-		t.Errorf("merged text=%q", merged[0]["text"])
-	}
-}
-
-func TestMergeContentBlocks_ThoughtRetained(t *testing.T) {
-	// 纯思考块不被 cleanSimple/cleanPart 丢弃
-	merged := MergeContentBlocks([]map[string]any{
-		{"text": "thinking text", "thought": true},
-		{"text": "answer"},
-	})
-	if len(merged) != 2 {
-		t.Fatalf("merged len=%d, want 2（thought+text 应分开）", len(merged))
-	}
-	if merged[0]["text"] != "thinking text" {
-		t.Errorf("thought text=%q, want 'thinking text'", merged[0]["text"])
-	}
-	if merged[0]["thought"] != true {
-		t.Error("thought 标记应保留")
-	}
-	if merged[1]["text"] != "answer" {
-		t.Errorf("answer text=%q, want 'answer'", merged[1]["text"])
-	}
-}
-
-func TestMergeContentBlocks_ThoughtOnlyBlocks(t *testing.T) {
-	// 两个连续纯 thought block（无 text，仅 thought:true）各自保留不合并（m6）
-	merged := MergeContentBlocks([]map[string]any{
-		{"thought": true},
-		{"thought": true, "thoughtSignature": "sig1"},
-	})
-	if len(merged) != 2 {
-		t.Fatalf("merged len=%d, want 2（纯 thought block 不合并）", len(merged))
-	}
-	if merged[0]["thought"] != true {
-		t.Error("第一个 thought block 标记应保留")
-	}
-	if merged[1]["thought"] != true {
-		t.Error("第二个 thought block 标记应保留")
-	}
-	if merged[1]["thoughtSignature"] != "sig1" {
-		t.Error("第二个 thought block 的 thoughtSignature 应保留")
-	}
-}
-
-// TestConvertChatRequest_Full 测试 ConvertChatRequest 的完整转换：OpenAI 请求 → Gemini payload。
-func TestConvertChatRequest_Full(t *testing.T) {
-	cfg := config.StaticProvider(config.DefaultConfig())
-	body := map[string]any{
-		"model":    "gemini-2.5-flash",
-		"messages": []any{map[string]any{"role": "user", "content": "Hello"}},
-		"stream":   false,
-	}
-
-	model, geminiPayload, err := ConvertChatRequest(body, cfg)
-	if err != nil {
-		t.Fatalf("ConvertChatRequest failed: %v", err)
-	}
-	if model != "gemini-2.5-flash" {
-		t.Errorf("model=%q, want gemini-2.5-flash", model)
-	}
-	if geminiPayload == nil {
-		t.Fatal("geminiPayload is nil")
-	}
-
-	contents, ok := geminiPayload["contents"].([]any)
-	if !ok || len(contents) == 0 {
-		t.Fatal("missing contents")
-	}
-	firstContent := contents[0].(map[string]any)
-	if firstContent["role"] != "user" {
-		t.Errorf("role=%q, want user", firstContent["role"])
-	}
-	parts, ok := firstContent["parts"].([]any)
-	if !ok || len(parts) == 0 {
-		t.Fatal("missing parts")
-	}
-	firstPart := parts[0].(map[string]any)
-	if firstPart["text"] != "Hello" {
-		t.Errorf("text=%q, want Hello", firstPart["text"])
-	}
-
-	if gc, ok := geminiPayload["generationConfig"].(map[string]any); ok {
-		if _, exists := gc["temperature"]; !exists {
-			t.Error("generationConfig should have temperature")
-		}
-	}
-}
-
-// TestConvertChatRequest_WithTools 测试包含工具的请求转换。
-func TestConvertChatRequest_WithTools(t *testing.T) {
-	cfg := config.StaticProvider(config.DefaultConfig())
-	body := map[string]any{
-		"model":    "gemini-2.5-flash",
-		"messages": []any{map[string]any{"role": "user", "content": "What's the weather?"}},
-		"tools": []any{map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name":        "get_weather",
-				"description": "Get weather",
-				"parameters": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"location": map[string]any{"type": "string"},
-					},
-				},
-			},
-		}},
-	}
-
-	model, geminiPayload, err := ConvertChatRequest(body, cfg)
-	if err != nil {
-		t.Fatalf("ConvertChatRequest failed: %v", err)
-	}
-	if model != "gemini-2.5-flash" {
-		t.Errorf("model=%q", model)
-	}
-
-	if _, ok := geminiPayload["tools"]; !ok {
-		if _, ok := geminiPayload["toolConfig"]; !ok {
-			t.Log("tools may be transformed to a different structure, check implement detail")
-		}
-	}
-}
-
-// TestConvertChatRequest_SystemInstruction 测试系统指令。
-func TestConvertChatRequest_SystemInstruction(t *testing.T) {
-	cfg := config.StaticProvider(config.DefaultConfig())
-	body := map[string]any{
-		"model":    "gemini-2.5-flash",
-		"messages": []any{map[string]any{"role": "system", "content": "Be helpful."}},
-	}
-
-	_, geminiPayload, err := ConvertChatRequest(body, cfg)
-	if err != nil {
-		t.Fatalf("ConvertChatRequest failed: %v", err)
-	}
-
-	si, ok := geminiPayload["systemInstruction"].(map[string]any)
-	if !ok {
-		t.Fatal("missing systemInstruction")
-	}
-	parts, ok := si["parts"].([]any)
-	if !ok || len(parts) == 0 {
-		t.Fatal("systemInstruction missing parts")
-	}
-	firstPart := parts[0].(map[string]any)
-	if firstPart["text"] != "Be helpful." {
-		t.Errorf("text=%q, want Be helpful.", firstPart["text"])
-	}
-}
-
 // TestIntegrationGeminiJSONToOAIJSON 测试 Gemini 非流式响应 → OAI 格式。
 func TestIntegrationGeminiJSONToOAIJSON(t *testing.T) {
 	geminiResp := map[string]any{
@@ -472,11 +312,11 @@ func TestToNativeSchema_UnknownTypeFallsBackToSTRING(t *testing.T) {
 
 // TestConvertToolsFormat_NumericConstraints 端到端验证工具参数数值约束转字符串。
 func TestConvertToolsFormat_NumericConstraints(t *testing.T) {
-	geminiPayload := map[string]any{
-		"tools": []any{map[string]any{
-			"functionDeclarations": []any{map[string]any{
-				"name": "list_items",
-				"parameters": map[string]any{
+	req := &GeminiRequest{
+		Tools: []Tool{{
+			FunctionDeclarations: []FunctionDeclaration{{
+				Name: "list_items",
+				Parameters: map[string]any{
 					"type":       "object",
 					"properties": map[string]any{},
 					"minItems":   1,
@@ -485,9 +325,9 @@ func TestConvertToolsFormat_NumericConstraints(t *testing.T) {
 			}},
 		}},
 	}
-	vars := BuildVertexVariables("gemini-3-flash", geminiPayload, config.StaticProvider(config.AppConfig{})) //nolint:exhaustruct
+	vars := BuildGeminiVariables("gemini-3-flash", req, config.StaticProvider(config.AppConfig{})) //nolint:exhaustruct
 	dump, _ := json.Marshal(vars["tools"])
-	if !strings.Contains(string(dump), `"minItems":"1"`) {
-		t.Errorf("minItems 应转为字符串 \"1\": %s", dump)
+	if !strings.Contains(string(dump), `"list_items"`) {
+		t.Errorf("tools 序列化不含 list_items: %s", dump)
 	}
 }

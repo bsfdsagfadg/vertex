@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -13,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
@@ -29,39 +27,6 @@ type handler struct {
 // StreamCallback 是真流式回调：data 非 nil 表示一个有效 chunk，err 非 nil 表示错误。
 // 返回 false 表示调用者要求停止流。
 type StreamCallback func(chunk map[string]any, err *vertex.VertexError) bool
-
-// coreGenerate 统一非流式调用：剥离 fake 前缀、解包 generateContentRequest、
-// 更新模型追踪、调用 CompleteChat、错误转换、清洗 finishReason。
-func (h *handler) coreGenerate(ctx context.Context, rawModel string, payload map[string]any) (map[string]any, *vertex.VertexError) {
-	actualModel, _ := stripFakePrefix(rawModel, h.cfg.FakePrefixes())
-	if reqObj, ok := payload["generateContentRequest"].(map[string]any); ok {
-		payload = reqObj
-	}
-	cli.UpdateReqModel(vertex.RequestIDFromContext(ctx), actualModel)
-	resp, err := h.vc.CompleteChat(ctx, actualModel, payload)
-	if err != nil {
-		return nil, toVertexError(err)
-	}
-	cleanGeminiFinishReason(resp)
-	return resp, nil
-}
-
-// coreStreamGenerate 统一真流式调用：剥离 fake 前缀、解包 generateContentRequest、
-// 更新模型追踪、调用 StreamChat，回调中自动清洗 finishReason。
-func (h *handler) coreStreamGenerate(ctx context.Context, rawModel string, payload map[string]any, onChunk StreamCallback) {
-	actualModel, _ := stripFakePrefix(rawModel, h.cfg.FakePrefixes())
-	if reqObj, ok := payload["generateContentRequest"].(map[string]any); ok {
-		payload = reqObj
-	}
-	cli.UpdateReqModel(vertex.RequestIDFromContext(ctx), actualModel)
-	h.vc.StreamChat(ctx, actualModel, payload, func(ch vertex.StreamChunk) bool {
-		if ch.Err != nil {
-			return onChunk(nil, ch.Err)
-		}
-		cleanGeminiFinishReason(ch.Data)
-		return onChunk(ch.Data, nil)
-	})
-}
 
 func (h *handler) dialer() transport.ProxyDialer {
 	if h.vc != nil && h.vc.Net() != nil {
@@ -240,6 +205,12 @@ func resolveN(raw any, maxN int) (int, string) {
 		n = int(v)
 	case int:
 		n = v
+	case *int:
+		if v != nil {
+			n = *v
+		} else {
+			return 1, ""
+		}
 	default:
 		return 0, "请求参数有误: n 必须是整数 (n must be an integer)"
 	}

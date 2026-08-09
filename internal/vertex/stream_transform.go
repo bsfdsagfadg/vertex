@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
 // finishReasonUnspecified 是匿名 batchGraphql 每帧都携带的 protobuf 默认值（无意义）。
@@ -22,7 +24,7 @@ const finishReasonUnspecified = "FINISH_REASON_UNSPECIFIED"
 // 再 unwrap data.ui.streamGenerateContentAnonymous，最后 _extract_chunk 清洗后 emit。
 // 返回 (stop, err)：emit 出真实 finishReason 即 stop=true（结束扫描）；客户端断开由 ctx.Err() 路径处理；上游错误即 err 非 nil。
 // seenFinish 用于跨帧追踪 finishReason 已发出但 usageMetadata 延迟到达的情况。
-func processStreamingObject(obj map[string]any, emit func(map[string]any) bool, seenFinish ...*bool) (bool, error) {
+func processStreamingObject(obj map[string]any, emit func(*transform.GeminiChunk) bool, seenFinish ...*bool) (bool, error) {
 	var sf *bool
 	if len(seenFinish) > 0 {
 		sf = seenFinish[0]
@@ -56,7 +58,7 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool, 
 			if data, ok := result["data"].(map[string]any); ok {
 				if _, hasUM := data["usageMetadata"]; hasUM {
 					if chunk := extractChunk(data); chunk != nil {
-						_ = emit(chunk)
+						_ = emit(mapToGeminiChunk(chunk))
 					} else {
 						// 无 candidates 但直接有 usageMetadata 的纯元数据帧
 						metaChunk := map[string]any{}
@@ -66,13 +68,12 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool, 
 							}
 						}
 						if len(metaChunk) > 0 {
-							_ = emit(metaChunk)
+							_ = emit(mapToGeminiChunk(metaChunk))
 						}
 					}
 					return true, nil
 				}
 			}
-			// 未找到 usageMetadata 则继续等待（修复：不再无条件停止）
 			return false, nil
 		}
 
@@ -94,12 +95,8 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool, 
 							outerMeta[key] = v
 						}
 					}
-					// 极少数情况 inner 是 list（如多个 candidate）：逐项 extract+emit。
-					// 注意：inner 各项是平级 candidates 而非连续帧，因此同一 list 内即使
-					// 某一项触发 *sf=true，剩余项也会继续处理（不会进入上方 seenFinish 块）。
 					for _, itemRaw := range inner {
 						if item, ok := itemRaw.(map[string]any); ok {
-							// 浅拷贝避免修改原始 json 解析数据（C2 修复）
 							itemCopy := shallowCopy(item)
 							for k, v := range outerMeta {
 								if _, exists := itemCopy[k]; !exists {
@@ -107,8 +104,9 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool, 
 								}
 							}
 							if chunk := extractChunk(itemCopy); chunk != nil {
-								if done := emitAndCheckFinish(chunk, emit); done {
-									if _, hasUsage := chunk["usageMetadata"]; hasUsage || sf == nil {
+								typedChunk := mapToGeminiChunk(chunk)
+								if done := emitAndCheckFinish(typedChunk, emit); done {
+									if typedChunk.UsageMetadata != nil || sf == nil {
 										return true, nil
 									}
 									*sf = true
@@ -125,8 +123,9 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool, 
 		}
 
 		if chunk := extractChunk(data); chunk != nil {
-			if done := emitAndCheckFinish(chunk, emit); done {
-				if _, hasUsage := chunk["usageMetadata"]; hasUsage || sf == nil {
+			typedChunk := mapToGeminiChunk(chunk)
+			if done := emitAndCheckFinish(typedChunk, emit); done {
+				if typedChunk.UsageMetadata != nil || sf == nil {
 					return true, nil
 				}
 				*sf = true
@@ -137,31 +136,22 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool, 
 	return false, nil
 }
 
-// emitAndCheckFinish emit 一个 chunk 并判定是否应结束流。
-//
-// finishReason 过滤（红线⑤）：emit 后取 chunk 的 candidates[0].finishReason，
-// **仅当非空且 != FINISH_REASON_UNSPECIFIED 才主动结束流**。
-// 返回 done=true 表示应停止扫描。
-func emitAndCheckFinish(chunk map[string]any, emit func(map[string]any) bool) (done bool) {
+// emitAndCheckFinish emit 一个 typed chunk 并判定是否应结束流。
+func emitAndCheckFinish(chunk *transform.GeminiChunk, emit func(*transform.GeminiChunk) bool) (done bool) {
 	emit(chunk)
-	fr := chunkFinishReason(chunk)
+	fr := chunkFinishReasonTyped(chunk)
 	if fr != "" && fr != finishReasonUnspecified {
 		return true
 	}
 	return false
 }
 
-// chunkFinishReason 取 chunk 的 candidates[0].finishReason。
-func chunkFinishReason(chunk map[string]any) string {
-	cands, ok := chunk["candidates"].([]any)
-	if !ok || len(cands) == 0 {
+// chunkFinishReasonTyped 取 chunk 的 candidates[0].finishReason。
+func chunkFinishReasonTyped(chunk *transform.GeminiChunk) string {
+	if chunk == nil || len(chunk.Candidates) == 0 {
 		return ""
 	}
-	c, ok := cands[0].(map[string]any)
-	if !ok {
-		return ""
-	}
-	return toStr(c["finishReason"])
+	return chunk.Candidates[0].FinishReason
 }
 
 // extractChunk 从 Gemini 数据中提取标准化 chunk，清洗畸形嵌套。
@@ -277,17 +267,20 @@ func cleanPart(part map[string]any) map[string]any {
 		if !hasName && !hasArgs {
 			delete(cleaned, "functionCall")
 		} else if name, ok := fc["name"].(string); ok && name != "" {
-			if argStr, ok := fc["args"].(string); ok {
+			if fc["args"] == nil {
+				fc["args"] = map[string]any{}
+			} else if argStr, ok := fc["args"].(string); ok {
 				if argStr != "" {
 					var parsed any
 					if err := json.Unmarshal([]byte(argStr), &parsed); err == nil {
 						fc["args"] = parsed
+					} else {
+						fc["args"] = map[string]any{}
 					}
 				} else {
 					fc["args"] = map[string]any{}
 				}
 			}
-			// args 已是 map[string]any 无需处理
 		}
 	}
 
@@ -320,62 +313,26 @@ func cleanPart(part map[string]any) map[string]any {
 	return cleaned
 }
 
-// isValidContentChunk 检查 chunk 是否包含有效生成内容（text/thought/functionCall）
-// 或真实 finishReason，或安全拦截 blockReason。
-func isValidContentChunk(chunk map[string]any) bool {
-	cands, ok := chunk["candidates"].([]any)
-	if ok && len(cands) > 0 {
-		for _, cRaw := range cands {
-			cand, ok := cRaw.(map[string]any)
-			if !ok {
-				continue
-			}
-			content, ok := cand["content"].(map[string]any)
-			if !ok {
-				continue
-			}
-			parts, ok := content["parts"].([]any)
-			if !ok || len(parts) == 0 {
-				continue
-			}
-			for _, pRaw := range parts {
-				part, ok := pRaw.(map[string]any)
-				if !ok {
-					continue
-				}
-				if text, ok := part["text"].(string); ok && text != "" {
-					return true
-				}
-				if thought, ok := part["thought"].(string); ok && thought != "" {
-					return true
-				}
-				if thought, ok := part["thought"].(bool); ok && thought {
-					return true
-				}
-				if fc, ok := part["functionCall"].(map[string]any); ok && fc != nil {
-					return true
-				}
-				if ec, ok := part["executableCode"].(map[string]any); ok && ec != nil {
-					return true
-				}
-				if cr, ok := part["codeExecutionResult"].(map[string]any); ok && cr != nil {
-					return true
-				}
-				if id, ok := part["inlineData"].(map[string]any); ok && id != nil {
-					return true
-				}
-				if fd, ok := part["fileData"].(map[string]any); ok && fd != nil {
-					return true
-				}
-			}
-		}
+// isValidContentChunkTyped 检查强类型 chunk 是否包含有效生成内容或真实 finishReason。
+func isValidContentChunkTyped(chunk *transform.GeminiChunk) bool {
+	if chunk == nil {
+		return false
 	}
-	if fr := chunkFinishReason(chunk); fr == "SAFETY" {
+	if chunk.PromptFeedback != nil && chunk.PromptFeedback.BlockReason != "" && chunk.PromptFeedback.BlockReason != blockReasonUnspecified {
 		return true
 	}
-	if pf, ok := chunk["promptFeedback"].(map[string]any); ok {
-		if br, _ := pf["blockReason"].(string); br != "" && br != blockReasonUnspecified {
-			return true
+	if len(chunk.Candidates) > 0 {
+		for _, cand := range chunk.Candidates {
+			if cand.FinishReason != "" && cand.FinishReason != finishReasonUnspecified {
+				return true
+			}
+			if cand.Content != nil {
+				for _, p := range cand.Content.Parts {
+					if p.Text != "" || p.Thought || p.FunctionCall != nil || p.InlineData != nil || p.FileData != nil || p.ExecutableCode != nil || p.CodeExecutionResult != nil {
+						return true
+					}
+				}
+			}
 		}
 	}
 	return false

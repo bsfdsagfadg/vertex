@@ -11,6 +11,7 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
 func setupRaceNodes(t *testing.T, uris ...string) {
@@ -222,20 +223,20 @@ func TestRunRace_CompleteChat_HardErrorDoesNotBlockSTOP(t *testing.T) {
 
 	var callOrder int32
 
-	run := func(ctx context.Context, uri string) (map[string]any, error) {
+	run := func(ctx context.Context, uri string) (*transform.GeminiResponse, error) {
 		order := atomic.AddInt32(&callOrder, 1)
 		if order == 1 {
 			// 第一个候选：不可重试硬错误（403）。
 			return nil, NewPermissionDeniedError("forbidden", nil)
 		}
-		return map[string]any{
-			"candidates": []any{map[string]any{"finishReason": "STOP"}},
+		return &transform.GeminiResponse{
+			Candidates: []*transform.Candidate{{FinishReason: "STOP"}},
 		}, nil
 	}
 
-	result, err := RunRace(ctx, cfg, run, WithWinningCheck(func(resp map[string]any) bool {
-		return candidateFinish(resp) == "STOP"
-	}), WithCollectedFinalizer(func(results []raceResult[map[string]any]) (map[string]any, error) {
+	result, err := RunRace(ctx, cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
+		return candidateFinishTyped(resp) == "STOP"
+	}), WithCollectedFinalizer(func(results []raceResult[*transform.GeminiResponse]) (*transform.GeminiResponse, error) {
 		cr := make([]candidateResult, len(results))
 		for i, r := range results {
 			cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
@@ -246,7 +247,7 @@ func TestRunRace_CompleteChat_HardErrorDoesNotBlockSTOP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if finish := candidateFinish(result); finish != "STOP" {
+	if finish := candidateFinishTyped(result); finish != "STOP" {
 		t.Errorf("expected STOP finish reason, got %s", finish)
 	}
 	if count := atomic.LoadInt32(&callOrder); count < 2 {
@@ -257,16 +258,16 @@ func TestRunRace_CompleteChat_HardErrorDoesNotBlockSTOP(t *testing.T) {
 // TestRunRace_CompleteChat_PickBestNonSTOP 验证非流式多个非 STOP 结果收集后
 // 使用 pickBestResult 规则：MAX_TOKENS 优先，然后按内容长度。
 func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
-	makeResult := func(finish, text string) map[string]any {
-		return map[string]any{
-			"candidates": []any{map[string]any{
-				"finishReason": finish,
-				"content":      map[string]any{"parts": []any{map[string]any{"text": text}}, "role": "model"},
+	makeResult := func(finish, text string) *transform.GeminiResponse {
+		return &transform.GeminiResponse{
+			Candidates: []*transform.Candidate{{
+				FinishReason: finish,
+				Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: text}}},
 			}},
 		}
 	}
 
-	pickFinalizer := func(results []raceResult[map[string]any]) (map[string]any, error) {
+	pickFinalizer := func(results []raceResult[*transform.GeminiResponse]) (*transform.GeminiResponse, error) {
 		cr := make([]candidateResult, len(results))
 		for i, r := range results {
 			cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
@@ -283,7 +284,7 @@ func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 		defer cancel()
 
 		var callOrder int32
-		run := func(ctx context.Context, uri string) (map[string]any, error) {
+		run := func(ctx context.Context, uri string) (*transform.GeminiResponse, error) {
 			order := atomic.AddInt32(&callOrder, 1)
 			if order == 1 {
 				return makeResult("MAX_TOKENS", "short"), nil
@@ -291,14 +292,14 @@ func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 			return makeResult("SAFETY", "this is a much longer response"), nil
 		}
 
-		result, err := RunRace(ctx, cfg, run, WithWinningCheck(func(resp map[string]any) bool {
-			return candidateFinish(resp) == "STOP"
+		result, err := RunRace(ctx, cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
+			return candidateFinishTyped(resp) == "STOP"
 		}), WithCollectedFinalizer(pickFinalizer))
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if finish := candidateFinish(result); finish != "MAX_TOKENS" {
+		if finish := candidateFinishTyped(result); finish != "MAX_TOKENS" {
 			t.Errorf("expected MAX_TOKENS to win, got %s", finish)
 		}
 		if count := atomic.LoadInt32(&callOrder); count != 2 {
@@ -315,7 +316,7 @@ func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 		defer cancel()
 
 		var callOrder int32
-		run := func(ctx context.Context, uri string) (map[string]any, error) {
+		run := func(ctx context.Context, uri string) (*transform.GeminiResponse, error) {
 			order := atomic.AddInt32(&callOrder, 1)
 			if order == 1 {
 				return makeResult("SAFETY", "short"), nil
@@ -323,17 +324,17 @@ func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 			return makeResult("SAFETY", "this is a much longer response"), nil
 		}
 
-		result, err := RunRace(ctx, cfg, run, WithWinningCheck(func(resp map[string]any) bool {
-			return candidateFinish(resp) == "STOP"
+		result, err := RunRace(ctx, cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
+			return candidateFinishTyped(resp) == "STOP"
 		}), WithCollectedFinalizer(pickFinalizer))
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if finish := candidateFinish(result); finish != "SAFETY" {
+		if finish := candidateFinishTyped(result); finish != "SAFETY" {
 			t.Errorf("expected SAFETY finish, got %s", finish)
 		}
-		text := responseContentLength(result)
+		text := responseContentLengthTyped(result)
 		if text <= len("short") {
 			t.Errorf("expected longer text to win, got content length %d", text)
 		}
@@ -364,7 +365,7 @@ func TestRunRace_Streaming_PermissionDenied_NoFailFast(t *testing.T) {
 			return nil, ctx.Err()
 		}
 		ch := make(chan StreamChunk, 1)
-		ch <- StreamChunk{Data: map[string]any{"text": "success"}}
+		ch <- StreamChunk{Data: &transform.GeminiChunk{Candidates: []*transform.Candidate{{Content: &transform.Content{Parts: []transform.Part{{Text: "success"}}}}}}}
 		close(ch)
 		return ch, nil
 	}
@@ -436,7 +437,7 @@ func TestStreamParallel_FailoverOnEmptyResponse(t *testing.T) {
 			case <-ctx.Done():
 				return
 			}
-			ch <- StreamChunk{Data: map[string]any{"text": "node-b-success"}}
+			ch <- StreamChunk{Data: &transform.GeminiChunk{Candidates: []*transform.Candidate{{Content: &transform.Content{Parts: []transform.Part{{Text: "node-b-success"}}}}}}}
 		}()
 		return ch
 	}
@@ -531,22 +532,22 @@ func TestRunRace_ContextCanceled_PreservesCollectedResultsAndFailedErrors(t *tes
 		// 竞速引擎按全局轮询索引挑选候选，首个启动的节点不确定（uri1/uri2 皆可），
 		// 因此按调用顺序而非 URI 决定行为：首个节点产出非即时胜出结果，次个节点返回 Context 取消错误。
 		var callOrder int32
-		run := func(ctx context.Context, uri string) (map[string]any, error) {
+		run := func(ctx context.Context, uri string) (*transform.GeminiResponse, error) {
 			order := atomic.AddInt32(&callOrder, 1)
 			if order == 1 {
-				return map[string]any{
-					"candidates": []any{map[string]any{
-						"finishReason": "MAX_TOKENS",
-						"content":      map[string]any{"parts": []any{map[string]any{"text": "node1-answer"}}, "role": "model"},
+				return &transform.GeminiResponse{
+					Candidates: []*transform.Candidate{{
+						FinishReason: "MAX_TOKENS",
+						Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: "node1-answer"}}},
 					}},
 				}, nil
 			}
 			return nil, NewContextError(context.Canceled)
 		}
 
-		result, err := RunRace(ctx, cfg, run, WithWinningCheck(func(resp map[string]any) bool {
-			return candidateFinish(resp) == "STOP"
-		}), WithCollectedFinalizer(func(results []raceResult[map[string]any]) (map[string]any, error) {
+		result, err := RunRace(ctx, cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
+			return candidateFinishTyped(resp) == "STOP"
+		}), WithCollectedFinalizer(func(results []raceResult[*transform.GeminiResponse]) (*transform.GeminiResponse, error) {
 			cr := make([]candidateResult, len(results))
 			for i, r := range results {
 				cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
@@ -557,7 +558,7 @@ func TestRunRace_ContextCanceled_PreservesCollectedResultsAndFailedErrors(t *tes
 		if err != nil {
 			t.Fatalf("expected nil error (collected result should win over context error), got: %v", err)
 		}
-		if finish := candidateFinish(result); finish != "MAX_TOKENS" {
+		if finish := candidateFinishTyped(result); finish != "MAX_TOKENS" {
 			t.Errorf("expected first node MAX_TOKENS result to be returned, got finishReason=%q", finish)
 		}
 		if count := atomic.LoadInt32(&callOrder); count != 2 {

@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
 func TestScanStream_BufferHardLimit(t *testing.T) {
@@ -40,9 +42,9 @@ func TestScanStream_BufferHardLimit(t *testing.T) {
 
 // collectStream 把 scanStream 跑到底，收集所有 emit 出来的 chunk，返回 (chunks, 终止错误)。
 // onObject 用 processStreamingObject 的真实逻辑，确保测的是端到端的流式提取 + finishReason 过滤。
-func collectStream(t *testing.T, raw string) (emitted []map[string]any, finished bool, scanErr error) {
+func collectStream(t *testing.T, raw string) (emitted []*transform.GeminiChunk, finished bool, scanErr error) {
 	t.Helper()
-	emit := func(ch map[string]any) bool {
+	emit := func(ch *transform.GeminiChunk) bool {
 		emitted = append(emitted, ch)
 		return true
 	}
@@ -130,9 +132,9 @@ func TestScanStream_FinishWithContentSameFrame(t *testing.T) {
 func TestScanStream_SplitAcrossReads(t *testing.T) {
 	raw := wrap(`{"candidates":[{"content":{"parts":[{"text":"split me"}],"role":"model"},"finishReason":"STOP"}]}`)
 	// 逐字节投喂（最极端的分片），状态机必须能正确续扫。
-	emitted := []map[string]any{}
+	var emitted []*transform.GeminiChunk
 	err := scanStream(context.Background(), &splitReader{data: []byte(raw), chunk: 1}, func(obj map[string]any) (bool, error) {
-		stop, err := processStreamingObject(obj, func(ch map[string]any) bool {
+		stop, err := processStreamingObject(obj, func(ch *transform.GeminiChunk) bool {
 			emitted = append(emitted, ch)
 			return true
 		})
@@ -182,7 +184,7 @@ func TestScanStream_UsageMetadataDelayed(t *testing.T) {
 	}
 	// 检查最后一帧是否包含 usageMetadata
 	last := emitted[len(emitted)-1]
-	if _, hasUsage := last["usageMetadata"]; !hasUsage {
+	if last.UsageMetadata == nil {
 		t.Errorf("延迟的 usageMetadata 未收集，最后一帧=%v", last)
 	}
 }
@@ -193,12 +195,12 @@ func TestScanStream_UsageMetadataDelayedSplitRead(t *testing.T) {
 	usageFrame := `{"results":[{"data":{"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":10,"totalTokenCount":15}}}]}`
 	raw := stopFrame + usageFrame
 
-	emitted := []map[string]any{}
+	var emitted []*transform.GeminiChunk
 	var seenFinish bool
 	var finished bool
 	// 使用 splitReader 按 STOP 帧长度分块，确保两帧在不同 Read 调用中到达
 	err := scanStream(context.Background(), &splitReader{data: []byte(raw), chunk: len(stopFrame)}, func(obj map[string]any) (bool, error) {
-		stop, err := processStreamingObject(obj, func(ch map[string]any) bool {
+		stop, err := processStreamingObject(obj, func(ch *transform.GeminiChunk) bool {
 			emitted = append(emitted, ch)
 			return true
 		}, &seenFinish)
@@ -217,7 +219,7 @@ func TestScanStream_UsageMetadataDelayedSplitRead(t *testing.T) {
 		t.Fatalf("emitted=%d, want >= 2（内容帧+元数据帧跨读边界）", len(emitted))
 	}
 	last := emitted[len(emitted)-1]
-	if _, hasUsage := last["usageMetadata"]; !hasUsage {
+	if last.UsageMetadata == nil {
 		t.Errorf("跨读边界的延迟 usageMetadata 未收集，最后一帧=%v", last)
 	}
 }
@@ -235,7 +237,7 @@ func TestScanStream_UsageMetadataSameFrame(t *testing.T) {
 	if len(emitted) != 1 {
 		t.Fatalf("emitted=%d, want 1", len(emitted))
 	}
-	if _, hasUsage := emitted[0]["usageMetadata"]; !hasUsage {
+	if emitted[0].UsageMetadata == nil {
 		t.Error("同帧 usageMetadata 应存在")
 	}
 }

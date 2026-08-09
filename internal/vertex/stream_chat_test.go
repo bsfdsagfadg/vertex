@@ -13,6 +13,7 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
@@ -103,9 +104,11 @@ func TestExecuteStreamingAttempt_IdleTimeout(t *testing.T) {
 	}
 	defer sess.Close()
 
-	var emitted []map[string]any
-	err = vc.executeStreamingAttempt(ctx, sess, "test-model", map[string]any{}, "test-token", true, func(ch map[string]any) bool {
-		emitted = append(emitted, ch)
+	var emitted []transform.GeminiChunk
+	err = vc.executeStreamingAttempt(ctx, sess, "test-model", &transform.GeminiRequest{}, "test-token", true, func(ch *transform.GeminiChunk) bool {
+		if ch != nil {
+			emitted = append(emitted, *ch)
+		}
 		return true
 	})
 
@@ -161,9 +164,11 @@ func TestExecuteStreamingAttempt_IdleTimeout_InDoStream(t *testing.T) {
 	}
 	defer sess.Close()
 
-	var emitted []map[string]any
-	err = vc.executeStreamingAttempt(ctx, sess, "test-model", map[string]any{}, "test-token", true, func(ch map[string]any) bool {
-		emitted = append(emitted, ch)
+	var emitted []transform.GeminiChunk
+	err = vc.executeStreamingAttempt(ctx, sess, "test-model", &transform.GeminiRequest{}, "test-token", true, func(ch *transform.GeminiChunk) bool {
+		if ch != nil {
+			emitted = append(emitted, *ch)
+		}
 		return true
 	})
 
@@ -204,7 +209,7 @@ func TestExecuteStreamingWithRetries_ClientCancel(t *testing.T) {
 	}
 
 	// 不应 panic
-	vc.executeStreamingWithRetries(ctx, "test-model", map[string]any{}, "test-proxy", yield)
+	vc.executeStreamingWithRetries(ctx, "test-model", &transform.GeminiRequest{}, "test-proxy", yield)
 
 	if gotErr == nil {
 		t.Fatal("expected context error, got nil")
@@ -272,7 +277,7 @@ func TestExecuteStreamingWithRetries_NetworkError_RecreatesSession(t *testing.T)
 		return true
 	}
 
-	vc.executeStreamingWithRetries(ctx, "test-model", map[string]any{}, "", yield)
+	vc.executeStreamingWithRetries(ctx, "test-model", &transform.GeminiRequest{}, "", yield)
 
 	if gotText != "recovered" {
 		t.Errorf("expected retries to recover valid content, got %q", gotText)
@@ -332,14 +337,16 @@ func TestExecuteStreamingAttempt_PendingChunksCap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var emitted []map[string]any
+	var emitted []*transform.GeminiChunk
 	var gotErr *VertexError
-	vc.executeStreamingWithRetries(ctx, "test-model", map[string]any{}, "", func(chunk StreamChunk) bool {
+	vc.executeStreamingWithRetries(ctx, "test-model", &transform.GeminiRequest{}, "", func(chunk StreamChunk) bool {
 		if chunk.Err != nil {
 			gotErr = chunk.Err
 			return true
 		}
-		emitted = append(emitted, chunk.Data)
+		if chunk.Data != nil {
+			emitted = append(emitted, chunk.Data)
+		}
 		return true
 	})
 
@@ -359,4 +366,14 @@ func TestExecuteStreamingAttempt_PendingChunksCap(t *testing.T) {
 	if !found {
 		t.Error("内容帧 text=hello 应被正常 yield")
 	}
+}
+
+func firstPartText(chunk *transform.GeminiChunk) string {
+	if chunk == nil || len(chunk.Candidates) == 0 || chunk.Candidates[0].Content == nil {
+		return ""
+	}
+	if len(chunk.Candidates[0].Content.Parts) > 0 {
+		return chunk.Candidates[0].Content.Parts[0].Text
+	}
+	return ""
 }

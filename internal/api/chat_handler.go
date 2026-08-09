@@ -15,19 +15,23 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
+// ChatHandler 是 OpenAI /v1/chat/completions 入口。汇聚点全链路已强类型化：
+// 入站解码为 *transform.ChatCompletionRequest，经 TextAdaptor 转为 *GeminiRequest，
+// 由 coreGenerateTyped / coreStreamGenerateTyped 统一调度（家族路由 + 策略增强 +
+// typed 提交通道），响应侧经 TextAdaptor 还原为 OpenAI DTO。
 type ChatHandler struct {
 	handler
-	reqConv  transform.RequestConverter
-	respConv transform.ResponseConverter
+	adaptor *transform.TextAdaptor
 }
 
+// handleChatCompletions 处理 OpenAI Chat Completions 请求。
 func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		oaiError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
 		return
 	}
 
-	var body map[string]any
+	var body transform.ChatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		if _, ok := err.(*json.SyntaxError); ok && strings.Contains(err.Error(), "invalid UTF-8") {
 			oaiError(w, http.StatusBadRequest, "请求体编码错误，需为 UTF-8 (request body must be UTF-8 encoded)", "invalid_request_error")
@@ -36,12 +40,9 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		oaiError(w, http.StatusBadRequest, "请求格式错误，JSON 解析失败 (invalid JSON)", "invalid_request_error")
 		return
 	}
-	if body == nil {
-		body = make(map[string]any)
-	}
 
-	rawModel, _ := body["model"].(string)
-	if strings.TrimSpace(rawModel) == "" {
+	rawModel := strings.TrimSpace(body.Model)
+	if rawModel == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": "请求参数有误: 缺少必需字段 model (missing required field 'model')",
 			"type":    "invalid_request_error", "code": 400, "param": "model",
@@ -50,19 +51,19 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	actualModel, useFake := stripFakePrefix(rawModel, c.cfg.FakePrefixes())
-	body["model"] = actualModel
+	body.Model = actualModel
 	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 
-	stream, _ := body["stream"].(bool)
+	stream := body.Stream
 	aggregateStream := stream && c.cfg.AggregateStream()
 
-	model, geminiPayload, convErr := c.reqConv.Convert(body, c.cfg)
+	geminiReq, modelName, convErr := c.adaptor.ToGeminiRequest(&body, c.cfg)
 	if convErr != nil {
 		oaiError(w, http.StatusBadRequest, "请求参数有误: "+convErr.Error()+" (invalid argument)", "invalid_request_error")
 		return
 	}
 
-	n, nErr := resolveN(body["n"], c.cfg.MaxN())
+	n, nErr := resolveN(body.N, c.cfg.MaxN())
 	if nErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": nErr, "type": "invalid_request_error", "code": 400, "param": "n",
@@ -82,50 +83,31 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	log.Printf("[Server] [ChatCompletions] 收到请求: 模型=%s, 真模型=%s, 流式=%v, n=%d", rawModel, actualModel, stream, n)
 
-	transform.ApplyImageConfig(geminiPayload, body, actualModel)
-	transform.ApplyResponseModalities(geminiPayload, c.cfg.DefaultResponseModalities(), actualModel)
-	transform.ApplyDefaultThinking(geminiPayload, c.cfg.DefaultThinkingLevel(), actualModel)
-	if strings.Contains(strings.ToLower(model), "image") {
-		gc, ok := geminiPayload["generationConfig"].(map[string]any)
-		if !ok {
-			gc = map[string]any{}
-			geminiPayload["generationConfig"] = gc
-		}
-		ic, ok := gc["imageConfig"].(map[string]any)
-		if !ok {
-			ic = map[string]any{}
-			gc["imageConfig"] = ic
-		}
-		if _, has := ic["imageSize"]; !has {
-			ic["imageSize"] = transform.ResolveImageSize(c.cfg.DefaultImageSize(), actualModel)
-		}
-	}
-
 	if aggregateStream || (stream && useFake) {
 		requestID := reqID24()
 		sw := newSSEWriter(w, "text/event-stream")
-		resp, ve := c.coreGenerate(requestCtx, rawModel, geminiPayload)
+		resp, ve := c.coreGenerateTyped(requestCtx, rawModel, geminiReq)
 		if ve != nil {
 			if !sw.hasWritten() {
 				writeJSON(w, ve.Code, vertexErrorToOAI(ve))
 				return
 			}
-			c.writeStreamError(sw.write, ve, requestID, model)
+			c.writeStreamError(sw.write, ve, requestID, modelName)
 			return
 		}
-		oai := c.respConv.ToOAI(resp, model)
-		c.oaiSinglePacketSSE(sw, oai, model, requestID)
+		oai := c.adaptor.FromGeminiResponse(resp, modelName)
+		c.oaiSinglePacketSSE(sw, oai, modelName, requestID)
 		return
 	}
 
 	if stream {
-		c.streamChatCompletionsCore(requestCtx, w, model, geminiPayload)
+		c.streamChatCompletionsCore(requestCtx, w, modelName, geminiReq)
 		return
 	}
 
 	if n > 1 {
 		type coreResult struct {
-			resp map[string]any
+			resp *transform.GeminiResponse
 			err  *vertex.VertexError
 		}
 		results := make([]coreResult, n)
@@ -139,22 +121,22 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 						results[idx] = coreResult{err: vertex.NewInternalError(fmt.Sprintf("candidate panic: %v", rec), nil)}
 					}
 				}()
-				r, ve := c.coreGenerate(requestCtx, rawModel, geminiPayload)
+				r, ve := c.coreGenerateTyped(requestCtx, rawModel, geminiReq)
 				results[idx] = coreResult{resp: r, err: ve}
 			}(i)
 		}
 		wg.Wait()
 
-		var ok []map[string]any
+		var ok []*transform.GeminiResponse
 		var firstErr *vertex.VertexError
-		for _, r := range results {
-			if r.err != nil {
+		for _, res := range results {
+			if res.err != nil {
 				if firstErr == nil {
-					firstErr = r.err
+					firstErr = res.err
 				}
 				continue
 			}
-			ok = append(ok, r.resp)
+			ok = append(ok, res.resp)
 		}
 		if len(ok) == 0 {
 			if firstErr == nil {
@@ -162,32 +144,35 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			}
 			if isSafetyBlock(firstErr) {
 				log.Printf("[Vertex] 请求被 Google 安全审查拦截, 请求ID=%s, 原因: %s", vertex.RequestIDFromContext(r.Context()), firstErr.Status)
-				writeJSON(w, http.StatusOK, oaiSafetyResponse(model))
+				writeJSON(w, http.StatusOK, oaiSafetyResponse(modelName))
 				return
 			}
 			writeJSON(w, firstErr.Code, vertexErrorToOAI(firstErr))
 			return
 		}
-		writeJSON(w, http.StatusOK, c.respConv.AggregateN(ok, model))
+		writeJSON(w, http.StatusOK, c.adaptor.AggregateN(ok, modelName))
 		return
 	}
 
-	geminiResp, ve := c.coreGenerate(requestCtx, rawModel, geminiPayload)
+	geminiResp, ve := c.coreGenerateTyped(requestCtx, rawModel, geminiReq)
 	if ve != nil {
 		if isSafetyBlock(ve) {
 			log.Printf("[Vertex] 请求被 Google 安全审查拦截, 请求ID=%s, 原因: %s", vertex.RequestIDFromContext(r.Context()), ve.Status)
-			writeJSON(w, http.StatusOK, oaiSafetyResponse(model))
+			writeJSON(w, http.StatusOK, oaiSafetyResponse(modelName))
 			return
 		}
 		writeJSON(w, ve.Code, vertexErrorToOAI(ve))
 		return
 	}
 
-	oaiResp := c.respConv.ToOAI(geminiResp, model)
+	oaiResp := c.adaptor.FromGeminiResponse(geminiResp, modelName)
 	writeJSON(w, http.StatusOK, oaiResp)
 }
 
-func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
+// streamChatCompletionsCore 强类型真流式核心：回调收到 typed GeminiChunk，
+// 经 TextAdaptor 转 OAI SSE 行并写出；控制流（断开、finish、缺 finish 补 length)
+// 语义与旧 map 实现保持完全一致。
+func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.ResponseWriter, model string, geminiReq *transform.GeminiRequest) {
 	rid := vertex.RequestIDFromContext(ctx)
 	if rid == "" {
 		rid = reqID24()
@@ -215,7 +200,7 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 	isFirst := true
 	toolCallTracker := transform.NewStreamToolCallTracker()
 
-	c.coreStreamGenerate(streamCtx, model, geminiPayload, func(data map[string]any, err *vertex.VertexError) bool {
+	c.coreStreamGenerateTyped(streamCtx, model, geminiReq, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
 		if err != nil {
 			if !sw.hasWritten() {
 				writeJSON(w, err.Code, vertexErrorToOAI(err))
@@ -226,13 +211,13 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 			streamErrWritten = true
 			return false
 		}
-		events := c.respConv.StreamToSSE(data, model, sseID, isFirst, toolCallTracker)
-		isFirst = false
-		observer.observe(ctx, vertex.StreamChunk{Data: data}, events)
+		events := c.adaptor.FromGeminiChunk(chunk, model, sseID, isFirst, toolCallTracker)
+		observer.observeTyped(ctx, events)
 		for _, ev := range events {
 			if ev == "" {
 				continue
 			}
+			isFirst = false
 			if strings.Contains(ev, `"finish_reason"`) && !strings.Contains(ev, `"finish_reason":null`) {
 				hasFinish = true
 			}
@@ -241,30 +226,29 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 		return true
 	})
 
-	writeSilent := func(line string) bool {
-		return sw.write(line)
-	}
-
 	if streamErrWritten {
 		return
 	}
 	if !hasFinish {
+		finishReason := "stop"
+		if toolCallTracker.HasCalls() {
+			finishReason = "tool_calls"
+		}
 		base := streamChunkBase(model, sseID)
-		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "length"}}
-		writeSilent(sseEvent(base))
+		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}
+		_ = sw.write(sseEvent(base))
 	}
-	writeSilent("data: [DONE]\n\n")
+	_ = sw.write("data: [DONE]\n\n")
 }
 
+// writeStreamError 写流式中途错误 SSE 包。write 为真流式回调写入器。
 func (c *ChatHandler) writeStreamError(write func(string) bool, e *vertex.VertexError, requestID, model string) {
 	if isSafetyBlock(e) {
 		base := streamChunkBase(model, requestID)
 		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "content_filter"}}
 		_ = write(sseEvent(base))
 	} else {
-		// 流式中途报错：SSE Header 已发送，无法再用 HTTP 状态码 JSON 报错。
-		// 必须携带合规的 choices 数组（含 finish_reason=error）让 OpenAI SDK 免于解析崩溃，
-		// 同时挂载 vertexErrorToOAI 产生的 error 字典。
+		// 流式中途报错：SSE 头已发送，只能携带合规 choices + finish_reason=error。
 		base := streamChunkBase(model, requestID)
 		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "error"}}
 		base["error"] = vertexErrorToOAI(e)["error"]
@@ -274,58 +258,42 @@ func (c *ChatHandler) writeStreamError(write func(string) bool, e *vertex.Vertex
 }
 
 // oaiSinglePacketSSE 把完整 OAI 响应转为单包 SSE 事件 + [DONE]。
-// 单个 choice 的 delta 内放入所有可表达内容（text、tool_calls、reasoning_content），
-// 事件本身包含 finish_reason 和 usage。
-func (c *ChatHandler) oaiSinglePacketSSE(sw *sseWriter, oai map[string]any, model, requestID string) {
+// oai 为 *transform.ChatCompletionResponse（TextAdaptor 输出）。
+func (c *ChatHandler) oaiSinglePacketSSE(sw *sseWriter, oai any, model, requestID string) {
 	base := streamChunkBase(model, requestID)
-	choices := firstChoice(oai)
-	if choices == nil {
+
+	oaiResp, ok := oai.(*transform.ChatCompletionResponse)
+	if !ok || len(oaiResp.Choices) == 0 {
 		_ = sw.write(sseEvent(base))
 		_ = sw.write("data: [DONE]\n\n")
 		return
 	}
 
-	msg, _ := choices["message"].(map[string]any)
-	finishReason, _ := choices["finish_reason"].(string)
-	if msg == nil {
-		msg = map[string]any{}
-	}
-
+	ch := oaiResp.Choices[0]
+	msg := ch.Message
 	delta := map[string]any{}
-	if role, ok := msg["role"].(string); ok {
-		delta["role"] = role
+	if msg.Role != "" {
+		delta["role"] = msg.Role
 	}
-	if content, ok := msg["content"]; ok && content != nil {
-		delta["content"] = content
+	if msg.Content != nil {
+		delta["content"] = msg.Content
 	}
-	if tc, ok := msg["tool_calls"]; ok && tc != nil {
-		delta["tool_calls"] = tc
+	if len(msg.ToolCalls) > 0 {
+		delta["tool_calls"] = msg.ToolCalls
 	}
-	if rc, ok := msg["reasoning_content"]; ok && rc != nil {
-		delta["reasoning_content"] = rc
+	if msg.ReasoningContent != "" {
+		delta["reasoning_content"] = msg.ReasoningContent
 	}
 
 	choice := map[string]any{"index": 0, "delta": delta}
-	if finishReason != "" {
-		choice["finish_reason"] = finishReason
+	if ch.FinishReason != "" {
+		choice["finish_reason"] = ch.FinishReason
 	}
 	base["choices"] = []any{choice}
 
-	if usage, ok := oai["usage"]; ok {
-		base["usage"] = usage
+	if oaiResp.Usage != nil {
+		base["usage"] = oaiResp.Usage
 	}
 	_ = sw.write(sseEvent(base))
 	_ = sw.write("data: [DONE]\n\n")
-}
-
-func firstChoice(oai map[string]any) map[string]any {
-	choices, ok := oai["choices"].([]any)
-	if !ok || len(choices) == 0 {
-		return nil
-	}
-	choice, ok := choices[0].(map[string]any)
-	if !ok {
-		return nil
-	}
-	return choice
 }

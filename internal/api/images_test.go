@@ -31,7 +31,7 @@ func TestCoerceOAIN(t *testing.T) {
 	}
 }
 
-// ---- getStr：缺失/非字符串 → default，存在字符串（含空串）→ 原样 ----
+// ---- stringValOr：缺失/非字符串 → default，存在字符串（含空串）→ 原样 ----
 
 func TestGetStr(t *testing.T) {
 	body := map[string]any{
@@ -58,8 +58,8 @@ func TestGetStr(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := getStr(body, c.key, c.def); got != c.want {
-				t.Errorf("getStr(%q, %q)=%q，期望 %q", c.key, c.def, got, c.want)
+			if got := stringValOr(body, c.key, c.def); got != c.want {
+				t.Errorf("stringValOr(%q, %q)=%q，期望 %q", c.key, c.def, got, c.want)
 			}
 		})
 	}

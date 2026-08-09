@@ -3,14 +3,18 @@ package vertex
 import (
 	"errors"
 	"testing"
+
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
-// TestCompleteChat_AllCandidatesSafetyBlocked_ReturnsSafetyError 验证所有候选都被安全审查
-// 拦截（finishReason=SAFETY 且无有效内容）时，pickBestResult 返回 *VertexError.Kind=="safety"，
-// 而非退化为 500 内部错误。修复前：无有效响应直接返回 NewInternalError，被网关误判为服务内部错误。
+// TestCompleteChat_AllCandidatesSafetyBlocked_ReturnsSafetyError 验证所有候选都被安全审查拦截
 func TestCompleteChat_AllCandidatesSafetyBlocked_ReturnsSafetyError(t *testing.T) {
-	safetyResult := func() map[string]any {
-		return map[string]any{"candidates": []any{map[string]any{"finishReason": "SAFETY"}}}
+	safetyResult := func() *transform.GeminiResponse {
+		return &transform.GeminiResponse{
+			Candidates: []*transform.Candidate{
+				{FinishReason: "SAFETY"},
+			},
+		}
 	}
 
 	results := []candidateResult{
@@ -35,17 +39,18 @@ func TestCompleteChat_AllCandidatesSafetyBlocked_ReturnsSafetyError(t *testing.T
 	}
 }
 
-// TestPickBestResult_MixedSafetyAndViable 验证混合场景：部分候选安全拦截、部分含有效内容时，
-// 返回首个有效内容，不产生 safety 错误。
+// TestPickBestResult_MixedSafetyAndViable 验证混合场景：部分候选安全拦截、部分含有效内容时，返回首个有效内容。
 func TestPickBestResult_MixedSafetyAndViable(t *testing.T) {
-	viable := map[string]any{"candidates": []any{
-		map[string]any{
-			"finishReason": "STOP",
-			"content":      map[string]any{"parts": []any{map[string]any{"text": "ok"}}, "role": "model"},
+	viable := &transform.GeminiResponse{
+		Candidates: []*transform.Candidate{
+			{
+				FinishReason: "STOP",
+				Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: "ok"}}},
+			},
 		},
-	}}
+	}
 	results := []candidateResult{
-		{proxyURI: "uri1", resp: map[string]any{"candidates": []any{map[string]any{"finishReason": "SAFETY"}}}},
+		{proxyURI: "uri1", resp: &transform.GeminiResponse{Candidates: []*transform.Candidate{{FinishReason: "SAFETY"}}}},
 		{proxyURI: "uri2", resp: viable},
 	}
 
@@ -53,17 +58,16 @@ func TestPickBestResult_MixedSafetyAndViable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if candidateFinish(resp) != "STOP" {
+	if candidateFinishTyped(resp) != "STOP" {
 		t.Errorf("expected STOP viable result to win, got %v", resp)
 	}
 }
 
-// TestPickBestResult_AllNoViableNonSafety 验证全无有效内容且无 SAFETY 时仍保持
-// 内部错误语义（不误报 safety）。
+// TestPickBestResult_AllNoViableNonSafety 验证全无有效内容且无 SAFETY 时保持内部错误。
 func TestPickBestResult_AllNoViableNonSafety(t *testing.T) {
-	empty := map[string]any{"candidates": []any{}}
+	empty := &transform.GeminiResponse{Candidates: []*transform.Candidate{}}
 	results := []candidateResult{
-		{resp: map[string]any{}},
+		{resp: &transform.GeminiResponse{}},
 		{resp: empty},
 	}
 	_, err := pickBestResult(results)

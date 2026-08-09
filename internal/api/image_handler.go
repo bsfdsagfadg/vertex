@@ -20,6 +20,8 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
+// ImageHandler 提供 OpenAI /v1/images/* 入口。
+// 汇聚点使用 Image family 的 typed 提交通道（coreGenerateTyped + ImageAdaptor）。
 type ImageHandler struct {
 	handler
 }
@@ -29,17 +31,24 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 		oaiError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
 		return
 	}
-	body, ok := img.readJSONObject(w, r)
-	if !ok {
+	var body transform.ImagesRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
+			"message": "请求体必须是合法JSON", "type": "invalid_request_error", "code": nil}})
 		return
 	}
 
-	model := transform.ResolveImageModel(getStr(body, "model", ""))
-	prompt := getStr(body, "prompt", "")
-	size := getStr(body, "size", "1024x1024")
-	respFmt := getStr(body, "response_format", "b64_json")
+	geminiReq, model, convErr := transform.NewImageAdaptor().ToGeminiRequest(&body, img.cfg)
+	if convErr != nil {
+		img.oaiBadRequest(w, "请求参数有误: "+convErr.Error())
+		return
+	}
 
-	n, nErr := resolveN(body["n"], 8)
+	respFmt := body.ResponseFormat
+	if respFmt == "" {
+		respFmt = "b64_json"
+	}
+	n, nErr := resolveN(body.N, 8)
 	if nErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": nErr, "type": "invalid_request_error", "code": 400, "param": "n",
@@ -47,6 +56,10 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	size := body.Size
+	if size == "" {
+		size = "1024x1024"
+	}
 	log.Printf("[Server] [ImageGenerations] 收到请求: 模型=%s, 尺寸=%s, 格式=%s, n=%d", model, size, respFmt, n)
 
 	if model == "" {
@@ -54,32 +67,13 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 			"message": "缺少model字段", "type": "invalid_request_error", "code": nil}})
 		return
 	}
-	if prompt == "" {
+	if body.Prompt == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": "缺少 prompt 字段 (missing prompt)", "type": "invalid_request_error", "code": 400}})
 		return
 	}
 
-	geminiPayload := map[string]any{
-		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": prompt}}}},
-	}
-	transform.ApplyImageConfig(geminiPayload, body, model)
-	transform.ApplyDefaultThinking(geminiPayload, img.cfg.DefaultThinkingLevel(), model)
-	if !hasImageSize(geminiPayload) {
-		gc, _ := geminiPayload["generationConfig"].(map[string]any)
-		if gc == nil {
-			gc = map[string]any{}
-			geminiPayload["generationConfig"] = gc
-		}
-		ic, _ := gc["imageConfig"].(map[string]any)
-		if ic == nil {
-			ic = map[string]any{}
-			gc["imageConfig"] = ic
-		}
-		ic["imageSize"] = transform.ResolveImageSize(img.cfg.DefaultImageSize(), model)
-	}
-
-	img.runOAIImageRequest(r.Context(), w, model, geminiPayload, n, respFmt)
+	img.runOAIImageRequest(r.Context(), w, model, geminiReq, n, respFmt)
 }
 
 func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request) {
@@ -120,11 +114,15 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 
 	log.Printf("[Server] [ImageEdits] 收到请求: 模型=%s, 格式=%s, 图片数=%d", model, respFmt, len(images))
 
-	geminiPayload := transform.BuildImagePayload(model, prompt, images, mask,
+	geminiReq, err := buildTypedImageEditRequest(model, prompt, images, mask,
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"),
 		formValue(r, "background"), "edit")
+	if err != nil {
+		img.oaiBadRequest(w, "请求参数有误: "+err.Error())
+		return
+	}
 
-	img.runOAIImageRequest(r.Context(), w, model, geminiPayload, n, respFmt)
+	img.runOAIImageRequest(r.Context(), w, model, geminiReq, n, respFmt)
 }
 
 func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Request) {
@@ -156,17 +154,26 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 
 	log.Printf("[Server] [ImageVariations] 收到请求: 模型=%s, 格式=%s, 图片数=%d", model, respFmt, len(images))
 
-	geminiPayload := transform.BuildImagePayload(model, prompt, images, nil,
-		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"), "", "variation")
+	geminiReq, err := buildTypedImageVariationRequest(model, prompt, images,
+		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"), "variation")
+	if err != nil {
+		img.oaiBadRequest(w, "请求参数有误: "+err.Error())
+		return
+	}
 
-	img.runOAIImageRequest(r.Context(), w, model, geminiPayload, n, respFmt)
+	img.runImageRequest(r.Context(), w, model, geminiReq, n, respFmt)
 }
 
-func (img *ImageHandler) runOAIImageRequest(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any, n int, responseFormat string) {
+// runOAIImageRequest 并发 n 路图片生成请求并聚合 base64/url。
+func (img *ImageHandler) runOAIImageRequest(ctx context.Context, w http.ResponseWriter, model string, geminiReq *transform.GeminiRequest, n int, responseFormat string) {
+	img.runImageRequest(ctx, w, model, geminiReq, n, responseFormat)
+}
+
+func (img *ImageHandler) runImageRequest(ctx context.Context, w http.ResponseWriter, model string, geminiReq *transform.GeminiRequest, n int, responseFormat string) {
 	wantURL := responseFormat == "url"
 
 	type rResult struct {
-		images []vertex.ImageData
+		images []transform.ImagePayload
 		err    *vertex.VertexError
 	}
 	results := make([]rResult, n)
@@ -181,17 +188,17 @@ func (img *ImageHandler) runOAIImageRequest(ctx context.Context, w http.Response
 				}
 			}()
 			log.Printf("[Server] [runOAIImageRequest] 开始获取图片 (第 %d/%d 张)", idx+1, n)
-			resp, ve := img.coreGenerate(ctx, model, geminiPayload)
+			resp, ve := img.coreGenerateTyped(ctx, model, geminiReq)
 			if ve != nil {
 				results[idx] = rResult{err: ve}
 				return
 			}
-			results[idx] = rResult{images: vertex.ExtractImageResponse(resp)}
+			results[idx] = rResult{images: transform.ExtractImagesTyped(resp)}
 		}(i)
 	}
 	wg.Wait()
 
-	var allImages []vertex.ImageData
+	var allImages []*transform.ImagePayload
 	var firstErr *vertex.VertexError
 	for _, r := range results {
 		if r.err != nil {
@@ -200,7 +207,9 @@ func (img *ImageHandler) runOAIImageRequest(ctx context.Context, w http.Response
 			}
 			continue
 		}
-		allImages = append(allImages, r.images...)
+		for i := range r.images {
+			allImages = append(allImages, &r.images[i])
+		}
 	}
 	if len(allImages) == 0 {
 		if firstErr != nil {
@@ -236,16 +245,6 @@ func (img *ImageHandler) runOAIImageRequest(ctx context.Context, w http.Response
 func (img *ImageHandler) oaiBadRequest(w http.ResponseWriter, message string) {
 	writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 		"message": message, "type": "invalid_request_error", "code": 400}})
-}
-
-func (img *ImageHandler) readJSONObject(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-			"message": "请求体必须是合法JSON", "type": "invalid_request_error", "code": nil}})
-		return nil, false
-	}
-	return body, true
 }
 
 const multipartMemoryLimit = 8 << 20
@@ -344,7 +343,8 @@ func firstNonEmptyStr(a, b string) string {
 	return b
 }
 
-func getStr(body map[string]any, key, def string) string {
+// stringValOr 从 map 读取字符串字段，缺失或非字符串返回默认值。
+func stringValOr(body map[string]any, key, def string) string {
 	v, ok := body[key]
 	if !ok {
 		return def
@@ -356,6 +356,7 @@ func getStr(body map[string]any, key, def string) string {
 	return s
 }
 
+// hasImageSize 判断载荷里是否已设置非空 imageSize。
 func hasImageSize(payload map[string]any) bool {
 	gc, ok := payload["generationConfig"].(map[string]any)
 	if !ok {
@@ -371,4 +372,16 @@ func hasImageSize(payload map[string]any) bool {
 	}
 	s, _ := v.(string)
 	return s != ""
+}
+
+// buildTypedImageEditRequest 构造 edit 请求的 typed 载荷。
+func buildTypedImageEditRequest(model, prompt string, images []transform.InlineImage, mask *transform.InlineImage, size, quality, style, background, mode string) (*transform.GeminiRequest, error) {
+	payload := transform.BuildImagePayload(model, prompt, images, mask, size, quality, style, background, mode)
+	return transform.NormalizeGeminiRequestMap(payload)
+}
+
+// buildTypedImageVariationRequest 构造 variation 请求的 typed 载荷。
+func buildTypedImageVariationRequest(model, prompt string, images []transform.InlineImage, size, quality, style, mode string) (*transform.GeminiRequest, error) {
+	payload := transform.BuildImagePayload(model, prompt, images, nil, size, quality, style, "", mode)
+	return transform.NormalizeGeminiRequestMap(payload)
 }

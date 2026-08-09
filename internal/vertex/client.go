@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
@@ -23,12 +25,12 @@ const (
 
 var batchGraphqlURL = anonBaseURL + batchGraphqlPath + "?key=" + anonAPIKey + "&prettyPrint=false" //nolint:gochecknoglobals
 
-var defaultSafetySettings = []any{ //nolint:gochecknoglobals
-	map[string]any{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-	map[string]any{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-	map[string]any{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-	map[string]any{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-	map[string]any{"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
+var defaultSafetySettingsTyped = []transform.SafetySetting{ //nolint:gochecknoglobals
+	{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"},
+	{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_NONE"},
+	{Category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", Threshold: "BLOCK_NONE"},
+	{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold: "BLOCK_NONE"},
+	{Category: "HARM_CATEGORY_CIVIC_INTEGRITY", Threshold: "BLOCK_NONE"},
 }
 
 // RequestIDKey 是 context 中存储 reqID 的键类型。
@@ -67,18 +69,115 @@ func (c *VertexAIClient) getBatchGraphqlURL() string {
 	return anonBaseURL + batchGraphqlPath + "?key=" + key + "&prettyPrint=false"
 }
 
-// candidateCollector 在 collectChunksToParseResult 内部使用，按 candidate index 分组收集流式 chunk 属性。
-type candidateCollector struct {
-	index             int
-	parts             []map[string]any
-	finishReason      string
-	finishMessage     any
-	safetyRatings     any
-	citationMetadata  any
-	groundingMetadata any
-	tokenCount        any
-	avgLogprobs       any
-	logprobsResult    any
+type ParseResultTyped struct {
+	Candidates     []*transform.Candidate
+	PromptFeedback *transform.PromptFeedback
+	UsageMetadata  *transform.UsageMetadata
+	ModelVersion   string
+	HasError       bool
+	ErrorMessage   string
+}
+
+func (c *VertexAIClient) buildCompleteResponseTyped(r *ParseResultTyped) (*transform.GeminiResponse, error) {
+	if r.HasError {
+		return nil, NewInternalError("upstream parse error: "+r.ErrorMessage, nil)
+	}
+	resp := &transform.GeminiResponse{
+		Candidates:     r.Candidates,
+		PromptFeedback: r.PromptFeedback,
+		UsageMetadata:  r.UsageMetadata,
+		ModelVersion:   r.ModelVersion,
+	}
+	if len(resp.Candidates) == 0 && resp.PromptFeedback == nil {
+		return nil, NewEmptyResponseError("Upstream returned empty response (no content)", nil)
+	}
+	return resp, nil
+}
+
+func collectChunksToParseResultTyped(chunks []*transform.GeminiChunk) *ParseResultTyped {
+	s := &ParseResultTyped{}
+	candsMap := map[int]*transform.Candidate{}
+
+	for _, chunk := range chunks {
+		if chunk == nil {
+			continue
+		}
+		for _, cand := range chunk.Candidates {
+			if cand == nil {
+				continue
+			}
+			idx := cand.Index
+			existing, ok := candsMap[idx]
+			if !ok {
+				cCopy := *cand
+				if cCopy.Content == nil {
+					cCopy.Content = &transform.Content{Role: "model"}
+				}
+				candsMap[idx] = &cCopy
+			} else {
+				if cand.FinishReason != "" {
+					existing.FinishReason = cand.FinishReason
+				}
+				if cand.Content != nil && len(cand.Content.Parts) > 0 {
+					if existing.Content == nil {
+						existing.Content = &transform.Content{Role: "model"}
+					}
+					existing.Content.Parts = append(existing.Content.Parts, cand.Content.Parts...)
+				}
+			}
+		}
+		if chunk.PromptFeedback != nil && s.PromptFeedback == nil {
+			s.PromptFeedback = chunk.PromptFeedback
+		}
+		if chunk.UsageMetadata != nil {
+			s.UsageMetadata = chunk.UsageMetadata
+		}
+		if chunk.ModelVersion != "" {
+			s.ModelVersion = chunk.ModelVersion
+		}
+	}
+
+	var idxs []int
+	for idx := range candsMap {
+		idxs = append(idxs, idx)
+	}
+	sort.Ints(idxs)
+
+	for _, idx := range idxs {
+		c := candsMap[idx]
+		if c.Content != nil && len(c.Content.Parts) > 0 {
+			c.Content.Parts = mergeStreamPartsTyped(c.Content.Parts)
+		}
+		s.Candidates = append(s.Candidates, c)
+	}
+	return s
+}
+
+func mergeStreamPartsTyped(parts []transform.Part) []transform.Part {
+	if len(parts) == 0 {
+		return parts
+	}
+	merged := make([]transform.Part, 0, len(parts))
+	var current *transform.Part
+
+	for _, p := range parts {
+		if p.Text == "" {
+			merged = append(merged, p)
+			current = nil
+			continue
+		}
+		if current != nil && current.Thought == p.Thought && current.Text != "" {
+			current.Text += p.Text
+			if p.ThoughtSignature != "" && current.ThoughtSignature == "" {
+				current.ThoughtSignature = p.ThoughtSignature
+			}
+		} else {
+			pCopy := p
+			merged = append(merged, pCopy)
+			current = &merged[len(merged)-1]
+		}
+	}
+	return merged
 }
 
 func (c *VertexAIClient) buildCompleteResponse(r *ParseResult) (map[string]any, error) {
@@ -128,6 +227,19 @@ func (c *VertexAIClient) buildCompleteResponse(r *ParseResult) (map[string]any, 
 	}
 	setIfPresent(resp, "modelStatus", r.ModelStatus)
 	return resp, nil
+}
+
+type candidateCollector struct {
+	index             int
+	parts             []map[string]any
+	finishReason      string
+	finishMessage     any
+	safetyRatings     any
+	citationMetadata  any
+	groundingMetadata any
+	tokenCount        any
+	avgLogprobs       any
+	logprobsResult    any
 }
 
 // collectChunksToParseResult 把流式收集到的 chunk 列表合并为 ParseResult。
@@ -226,7 +338,7 @@ func collectChunksToParseResult(chunks []map[string]any) *ParseResult {
 	var firstMergedParts []map[string]any
 	for _, idx := range indices {
 		cc := candidatesMap[idx]
-		mergedParts := transform.MergeContentBlocks(cc.parts)
+		mergedParts := mergeStreamParts(cc.parts)
 		if firstMergedParts == nil {
 			firstMergedParts = mergedParts
 		}
@@ -264,6 +376,79 @@ func collectChunksToParseResult(chunks []map[string]any) *ParseResult {
 	}
 
 	return s
+}
+
+// mergeStreamParts 合并相邻同类型文本块（thought+thought、text+text），
+// 语义对齐旧 transform.MergeContentBlocks（本地化实现，解除跨包依赖）。
+func mergeStreamParts(parts []map[string]any) []map[string]any {
+	cleaned := make([]map[string]any, 0, len(parts))
+	for _, p := range parts {
+		if c := cleanStreamSimple(p); c != nil {
+			cleaned = append(cleaned, c)
+		}
+	}
+	if len(cleaned) == 0 {
+		return []map[string]any{}
+	}
+
+	merged := make([]map[string]any, 0, len(cleaned))
+	var current map[string]any
+
+	for _, part := range cleaned {
+		isText := isNonEmptyString(part["text"])
+		if !isText {
+			merged = append(merged, part)
+			current = nil
+			continue
+		}
+		isThought := isTruthyAny(part["thought"])
+		if current != nil && isTruthyAny(current["thought"]) == isThought {
+			current["text"] = toStr(current["text"]) + toStr(part["text"])
+			if sig, ok := part["thoughtSignature"]; ok {
+				if _, exists := current["thoughtSignature"]; !exists {
+					current["thoughtSignature"] = sig
+				}
+			}
+		} else {
+			np := map[string]any{"text": toStr(part["text"])}
+			if isThought {
+				np["thought"] = true
+				if sig, ok := part["thoughtSignature"]; ok {
+					np["thoughtSignature"] = sig
+				}
+			}
+			merged = append(merged, np)
+			current = np
+		}
+	}
+	return merged
+}
+
+// cleanStreamSimple 是用于内容块合并的轻量清洗（本地版）。
+func cleanStreamSimple(part map[string]any) map[string]any {
+	cleaned := shallowCopy(part)
+	if t, ok := cleaned["text"]; ok {
+		if toStr(t) == "" {
+			delete(cleaned, "text")
+		}
+	}
+	if fcRaw, ok := cleaned["functionCall"]; ok {
+		if fc, ok := fcRaw.(map[string]any); ok {
+			if !isNonEmptyString(fc["name"]) {
+				delete(cleaned, "functionCall")
+			}
+		}
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return cleaned
+}
+
+// isNonEmptyString 判断 any 是否为非空字符串。
+func isNonEmptyString(v any) bool {
+	s, ok := v.(string)
+	return ok && strings.TrimSpace(s) != ""
 }
 
 func candidateFinish(result map[string]any) string {
@@ -354,4 +539,19 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
+}
+
+func mapToGeminiChunk(m map[string]any) *transform.GeminiChunk {
+	if m == nil {
+		return &transform.GeminiChunk{}
+	}
+	b, err := jsonx.Marshal(m)
+	if err != nil {
+		return &transform.GeminiChunk{}
+	}
+	var chunk transform.GeminiChunk
+	if err := json.Unmarshal(b, &chunk); err != nil {
+		return &transform.GeminiChunk{}
+	}
+	return &chunk
 }

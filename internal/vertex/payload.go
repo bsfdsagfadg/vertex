@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"math/big"
 
@@ -51,8 +52,29 @@ func randomUUID() string {
 
 // buildRequestPayload 构建发往上游的完整请求体（对齐 _build_request_payload）：
 // 用 transform 构建 variables，再强制注入 region=global 与 recaptchaToken，最后包壳。
+//
+// 注意：本函数为旧 map 链路保留；新链路使用 buildTypedRequestPayload。
 func buildRequestPayload(model string, geminiPayload map[string]any, recaptchaToken string, cfg config.ConfigProvider) map[string]any {
-	vars := transform.BuildVertexVariables(model, geminiPayload, cfg)
+	b, err := json.Marshal(geminiPayload)
+	if err != nil {
+		vars := transform.BuildGeminiVariables(model, nil, cfg)
+		return wrapPayload(vars, recaptchaToken)
+	}
+	var req transform.GeminiRequest
+	_ = json.Unmarshal(b, &req)
+	vars := transform.BuildGeminiVariables(model, &req, cfg)
+	return wrapPayload(vars, recaptchaToken)
+}
+
+// buildTypedRequestPayload 由强类型 GeminiRequest 构建发往上游的完整请求体。
+// 替代旧 buildRequestPayload（map 版）：变量构建全部收敛到 transform.BuildGeminiVariables。
+func buildTypedRequestPayload(model string, req *transform.GeminiRequest, recaptchaToken string, cfg config.ConfigProvider) map[string]any {
+	vars := transform.BuildGeminiVariables(model, req, cfg)
+	return wrapPayload(vars, recaptchaToken)
+}
+
+// wrapPayload 把 variables 包裹为 batchGraphql envelope。
+func wrapPayload(vars map[string]any, recaptchaToken string) map[string]any {
 	vars["region"] = "global"
 	vars["recaptchaToken"] = recaptchaToken
 	trackingID := randomTrackingID()
