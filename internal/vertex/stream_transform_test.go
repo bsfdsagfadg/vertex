@@ -387,8 +387,8 @@ func TestIsValidContentChunk_FinishReasonStopWithoutContent(t *testing.T) {
 	chunk := &transform.GeminiChunk{
 		Candidates: []*transform.Candidate{{FinishReason: "STOP"}},
 	}
-	if !isValidContentChunkTyped(chunk) {
-		t.Error("STOP finishReason chunk should be valid")
+	if isValidContentChunkTyped(chunk) {
+		t.Error("STOP finishReason without content should NOT be valid (causes silent interruption)")
 	}
 }
 
@@ -432,8 +432,31 @@ func TestIsValidContentChunk_EmptyStopFrame(t *testing.T) {
 		}},
 		PromptFeedback: &transform.PromptFeedback{BlockReason: "BLOCKED_REASON_UNSPECIFIED"},
 	}
+	if isValidContentChunkTyped(chunk) {
+		t.Error("空 STOP 帧（无真实内容）不应判为有效，否则导致节点误胜出与客户端静默中断")
+	}
+}
+
+// MAX_TOKENS 无内容不应判为有效（与 STOP 同理，防止空响应误胜出）
+func TestIsValidContentChunk_FinishReasonMaxTokensWithoutContent(t *testing.T) {
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{FinishReason: "MAX_TOKENS"}},
+	}
+	if isValidContentChunkTyped(chunk) {
+		t.Error("MAX_TOKENS finishReason without content should NOT be valid")
+	}
+}
+
+// STOP + 有真实 content 应判为有效（正常流式响应末帧场景）
+func TestIsValidContentChunk_StopWithContent(t *testing.T) {
+	chunk := &transform.GeminiChunk{
+		Candidates: []*transform.Candidate{{
+			FinishReason: "STOP",
+			Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: "hello"}}},
+		}},
+	}
 	if !isValidContentChunkTyped(chunk) {
-		t.Error("STOP 帧应判为有效响应以驱动结束")
+		t.Error("STOP frame with real content should be valid")
 	}
 }
 

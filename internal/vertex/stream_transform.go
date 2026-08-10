@@ -323,7 +323,12 @@ func isValidContentChunkTyped(chunk *transform.GeminiChunk) bool {
 	}
 	if len(chunk.Candidates) > 0 {
 		for _, cand := range chunk.Candidates {
-			if cand.FinishReason != "" && cand.FinishReason != finishReasonUnspecified {
+			// 仅 SAFETY 拦截帧作为有效内容（无 content 但代表真实安全拦截）。
+			// STOP/MAX_TOKENS 等空 finishReason 帧不视为有效内容：
+			// 正常流程中 STOP 帧前必有 content 帧（contentYielded=true 后 STOP 帧仍会被 yield），
+			// 仅当空 STOP 帧作为首帧时（上游风控/异常返回）需被判为无效以触发重试/报错，
+			// 避免空响应被误判为节点连通胜出，导致客户端静默中断。
+			if cand.FinishReason == "SAFETY" {
 				return true
 			}
 			if cand.Content != nil {
