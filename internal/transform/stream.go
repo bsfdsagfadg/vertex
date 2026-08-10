@@ -3,6 +3,7 @@ package transform
 import (
 	cryptorand "crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -15,6 +16,48 @@ import (
 const FinishReasonUnspecified = "FINISH_REASON_UNSPECIFIED"
 
 var streamCounter uint64 //nolint:gochecknoglobals
+
+// FunctionCallIDAssigner supplies IDs in response order. Reuse one assigner
+// for all chunks in a stream so separate tool-call frames remain distinct.
+type FunctionCallIDAssigner struct {
+	next int
+}
+
+func NewFunctionCallIDAssigner() *FunctionCallIDAssigner {
+	return &FunctionCallIDAssigner{}
+}
+
+func (a *FunctionCallIDAssigner) Ensure(value any) {
+	if a == nil {
+		return
+	}
+	ensureFunctionCallIDs(value, &a.next)
+}
+
+// EnsureFunctionCallIDs supplies the call ID required by native Gemini
+// clients when an upstream non-streaming functionCall omits it.
+func EnsureFunctionCallIDs(value any) {
+	NewFunctionCallIDAssigner().Ensure(value)
+}
+
+func ensureFunctionCallIDs(value any, next *int) {
+	switch v := value.(type) {
+	case map[string]any:
+		if fc, ok := v["functionCall"].(map[string]any); ok {
+			if strings.TrimSpace(toString(fc["name"])) != "" && strings.TrimSpace(toString(firstNonEmpty(fc["id"], fc["call_id"], fc["toolCallId"]))) == "" {
+				(*next)++
+				fc["id"] = fmt.Sprintf("tool_call_%d", *next)
+			}
+		}
+		for _, child := range v {
+			ensureFunctionCallIDs(child, next)
+		}
+	case []any:
+		for _, child := range v {
+			ensureFunctionCallIDs(child, next)
+		}
+	}
+}
 
 type streamToolCallEntry struct {
 	index  int
@@ -195,6 +238,9 @@ func extractPartsTracked(parts []any, forStream bool, tracker *StreamToolCallTra
 			}
 			argBytes, _ := jsonx.Marshal(args)
 			index, callID := toolOrdinal, "call_"+reqID()
+			if explicitID := toString(firstNonEmpty(fc["id"], fc["call_id"], fc["toolCallId"])); explicitID != "" {
+				callID = explicitID
+			}
 			if tracker != nil {
 				index, callID = tracker.process(candidateIndex, toolOrdinal, fc)
 			}

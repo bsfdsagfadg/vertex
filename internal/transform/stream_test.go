@@ -99,6 +99,55 @@ func TestStreamToolCallTrackerKeepsToolFinishAcrossSeparateFrame(t *testing.T) {
 	}
 }
 
+func TestExtractPartsPreservesExplicitToolCallID(t *testing.T) {
+	parts := []any{map[string]any{"functionCall": map[string]any{
+		"id": "tool_call_1", "name": "lookup", "args": map[string]any{"q": "x"},
+	}}}
+	_, calls, _ := ExtractParts(parts, false)
+	if len(calls) != 1 {
+		t.Fatalf("calls=%#v, want one call", calls)
+	}
+	call, _ := calls[0].(map[string]any)
+	if call["id"] != "tool_call_1" {
+		t.Fatalf("call id=%v, want tool_call_1", call["id"])
+	}
+}
+
+func TestFunctionCallIDAssignerFillsMissingNativeIDsAcrossChunks(t *testing.T) {
+	assigner := NewFunctionCallIDAssigner()
+	first := map[string]any{"functionCall": map[string]any{"name": "one", "args": map[string]any{}}}
+	second := map[string]any{"functionCall": map[string]any{"name": "two", "args": map[string]any{}}}
+	assigner.Ensure(first)
+	assigner.Ensure(second)
+
+	firstCall := first["functionCall"].(map[string]any)
+	secondCall := second["functionCall"].(map[string]any)
+	if firstCall["id"] != "tool_call_1" || secondCall["id"] != "tool_call_2" {
+		t.Fatalf("assigned ids=%v, %v, want tool_call_1/tool_call_2", firstCall["id"], secondCall["id"])
+	}
+}
+
+func TestNativeAndOAIToolCallIDsStayAligned(t *testing.T) {
+	response := map[string]any{"candidates": []any{map[string]any{
+		"content": map[string]any{"role": "model", "parts": []any{map[string]any{
+			"functionCall": map[string]any{"name": "workspace_list_files", "args": map[string]any{}},
+		}}},
+		"finishReason": "STOP",
+	}}}
+	EnsureFunctionCallIDs(response)
+
+	candidate := response["candidates"].([]any)[0].(map[string]any)
+	nativePart := candidate["content"].(map[string]any)["parts"].([]any)[0].(map[string]any)
+	nativeID := nativePart["functionCall"].(map[string]any)["id"]
+	oai := GeminiJSONToOAIJSON(response, "gemini-3.6-flash")
+	choice := oai["choices"].([]any)[0].(map[string]any)
+	message := choice["message"].(map[string]any)
+	oaiID := message["tool_calls"].([]any)[0].(map[string]any)["id"]
+	if nativeID == "" || nativeID != oaiID {
+		t.Fatalf("native id=%v, OAI id=%v, want the same non-empty id", nativeID, oaiID)
+	}
+}
+
 func toolCallsFromEvents(t *testing.T, events []string) []map[string]any {
 	t.Helper()
 	for _, event := range events {
