@@ -27,6 +27,9 @@ func ConvertRealtimeChunkTyped(chunk *GeminiChunk, model, requestID string, isFi
 
 	c, _ := firstCandidateTyped(chunk)
 	text, reasoning, toolCalls := SplitTextParts(candidatePartsTyped(c))
+	if c != nil && c.GroundingMetadata != nil {
+		text = ConvertCitationsToMarkdown(text, c.GroundingMetadata)
+	}
 	var finish string
 	if c != nil {
 		finish = c.FinishReason

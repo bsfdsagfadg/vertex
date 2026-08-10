@@ -192,10 +192,25 @@ type InlineDataRef struct {
 	Data     string `json:"data,omitempty"`
 }
 
-// OAITool 是 OpenAI 工具声明（type=function）。
+// OAITool 是 OpenAI 工具声明（type=function / web_search 等）。
 type OAITool struct {
-	Type     string        `json:"type,omitempty"`
-	Function OAIFunction   `json:"function,omitempty"`
+	Type     string         `json:"type,omitempty"`
+	Function OAIFunction    `json:"function,omitempty"`
+	RawMap   map[string]any `json:"-"`
+}
+
+func (t *OAITool) UnmarshalJSON(data []byte) error {
+	type Alias OAITool
+	var aux Alias
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*t = OAITool(aux)
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err == nil {
+		t.RawMap = raw
+	}
+	return nil
 }
 
 // OAIFunction 是 OpenAI function 声明。

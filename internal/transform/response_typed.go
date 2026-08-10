@@ -103,6 +103,10 @@ func BuildChatCompletion(resp *GeminiResponse, model string) *ChatCompletionResp
 	c, ok := firstCandidateTyped(resp)
 	text, reasoning, toolCalls, _ := SplitResponseParts(candidatePartsTyped(c))
 
+	if ok && c.GroundingMetadata != nil {
+		text = ConvertCitationsToMarkdown(text, c.GroundingMetadata)
+	}
+
 	msg := ResponseMessage{Role: "assistant", Content: nil}
 	if text != "" {
 		msg.Content = text
@@ -144,6 +148,9 @@ func AggregateChatCompletions(resps []*GeminiResponse, model string) *ChatComple
 	for idx, resp := range resps {
 		c, ok := firstCandidateTyped(resp)
 		text, reasoning, toolCalls, _ := SplitResponseParts(candidatePartsTyped(c))
+		if ok && c.GroundingMetadata != nil {
+			text = ConvertCitationsToMarkdown(text, c.GroundingMetadata)
+		}
 		msg := ResponseMessage{Role: "assistant", Content: nil}
 		if text != "" {
 			msg.Content = text

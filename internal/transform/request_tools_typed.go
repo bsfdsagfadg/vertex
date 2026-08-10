@@ -26,20 +26,44 @@ func convertToolsTyped(req *ChatCompletionRequest, gemini *GeminiRequest) map[st
 		return declared
 	}
 	var decls []FunctionDeclaration
+	var hasGoogleSearch bool
 	for _, t := range req.Tools {
-		if t.Type == "function" && t.Function.Name != "" {
-			d := FunctionDeclaration{Name: t.Function.Name, Description: t.Function.Description}
-			if len(t.Function.Parameters) > 0 {
-				d.Parameters = cleanFunctionParameters(DeepCopyAny(t.Function.Parameters))
-			} else {
-				d.Parameters = map[string]any{"type": "object", "properties": map[string]any{}}
+		switch t.Type {
+		case "function":
+			if t.Function.Name != "" {
+				d := FunctionDeclaration{Name: t.Function.Name, Description: t.Function.Description}
+				if len(t.Function.Parameters) > 0 {
+					d.Parameters = cleanFunctionParameters(DeepCopyAny(t.Function.Parameters))
+				} else {
+					d.Parameters = map[string]any{"type": "object", "properties": map[string]any{}}
+				}
+				decls = append(decls, d)
+				declared[t.Function.Name] = true
 			}
-			decls = append(decls, d)
-			declared[t.Function.Name] = true
+		case "web_search", "web_search_2", "google_search", "googleSearch":
+			hasGoogleSearch = true
+		default:
+			// 兼容某些客户端直接传入自定义类型或包含 googleSearch / web_search 字段的 tool 对象
+			if t.RawMap != nil {
+				_, ok1 := t.RawMap["googleSearch"]
+				_, ok2 := t.RawMap["google_search"]
+				_, ok3 := t.RawMap["web_search"]
+				if ok1 || ok2 || ok3 {
+					hasGoogleSearch = true
+				}
+			}
 		}
 	}
-	if len(decls) > 0 {
-		gemini.Tools = append(gemini.Tools, Tool{FunctionDeclarations: decls})
+
+	if len(decls) > 0 || hasGoogleSearch {
+		tool := Tool{}
+		if len(decls) > 0 {
+			tool.FunctionDeclarations = decls
+		}
+		if hasGoogleSearch {
+			tool.GoogleSearch = map[string]any{}
+		}
+		gemini.Tools = append(gemini.Tools, tool)
 	}
 	return declared
 }
