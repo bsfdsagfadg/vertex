@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
 func TestParseErrorResponse(t *testing.T) {
@@ -100,6 +101,35 @@ func TestBuildRequestPayload(t *testing.T) {
 	}
 	if vars["model"] != "gemini-3.1-flash" {
 		t.Errorf("model=%v", vars["model"])
+	}
+}
+
+func TestBuildTypedRequestPayload(t *testing.T) {
+	cfg := config.StaticProvider(config.DefaultConfig())
+	req := &transform.GeminiRequest{
+		Contents: []transform.Content{
+			{Role: "user", Parts: []transform.Part{{Text: "hi"}}},
+		},
+	}
+	body := buildTypedRequestPayload("gemini-3.1-flash", req, "TOKEN123", cfg)
+	if body.QuerySignature != querySignature {
+		t.Error("querySignature 不匹配")
+	}
+	if body.OperationName != "StreamGenerateContentAnonymous" {
+		t.Error("operationName 不匹配")
+	}
+	vars, ok := body.Variables.(*transform.GeminiVariables)
+	if !ok || vars == nil {
+		t.Fatalf("Variables type mismatch: %T", body.Variables)
+	}
+	if vars.Region != "global" {
+		t.Errorf("region=%v, want global", vars.Region)
+	}
+	if vars.RecaptchaToken != "TOKEN123" {
+		t.Errorf("recaptchaToken=%v", vars.RecaptchaToken)
+	}
+	if vars.Model != "gemini-3.1-flash" {
+		t.Errorf("model=%v", vars.Model)
 	}
 }
 

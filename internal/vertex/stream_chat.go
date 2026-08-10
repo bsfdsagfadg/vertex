@@ -379,7 +379,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 			log.Printf("[DEBUG] [StreamChat] 完整请求体: %s", string(debugReq))
 			log.Printf("[DEBUG] [StreamChat] 上游回复: %s", errText)
 		} else if sr.StatusCode == 400 {
-			debugBody, _ := json.Marshal(newBody["variables"])
+			debugBody, _ := json.Marshal(newBody.Variables)
 			log.Printf("[Vertex] [Stream] 收到 400 Bad Request, Variables Payload: %s", string(debugBody))
 		}
 

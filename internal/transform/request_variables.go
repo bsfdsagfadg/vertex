@@ -12,13 +12,8 @@ import (
 // batchGraphql 的 variables 结构。所有对内容的后处理（同 role 合并、空内容
 // 过滤、systemInstruction 降级、尾部"继续"补足）都在 typed 上完成，零 map 往返。
 
-// BuildGeminiVariables 由强类型请求构建发往上游的 variables。
-//
-// 与旧 map 版的差异：输入已结构化，故不再需要 normalizeContents /
-// handleInlineData 等 map 清洗；签名注入（applyHistorySignatures）与
-// base64 规范化（NormalizeBase64）已由请求转换阶段完成，这里仅负责
-// 内容后处理与包壳。
-func BuildGeminiVariables(model string, req *GeminiRequest, cfg config.ConfigProvider) map[string]any {
+// BuildGeminiVariablesTyped 由强类型请求构建发往上游的强类型 variables 结构体。
+func BuildGeminiVariablesTyped(model string, req *GeminiRequest, cfg config.ConfigProvider) *GeminiVariables {
 	if req == nil {
 		req = &GeminiRequest{}
 	}
@@ -56,9 +51,24 @@ func BuildGeminiVariables(model string, req *GeminiRequest, cfg config.ConfigPro
 		Store:             req.Store,
 	}
 
-	vars := marshalRequest(out)
-	vars["model"] = config.ResolveModelName(model)
-	return vars
+	return &GeminiVariables{
+		Model:         config.ResolveModelName(model),
+		GeminiRequest: out,
+	}
+}
+
+// BuildGeminiVariables 由强类型请求构建发往上游的 variables map 兼容层。
+func BuildGeminiVariables(model string, req *GeminiRequest, cfg config.ConfigProvider) map[string]any {
+	vars := BuildGeminiVariablesTyped(model, req, cfg)
+	b, err := json.Marshal(vars)
+	if err != nil {
+		return map[string]any{}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return map[string]any{}
+	}
+	return m
 }
 
 // mergeContiguousRolesTyped 合并相邻同 role 的 content。
@@ -173,19 +183,6 @@ func matchTrailingFixModel(model string, list []string) bool {
 		}
 	}
 	return false
-}
-
-// marshalRequest 把 typed 请求序列化为 map（不产生任何额外字段）。
-func marshalRequest(req *GeminiRequest) map[string]any {
-	b, err := json.Marshal(req)
-	if err != nil {
-		return map[string]any{}
-	}
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		return map[string]any{}
-	}
-	return m
 }
 
 // prepareNativeTools 把 Tools 中各 FunctionDeclaration 的 Parameters

@@ -24,6 +24,29 @@ func (d *dummyConfig) ResolveModelName(m string) string {
 	return m
 }
 
+func TestBuildGeminiVariablesTyped_Basic(t *testing.T) {
+	req := &GeminiRequest{
+		Contents: []Content{
+			{Role: "user", Parts: []Part{{Text: "hello"}}},
+		},
+	}
+	cfg := &dummyConfig{trailingFixEnabled: false}
+
+	vars := BuildGeminiVariablesTyped("gemini-1.5-flash", req, cfg)
+	if vars == nil {
+		t.Fatal("vars should not be nil")
+	}
+	if vars.Model != "gemini-1.5-flash" {
+		t.Errorf("model=%v, want 'gemini-1.5-flash'", vars.Model)
+	}
+	if vars.GeminiRequest == nil {
+		t.Fatal("embedded GeminiRequest should not be nil")
+	}
+	if len(vars.Contents) != 1 || vars.Contents[0].Role != "user" {
+		t.Fatalf("invalid contents in typed vars: %v", vars.Contents)
+	}
+}
+
 func TestBuildGeminiVariables_Basic(t *testing.T) {
 	req := &GeminiRequest{
 		Contents: []Content{

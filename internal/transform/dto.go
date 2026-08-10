@@ -19,6 +19,15 @@ type GeminiRequest struct {
 	Store             *bool            `json:"store,omitempty"`
 }
 
+// GeminiVariables 上游 GraphQL variables 强类型载体。
+// 匿名嵌入 *GeminiRequest，其字段在 json.Marshal 时会自动打平至同级。
+type GeminiVariables struct {
+	Model          string `json:"model"`
+	Region         string `json:"region,omitempty"`
+	RecaptchaToken string `json:"recaptchaToken,omitempty"`
+	*GeminiRequest
+}
+
 // Content 是一个对话回合（user / model / function）。
 type Content struct {
 	Role  string `json:"role"`          // user / model / function
