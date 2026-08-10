@@ -2,7 +2,9 @@ package transform
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -213,6 +215,8 @@ func TestStreamToolCallTracker_SameCallIDAcrossFrames(t *testing.T) {
 		t.Errorf("index=%d, want 0", idx1)
 	}
 
+	// 跨帧续打：新帧内第一次出现同名，应命中首帧 entry（稳定 ID）。
+	tracker.BeginFrame()
 	idx2, id2, isNew2 := tracker.ProcessFunctionCall("get_weather")
 	if isNew2 {
 		t.Error("同名工具第二次调用不应是 isNew（漏洞2：稳定 ID）")
@@ -222,6 +226,47 @@ func TestStreamToolCallTracker_SameCallIDAcrossFrames(t *testing.T) {
 	}
 	if id2 != id1 {
 		t.Errorf("call_id 变化: %s -> %s（漏洞2：随机 ID 生成）", id1, id2)
+	}
+}
+
+func TestStreamToolCallTracker_MultipleSameNameCalls(t *testing.T) {
+	// 同一帧内多次发起相同函数名（如两次 read_file）必须分配不同的 (index, callID)，
+	// 不能被误判为同名旧调用的增量续打。
+	tracker := NewStreamToolCallTracker()
+
+	// 帧 1：两个独立的 read_file 调用
+	idx1, id1, isNew1 := tracker.ProcessFunctionCall("read_file")
+	if !isNew1 {
+		t.Error("帧内第一个 read_file 应为新调用")
+	}
+	idx2, id2, isNew2 := tracker.ProcessFunctionCall("read_file")
+	if !isNew2 {
+		t.Error("帧内第二个同名 read_file 必须也是新调用（漏洞3：同名合并）")
+	}
+	if idx2 == idx1 {
+		t.Errorf("同名两次调用 index 相同: %d（漏洞3）", idx2)
+	}
+	if id2 == id1 {
+		t.Error("同名两次调用 call_id 相同（漏洞3）")
+	}
+
+	// 帧 2：按出现次序续打，分别命中各自的 entry
+	tracker.BeginFrame()
+	idxA, idA, isNewA := tracker.ProcessFunctionCall("read_file")
+	if isNewA {
+		t.Error("续打帧第一个 read_file 不应是新调用")
+	}
+	if idxA != idx1 || idA != id1 {
+		t.Errorf("续打帧第一个调用错配: got (index=%d, id=%s), want (index=%d, id=%s)",
+			idxA, idA, idx1, id1)
+	}
+	idxB, idB, isNewB := tracker.ProcessFunctionCall("read_file")
+	if isNewB {
+		t.Error("续打帧第二个 read_file 不应是新调用")
+	}
+	if idxB != idx2 || idB != id2 {
+		t.Errorf("续打帧第二个调用错配: got (index=%d, id=%s), want (index=%d, id=%s)",
+			idxB, idB, idx2, id2)
 	}
 }
 
@@ -335,6 +380,146 @@ func TestConvertRealtimeChunk_MultipleToolCallsSameFrame(t *testing.T) {
 	}
 	if toolCallCount != 2 {
 		t.Errorf("应包含 2 个 tool_calls，got %d", toolCallCount)
+	}
+}
+
+// 续传帧（isNew=false）必须保留与首帧一致的稳定 id/type，strict OpenAI SDK
+// 对缺失 id 的 tool_calls delta 会判定校验失败。
+func TestConvertRealtimeChunkTyped_ToolCallIDPreservedOnContinuation(t *testing.T) {
+	tracker := NewStreamToolCallTracker()
+
+	chunk1 := &GeminiChunk{Candidates: []*Candidate{{
+		Content: &Content{Role: "model", Parts: []Part{{
+			FunctionCall: &FunctionCall{Name: "get_weather", Args: map[string]any{"city": "SF"}},
+		}}},
+		FinishReason: FinishReasonUnspecified,
+	}}}
+	chunk2 := &GeminiChunk{Candidates: []*Candidate{{
+		Content: &Content{Role: "model", Parts: []Part{{
+			FunctionCall: &FunctionCall{Name: "get_weather", Args: map[string]any{"city": "SF", "unit": "celsius"}},
+		}}},
+		FinishReason: FinishReasonUnspecified,
+	}}}
+
+	events1 := ConvertRealtimeChunkTyped(chunk1, "m", "r", false, tracker)
+	events2 := ConvertRealtimeChunkTyped(chunk2, "m", "r", false, tracker)
+
+	id1, idx1 := "", -1
+	for _, e := range events1 {
+		if strings.Contains(e, `"tool_calls"`) {
+			id1 = extractToolCallID(e)
+			idx1 = extractToolCallIndex(e)
+		}
+	}
+	id2, idx2 := "", -1
+	for _, e := range events2 {
+		if strings.Contains(e, `"tool_calls"`) {
+			id2 = extractToolCallID(e)
+			idx2 = extractToolCallIndex(e)
+		}
+	}
+	if id1 == "" {
+		t.Fatalf("首帧 tool_call 必须携带 id（漏洞1）\n%v", events1)
+	}
+	if id2 == "" {
+		t.Fatalf("续传帧 tool_call 必须携带 id，不得被 omitempty 丢弃（漏洞1）\n%v", events2)
+	}
+	if id2 != id1 {
+		t.Errorf("续传帧 id 必须与首帧一致: %s -> %s", id1, id2)
+	}
+	if idx2 != idx1 {
+		t.Errorf("续传帧 index 必须与首帧一致: %d -> %d", idx1, idx2)
+	}
+	if !strings.Contains(events2[0], `"type":"function"`) {
+		t.Errorf("续传帧应保留 type=function: %s", events2[0])
+	}
+}
+
+// 续传帧（isNew=false）中 ResponseToolCallFn.Name 为空串 "" 时，
+// 必须显式序列化出 "name": "" 键，不得被 omitempty 抹除，
+// 避免 strict OpenAI SDK 报 Expected 'function.name' to be a string.
+func TestConvertRealtimeChunkTyped_FunctionNameExplicitKeyOnContinuation(t *testing.T) {
+	tracker := NewStreamToolCallTracker()
+
+	chunk1 := &GeminiChunk{Candidates: []*Candidate{{
+		Content: &Content{Role: "model", Parts: []Part{{
+			FunctionCall: &FunctionCall{Name: "get_weather", Args: map[string]any{"city": "SF"}},
+		}}},
+		FinishReason: FinishReasonUnspecified,
+	}}}
+	chunk2 := &GeminiChunk{Candidates: []*Candidate{{
+		Content: &Content{Role: "model", Parts: []Part{{
+			FunctionCall: &FunctionCall{Name: "get_weather", Args: map[string]any{"city": "SF", "unit": "celsius"}},
+		}}},
+		FinishReason: FinishReasonUnspecified,
+	}}}
+
+	_ = ConvertRealtimeChunkTyped(chunk1, "m", "r", false, tracker)
+	events2 := ConvertRealtimeChunkTyped(chunk2, "m", "r", false, tracker)
+
+	if len(events2) == 0 {
+		t.Fatalf("续传帧应有事件")
+	}
+
+	evt := events2[0]
+	const prefix = "data: "
+	if !strings.HasPrefix(evt, prefix) {
+		t.Fatalf("非标准 SSE 事件: %s", evt)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(evt[len(prefix):]), &parsed); err != nil {
+		t.Fatalf("解析 JSON 失败: %v", err)
+	}
+
+	choices, ok := parsed["choices"].([]any)
+	if !ok || len(choices) == 0 {
+		t.Fatalf("缺失 choices")
+	}
+	choice := choices[0].(map[string]any)
+	delta := choice["delta"].(map[string]any)
+	toolCalls := delta["tool_calls"].([]any)
+	if len(toolCalls) == 0 {
+		t.Fatalf("缺失 tool_calls")
+	}
+	tc := toolCalls[0].(map[string]any)
+	fn, ok := tc["function"].(map[string]any)
+	if !ok {
+		t.Fatalf("缺失 function 对象: %v", tc)
+	}
+
+	nameVal, exists := fn["name"]
+	if !exists {
+		t.Fatalf("function 对象必须显式包含 'name' 键，当前被丢弃: %v", fn)
+	}
+
+	if _, isStr := nameVal.(string); !isStr {
+		t.Errorf("function.name 的值必须是 string 类型，got: %T (%v)", nameVal, nameVal)
+	}
+}
+
+func TestStreamToolCallTracker_ConcurrentAccess(t *testing.T) {
+	tracker := NewStreamToolCallTracker()
+	var wg sync.WaitGroup
+	goroutines := 20
+	iterations := 100
+
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(gID int) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				tracker.BeginFrame()
+				fnName := fmt.Sprintf("fn_%d", i%3)
+				_, _, _ = tracker.ProcessFunctionCall(fnName)
+				_ = tracker.HasCalls()
+			}
+		}(g)
+	}
+
+	wg.Wait()
+	if !tracker.HasCalls() {
+		t.Errorf("并发测试完成后 tracker 应包含 calls")
 	}
 }
 

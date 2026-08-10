@@ -85,15 +85,21 @@ func ConvertChatRequestToGemini(req *ChatCompletionRequest, cfg ConfigFace) (*Ge
 			if tcID != "" {
 				fr.ID = tcID
 			}
-			gemini.Contents = appendFunctionToContent(gemini.Contents, Part{FunctionResponse: &fr})
+			gemini.Contents = append(gemini.Contents, Content{
+				Role:  "user",
+				Parts: []Part{{FunctionResponse: &fr}},
+			})
 		case "function":
 			name := msg.Name
 			if name == "" {
 				name = "unknown"
 			}
-			gemini.Contents = appendFunctionToContent(gemini.Contents, Part{FunctionResponse: &FunctionResponse{
-				Name: name, Response: coerceFunctionResponseTyped(msg),
-			}})
+			gemini.Contents = append(gemini.Contents, Content{
+				Role:  "user",
+				Parts: []Part{{FunctionResponse: &FunctionResponse{
+					Name: name, Response: coerceFunctionResponseTyped(msg),
+				}}},
+			})
 		}
 	}
 
@@ -286,18 +292,6 @@ func splitAssistantContentTyped(content MessageContent) []Part {
 		parts = append(parts, Part{Text: ""})
 	}
 	return parts
-}
-
-// appendFunctionToContent 把 functionResponse part 追加进 contents。
-func appendFunctionToContent(contents []Content, part Part) []Content {
-	if n := len(contents); n > 0 {
-		last := &contents[n-1]
-		if last.Role == "function" {
-			last.Parts = append(last.Parts, part)
-			return contents
-		}
-	}
-	return append(contents, Content{Role: "function", Parts: []Part{part}})
 }
 
 // coerceFunctionResponseTyped 规范化 tool/function 角色 content。

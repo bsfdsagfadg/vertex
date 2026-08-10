@@ -258,3 +258,89 @@ func TestBuildGeminiVariables_HistoryThoughtSignatureInjection(t *testing.T) {
 		t.Errorf("expected non-empty thoughtSignature, got %q", sig)
 	}
 }
+
+func TestBuildGeminiVariables_ToolResponseIsolation(t *testing.T) {
+	// 构造 OpenAI 风格请求：user -> assistant(functionCall) -> tool(functionResponse) -> user(follow-up text)
+	strPtr := func(s string) *string { return &s }
+	chatReq := &ChatCompletionRequest{
+		Model: "gemini-3.6-flash",
+		Messages: []Message{
+			{Role: "user", Content: MessageContent{String: strPtr("Find files")}},
+			{
+				Role: "assistant",
+				ToolCalls: []OAIToolCall{
+					{
+						ID:       "call_123",
+						Type:     "function",
+						Function: OAIToolCallFn{Name: "glob", Arguments: `{"pattern":"*.go"}`},
+					},
+				},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: "call_123",
+				Name:       "glob",
+				Content:    MessageContent{String: strPtr(`["main.go"]`)},
+			},
+			{Role: "user", Content: MessageContent{String: strPtr("Analyze main.go")}},
+		},
+	}
+
+	geminiReq, _, err := ConvertChatRequestToGemini(chatReq, nil)
+	if err != nil {
+		t.Fatalf("ConvertChatRequestToGemini failed: %v", err)
+	}
+
+	vars := BuildGeminiVariables("gemini-3.6-flash", geminiReq, nil)
+	contents, ok := vars["contents"].([]any)
+	if !ok {
+		t.Fatalf("contents in vars is not []any")
+	}
+
+	// 验证 4 个独立的 content 节点 (user -> model -> user(functionResponse) -> user(follow-up text))
+	if len(contents) != 4 {
+		t.Fatalf("len(contents)=%d, want 4 (functionResponse must NOT be merged with follow-up user text)", len(contents))
+	}
+
+	// 节点 2: tool response Content
+	toolContent, ok := contents[2].(map[string]any)
+	if !ok || toolContent["role"] != "user" {
+		t.Fatalf("content[2] role=%v, want 'user'", toolContent["role"])
+	}
+	toolParts, ok := toolContent["parts"].([]any)
+	if !ok || len(toolParts) != 1 {
+		t.Fatalf("len(toolParts)=%d, want 1", len(toolParts))
+	}
+	pTool, ok := toolParts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("pTool not a map")
+	}
+	fr, ok := pTool["functionResponse"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing functionResponse in pTool: %v", pTool)
+	}
+	if fr["name"] != "glob" {
+		t.Errorf("functionResponse.name=%v, want 'glob'", fr["name"])
+	}
+	respMap, ok := fr["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("functionResponse.response must be a map, got %T (%v)", fr["response"], fr["response"])
+	}
+	if _, hasResult := respMap["result"]; !hasResult && len(respMap) == 0 {
+		t.Errorf("functionResponse.response map is empty")
+	}
+
+	// 节点 3: follow-up user Content
+	userContent, ok := contents[3].(map[string]any)
+	if !ok || userContent["role"] != "user" {
+		t.Fatalf("content[3] role=%v, want 'user'", userContent["role"])
+	}
+	userParts, ok := userContent["parts"].([]any)
+	if !ok || len(userParts) != 1 {
+		t.Fatalf("len(userParts)=%d, want 1", len(userParts))
+	}
+	pUser, ok := userParts[0].(map[string]any)
+	if !ok || pUser["text"] != "Analyze main.go" {
+		t.Errorf("content[3] part text=%v, want 'Analyze main.go'", pUser["text"])
+	}
+}

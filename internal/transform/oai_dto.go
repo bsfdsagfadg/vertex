@@ -293,7 +293,7 @@ type ResponseToolCall struct {
 
 // ResponseToolCallFn 是工具调用的函数部分。
 type ResponseToolCallFn struct {
-	Name      string `json:"name,omitempty"`
+	Name      string `json:"name"`
 	Arguments string `json:"arguments,omitempty"`
 }
 

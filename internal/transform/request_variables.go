@@ -63,9 +63,10 @@ func BuildGeminiVariables(model string, req *GeminiRequest, cfg config.ConfigPro
 
 // mergeContiguousRolesTyped 合并相邻同 role 的 content。
 //
-// 与旧 mergeContiguousRoles 语义一致：functionResponse 与其他类型混合的
-// content 不得合并（防触发上游 "Requests ending with a model turn are not
-// supported."），仅当双方 parts 全部为 functionResponse 才允许合并。
+// 规则：只要 prev 或 c 包含 FunctionResponse，则绝对禁止与其他 Content 合并
+// （即使对方同样含有 FunctionResponse 或同为 user/function role），
+// 强制保持 FunctionResponse 处于独占的 Content 节点中，防止 Google Vertex AI 上游
+// 抛出 400 INVALID_ARGUMENT (Function response content must be unique)。
 func mergeContiguousRolesTyped(contents []Content) []Content {
 	if len(contents) == 0 {
 		return contents
@@ -78,10 +79,8 @@ func mergeContiguousRolesTyped(contents []Content) []Content {
 			continue
 		}
 		if partsContainFunctionResponseTyped(prev.Parts) || partsContainFunctionResponseTyped(c.Parts) {
-			if !(allPartsAreFunctionResponseTyped(prev.Parts) && allPartsAreFunctionResponseTyped(c.Parts)) {
-				merged = append(merged, c)
-				continue
-			}
+			merged = append(merged, c)
+			continue
 		}
 		prev.Parts = append(prev.Parts, c.Parts...)
 	}
@@ -164,19 +163,6 @@ func partsContainFunctionResponseTyped(parts []Part) bool {
 		}
 	}
 	return false
-}
-
-// allPartsAreFunctionResponseTyped 判断 parts 非空且每个 part 都是 functionResponse。
-func allPartsAreFunctionResponseTyped(parts []Part) bool {
-	if len(parts) == 0 {
-		return false
-	}
-	for _, p := range parts {
-		if p.FunctionResponse == nil {
-			return false
-		}
-	}
-	return true
 }
 
 // matchTrailingFixModel 检查模型名称是否匹配尾部修复清单。

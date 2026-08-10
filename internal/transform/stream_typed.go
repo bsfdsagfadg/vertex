@@ -22,6 +22,10 @@ func ConvertRealtimeChunkTyped(chunk *GeminiChunk, model, requestID string, isFi
 	if chunk == nil {
 		return nil
 	}
+	if tracker != nil {
+		// 每个 chunk 视为独立帧：帧内同名多次出现视为多个独立调用，跨帧按出现次序续打。
+		tracker.BeginFrame()
+	}
 	created := time.Now().Unix()
 	var events []string
 
@@ -80,14 +84,13 @@ func ConvertRealtimeChunkTyped(chunk *GeminiChunk, model, requestID string, isFi
 			}
 			delta := tc
 			delta.Index = index
-			if isNew {
-				delta.ID = callID
-				if delta.Type == "" {
-					delta.Type = "function"
-				}
-			} else {
-				delta.ID = ""
-				delta.Type = ""
+			// id/type 在首帧与续传帧中保持一致（strict OpenAI SDK 要求增量帧携带稳定 id）。
+			delta.ID = callID
+			if delta.Type == "" {
+				delta.Type = "function"
+			}
+			if !isNew {
+				// 续传帧：仅保留 arguments 增量，name 不重复输出。
 				delta.Function = ResponseToolCallFn{
 					Arguments: tc.Function.Arguments,
 				}

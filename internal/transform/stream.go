@@ -28,6 +28,10 @@ func sseLine(obj map[string]any) string {
 // ConvertRealtimeChunk 把单个 Gemini 增量 dict 转为 OAI SSE 事件字符串列表。
 // tracker 为可选参数，传入时保证 tool_call 的 id/index 跨帧稳定。
 func ConvertRealtimeChunk(chunk map[string]any, model, requestID string, isFirst bool, tracker *StreamToolCallTracker) []string {
+	if tracker != nil {
+		// 每个 chunk 视为独立帧：帧内同名多次出现视为多个独立调用，跨帧按出现次序续打。
+		tracker.BeginFrame()
+	}
 	candidate := firstCandidate(chunk)
 	parts := candidateParts(candidate)
 	finish, _ := candidate["finishReason"].(string)
