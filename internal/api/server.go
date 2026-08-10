@@ -42,6 +42,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1/models", s.handleModelsOAI)
 	mux.HandleFunc("/v1beta/models", s.handleModelsGemini)
+	mux.HandleFunc("/v1beta1/models", s.handleModelsGemini)
+	mux.HandleFunc("/v1alpha/models", s.handleModelsGemini)
 	mux.HandleFunc("/v1/chat/completions", s.chat.handleChatCompletions)
 	mux.HandleFunc("/v1/images/generations", s.image.handleImageGenerations)
 	mux.HandleFunc("/v1/images/edits", s.image.handleImageEdits)
@@ -53,6 +55,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/admin/", s.admin.handleAdminAPI)
 	mux.HandleFunc("/assets/", s.handleAssets)
 	mux.HandleFunc("/v1beta/models/", s.gemini.handleModelsSubtree)
+	mux.HandleFunc("/v1beta1/models/", s.gemini.handleModelsSubtree)
+	mux.HandleFunc("/v1alpha/models/", s.gemini.handleModelsSubtree)
 	mux.HandleFunc("/v1/models/", s.gemini.handleModelsSubtree)
 
 	if s.mw.cfg.DebugPprof() {
