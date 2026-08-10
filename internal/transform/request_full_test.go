@@ -587,6 +587,14 @@ func TestApplyImageConfig(t *testing.T) {
 	if ic6["imageSize"] != "2K" || ic6["aspectRatio"] != "3:2" {
 		t.Errorf("size 推导错误: %v", ic6)
 	}
+
+	// OpenAI/Gemini 顶层输出模态应优先于程序默认值。
+	gp7 := map[string]any{}
+	ApplyImageConfig(gp7, map[string]any{"modalities": []any{"text", "image"}}, "gemini-3.1-flash-image")
+	mods7 := gp7["generationConfig"].(map[string]any)["responseModalities"].([]any)
+	if len(mods7) != 2 || mods7[0] != "TEXT" || mods7[1] != "IMAGE" {
+		t.Errorf("显式 modalities 转换错误: %v", mods7)
+	}
 }
 
 func TestApplyImageDefaults(t *testing.T) {
@@ -613,6 +621,23 @@ func TestApplyImageDefaults(t *testing.T) {
 	}
 	if explicitGC["responseModalities"].([]any)[0] != "TEXT" {
 		t.Fatal("不应覆盖客户端显式 responseModalities")
+	}
+
+	snakeExplicit := map[string]any{"generation_config": map[string]any{
+		"response_modalities": []any{"IMAGE"},
+		"image_config":        map[string]any{"image_size": "4K"},
+	}}
+	ApplyImageDefaults(snakeExplicit, "gemini-3.1-flash-image", "2K", "图文")
+	snakeGC := snakeExplicit["generationConfig"].(map[string]any)
+	if snakeGC["imageConfig"].(map[string]any)["imageSize"] != "4K" {
+		t.Fatal("不应覆盖 snake_case 显式 image_size")
+	}
+	snakeMods := snakeGC["responseModalities"].([]any)
+	if len(snakeMods) != 1 || snakeMods[0] != "IMAGE" {
+		t.Fatal("不应覆盖 snake_case 显式 response_modalities")
+	}
+	if _, exists := snakeExplicit["generation_config"]; exists {
+		t.Fatal("snake_case generation_config 应规范为 generationConfig")
 	}
 
 	empty := map[string]any{"generationConfig": map[string]any{

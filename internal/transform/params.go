@@ -153,9 +153,11 @@ func pixelsToTier(px int) string {
 	return ""
 }
 
-// ApplyImageConfig 原地把客户端分辨率/imageConfig 写入 geminiPayload.generationConfig.imageConfig。
+// ApplyImageConfig 原地把客户端图片参数写入 Gemini generationConfig。
 // model 用于过滤该模型不支持的清晰度档位和长宽比。
 func ApplyImageConfig(geminiPayload, body map[string]any, model string) {
+	applyResponseModalities(geminiPayload, body, model)
+
 	var imageSize string
 	var aspectRatio string
 
@@ -221,11 +223,7 @@ func mergeImageConfig(payload map[string]any, values map[string]any) {
 	if len(values) == 0 {
 		return
 	}
-	genCfg, ok := payload["generationConfig"].(map[string]any)
-	if !ok {
-		genCfg = map[string]any{}
-		payload["generationConfig"] = genCfg
-	}
+	genCfg := imageGenerationConfig(payload)
 	imageConfig, ok := genCfg["imageConfig"].(map[string]any)
 	if !ok {
 		imageConfig = map[string]any{}
@@ -241,11 +239,7 @@ func ApplyImageDefaults(payload map[string]any, model, defaultSize, defaultModal
 	if !IsImageModel(model) {
 		return
 	}
-	genCfg, ok := payload["generationConfig"].(map[string]any)
-	if !ok {
-		genCfg = map[string]any{}
-		payload["generationConfig"] = genCfg
-	}
+	genCfg := imageGenerationConfig(payload)
 	if !hasResponseModalities(genCfg["responseModalities"]) {
 		if defaultModalities == "仅图片" {
 			genCfg["responseModalities"] = []any{"IMAGE"}
@@ -260,6 +254,85 @@ func ApplyImageDefaults(payload map[string]any, model, defaultSize, defaultModal
 	}
 	if size, _ := imageConfig["imageSize"].(string); strings.TrimSpace(size) == "" {
 		imageConfig["imageSize"] = ResolveImageSize(defaultSize, model)
+	}
+}
+
+// imageGenerationConfig returns the canonical generationConfig map while
+// preserving explicitly supplied snake_case Gemini parameters.
+func imageGenerationConfig(payload map[string]any) map[string]any {
+	genCfg, ok := payload["generationConfig"].(map[string]any)
+	if !ok {
+		if snake, snakeOK := payload["generation_config"].(map[string]any); snakeOK {
+			genCfg = make(map[string]any, len(snake))
+			for key, value := range snake {
+				genCfg[key] = value
+			}
+			delete(payload, "generation_config")
+		} else {
+			genCfg = map[string]any{}
+		}
+		payload["generationConfig"] = genCfg
+	}
+
+	if _, exists := genCfg["responseModalities"]; !exists {
+		if value, snakeOK := genCfg["response_modalities"]; snakeOK {
+			genCfg["responseModalities"] = value
+			delete(genCfg, "response_modalities")
+		}
+	}
+	if _, exists := genCfg["imageConfig"]; !exists {
+		if value, snakeOK := genCfg["image_config"]; snakeOK {
+			genCfg["imageConfig"] = value
+			delete(genCfg, "image_config")
+		}
+	}
+	if imageConfig, imageOK := genCfg["imageConfig"].(map[string]any); imageOK {
+		if _, exists := imageConfig["imageSize"]; !exists {
+			if value, snakeOK := imageConfig["image_size"]; snakeOK {
+				imageConfig["imageSize"] = value
+				delete(imageConfig, "image_size")
+			}
+		}
+	}
+	return genCfg
+}
+
+func applyResponseModalities(payload, body map[string]any, model string) {
+	if !IsImageModel(model) {
+		return
+	}
+	for _, key := range []string{"responseModalities", "response_modalities", "modalities"} {
+		if value, exists := body[key]; exists && value != nil {
+			genCfg := imageGenerationConfig(payload)
+			if hasResponseModalities(genCfg["responseModalities"]) {
+				return
+			}
+			genCfg["responseModalities"] = normalizeResponseModalities(value)
+			return
+		}
+	}
+}
+
+func normalizeResponseModalities(value any) any {
+	switch modalities := value.(type) {
+	case []any:
+		out := make([]any, len(modalities))
+		for i, modality := range modalities {
+			if text, ok := modality.(string); ok {
+				out[i] = strings.ToUpper(strings.TrimSpace(text))
+			} else {
+				out[i] = modality
+			}
+		}
+		return out
+	case []string:
+		out := make([]string, len(modalities))
+		for i, modality := range modalities {
+			out[i] = strings.ToUpper(strings.TrimSpace(modality))
+		}
+		return out
+	default:
+		return value
 	}
 }
 
