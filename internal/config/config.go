@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -118,6 +119,10 @@ var (
 	cached *AppConfig
 	//nolint:gochecknoglobals // Global configuration cache
 	cacheTime time.Time
+	//nolint:gochecknoglobals // Tracks successful loads so unchanged TTL refreshes stay quiet.
+	lastLoadedConfigHash [sha256.Size]byte
+	//nolint:gochecknoglobals // Tracks whether lastLoadedConfigHash has been initialized.
+	hasLoadedConfigHash bool
 )
 
 const cacheTTL = 60 * time.Second
@@ -284,7 +289,9 @@ func Load() AppConfig {
 					log.Printf("[Config] 自动回写规范化配置失败: %v", errSave)
 				}
 			}
-			log.Printf("[Config] 成功加载配置文件 config.json")
+			if shouldLogSuccessfulLoad(cfg) {
+				log.Printf("[Config] 成功加载配置文件 config.json")
+			}
 		}
 	} else if !os.IsNotExist(err) {
 		log.Printf("[Config] 读取 config.json 失败: %v", err)
@@ -292,6 +299,23 @@ func Load() AppConfig {
 	cached = &cfg
 	cacheTime = time.Now()
 	return cfg
+}
+
+// shouldLogSuccessfulLoad suppresses the periodic success message when the
+// cache TTL expires but the effective configuration has not changed.
+// Load holds mu while calling this function.
+func shouldLogSuccessfulLoad(cfg AppConfig) bool {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return true
+	}
+	hash := sha256.Sum256(data)
+	if hasLoadedConfigHash && hash == lastLoadedConfigHash {
+		return false
+	}
+	lastLoadedConfigHash = hash
+	hasLoadedConfigHash = true
+	return true
 }
 
 func initializeConfigFromExample() {
