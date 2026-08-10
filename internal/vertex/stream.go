@@ -722,18 +722,21 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool, 
 // 避免首候选先结束时截断其他候选或丢失延迟 usage 包。
 // 返回 (stopByClient, done)：done=true 表示应停止扫描；stopByClient 区分是客户端断开还是正常 finish。
 func emitAndCheckFinish(chunk map[string]any, emit func(map[string]any) bool, states ...*streamCompletionState) (stopByClient bool, done bool) {
+	if len(states) > 0 && states[0] != nil {
+		state := states[0]
+		// Observe before handing the mutable chunk to downstream consumers.
+		state.observe(chunk)
+		done = state.sawUsage && state.allFinished()
+	} else {
+		fr := chunkFinishReason(chunk)
+		done = fr != "" && fr != finishReasonUnspecified
+	}
 	if !emit(chunk) {
 		// 客户端断开 / 上层要求停止。
 		log.Printf("[Stream] 客户端主动断开，导致流结束")
 		return true, true
 	}
-	if len(states) > 0 && states[0] != nil {
-		state := states[0]
-		state.observe(chunk)
-		return false, state.sawUsage && state.allFinished()
-	}
-	fr := chunkFinishReason(chunk)
-	if fr != "" && fr != finishReasonUnspecified {
+	if done {
 		// 真实 finishReason：主动结束（避免上游不关连接挂到 180s）。
 		return false, true
 	}

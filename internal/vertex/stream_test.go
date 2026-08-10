@@ -450,6 +450,31 @@ func TestStreamCompletionStateWaitsForEveryCandidateAndUsage(t *testing.T) {
 	}
 }
 
+func TestEmitAndCheckFinishObservesBeforeEmitMutation(t *testing.T) {
+	state := newStreamCompletionState()
+	candidate := map[string]any{"index": 7, "finishReason": "STOP"}
+	chunk := map[string]any{
+		"candidates":    []any{candidate},
+		"usageMetadata": map[string]any{"totalTokenCount": float64(5)},
+	}
+
+	_, done := emitAndCheckFinish(chunk, func(map[string]any) bool {
+		delete(candidate, "index")
+		delete(candidate, "finishReason")
+		return true
+	}, state)
+
+	if !done {
+		t.Fatal("completion state must be observed before downstream mutates the emitted chunk")
+	}
+	if _, ok := state.seen[7]; !ok {
+		t.Fatal("candidate index was not observed before emit")
+	}
+	if _, ok := state.finished[7]; !ok {
+		t.Fatal("candidate finish reason was not observed before emit")
+	}
+}
+
 func TestProcessStreamingObjectDoesNotStopInsideParallelCandidateList(t *testing.T) {
 	state := newStreamCompletionState()
 	emitted := 0
