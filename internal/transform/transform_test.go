@@ -615,6 +615,23 @@ func TestBuildVertexVariablesTurnGuardKeepsModelFunctionResponse(t *testing.T) {
 	}
 }
 
+func TestBuildVertexVariablesTurnGuardSkipsModelFunctionCall(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ModelTurnGuardEnabled = true
+	payload := map[string]any{"contents": []any{
+		map[string]any{"role": "user", "parts": []any{map[string]any{"text": "call a tool"}}},
+		map[string]any{"role": "model", "parts": []any{map[string]any{
+			"functionCall": map[string]any{"name": "lookup", "args": map[string]any{}},
+		}}},
+	}}
+
+	vars := BuildVertexVariables("gemini-3.6-flash", payload, config.StaticProvider(cfg))
+	contents := vars["contents"].([]any)
+	if len(contents) != 2 {
+		t.Fatalf("contents=%#v, want no synthetic user turn after functionCall", contents)
+	}
+}
+
 func TestBuildVertexVariablesTurnGuardRespectsGlobalSwitch(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelTurnGuardEnabled = false
@@ -626,6 +643,31 @@ func TestBuildVertexVariablesTurnGuardRespectsGlobalSwitch(t *testing.T) {
 	contents := vars["contents"].([]any)
 	if len(contents) != 1 {
 		t.Fatalf("global switch off unexpectedly appended content: %#v", contents)
+	}
+}
+
+func TestBuildVertexVariablesDropsPenaltiesForNewFlashModels(t *testing.T) {
+	provider := config.StaticProvider(config.DefaultConfig())
+	for _, model := range []string{"gemini-3.6-flash", "gemini-3.5-flash-lite"} {
+		t.Run(model, func(t *testing.T) {
+			payload := map[string]any{
+				"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}}},
+				"generation_config": map[string]any{
+					"presence_penalty": 1.25, "frequencyPenalty": 0.75, "temperature": 0.4,
+				},
+			}
+			vars := BuildVertexVariables(model, payload, provider)
+			generationConfig := vars["generationConfig"].(map[string]any)
+			if _, ok := generationConfig["presencePenalty"]; ok {
+				t.Fatalf("presencePenalty was not removed: %#v", generationConfig)
+			}
+			if _, ok := generationConfig["frequencyPenalty"]; ok {
+				t.Fatalf("frequencyPenalty was not removed: %#v", generationConfig)
+			}
+			if generationConfig["temperature"] != 0.4 {
+				t.Fatalf("unrelated generation config changed: %#v", generationConfig)
+			}
+		})
 	}
 }
 
@@ -872,6 +914,12 @@ func TestStripGeminiIDs(t *testing.T) {
 					},
 				},
 			},
+			map[string]any{
+				"role": "model",
+				"parts": []any{map[string]any{
+					"functionCall": map[string]any{"id": "tool_call_2-vp12345678"},
+				}},
+			},
 		},
 	}
 
@@ -888,5 +936,10 @@ func TestStripGeminiIDs(t *testing.T) {
 	fr := m2["parts"].([]any)[0].(map[string]any)["functionResponse"].(map[string]any)
 	if fr["id"] != "gemini-tool-call-1" {
 		t.Errorf("functionResponse.id stripping 失败: %v", fr["id"])
+	}
+	m3 := contents[2].(map[string]any)
+	fc2 := m3["parts"].([]any)[0].(map[string]any)["functionCall"].(map[string]any)
+	if fc2["id"] != "tool_call_2" {
+		t.Errorf("tool_call id stripping 失败: %v", fc2["id"])
 	}
 }

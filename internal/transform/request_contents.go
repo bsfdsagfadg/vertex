@@ -211,7 +211,10 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 	}
 
 	if genCfg := buildGenerationConfig(geminiPayload); len(genCfg) > 0 {
-		vars["generationConfig"] = genCfg
+		dropUnsupportedPenaltyConfig(model, cfg, genCfg)
+		if len(genCfg) > 0 {
+			vars["generationConfig"] = genCfg
+		}
 	}
 
 	if _, ok := vars["safetySettings"]; !ok {
@@ -221,6 +224,18 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 	}
 
 	return vars
+}
+
+func dropUnsupportedPenaltyConfig(model string, cfg config.ConfigProvider, generationConfig map[string]any) {
+	realModel := model
+	if cfg != nil {
+		realModel = cfg.ResolveModelName(model)
+	}
+	switch strings.ToLower(strings.TrimSpace(realModel)) {
+	case "gemini-3.6-flash", "gemini-3.5-flash-lite":
+		delete(generationConfig, "presencePenalty")
+		delete(generationConfig, "frequencyPenalty")
+	}
 }
 
 // handleSystemInstruction 把 systemInstruction 在无 user content 时降级为首条 user message。
@@ -597,17 +612,37 @@ func appendTrailingUserTurn(contents any) any {
 	if !ok || !endsWithModelTurn(last) {
 		return contents
 	}
+	// A model functionCall is not an incomplete text turn. It must be followed
+	// by the caller's functionResponse; appending a synthetic user turn here
+	// breaks the tool-call pairing and can trigger upstream tool_call_id errors.
+	if modelTurnHasFunctionCall(last) {
+		return contents
+	}
 	return append(list, map[string]any{
 		"role":  "user",
 		"parts": []any{map[string]any{"text": "\n"}},
 	})
 }
 
+func modelTurnHasFunctionCall(content map[string]any) bool {
+	for _, rawPart := range asAnySlice(content["parts"]) {
+		part, ok := rawPart.(map[string]any)
+		if !ok {
+			continue
+		}
+		fc, ok := part["functionCall"].(map[string]any)
+		if ok && strings.TrimSpace(toString(fc["name"])) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func stripGeminiIDs(val any) {
 	switch v := val.(type) {
 	case map[string]any:
 		for k, mv := range v {
-			if s, ok := mv.(string); ok && strings.HasPrefix(s, "gemini-tool-call-") {
+			if s, ok := mv.(string); ok && (strings.HasPrefix(s, "gemini-tool-call-") || strings.HasPrefix(s, "tool_call_")) {
 				if len(s) > 11 && strings.Contains(s, "-vp") {
 					idx := strings.LastIndex(s, "-vp")
 					if idx > 0 && len(s)-idx == 11 {
