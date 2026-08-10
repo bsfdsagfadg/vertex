@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestTokenPoolRealtime 验证每次 GetToken 都实时获取，且 Start/Stop 不阻塞、Stats 返回 0,0。
@@ -32,6 +34,95 @@ func TestTokenPoolRealtime(t *testing.T) {
 	}
 
 	p.Stop() // 不应阻塞
+}
+
+func TestTokenPoolSharedStartsFiveRoutesImmediately(t *testing.T) {
+	var started atomic.Int32
+	allStarted := make(chan struct{})
+	p := &TokenPool{
+		fetch: func(ctx context.Context, proxyURI string) (string, error) {
+			if started.Add(1) == sharedTokenConcurrency {
+				close(allStarted)
+			}
+			select {
+			case <-allStarted:
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+			if proxyURI == "route-3" {
+				return "winner", nil
+			}
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+		routes: func() []string {
+			return []string{"route-1", "route-2", "route-3", "route-4", "route-5"}
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	token, err := p.GetTokenSharedContext(ctx)
+	if err != nil || token != "winner" {
+		t.Fatalf("并发 token 竞速失败: token=%q err=%v", token, err)
+	}
+	if got := started.Load(); got != sharedTokenConcurrency {
+		t.Fatalf("应立即启动 %d 路完整请求，实际 %d", sharedTokenConcurrency, got)
+	}
+}
+
+func TestTokenPoolSharedCapsRoutesAtFive(t *testing.T) {
+	var calls atomic.Int32
+	p := &TokenPool{
+		fetch: func(context.Context, string) (string, error) {
+			calls.Add(1)
+			return "", errors.New("failed")
+		},
+		routes: func() []string {
+			return []string{"1", "2", "3", "4", "5", "6"}
+		},
+	}
+	if _, err := p.GetTokenSharedContext(context.Background()); err == nil {
+		t.Fatal("全部路线失败时应返回错误")
+	}
+	if got := calls.Load(); got != sharedTokenConcurrency {
+		t.Fatalf("并发上限应为 %d，实际调用 %d", sharedTokenConcurrency, got)
+	}
+}
+
+func TestTokenPoolSharedDoesNotSingleflightCallers(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	p := &TokenPool{
+		fetch: func(context.Context, string) (string, error) {
+			n := calls.Add(1)
+			<-release
+			return fmt.Sprintf("token-%d", n), nil
+		},
+		routes: func() []string { return []string{"route"} },
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			if _, err := p.GetTokenSharedContext(context.Background()); err != nil {
+				t.Errorf("独立 token 获取失败: %v", err)
+			}
+		}()
+	}
+	deadline := time.Now().Add(time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := calls.Load(); got != 2 {
+		close(release)
+		wg.Wait()
+		t.Fatalf("两个调用不应被 singleflight 合并，fetch 次数=%d", got)
+	}
+	close(release)
+	wg.Wait()
 }
 
 func TestTokenPoolContextCancellation(t *testing.T) {

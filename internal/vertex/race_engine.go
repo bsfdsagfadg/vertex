@@ -156,13 +156,6 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		log.Printf("[Vertex] [RunParallel] 降级为单节点运行: %s", nodes.GetNodeName(proxy))
 		return run(ctx, proxy)
 	}
-	if route := routeFromContext(ctx); route != nil && route.authCandidateBound && route.token != nil {
-		// The configured pool size is only a provisional bound. The actual
-		// candidates selected for this request define how many independent rT
-		// opportunities the old per-node behavior would have had.
-		route.token.setRefreshLimit(len(cands) - 1)
-	}
-
 	if cfg.DebugMode() {
 		log.Printf("[Vertex] [RunParallel] 开启对冲延迟竞速, %d 个节点参与", len(cands))
 		for _, c := range cands {
@@ -196,10 +189,6 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 			stickyPool.Add(res.uri)
 			return
 		}
-		if ve := asVertexError(res.err); ve != nil && ve.isRequestTokenControl() {
-			return
-		}
-
 		if errors.Is(res.err, context.Canceled) {
 			return
 		}
@@ -427,48 +416,6 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 						}
 
 						ve := asVertexError(res.err)
-						if ve != nil && ve.requestTokenTerminal {
-							cancel()
-							return zero, res.err
-						}
-						if ve != nil && ve.requestTokenInvalid {
-							route := routeFromContext(ctx)
-							if route == nil || route.token == nil {
-								failedErrors = append(failedErrors, res.err)
-								continue
-							}
-							invalidated := route.token.invalidateToken(ve.requestToken)
-							if invalidated.exhausted {
-								cancel()
-								return zero, NewInternalError("recaptcha token remained invalid after request recovery").markRequestTokenTerminal()
-							}
-							if invalidated.refreshed {
-								remaining := make([]nodes.Node, 0, len(cands)-1)
-								for _, candidate := range cands {
-									if candidate.RawURI != res.uri {
-										remaining = append(remaining, candidate)
-									}
-								}
-								cands = remaining
-								cancelsMu.Lock()
-								for u, cancelFn := range cancels {
-									if u != res.uri {
-										cancelFn()
-									}
-								}
-								cancelsMu.Unlock()
-								if len(cands) == 0 {
-									cancel()
-									return zero, NewInternalError("recaptcha token remained invalid after request recovery").markRequestTokenTerminal()
-								}
-								timer.Stop()
-								break InnerLoop
-							}
-							// A late error from an already replaced token has no
-							// bearing on the current token and must not retire a node.
-							continue
-						}
-
 						failedErrors = append(failedErrors, res.err)
 
 						if ve != nil && ve.IsGlobalHardError() {

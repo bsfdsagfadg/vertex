@@ -42,20 +42,13 @@ var (
 	cachedVer string     //nolint:gochecknoglobals
 )
 
-// versionUA 拉取 enterprise.js 时使用的浏览器 UA（与 transport 包保持一致）。
-const versionUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
-
 // fetchVersionFromJS 从 enterprise.js 提取当前 reCAPTCHA release 版本号。
 //
 // 版本号 Google 会定期滚动：硬编码旧版本会让 reload 换发的 token 第一次被
 // batchGraphql 评估时失败（"Failed to verify action"），同 token 重试一次才过。
 // 动态拉取当前版本后首帧即可通过（实测）。
 func fetchVersionFromSession(ctx context.Context, sess *transport.Session) (string, error) {
-	h := transport.Header{
-		"user-agent":      {versionUA},
-		"accept":          {"*/*"},
-		"accept-language": {"zh-CN,zh;q=0.9,en;q=0.8"},
-	}
+	h := enterpriseJSHeaders()
 	status, body, err := sess.DoAndRead(ctx, "GET", recaptchaBase+"/recaptcha/enterprise.js", h, nil)
 	if err != nil {
 		return "", fmt.Errorf("获取 reCAPTCHA 版本失败: %w", err)
@@ -68,6 +61,10 @@ func fetchVersionFromSession(ctx context.Context, sess *transport.Session) (stri
 		return "", fmt.Errorf("无法从 enterprise.js 解析 reCAPTCHA 版本")
 	}
 	return string(m[1]), nil
+}
+
+func enterpriseJSHeaders() transport.Header {
+	return transport.XHRHeaders("", "*/*", recaptchaBase, recaptchaBase, "cross-site")
 }
 
 // currentVersion 返回缓存的 reCAPTCHA 版本号，未缓存则现场拉取。

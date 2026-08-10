@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
@@ -52,159 +51,10 @@ type VertexAIClient struct {
 	cfg  config.ConfigProvider
 }
 
-type requestRouteKey struct{}
-
-type requestTokenState struct {
-	mu           sync.Mutex
-	token        string
-	proxyURI     string
-	fetchToken   func(context.Context) (string, error)
-	refreshing   bool
-	wait         chan struct{}
-	lastErr      error
-	refreshes    int
-	refreshLimit int
-	limitSet     bool
-}
-
-type tokenInvalidationResult struct {
-	refreshed bool
-	exhausted bool
-}
-
-type requestRoute struct {
-	entryURI           string
-	token              *requestTokenState
-	authCandidateBound bool
-}
-
-func routeFromContext(ctx context.Context) *requestRoute {
-	route, _ := ctx.Value(requestRouteKey{}).(*requestRoute)
-	return route
-}
-
-func (s *requestTokenState) get(ctx context.Context, pool *recaptcha.TokenPool) (string, error) {
-	for {
-		s.mu.Lock()
-		if s.token != "" {
-			token := s.token
-			s.mu.Unlock()
-			return token, nil
-		}
-		if s.refreshing {
-			wait := s.wait
-			s.mu.Unlock()
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case <-wait:
-				s.mu.Lock()
-				token, err := s.token, s.lastErr
-				s.mu.Unlock()
-				return token, err
-			}
-		}
-		if s.lastErr != nil {
-			err := s.lastErr
-			s.mu.Unlock()
-			return "", err
-		}
-		s.refreshing = true
-		s.wait = make(chan struct{})
-		wait := s.wait
-		proxyURI := s.proxyURI
-		fetchToken := s.fetchToken
-		s.mu.Unlock()
-
-		var token string
-		var err error
-		if fetchToken != nil {
-			token, err = fetchToken(ctx)
-		} else {
-			token, err = pool.GetTokenWithProxyContext(ctx, proxyURI)
-		}
-		if err == nil && token == "" {
-			err = fmt.Errorf("empty recaptcha token")
-		}
-		s.mu.Lock()
-		if err == nil {
-			s.token = token
-		}
-		s.lastErr = err
-		s.refreshing = false
-		close(wait)
-		s.mu.Unlock()
-		return token, err
-	}
-}
-
-func (s *requestTokenState) setRefreshLimit(limit int) {
-	if limit < 0 {
-		limit = 0
-	}
-	s.mu.Lock()
-	s.refreshLimit = limit
-	s.limitSet = true
-	s.mu.Unlock()
-}
-
-func (s *requestTokenState) setProxyURI(proxyURI string) {
-	s.mu.Lock()
-	s.proxyURI = proxyURI
-	s.token = ""
-	s.lastErr = nil
-	s.refreshes = 0
-	s.mu.Unlock()
-}
-
-func (s *requestTokenState) invalidateToken(token string) tokenInvalidationResult {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.token != token {
-		return tokenInvalidationResult{}
-	}
-	limit := s.refreshLimit
-	if !s.limitSet {
-		// Preserve the standalone state helper's historical one-refresh default;
-		// request paths always set an explicit policy during prepareRequest.
-		limit = 1
-	}
-	if s.refreshes >= limit {
-		return tokenInvalidationResult{exhausted: true}
-	}
-	s.token = ""
-	s.lastErr = nil
-	s.refreshes++
-	return tokenInvalidationResult{refreshed: true}
-}
-
-// invalidate clears the current token. A stale lease is treated as already handled.
-func (s *requestTokenState) invalidate(token string) bool {
-	result := s.invalidateToken(token)
-	return !result.exhausted
-}
-
-func (c *VertexAIClient) prepareRequest(ctx context.Context) (context.Context, error) {
+func (c *VertexAIClient) prepareRequest(ctx context.Context) context.Context {
 	ctx = transport.WithRequestID(ctx, RequestIDFromContext(ctx))
-	state := &requestTokenState{fetchToken: c.fetchRequestToken} //nolint:exhaustruct
-	authCandidateBound := c.cfg.ParallelPoolEnabled() && !c.cfg.ParallelPoolRetryEnabled()
-	refreshLimit := c.cfg.MaxRetries()
-	if authCandidateBound {
-		// RunRace replaces this provisional value with the actual number of
-		// candidates selected for the request. The initial token is the first try.
-		refreshLimit = max(0, requestConcurrency(c.cfg)-1)
-	}
-	state.setRefreshLimit(refreshLimit)
-	token, err := state.get(ctx, c.pool)
-	if err != nil || token == "" {
-		if err == nil {
-			err = fmt.Errorf("empty recaptcha token")
-		}
-		return ctx, err
-	}
-	route := &requestRoute{token: state, authCandidateBound: authCandidateBound}
 	modelEntries := config.SelectEntryProxySequence(requestConcurrency(c.cfg), c.cfg)
-	return transport.WithEntryProxyPool(context.WithValue(ctx, requestRouteKey{}, route), modelEntries), nil
+	return transport.WithEntryProxyPool(ctx, modelEntries)
 }
 
 func requestConcurrency(cfg config.ConfigProvider) int {
@@ -217,102 +67,11 @@ func requestConcurrency(cfg config.ConfigProvider) int {
 	return 1
 }
 
-type tokenAttempt struct {
-	route string
-	token string
-	err   error
-	entry bool
-}
-
-func (c *VertexAIClient) fetchRequestToken(ctx context.Context) (string, error) {
-	attempts := requestConcurrency(c.cfg)
-	entries := config.SelectEntryProxySequence(attempts, c.cfg)
-	if len(entries) > 0 {
-		if token, err := c.raceTokenAttempts(ctx, entries, true); err == nil {
-			return token, nil
-		} else if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-	}
-
-	var routes []string
-	if candidates := nodes.SelectForParallel(attempts, c.cfg.ParallelNodeTopK(), c.cfg.DebugMode(), false); len(candidates) > 0 {
-		routes = make([]string, 0, len(candidates))
-		for _, candidate := range candidates {
-			routes = append(routes, candidate.RawURI)
-		}
-	}
-	if len(routes) == 0 {
-		routes = []string{""}
-	}
-	return c.raceTokenAttempts(ctx, routes, false)
-}
-
-func (c *VertexAIClient) raceTokenAttempts(ctx context.Context, routes []string, entry bool) (string, error) {
-	raceCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	results := make(chan tokenAttempt, len(routes))
-	for _, route := range routes {
-		route := route
-		go func() {
-			token, err := c.pool.GetTokenWithProxyContext(raceCtx, route)
-			if err == nil && token == "" {
-				err = fmt.Errorf("empty recaptcha token")
-			}
-			results <- tokenAttempt{route: route, token: token, err: err, entry: entry}
-		}()
-	}
-
-	var firstErr error
-	var winner string
-	gotWinner := false
-	failedEntries := make(map[string]string)
-	for range routes {
-		result := <-results
-		if result.err == nil && !gotWinner {
-			winner = result.token
-			gotWinner = true
-			cancel()
-			if result.entry {
-				_ = config.MarkEntryProxySuccess(result.route)
-			} else if result.route != "" {
-				nodes.RecordTest(result.route, true, 0, "")
-			}
-			continue
-		}
-		if result.err != nil {
-			if firstErr == nil {
-				firstErr = result.err
-			}
-			if ctx.Err() != nil || gotWinner && errors.Is(result.err, context.Canceled) {
-				continue
-			}
-			if result.entry {
-				if _, exists := failedEntries[result.route]; !exists {
-					failedEntries[result.route] = result.err.Error()
-				}
-			} else if result.route != "" {
-				nodes.RecordTest(result.route, false, 0, result.err.Error())
-			}
-		}
-	}
-	for route, errText := range failedEntries {
-		_ = config.MarkEntryProxyFailure(route, errText)
-	}
-	if gotWinner {
-		return winner, nil
-	}
-	if firstErr == nil {
-		firstErr = fmt.Errorf("all recaptcha token routes failed")
-	}
-	return "", firstErr
-}
-
 func NewVertexAIClient(cfg config.ConfigProvider) *VertexAIClient {
 	net := transport.NewNetworkClient(cfg.DebugMode(), cfg.ProxyURL)
 	return &VertexAIClient{
 		net:  net,
-		pool: recaptcha.NewTokenPool(net, cfg.ProxyURL, cfg.DebugMode()),
+		pool: recaptcha.NewTokenPool(net, cfg),
 		cfg:  cfg,
 	}
 }
@@ -335,11 +94,7 @@ func (c *VertexAIClient) getBatchGraphqlURL() string {
 const largePayloadThreshold = 1 << 20 // 1MB
 
 func (c *VertexAIClient) CompleteChatN(ctx context.Context, model string, geminiPayload map[string]any, n int) ([]map[string]any, error) {
-	routedCtx, err := c.prepareRequest(ctx)
-	if err != nil {
-		return nil, NewAuthenticationError("Could not fetch recaptcha token: "+err.Error(), err)
-	}
-	return c.completeChatNWithRoute(routedCtx, model, geminiPayload, n)
+	return c.completeChatNWithRoute(c.prepareRequest(ctx), model, geminiPayload, n)
 }
 
 func (c *VertexAIClient) completeChatNWithRoute(ctx context.Context, model string, geminiPayload map[string]any, n int) ([]map[string]any, error) {

@@ -51,11 +51,7 @@ type StreamChunk struct {
 // 不再重试（已发出的内容不能重来）。ctx 取消（客户端断开/关闭）时干净结束流：
 // 重试退避被打断、上游流连接中断，不再空转。
 func (c *VertexAIClient) StreamChat(ctx context.Context, model string, geminiPayload map[string]any, yield func(StreamChunk) bool) {
-	routedCtx, err := c.prepareRequest(ctx)
-	if err != nil {
-		yield(StreamChunk{Err: NewAuthenticationError("Could not fetch recaptcha token: "+err.Error(), err)})
-		return
-	}
+	routedCtx := c.prepareRequest(ctx)
 	op := func(ctx context.Context, proxyURI string) <-chan StreamChunk {
 		ch := make(chan StreamChunk, 64)
 		// 深度拷贝 geminiPayload，防止并发竞速（StreamParallel / RunRace）时
@@ -118,14 +114,6 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 	defer sess.Close()
 
 	recaptchaToken := ""
-	route := routeFromContext(ctx)
-	if route != nil && route.token != nil {
-		recaptchaToken, err = route.token.get(ctx, c.pool)
-		if err != nil {
-			yield(StreamChunk{Err: NewAuthenticationError("Could not fetch recaptcha token: "+err.Error(), err)})
-			return
-		}
-	}
 	isFirstAuth := true
 	attempt := 0
 
@@ -137,21 +125,8 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 retryLoop:
 	for attempt <= maxRetries {
 		log.Printf("[Vertex] [StreamChat] 开始尝试 (Attempt %d/%d), 模型=%s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, reqID, nodes.GetNodeName(proxyURI))
-		if recaptchaToken == "" && route != nil && route.token != nil {
-			token, tokenErr := route.token.get(ctx, c.pool)
-			if tokenErr != nil && ctx.Err() != nil {
-				lastError = NewContextError(ctx.Err())
-				break retryLoop
-			}
-			if tokenErr != nil {
-				lastError = NewAuthenticationError("Could not fetch recaptcha token: "+tokenErr.Error(), tokenErr)
-			} else {
-				recaptchaToken = token
-				isFirstAuth = true
-			}
-		}
-		if recaptchaToken == "" && route == nil {
-			tok, tokenErr := c.pool.GetTokenWithProxyContext(ctx, proxyURI)
+		if recaptchaToken == "" {
+			tok, tokenErr := c.pool.GetTokenSharedContext(ctx)
 			if tokenErr != nil && ctx.Err() != nil {
 				lastError = NewContextError(ctx.Err())
 				break retryLoop
@@ -228,28 +203,8 @@ retryLoop:
 				}
 				continue
 			}
-			// In multi-node mode with per-node retry disabled, the first candidate
-			// reporting a stale shared token hands control to RunRace. That layer
-			// retires this candidate, cancels the remaining old-token work, and
-			// starts the next race round with one shared refreshed token.
-			if route != nil && route.token != nil && isRecaptchaAuthError(ve.Message) {
-				lastError = ve
-				if contentYielded {
-					break retryLoop
-				}
-				if route.authCandidateBound {
-					ve.markRequestTokenInvalid(recaptchaToken)
-					break retryLoop
-				}
-				result := route.token.invalidateToken(recaptchaToken)
-				if result.exhausted {
-					lastError = NewInternalError("recaptcha token remained invalid after request recovery").markRequestTokenTerminal()
-					break retryLoop
-				}
-				recaptchaToken = ""
-				isFirstAuth = true
-				continue
-			}
+			recaptchaToken = ""
+			isFirstAuth = true
 			lastError = ve
 			if contentYielded || attempt >= maxRetries {
 				break retryLoop
@@ -277,6 +232,7 @@ retryLoop:
 				return
 			}
 			sess = newSess
+			recaptchaToken = ""
 
 			// 避免过快重试 429 导致 token 浪费 and 节点持续封禁
 			wait := ve.RetryAfter
