@@ -110,6 +110,10 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			writeJSON(w, ve.Code, vertexErrorToOAI(ve))
 			return
 		}
+		toolCallIDAssigner := transform.NewFunctionCallIDAssigner()
+		for _, response := range responses {
+			toolCallIDAssigner.Ensure(response)
+		}
 		writeJSON(w, http.StatusOK, c.respConv.AggregateN(responses, model))
 		return
 	}
@@ -126,6 +130,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	transform.EnsureFunctionCallIDs(geminiResp)
 	oaiResp := c.respConv.ToOAI(geminiResp, model)
 	writeJSON(w, http.StatusOK, oaiResp)
 }
@@ -236,25 +241,51 @@ func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 
+	transform.EnsureFunctionCallIDs(resp)
 	oai := c.respConv.ToOAI(resp, model)
 	contentText := firstChoiceContent(oai)
+	toolCalls := firstChoiceToolCalls(oai)
 
 	createdTS := time.Now().Unix()
 	chunks := splitIntoRuneChunks(contentText)
+	if len(chunks) == 0 && len(toolCalls) > 0 {
+		chunks = []string{""}
+	}
 	for i, piece := range chunks {
 		base := streamChunkBase(model, requestID)
 		base["created"] = createdTS
 		var delta map[string]any
 		if i == 0 {
-			delta = map[string]any{"role": "assistant", "content": piece}
+			delta = map[string]any{"role": "assistant"}
+			if piece != "" {
+				delta["content"] = piece
+			}
 		} else {
 			delta = map[string]any{"content": piece}
 		}
 		choice := map[string]any{"index": 0, "delta": delta}
-		if i == len(chunks)-1 {
+		if i == len(chunks)-1 && len(toolCalls) == 0 {
 			choice["finish_reason"] = "stop"
 		}
 		base["choices"] = []any{choice}
+		if !sw.write(sseEvent(base)) {
+			return
+		}
+	}
+	for _, toolCall := range toolCalls {
+		base := streamChunkBase(model, requestID)
+		base["created"] = createdTS
+		base["choices"] = []any{map[string]any{
+			"index": 0, "delta": map[string]any{"tool_calls": []any{toolCall}}, "finish_reason": nil,
+		}}
+		if !sw.write(sseEvent(base)) {
+			return
+		}
+	}
+	if len(toolCalls) > 0 {
+		base := streamChunkBase(model, requestID)
+		base["created"] = createdTS
+		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}}
 		if !sw.write(sseEvent(base)) {
 			return
 		}
@@ -281,16 +312,25 @@ func (c *ChatHandler) oaiAggregateStream(ctx context.Context, w http.ResponseWri
 		c.writeStreamError(sw.write, ve, requestID, model)
 		return
 	}
+	transform.EnsureFunctionCallIDs(resp)
 	oai := c.respConv.ToOAI(resp, model)
 	contentText := firstChoiceContent(oai)
+	toolCalls := firstChoiceToolCalls(oai)
 
 	createdTS := time.Now().Unix()
 	base := streamChunkBase(model, requestID)
 	base["created"] = createdTS
 
+	delta := map[string]any{"role": "assistant"}
+	if contentText != "" {
+		delta["content"] = contentText
+	}
+	if len(toolCalls) > 0 {
+		delta["tool_calls"] = toolCalls
+	}
 	choice := map[string]any{
 		"index": 0,
-		"delta": map[string]any{"role": "assistant", "content": contentText},
+		"delta": delta,
 	}
 	base["choices"] = []any{choice}
 	if !sw.write(sseEvent(base)) {
@@ -300,10 +340,14 @@ func (c *ChatHandler) oaiAggregateStream(ctx context.Context, w http.ResponseWri
 	// Stream end
 	baseEnd := streamChunkBase(model, requestID)
 	baseEnd["created"] = createdTS
+	finishReason := "stop"
+	if len(toolCalls) > 0 {
+		finishReason = "tool_calls"
+	}
 	choiceEnd := map[string]any{
 		"index":         0,
 		"delta":         map[string]any{},
-		"finish_reason": "stop",
+		"finish_reason": finishReason,
 	}
 	baseEnd["choices"] = []any{choiceEnd}
 	sw.write(sseEvent(baseEnd))
@@ -327,4 +371,34 @@ func firstChoiceContent(oai map[string]any) string {
 		return c
 	}
 	return ""
+}
+
+func firstChoiceToolCalls(oai map[string]any) []any {
+	choices, ok := oai["choices"].([]any)
+	if !ok || len(choices) == 0 {
+		return nil
+	}
+	choice, ok := choices[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+	message, ok := choice["message"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	calls, _ := message["tool_calls"].([]any)
+	indexed := make([]any, 0, len(calls))
+	for index, rawCall := range calls {
+		call, ok := rawCall.(map[string]any)
+		if !ok {
+			continue
+		}
+		copyCall := make(map[string]any, len(call)+1)
+		for key, value := range call {
+			copyCall[key] = value
+		}
+		copyCall["index"] = index
+		indexed = append(indexed, copyCall)
+	}
+	return indexed
 }

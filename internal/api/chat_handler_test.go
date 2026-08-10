@@ -43,6 +43,26 @@ func TestWriteStreamErrorEmitsValidTerminalChoices(t *testing.T) {
 	}
 }
 
+func TestFirstChoiceToolCallsAddsStreamIndexesAndKeepsIDs(t *testing.T) {
+	oai := map[string]any{"choices": []any{map[string]any{"message": map[string]any{
+		"tool_calls": []any{
+			map[string]any{"id": "tool_call_1", "type": "function"},
+			map[string]any{"id": "tool_call_2", "type": "function"},
+		},
+	}}}}
+
+	calls := firstChoiceToolCalls(oai)
+	if len(calls) != 2 {
+		t.Fatalf("calls=%#v, want two calls", calls)
+	}
+	for index, rawCall := range calls {
+		call := rawCall.(map[string]any)
+		if call["index"] != index || call["id"] == "" {
+			t.Fatalf("call %d=%#v, want indexed call with id", index, call)
+		}
+	}
+}
+
 type assertableError string
 
 func (e assertableError) Error() string { return string(e) }
