@@ -381,6 +381,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		} else if sr.StatusCode == 400 {
 			debugBody, _ := json.Marshal(newBody.Variables)
 			log.Printf("[Vertex] [Stream] 收到 400 Bad Request, Variables Payload: %s", string(debugBody))
+			log.Printf("[Vertex] [Stream] 上游 400 原始回复: %s", errText)
 		}
 
 		if sr.StatusCode == 401 || sr.StatusCode == 403 ||

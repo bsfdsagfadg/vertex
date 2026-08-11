@@ -18,7 +18,8 @@ func BuildGeminiVariablesTyped(model string, req *GeminiRequest, cfg config.Conf
 		req = &GeminiRequest{}
 	}
 
-	contents := mergeContiguousRolesTyped(req.Contents)
+	contents := sanitizeContentRolesTyped(req.Contents)
+	contents = mergeContiguousRolesTyped(contents)
 	contents = filterEmptyContentsTyped(contents)
 	applyHistorySignatures(contents)
 	sysInstruction := req.SystemInstruction
@@ -39,12 +40,17 @@ func BuildGeminiVariablesTyped(model string, req *GeminiRequest, cfg config.Conf
 		}
 	}
 
+	safetySettings := req.SafetySettings
+	if len(safetySettings) == 0 && cfg != nil {
+		safetySettings = buildSafetySettingsTyped(cfg)
+	}
+
 	out := &GeminiRequest{
 		Contents:          contents,
 		SystemInstruction: sysInstruction,
 		Tools:             prepareNativeTools(req.Tools),
 		ToolConfig:        prepareNativeToolConfig(req.ToolConfig),
-		SafetySettings:    prepareNativeSafetySettings(req.SafetySettings),
+		SafetySettings:    prepareNativeSafetySettings(model, safetySettings),
 		GenerationConfig:  prepareNativeGenerationConfig(req.GenerationConfig),
 		CachedContent:     req.CachedContent,
 		ServiceTier:       req.ServiceTier,
@@ -73,10 +79,11 @@ func BuildGeminiVariables(model string, req *GeminiRequest, cfg config.ConfigPro
 
 // mergeContiguousRolesTyped 合并相邻同 role 的 content。
 //
-// 规则：只要 prev 或 c 包含 FunctionResponse，则绝对禁止与其他 Content 合并
-// （即使对方同样含有 FunctionResponse 或同为 user/function role），
-// 强制保持 FunctionResponse 处于独占的 Content 节点中，防止 Google Vertex AI 上游
-// 抛出 400 INVALID_ARGUMENT (Function response content must be unique)。
+// 规则：
+// 1. 若相邻两个 Content 均为 FunctionResponse（即 partsIsOnlyFunctionResponsesTyped 为 true），
+//    则允许并推荐合并到一个 Content 中，满足 Vertex AI 上游对于多工具调用 (Parallel Tool Calls) 需打包在同一个 turn 的强要求；
+// 2. 若只有一个 Content 包含 FunctionResponse 而另一个是普通 user 内容（如随后的文本/图片提示词），
+//    则严格禁止合并，保持 FunctionResponse 在独立 Content turn 中隔离。
 func mergeContiguousRolesTyped(contents []Content) []Content {
 	if len(contents) == 0 {
 		return contents
@@ -88,13 +95,37 @@ func mergeContiguousRolesTyped(contents []Content) []Content {
 			merged = append(merged, c)
 			continue
 		}
+		prevIsFR := partsIsOnlyFunctionResponsesTyped(prev.Parts)
+		currIsFR := partsIsOnlyFunctionResponsesTyped(c.Parts)
+
+		if prevIsFR && currIsFR {
+			// 两者都是纯 FunctionResponse，合并为同一个 Content turn
+			prev.Parts = append(prev.Parts, c.Parts...)
+			continue
+		}
+
 		if partsContainFunctionResponseTyped(prev.Parts) || partsContainFunctionResponseTyped(c.Parts) {
+			// 其中一个为 FunctionResponse，另一个包含非 FunctionResponse 内容（如 user text），隔离禁止合并
 			merged = append(merged, c)
 			continue
 		}
+
+		// 普通同 role 消息合并
 		prev.Parts = append(prev.Parts, c.Parts...)
 	}
 	return merged
+}
+
+// sanitizeContentRolesTyped 将 contents 中 Role 为空或纯空白的 Content
+// 兜底为 "user"，满足 Vertex AI 上游对 role 字段的非空强要求。
+// 仅补全空值，不改动已有的合法 role（user/model）。
+func sanitizeContentRolesTyped(contents []Content) []Content {
+	for i := range contents {
+		if strings.TrimSpace(contents[i].Role) == "" {
+			contents[i].Role = "user"
+		}
+	}
+	return contents
 }
 
 // filterEmptyContentsTyped 丢弃无任何有效字段的 part，并丢弃清洗后 parts 为空的 content。
@@ -175,6 +206,19 @@ func partsContainFunctionResponseTyped(parts []Part) bool {
 	return false
 }
 
+// partsIsOnlyFunctionResponsesTyped 判断 parts 是否非空且所有 part 均为 functionResponse。
+func partsIsOnlyFunctionResponsesTyped(parts []Part) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	for _, p := range parts {
+		if p.FunctionResponse == nil {
+			return false
+		}
+	}
+	return true
+}
+
 // matchTrailingFixModel 检查模型名称是否匹配尾部修复清单。
 func matchTrailingFixModel(model string, list []string) bool {
 	for _, item := range list {
@@ -231,16 +275,25 @@ func prepareNativeToolConfig(tc *ToolConfig) *ToolConfig {
 }
 
 // prepareNativeSafetySettings 规范化 SafetySettings 中的 Category 与 Threshold 枚举为全大写并去除首尾空格。
-func prepareNativeSafetySettings(settings []SafetySetting) []SafetySetting {
+// 对于图像模型，剔除上游不支持的 HARM_CATEGORY_JAILBREAK 与 HARM_CATEGORY_CIVIC_INTEGRITY 分类。
+func prepareNativeSafetySettings(model string, settings []SafetySetting) []SafetySetting {
 	if len(settings) == 0 {
 		return nil
 	}
-	out := make([]SafetySetting, len(settings))
-	for i, s := range settings {
-		out[i] = SafetySetting{
-			Category:  strings.ToUpper(strings.TrimSpace(s.Category)),
-			Threshold: strings.ToUpper(strings.TrimSpace(s.Threshold)),
+	isImage := IsImageModel(model)
+	out := make([]SafetySetting, 0, len(settings))
+	for _, s := range settings {
+		cat := strings.ToUpper(strings.TrimSpace(s.Category))
+		if isImage && (cat == "HARM_CATEGORY_JAILBREAK" || cat == "HARM_CATEGORY_CIVIC_INTEGRITY") {
+			continue
 		}
+		out = append(out, SafetySetting{
+			Category:  cat,
+			Threshold: strings.ToUpper(strings.TrimSpace(s.Threshold)),
+		})
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

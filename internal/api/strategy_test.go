@@ -121,6 +121,92 @@ func TestImageStrategy_EnhanceAndValidate(t *testing.T) {
 			t.Fatalf("expected nil thinkingConfig for unsupported image model, got %v", req.GenerationConfig.ThinkingConfig)
 		}
 	})
+
+	t.Run("no client thinkingConfig - image strategy does not inject console default level", func(t *testing.T) {
+		cfgWithThinking := &mockConfigProvider{defaultThinkingLevel: "中", defaultImageSize: "1K", defaultResponseModalities: "默认"}
+
+		// 2.5-flash-image (unsupported thinking)
+		st25 := &ImageStrategy{model: "gemini-2.5-flash-image"}
+		req25 := &transform.GeminiRequest{}
+		st25.Enhance(req25, cfgWithThinking)
+		if req25.GenerationConfig.ThinkingConfig != nil {
+			t.Fatalf("expected nil thinkingConfig for gemini-2.5-flash-image without client input, got %v", req25.GenerationConfig.ThinkingConfig)
+		}
+		if err := st25.Validate(req25); err != nil {
+			t.Fatalf("validation failed for gemini-2.5-flash-image: %v", err)
+		}
+
+		// 3.1-flash-image (supports MINIMAL and HIGH thinking)
+		st31 := &ImageStrategy{model: "gemini-3.1-flash-image"}
+		req31 := &transform.GeminiRequest{}
+		st31.Enhance(req31, cfgWithThinking)
+		if req31.GenerationConfig.ThinkingConfig != nil {
+			t.Fatalf("expected nil thinkingConfig for gemini-3.1-flash-image without client input, got %v", req31.GenerationConfig.ThinkingConfig)
+		}
+		if err := st31.Validate(req31); err != nil {
+			t.Fatalf("validation failed for gemini-3.1-flash-image: %v", err)
+		}
+	})
+}
+
+func TestImageStrategy_All4Models_ThinkingIsolation(t *testing.T) {
+	cfgWithThinking := &mockConfigProvider{
+		defaultThinkingLevel:      "高",
+		defaultImageSize:          "1K",
+		defaultResponseModalities: "默认",
+	}
+
+	models := []string{
+		"gemini-2.5-flash-image",
+		"gemini-3-pro-image",
+		"gemini-3.1-flash-image",
+		"gemini-3.1-flash-lite-image",
+	}
+
+	for _, model := range models {
+		t.Run(model+" thinking isolation", func(t *testing.T) {
+			st := &ImageStrategy{model: model}
+			req := &transform.GeminiRequest{}
+			st.Enhance(req, cfgWithThinking)
+			if req.GenerationConfig.ThinkingConfig != nil {
+				t.Fatalf("expected nil thinkingConfig for model %s without client input when console default is High, got %v", model, req.GenerationConfig.ThinkingConfig)
+			}
+			if err := st.Validate(req); err != nil {
+				t.Fatalf("validation failed for model %s: %v", model, err)
+			}
+		})
+	}
+}
+
+func TestImageStrategy_SafetySettings_CleanJailbreak(t *testing.T) {
+	cfg := &mockConfigProvider{}
+	models := []string{
+		"gemini-2.5-flash-image",
+		"gemini-3-pro-image",
+		"gemini-3.1-flash-image",
+		"gemini-3.1-flash-lite-image",
+	}
+
+	for _, model := range models {
+		t.Run(model+" cleans jailbreak", func(t *testing.T) {
+			st := &ImageStrategy{model: model}
+			req := &transform.GeminiRequest{
+				SafetySettings: []transform.SafetySetting{
+					{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_NONE"},
+					{Category: "HARM_CATEGORY_JAILBREAK", Threshold: "BLOCK_MEDIUM_AND_ABOVE"},
+				},
+			}
+			st.Enhance(req, cfg)
+			for _, ss := range req.SafetySettings {
+				if ss.Category == "HARM_CATEGORY_JAILBREAK" {
+					t.Fatalf("model %s still has HARM_CATEGORY_JAILBREAK in SafetySettings after Enhance", model)
+				}
+			}
+			if len(req.SafetySettings) != 1 || req.SafetySettings[0].Category != "HARM_CATEGORY_HATE_SPEECH" {
+				t.Fatalf("expected 1 safety setting for model %s, got %v", model, req.SafetySettings)
+			}
+		})
+	}
 }
 
 func TestAudioStrategy_EnhanceAndValidate(t *testing.T) {

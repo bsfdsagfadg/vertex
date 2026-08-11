@@ -35,6 +35,33 @@ func ConvertChatRequestToGemini(req *ChatCompletionRequest, cfg ConfigFace) (*Ge
 	var systemParts []Part
 	toolIDToName := map[string]string{}
 
+	// 预扫描：针对历史消息建立 tool_call_id 到函数名的映射表（处理部分客户端传入空 function.name 但 tool 消息带 name 的情况）
+	for i := range req.Messages {
+		m := &req.Messages[i]
+		if m.Role == "tool" {
+			tcID := strings.TrimSpace(m.ToolCallID)
+			name := strings.TrimSpace(m.Name)
+			if tcID != "" && name != "" {
+				toolIDToName[tcID] = name
+			}
+		} else if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				tcID := strings.TrimSpace(tc.ID)
+				name := strings.TrimSpace(tc.Function.Name)
+				if tcID != "" && name != "" {
+					toolIDToName[tcID] = name
+				}
+			}
+		}
+	}
+
+	type pendingToolCall struct {
+		id       string
+		name     string
+		consumed bool
+	}
+	var pendingCalls []*pendingToolCall
+
 	for i := range req.Messages {
 		msg := &req.Messages[i]
 		switch msg.Role {
@@ -63,10 +90,23 @@ func ConvertChatRequestToGemini(req *ChatCompletionRequest, cfg ConfigFace) (*Ge
 				parts = append(parts, splitAssistantContentTyped(msg.Content)...)
 			}
 			for _, tc := range msg.ToolCalls {
-				if tc.ID != "" {
-					toolIDToName[tc.ID] = tc.Function.Name
+				name := strings.TrimSpace(tc.Function.Name)
+				if name == "" && tc.ID != "" {
+					name = toolIDToName[tc.ID]
 				}
-				fc := FunctionCall{Name: tc.Function.Name, Args: parseArgsString(tc.Function.Arguments)}
+				if name == "" {
+					name = inferFunctionNameFromArgs(tc.Function.Arguments, req.Tools)
+				}
+				if name == "" {
+					return nil, "", fmt.Errorf("assistant 工具调用缺少 function.name (missing assistant tool_calls.function.name)")
+				}
+				if tc.ID != "" && name != "" {
+					toolIDToName[tc.ID] = name
+				}
+				if name != "" {
+					pendingCalls = append(pendingCalls, &pendingToolCall{id: tc.ID, name: name, consumed: false})
+				}
+				fc := FunctionCall{Name: name, Args: parseArgsString(tc.Function.Arguments)}
 				if tc.ID != "" {
 					fc.ID = tc.ID
 				}
@@ -76,12 +116,52 @@ func ConvertChatRequestToGemini(req *ChatCompletionRequest, cfg ConfigFace) (*Ge
 				gemini.Contents = append(gemini.Contents, Content{Role: "model", Parts: parts})
 			}
 		case "tool":
-			tcID := msg.ToolCallID
-			name := firstTruthyString(msg.Name, toolIDToName[tcID])
-			fr := FunctionResponse{Response: coerceFunctionResponseTyped(msg)}
-			if name != "" {
-				fr.Name = name
+			tcID := strings.TrimSpace(msg.ToolCallID)
+			name := strings.TrimSpace(msg.Name)
+
+			if name == "" && tcID != "" {
+				name = toolIDToName[tcID]
 			}
+
+			// 尝试标记对应的 pendingCall
+			var matched *pendingToolCall
+			if name != "" || tcID != "" {
+				for _, p := range pendingCalls {
+					if !p.consumed {
+						if (tcID != "" && p.id == tcID) || (name != "" && p.name == name) {
+							matched = p
+							if name == "" {
+								name = p.name
+							}
+							break
+						}
+					}
+				}
+			}
+
+			// 若仍然无法定位函数名，检查是否存在唯一未消费的前置工具调用以顺序恢复
+			if name == "" {
+				var unconsumed []*pendingToolCall
+				for _, p := range pendingCalls {
+					if !p.consumed {
+						unconsumed = append(unconsumed, p)
+					}
+				}
+				if len(unconsumed) == 1 {
+					matched = unconsumed[0]
+					name = matched.name
+				} else if len(unconsumed) > 1 {
+					return nil, "", fmt.Errorf("tool 消息缺少 name/tool_call_id，且历史存在多个未消费的工具调用，无法精确推断函数名 (ambiguous unconsumed tool calls)")
+				} else {
+					return nil, "", fmt.Errorf("tool 消息缺少 name 且 tool_call_id (%q) 无法关联到前置 assistant 工具调用 (unmatched tool_call_id)", tcID)
+				}
+			}
+
+			if matched != nil {
+				matched.consumed = true
+			}
+
+			fr := FunctionResponse{Name: name, Response: coerceFunctionResponseTyped(msg)}
 			if tcID != "" {
 				fr.ID = tcID
 			}
@@ -90,10 +170,31 @@ func ConvertChatRequestToGemini(req *ChatCompletionRequest, cfg ConfigFace) (*Ge
 				Parts: []Part{{FunctionResponse: &fr}},
 			})
 		case "function":
-			name := msg.Name
+			name := strings.TrimSpace(msg.Name)
 			if name == "" {
-				name = "unknown"
+				var unconsumed []*pendingToolCall
+				for _, p := range pendingCalls {
+					if !p.consumed {
+						unconsumed = append(unconsumed, p)
+					}
+				}
+				if len(unconsumed) == 1 {
+					unconsumed[0].consumed = true
+					name = unconsumed[0].name
+				} else if len(unconsumed) > 1 {
+					return nil, "", fmt.Errorf("function 消息缺少 name，且历史存在多个未消费的函数调用 (ambiguous unconsumed function calls)")
+				} else {
+					return nil, "", fmt.Errorf("function 消息缺少 name 且无法关联到前置函数调用 (missing function name)")
+				}
+			} else {
+				for _, p := range pendingCalls {
+					if !p.consumed && p.name == name {
+						p.consumed = true
+						break
+					}
+				}
 			}
+
 			gemini.Contents = append(gemini.Contents, Content{
 				Role:  "user",
 				Parts: []Part{{FunctionResponse: &FunctionResponse{
@@ -369,6 +470,61 @@ func int64Ptr(v int64) *int64 { return &v }
 
 // boolPtr 返回 bool 指针。
 func boolPtr(v bool) *bool { return &v }
+
+// inferFunctionNameFromArgs 根据参数键与工具声明尝试推断/恢复丢失的工具函数名。
+func inferFunctionNameFromArgs(argsStr string, tools []OAITool) string {
+	rawArgs := parseArgsString(argsStr)
+	argsMap, _ := rawArgs.(map[string]any)
+
+	// 1. 若当前请求仅声明了一个工具，且非空，优先直接归属于该工具
+	if len(tools) == 1 && tools[0].Function.Name != "" {
+		return tools[0].Function.Name
+	}
+
+	if len(argsMap) == 0 {
+		return ""
+	}
+
+	// 2. 优先比对当前请求中 req.Tools 声明的 Schema 属性（确保恢复出的名称强锁定在请求允许的工具范围内）
+	for _, t := range tools {
+		if t.Function.Name == "" || t.Function.Parameters == nil {
+			continue
+		}
+		props, ok := t.Function.Parameters["properties"].(map[string]any)
+		if !ok {
+			continue
+		}
+		matchAll := true
+		for k := range argsMap {
+			if _, exists := props[k]; !exists {
+				matchAll = false
+				break
+			}
+		}
+		if matchAll {
+			return t.Function.Name
+		}
+	}
+
+	// 3. 仅在 req.Tools 无法匹配时，使用静态特征规则兜底
+	if _, ok := argsMap["filePath"]; ok {
+		return "read"
+	}
+	if _, ok := argsMap["command"]; ok {
+		return "bash"
+	}
+	if _, ok := argsMap["cmd"]; ok {
+		return "bash"
+	}
+	if _, ok := argsMap["pattern"]; ok {
+		return "grep"
+	}
+	if _, ok := argsMap["todos"]; ok {
+		return "todowrite"
+	}
+
+	return ""
+}
 
 // 确保 ConfigFace 实现兼容 config.ConfigProvider 的最小面。
 var _ ConfigFace = (config.ConfigProvider)(nil)

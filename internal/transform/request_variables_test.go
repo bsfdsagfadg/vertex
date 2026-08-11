@@ -12,6 +12,10 @@ type dummyConfig struct {
 	trailingFixModels  []string
 }
 
+func (d *dummyConfig) SafetySettings() map[string]string {
+	return map[string]string{}
+}
+
 func (d *dummyConfig) TrailingModelFixEnabled() bool {
 	return d.trailingFixEnabled
 }
@@ -365,5 +369,296 @@ func TestBuildGeminiVariables_ToolResponseIsolation(t *testing.T) {
 	pUser, ok := userParts[0].(map[string]any)
 	if !ok || pUser["text"] != "Analyze main.go" {
 		t.Errorf("content[3] part text=%v, want 'Analyze main.go'", pUser["text"])
+	}
+}
+
+func TestBuildGeminiVariables_MultipleParallelToolResponsesMerged(t *testing.T) {
+	// 构造多平行工具调用的 OpenAI 请求：
+	// user -> assistant(2 functionCalls: glob, read) -> tool1(glob) -> tool2(read) -> user(follow-up text)
+	strPtr := func(s string) *string { return &s }
+	chatReq := &ChatCompletionRequest{
+		Model: "gemini-3.6-flash",
+		Messages: []Message{
+			{Role: "user", Content: MessageContent{String: strPtr("Find and read files")}},
+			{
+				Role: "assistant",
+				ToolCalls: []OAIToolCall{
+					{
+						ID:       "call_1",
+						Type:     "function",
+						Function: OAIToolCallFn{Name: "glob", Arguments: `{"pattern":"*.go"}`},
+					},
+					{
+						ID:       "call_2",
+						Type:     "function",
+						Function: OAIToolCallFn{Name: "read", Arguments: `{"path":"main.go"}`},
+					},
+				},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: "call_1",
+				Name:       "glob",
+				Content:    MessageContent{String: strPtr(`["main.go"]`)},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: "call_2",
+				Name:       "read",
+				Content:    MessageContent{String: strPtr("package main")},
+			},
+			{Role: "user", Content: MessageContent{String: strPtr("Analyze the content")}},
+		},
+	}
+
+	geminiReq, _, err := ConvertChatRequestToGemini(chatReq, nil)
+	if err != nil {
+		t.Fatalf("ConvertChatRequestToGemini failed: %v", err)
+	}
+
+	vars := BuildGeminiVariables("gemini-3.6-flash", geminiReq, nil)
+	contents, ok := vars["contents"].([]any)
+	if !ok {
+		t.Fatalf("contents in vars is not []any")
+	}
+
+	// 期望 4 个 Content 节点：
+	// 0: user ("Find and read files")
+	// 1: model (2 functionCalls)
+	// 2: user (2 functionResponses 合并到同一个 Content 中！)
+	// 3: user ("Analyze the content" 隔离保持独立)
+	if len(contents) != 4 {
+		t.Fatalf("len(contents)=%d, want 4 (multiple consecutive functionResponses MUST be merged into 1 Content)", len(contents))
+	}
+
+	toolContent, ok := contents[2].(map[string]any)
+	if !ok || toolContent["role"] != "user" {
+		t.Fatalf("content[2] role=%v, want 'user'", toolContent["role"])
+	}
+	toolParts, ok := toolContent["parts"].([]any)
+	if !ok || len(toolParts) != 2 {
+		t.Fatalf("len(toolParts)=%d, want 2 (both tool responses merged into 1 turn)", len(toolParts))
+	}
+
+	// 校验第 1 个 part 是 glob
+	p0, ok := toolParts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("toolParts[0] not a map")
+	}
+	fr0, ok := p0["functionResponse"].(map[string]any)
+	if !ok || fr0["name"] != "glob" {
+		t.Errorf("fr0 name=%v, want 'glob'", fr0["name"])
+	}
+
+	// 校验第 2 个 part 是 read
+	p1, ok := toolParts[1].(map[string]any)
+	if !ok {
+		t.Fatalf("toolParts[1] not a map")
+	}
+	fr1, ok := p1["functionResponse"].(map[string]any)
+	if !ok || fr1["name"] != "read" {
+		t.Errorf("fr1 name=%v, want 'read'", fr1["name"])
+	}
+
+	// 校验 follow-up user text 节点 3 独立存在
+	userContent, ok := contents[3].(map[string]any)
+	if !ok || userContent["role"] != "user" {
+		t.Fatalf("content[3] role=%v, want 'user'", userContent["role"])
+	}
+	userParts, ok := userContent["parts"].([]any)
+	if !ok || len(userParts) != 1 {
+		t.Fatalf("len(userParts)=%d, want 1", len(userParts))
+	}
+	pUser, ok := userParts[0].(map[string]any)
+	if !ok || pUser["text"] != "Analyze the content" {
+		t.Errorf("content[3] part text=%v, want 'Analyze the content'", pUser["text"])
+	}
+}
+
+func TestBuildGeminiVariablesTyped_DefaultSafetySettings(t *testing.T) {
+	req := &GeminiRequest{
+		Contents: []Content{
+			{Role: "user", Parts: []Part{{Text: "Draw a picture"}}},
+		},
+	}
+	cfg := &dummyConfig{}
+
+	t.Run("Image model strips HARM_CATEGORY_JAILBREAK and HARM_CATEGORY_CIVIC_INTEGRITY", func(t *testing.T) {
+		vars := BuildGeminiVariablesTyped("gemini-3.1-flash-image", req, cfg)
+		if vars == nil || vars.GeminiRequest == nil {
+			t.Fatal("vars or GeminiRequest is nil")
+		}
+		settings := vars.SafetySettings
+		if len(settings) != 4 {
+			t.Fatalf("expected 4 default safety settings for image model, got %d", len(settings))
+		}
+		for _, s := range settings {
+			if s.Category == "HARM_CATEGORY_JAILBREAK" || s.Category == "HARM_CATEGORY_CIVIC_INTEGRITY" {
+				t.Errorf("image model should not contain %s", s.Category)
+			}
+			if s.Threshold != "BLOCK_NONE" {
+				t.Errorf("expected BLOCK_NONE threshold, got %s", s.Threshold)
+			}
+		}
+	})
+
+	t.Run("Non-image model retains HARM_CATEGORY_JAILBREAK", func(t *testing.T) {
+		vars := BuildGeminiVariablesTyped("gemini-2.5-flash", req, cfg)
+		if vars == nil || vars.GeminiRequest == nil {
+			t.Fatal("vars or GeminiRequest is nil")
+		}
+		settings := vars.SafetySettings
+		if len(settings) != 6 {
+			t.Fatalf("expected 6 default safety settings for text model, got %d", len(settings))
+		}
+		hasJailbreak := false
+		for _, s := range settings {
+			if s.Category == "HARM_CATEGORY_JAILBREAK" {
+				hasJailbreak = true
+			}
+		}
+		if !hasJailbreak {
+			t.Errorf("text model should retain HARM_CATEGORY_JAILBREAK")
+		}
+	})
+}
+
+func TestSanitizeContentRolesTyped(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    []Content
+		expected []string // 期望的各 content role
+	}{
+		{
+			name:     "empty string defaults to user",
+			input:    []Content{{Role: "", Parts: []Part{{Text: "hi"}}}},
+			expected: []string{"user"},
+		},
+		{
+			name:     "whitespace-only defaults to user",
+			input:    []Content{{Role: "   ", Parts: []Part{{Text: "hi"}}}},
+			expected: []string{"user"},
+		},
+		{
+			name: "valid roles preserved",
+			input: []Content{
+				{Role: "user", Parts: []Part{{Text: "q"}}},
+				{Role: "model", Parts: []Part{{Text: "a"}}},
+			},
+			expected: []string{"user", "model"},
+		},
+		{
+			name: "mixed empty and valid",
+			input: []Content{
+				{Role: "", Parts: []Part{{Text: "turn1"}}},
+				{Role: "model", Parts: []Part{{Text: "resp"}}},
+				{Role: "  ", Parts: []Part{{Text: "turn2"}}},
+			},
+			expected: []string{"user", "model", "user"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeContentRolesTyped(tc.input)
+			for i, want := range tc.expected {
+				if got[i].Role != want {
+					t.Errorf("content[%d] role = %q, want %q", i, got[i].Role, want)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildGeminiVariablesTyped_EmptyRoleSanitized(t *testing.T) {
+	// 场景：Gemini 原生 REST 客户端省略 role 字段
+	req := &GeminiRequest{
+		Contents: []Content{
+			{Role: "", Parts: []Part{{Text: "Hello TTS"}}},
+		},
+		GenerationConfig: &GenerationConfig{
+			ResponseModalities: []string{"AUDIO"},
+		},
+	}
+	vars := BuildGeminiVariablesTyped("gemini-3.1-flash-tts-preview", req, nil)
+
+	if len(vars.Contents) != 1 {
+		t.Fatalf("expected 1 content, got %d", len(vars.Contents))
+	}
+	if vars.Contents[0].Role != "user" {
+		t.Errorf("empty role should default to 'user', got %q", vars.Contents[0].Role)
+	}
+}
+
+func TestBuildGeminiVariablesTyped_WhitespaceRoleSanitized(t *testing.T) {
+	// 场景：role 为纯空白
+	req := &GeminiRequest{
+		Contents: []Content{
+			{Role: "   ", Parts: []Part{{Text: "hi"}}},
+		},
+	}
+	vars := BuildGeminiVariablesTyped("gemini-pro", req, nil)
+
+	if vars.Contents[0].Role != "user" {
+		t.Errorf("whitespace-only role should default to 'user', got %q", vars.Contents[0].Role)
+	}
+}
+
+func TestBuildGeminiVariablesTyped_ValidRolePreserved(t *testing.T) {
+	// 场景：合法 role 不被改动
+	req := &GeminiRequest{
+		Contents: []Content{
+			{Role: "user", Parts: []Part{{Text: "q"}}},
+			{Role: "model", Parts: []Part{{Text: "a"}}},
+		},
+	}
+	vars := BuildGeminiVariablesTyped("gemini-pro", req, nil)
+
+	if vars.Contents[0].Role != "user" {
+		t.Errorf("user role should be preserved, got %q", vars.Contents[0].Role)
+	}
+	if vars.Contents[1].Role != "model" {
+		t.Errorf("model role should be preserved, got %q", vars.Contents[1].Role)
+	}
+}
+
+func TestBuildGeminiVariablesTyped_EmptyRoleMergeOrder(t *testing.T) {
+	// 场景：两条空 Role 的相邻 content。
+	// 修复前：sanitize 未执行时 "" == "" → merge 误判为同角色合并，且 role 仍为空 → 上游 400。
+	// 修复后：sanitize 先将两条均兜底为 "user"，merge 正确合并为 1 条，role 合法。
+	req := &GeminiRequest{
+		Contents: []Content{
+			{Role: "", Parts: []Part{{Text: "turn1"}}},
+			{Role: "", Parts: []Part{{Text: "turn2"}}},
+		},
+	}
+	vars := BuildGeminiVariablesTyped("gemini-pro", req, nil)
+
+	// 关键验证点：输出中所有 content 的 Role 不再为空字符串
+	for i, c := range vars.Contents {
+		if c.Role != "user" {
+			t.Errorf("content[%d] role should be 'user', got %q", i, c.Role)
+		}
+	}
+}
+
+func TestNormalizeGeminiRequestMap_EmptyRoleSanitized(t *testing.T) {
+	// 场景：raw map 中 contents 缺少 role 字段（复现日志 02.log 中的客户端行为）
+	raw := map[string]any{
+		"contents": []any{
+			map[string]any{
+				"parts": []any{map[string]any{"text": "hello"}},
+				// 注意：无 "role" 键
+			},
+		},
+	}
+	gm, err := NormalizeGeminiRequestMap(raw)
+	if err != nil {
+		t.Fatalf("NormalizeGeminiRequestMap error: %v", err)
+	}
+	if len(gm.Contents) != 1 {
+		t.Fatalf("expected 1 content, got %d", len(gm.Contents))
+	}
+	if gm.Contents[0].Role != "user" {
+		t.Errorf("missing role should default to 'user', got %q", gm.Contents[0].Role)
 	}
 }

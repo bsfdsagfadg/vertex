@@ -40,7 +40,7 @@ func (r *SignatureResolver) EnsureBase64Sig(sig string) string {
 // ApplyPart 对单个 typed part 签发/移除 thoughtSignature，语义对齐旧
 // finalizeCleanedPart：
 //
-//   - functionCall part：缺失签名则注入哨兵，已有真实签名保留，不携带 id。
+//   - functionCall part：缺失签名则注入哨兵，已有真实签名保留，并清理临时 id 字段。
 //   - thought part（thought=true）：缺失签名则注入哨兵。
 //   - 纯文本 part（text 非空且非 thought 标记）：移除 thought/签名。
 func (r *SignatureResolver) ApplyPart(p *Part) {
@@ -48,6 +48,9 @@ func (r *SignatureResolver) ApplyPart(p *Part) {
 		p.Thought = false
 		p.ThoughtSignature = ""
 		return
+	}
+	if p.FunctionCall != nil {
+		p.FunctionCall.ID = ""
 	}
 	hasFC := p.FunctionCall != nil
 	hasThought := p.Thought

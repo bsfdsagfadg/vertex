@@ -47,10 +47,17 @@ func (s *ImageStrategy) Enhance(req *transform.GeminiRequest, cfg config.ConfigP
 
 	if gc.ThinkingConfig != nil {
 		gc.ThinkingConfig = transform.NormalizeThinkingConfig(gc.ThinkingConfig, s.model)
-	} else {
-		if tc := transform.ResolveThinkingConfig(cfg.DefaultThinkingLevel(), s.model); tc != nil {
-			gc.ThinkingConfig = tc
+	}
+
+	if len(req.SafetySettings) > 0 {
+		cleaned := make([]transform.SafetySetting, 0, len(req.SafetySettings))
+		for _, ss := range req.SafetySettings {
+			cat := ss.Category
+			if cat != "HARM_CATEGORY_JAILBREAK" && cat != "HARM_CATEGORY_CIVIC_INTEGRITY" {
+				cleaned = append(cleaned, ss)
+			}
 		}
+		req.SafetySettings = cleaned
 	}
 }
 

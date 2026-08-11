@@ -11,7 +11,7 @@ import (
 // 客户端显式传入 thinkingConfig 时（由策略层判断）不应调用本函数，保证"客户端优先"。
 func ResolveThinkingConfig(defaultLevel, model string) *ThinkingConfig {
 	capability, ok := thinkingCapabilityFor(model)
-	if !ok {
+	if !ok || capability.mechanism == ThinkingUnsupported {
 		return nil
 	}
 
@@ -191,8 +191,12 @@ func ResolveImageConfigPassthrough(raw map[string]any, model string) *ImageConfi
 				out.ImageSize = s
 			}
 		case "aspectRatio", "aspect_ratio":
-			if s != "" && aspectRatioAllowedFor(model, s) {
-				out.AspectRatio = s
+			if s != "" {
+				if aspectRatioAllowedFor(model, s) {
+					out.AspectRatio = s
+				} else if strings.ToLower(s) == "auto" {
+					out.AspectRatio = "1:1"
+				}
 			}
 		case "imageType", "image_type":
 			if s != "" {

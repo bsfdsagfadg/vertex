@@ -54,6 +54,8 @@ func normalizeGeminiRequestMap(raw map[string]any) (*GeminiRequest, string, erro
 	if err := jsonxUnmarshal(b, &gm); err != nil {
 		return nil, "", err
 	}
+	// 结构对齐：补全缺失的 role 字段，使下游策略层与汇聚口看到的 Role 均合法
+	sanitizeContentRolesTyped(gm.Contents)
 	return &gm, "", nil
 }
 

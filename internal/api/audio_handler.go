@@ -16,7 +16,6 @@ type AudioHandler struct {
 }
 
 const ttsDefaultModel = "gemini-3.1-flash-tts-preview"
-const ttsDefaultVoice = "Kore"
 
 type ttsFormat struct {
 	contentType string
@@ -33,23 +32,6 @@ var ttsFormatInfo = map[string]ttsFormat{
 	"flac": {"audio/wav", true},
 }
 
-//nolint:gochecknoglobals // Voice translation map
-var ttsVoiceMap = map[string]string{
-	"alloy": "Kore", "echo": "Puck", "fable": "Charon", "onyx": "Fenrir",
-	"nova": "Aoede", "shimmer": "Leda", "ash": "Orus", "ballad": "Zephyr",
-	"coral": "Aoede", "sage": "Charon", "verse": "Puck",
-}
-
-//nolint:gochecknoglobals // Valid Gemini voices
-var ttsGeminiVoices = map[string]bool{
-	"Kore": true, "Puck": true, "Charon": true, "Aoede": true, "Fenrir": true, "Leda": true,
-	"Orus": true, "Zephyr": true, "Autonoe": true, "Enceladus": true, "Iapetus": true,
-	"Umbriel": true, "Algieba": true, "Despina": true, "Erinome": true, "Algenib": true,
-	"Rasalgethi": true, "Laomedeia": true, "Achernar": true, "Alnilam": true, "Schedar": true,
-	"Gacrux": true, "Pulcherrima": true, "Achird": true, "Zubenelgenubi": true,
-	"Vindemiatrix": true, "Sadachbia": true, "Sadaltager": true, "Sulafat": true,
-}
-
 func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		oaiError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
@@ -63,7 +45,7 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	voice := ttsResolveVoice(body.Voice)
+	voice := transform.ResolveVoice(body.Voice)
 	respFmt := strings.ToLower(firstNonEmptyStr(body.ResponseFormat, "mp3"))
 
 	geminiReq, model, convErr := transform.NewAudioAdaptor().ToGeminiRequest(&body, a.cfg)
@@ -112,17 +94,10 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 
 func ttsResolveVoice(voice any) string {
 	v, ok := voice.(string)
-	if !ok || strings.TrimSpace(v) == "" {
-		return ttsDefaultVoice
+	if !ok {
+		return transform.ResolveVoice("")
 	}
-	v = strings.TrimSpace(v)
-	if ttsGeminiVoices[v] {
-		return v
-	}
-	if mapped, ok2 := ttsVoiceMap[strings.ToLower(v)]; ok2 {
-		return mapped
-	}
-	return ttsDefaultVoice
+	return transform.ResolveVoice(v)
 }
 
 func ttsWAVHeader(dataLen, sampleRate int) []byte {

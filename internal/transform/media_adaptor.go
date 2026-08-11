@@ -47,7 +47,7 @@ func (a *ImageAdaptor) ToGeminiRequest(raw any, cfg config.ConfigProvider) (*Gem
 		if ar := sizeToAspectRatio(size); ar != "" {
 			ic.AspectRatio = ar
 		}
-		if is := sizeToImageSize(size); is != "" && strings.Contains(model, "gemini-3") {
+		if is := sizeToImageSize(size); is != "" && ImageSizeAllowedFor(model, is) {
 			ic.ImageSize = is
 		}
 		if ic.AspectRatio != "" || ic.ImageSize != "" || ic.ImageType != "" {
@@ -94,6 +94,40 @@ func (a *ImageAdaptor) AggregateN(resps []*GeminiResponse, model string) any {
 // AudioAdaptor 为音频（TTS）家族适配器。
 type AudioAdaptor struct{}
 
+const ttsDefaultVoice = "Kore"
+
+//nolint:gochecknoglobals // Voice translation map
+var ttsVoiceMap = map[string]string{
+	"alloy": "Kore", "echo": "Puck", "fable": "Charon", "onyx": "Fenrir",
+	"nova": "Aoede", "shimmer": "Leda", "ash": "Orus", "ballad": "Zephyr",
+	"coral": "Aoede", "sage": "Charon", "verse": "Puck",
+}
+
+//nolint:gochecknoglobals // Valid Gemini voices
+var ttsGeminiVoices = map[string]bool{
+	"Kore": true, "Puck": true, "Charon": true, "Aoede": true, "Fenrir": true, "Leda": true,
+	"Orus": true, "Zephyr": true, "Autonoe": true, "Enceladus": true, "Iapetus": true,
+	"Umbriel": true, "Algieba": true, "Despina": true, "Erinome": true, "Algenib": true,
+	"Rasalgethi": true, "Laomedeia": true, "Achernar": true, "Alnilam": true, "Schedar": true,
+	"Gacrux": true, "Pulcherrima": true, "Achird": true, "Zubenelgenubi": true,
+	"Vindemiatrix": true, "Sadachbia": true, "Sadaltager": true, "Sulafat": true,
+}
+
+// ResolveVoice 规范化/映射声线名称。
+func ResolveVoice(voice string) string {
+	v := strings.TrimSpace(voice)
+	if v == "" {
+		return ttsDefaultVoice
+	}
+	if ttsGeminiVoices[v] {
+		return v
+	}
+	if mapped, ok := ttsVoiceMap[strings.ToLower(v)]; ok {
+		return mapped
+	}
+	return ttsDefaultVoice
+}
+
 // NewAudioAdaptor 构造音频适配器。
 func NewAudioAdaptor() *AudioAdaptor { return &AudioAdaptor{} }
 
@@ -124,7 +158,7 @@ func (a *AudioAdaptor) ToGeminiRequest(raw any, cfg config.ConfigProvider) (*Gem
 			GenerationConfig: &GenerationConfig{
 				ResponseModalities: []string{"AUDIO"},
 				SpeechConfig: &SpeechConfig{
-					VoiceConfig: &VoiceConfig{PrebuiltVoiceConfig: &PrebuiltVoiceConfig{VoiceName: v.Voice}},
+					VoiceConfig: &VoiceConfig{PrebuiltVoiceConfig: &PrebuiltVoiceConfig{VoiceName: ResolveVoice(v.Voice)}},
 				},
 			},
 		}, model, nil

@@ -89,12 +89,7 @@ func ConvertRealtimeChunkTyped(chunk *GeminiChunk, model, requestID string, isFi
 			if delta.Type == "" {
 				delta.Type = "function"
 			}
-			if !isNew {
-				// 续传帧：仅保留 arguments 增量，name 不重复输出。
-				delta.Function = ResponseToolCallFn{
-					Arguments: tc.Function.Arguments,
-				}
-			}
+			_ = isNew
 			deltas = append(deltas, delta)
 		}
 		b := chunkBase(model, requestID, created)

@@ -8,21 +8,25 @@ import (
 func TestPrepareNativeSafetySettings(t *testing.T) {
 	tests := []struct {
 		name     string
+		model    string
 		input    []SafetySetting
 		expected []SafetySetting
 	}{
 		{
 			name:     "Nil input",
+			model:    "gemini-2.5-flash",
 			input:    nil,
 			expected: nil,
 		},
 		{
 			name:     "Empty input",
+			model:    "gemini-2.5-flash",
 			input:    []SafetySetting{},
 			expected: nil,
 		},
 		{
-			name: "Spaces and lowercases normalization",
+			name:  "Spaces and lowercases normalization",
+			model: "gemini-2.5-flash",
 			input: []SafetySetting{
 				{
 					Category:  " harm_category_hate_speech ",
@@ -44,11 +48,31 @@ func TestPrepareNativeSafetySettings(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:  "Image model filters out JAILBREAK",
+			model: "gemini-2.5-flash-image",
+			input: []SafetySetting{
+				{
+					Category:  "HARM_CATEGORY_HATE_SPEECH",
+					Threshold: "BLOCK_NONE",
+				},
+				{
+					Category:  "HARM_CATEGORY_JAILBREAK",
+					Threshold: "BLOCK_MEDIUM_AND_ABOVE",
+				},
+			},
+			expected: []SafetySetting{
+				{
+					Category:  "HARM_CATEGORY_HATE_SPEECH",
+					Threshold: "BLOCK_NONE",
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := prepareNativeSafetySettings(tt.input)
+			got := prepareNativeSafetySettings(tt.model, tt.input)
 			if !reflect.DeepEqual(got, tt.expected) {
 				t.Errorf("prepareNativeSafetySettings() = %v, want %v", got, tt.expected)
 			}

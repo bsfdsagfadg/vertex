@@ -72,6 +72,14 @@ func ImageSizeAllowedFor(model, tier string) bool {
 	return imageCapabilityFor(model).sizes[tier]
 }
 
+// IsImageModel 判断模型是否为图像模型（在能力表中，或者模型名包含 "image"）。
+func IsImageModel(model string) bool {
+	if _, ok := modelImageCapabilities[model]; ok {
+		return true
+	}
+	return strings.Contains(strings.ToLower(model), "image")
+}
+
 // aspectRatioAllowedFor 模型是否支持某比例。
 func aspectRatioAllowedFor(model, ratio string) bool {
 	return imageCapabilityFor(model).ratios[ratio]
@@ -117,7 +125,7 @@ func ResolveImageModel(model string) string {
 //   - prompt 经 buildImagePrompt 拼接尺寸/质量/风格/背景等自然语言约束。
 //   - images（编辑/变体的输入图）与 mask（编辑遮罩）以 inlineData 追加（base64 规范化）。
 //   - generationConfig.responseModalities=["TEXT","IMAGE"]；按 size 推 aspectRatio / imageSize
-//     （imageSize 仅 gemini-3 系列设置）。
+//     （imageSize 按模型能力矩阵配置）。
 func BuildImagePayload(model, prompt string, images []InlineImage, mask *InlineImage, size, quality, style, background, mode string) map[string]any {
 	promptText := buildImagePrompt(prompt, size, quality, style, background, mode, mask != nil)
 
@@ -141,7 +149,7 @@ func BuildImagePayload(model, prompt string, images []InlineImage, mask *InlineI
 	if ar := sizeToAspectRatio(size); ar != "" {
 		imageConfig["aspectRatio"] = ar
 	}
-	if is := sizeToImageSize(size); is != "" && strings.Contains(model, "gemini-3") {
+	if is := sizeToImageSize(size); is != "" && ImageSizeAllowedFor(model, is) {
 		imageConfig["imageSize"] = is
 	}
 	if len(imageConfig) > 0 {

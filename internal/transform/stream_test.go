@@ -493,8 +493,8 @@ func TestConvertRealtimeChunkTyped_FunctionNameExplicitKeyOnContinuation(t *test
 		t.Fatalf("function 对象必须显式包含 'name' 键，当前被丢弃: %v", fn)
 	}
 
-	if _, isStr := nameVal.(string); !isStr {
-		t.Errorf("function.name 的值必须是 string 类型，got: %T (%v)", nameVal, nameVal)
+	if nameVal != "get_weather" {
+		t.Errorf("function.name 的值必须保持真实函数名，got: %v", nameVal)
 	}
 }
 
