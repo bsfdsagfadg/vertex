@@ -16,7 +16,7 @@ import (
 // 策略增强、更新模型追踪、调用 CompleteChatTyped、错误转换、清洗 finishReason。
 func (h *handler) coreGenerateTyped(ctx context.Context, rawModel string, req *transform.GeminiRequest) (*transform.GeminiResponse, *vertex.VertexError) {
 	actualModel, _ := stripFakePrefix(rawModel, h.cfg.FakePrefixes())
-	strategy := NewModelFamilyRouter().For(actualModel)
+	strategy := transform.NewModelFamilyRouter().For(actualModel)
 	strategy.Enhance(req, h.cfg)
 	if err := strategy.Validate(req); err != nil {
 		return nil, vertex.NewInvalidArgumentError(err.Error(), nil)
@@ -34,7 +34,7 @@ func (h *handler) coreGenerateTyped(ctx context.Context, rawModel string, req *t
 // coreStreamGenerateTyped 统一真流式 typed 调用：回调中自动清洗 finishReason。
 func (h *handler) coreStreamGenerateTyped(ctx context.Context, rawModel string, req *transform.GeminiRequest, onChunk func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool) {
 	actualModel, _ := stripFakePrefix(rawModel, h.cfg.FakePrefixes())
-	strategy := NewModelFamilyRouter().For(actualModel)
+	strategy := transform.NewModelFamilyRouter().For(actualModel)
 	strategy.Enhance(req, h.cfg)
 	if err := strategy.Validate(req); err != nil {
 		onChunk(nil, vertex.NewInvalidArgumentError(err.Error(), nil))

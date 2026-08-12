@@ -1,10 +1,10 @@
-package api
+package transform
 
 import (
 	"testing"
+	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
 type mockConfigProvider struct {
@@ -25,9 +25,9 @@ func TestTextStrategy_Enhance(t *testing.T) {
 
 	t.Run("2.5 pro - lowercase high level converted to budget", func(t *testing.T) {
 		st := &TextStrategy{model: "gemini-2.5-pro"}
-		req := &transform.GeminiRequest{
-			GenerationConfig: &transform.GenerationConfig{
-				ThinkingConfig: &transform.ThinkingConfig{ThinkingLevel: "high"},
+		req := &GeminiRequest{
+			GenerationConfig: &GenerationConfig{
+				ThinkingConfig: &ThinkingConfig{ThinkingLevel: "high"},
 			},
 		}
 		st.Enhance(req, cfg)
@@ -43,9 +43,9 @@ func TestTextStrategy_Enhance(t *testing.T) {
 	t.Run("2.5 pro - explicit budget passthrough", func(t *testing.T) {
 		st := &TextStrategy{model: "gemini-2.5-pro"}
 		budget := 8000
-		req := &transform.GeminiRequest{
-			GenerationConfig: &transform.GenerationConfig{
-				ThinkingConfig: &transform.ThinkingConfig{ThinkingBudget: &budget, ThinkingLevel: "high"},
+		req := &GeminiRequest{
+			GenerationConfig: &GenerationConfig{
+				ThinkingConfig: &ThinkingConfig{ThinkingBudget: &budget, ThinkingLevel: "high"},
 			},
 		}
 		st.Enhance(req, cfg)
@@ -60,9 +60,9 @@ func TestTextStrategy_Enhance(t *testing.T) {
 
 	t.Run("3.6 flash - lowercase level to uppercase enum", func(t *testing.T) {
 		st := &TextStrategy{model: "gemini-3.6-flash"}
-		req := &transform.GeminiRequest{
-			GenerationConfig: &transform.GenerationConfig{
-				ThinkingConfig: &transform.ThinkingConfig{ThinkingLevel: "high"},
+		req := &GeminiRequest{
+			GenerationConfig: &GenerationConfig{
+				ThinkingConfig: &ThinkingConfig{ThinkingLevel: "high"},
 			},
 		}
 		st.Enhance(req, cfg)
@@ -77,7 +77,7 @@ func TestTextStrategy_Enhance(t *testing.T) {
 
 	t.Run("no client thinkingConfig - fallback to console default", func(t *testing.T) {
 		st := &TextStrategy{model: "gemini-3.6-flash"}
-		req := &transform.GeminiRequest{}
+		req := &GeminiRequest{}
 		st.Enhance(req, cfg)
 		tc := req.GenerationConfig.ThinkingConfig
 		if tc == nil || tc.ThinkingLevel != "MEDIUM" {
@@ -91,9 +91,9 @@ func TestImageStrategy_EnhanceAndValidate(t *testing.T) {
 
 	t.Run("3.1 flash image - lowercase level normalized and validated", func(t *testing.T) {
 		st := &ImageStrategy{model: "gemini-3.1-flash-image"}
-		req := &transform.GeminiRequest{
-			GenerationConfig: &transform.GenerationConfig{
-				ThinkingConfig: &transform.ThinkingConfig{ThinkingLevel: "high"},
+		req := &GeminiRequest{
+			GenerationConfig: &GenerationConfig{
+				ThinkingConfig: &ThinkingConfig{ThinkingLevel: "high"},
 			},
 		}
 		st.Enhance(req, cfg)
@@ -108,9 +108,9 @@ func TestImageStrategy_EnhanceAndValidate(t *testing.T) {
 
 	t.Run("unsupported image model - thinkingConfig purged to nil", func(t *testing.T) {
 		st := &ImageStrategy{model: "gemini-2.5-flash-image"}
-		req := &transform.GeminiRequest{
-			GenerationConfig: &transform.GenerationConfig{
-				ThinkingConfig: &transform.ThinkingConfig{ThinkingLevel: "high"},
+		req := &GeminiRequest{
+			GenerationConfig: &GenerationConfig{
+				ThinkingConfig: &ThinkingConfig{ThinkingLevel: "high"},
 			},
 		}
 		st.Enhance(req, cfg)
@@ -127,7 +127,7 @@ func TestImageStrategy_EnhanceAndValidate(t *testing.T) {
 
 		// 2.5-flash-image (unsupported thinking)
 		st25 := &ImageStrategy{model: "gemini-2.5-flash-image"}
-		req25 := &transform.GeminiRequest{}
+		req25 := &GeminiRequest{}
 		st25.Enhance(req25, cfgWithThinking)
 		if req25.GenerationConfig.ThinkingConfig != nil {
 			t.Fatalf("expected nil thinkingConfig for gemini-2.5-flash-image without client input, got %v", req25.GenerationConfig.ThinkingConfig)
@@ -138,7 +138,7 @@ func TestImageStrategy_EnhanceAndValidate(t *testing.T) {
 
 		// 3.1-flash-image (supports MINIMAL and HIGH thinking)
 		st31 := &ImageStrategy{model: "gemini-3.1-flash-image"}
-		req31 := &transform.GeminiRequest{}
+		req31 := &GeminiRequest{}
 		st31.Enhance(req31, cfgWithThinking)
 		if req31.GenerationConfig.ThinkingConfig != nil {
 			t.Fatalf("expected nil thinkingConfig for gemini-3.1-flash-image without client input, got %v", req31.GenerationConfig.ThinkingConfig)
@@ -166,7 +166,7 @@ func TestImageStrategy_All4Models_ThinkingIsolation(t *testing.T) {
 	for _, model := range models {
 		t.Run(model+" thinking isolation", func(t *testing.T) {
 			st := &ImageStrategy{model: model}
-			req := &transform.GeminiRequest{}
+			req := &GeminiRequest{}
 			st.Enhance(req, cfgWithThinking)
 			if req.GenerationConfig.ThinkingConfig != nil {
 				t.Fatalf("expected nil thinkingConfig for model %s without client input when console default is High, got %v", model, req.GenerationConfig.ThinkingConfig)
@@ -181,7 +181,7 @@ func TestImageStrategy_All4Models_ThinkingIsolation(t *testing.T) {
 func TestImageStrategy_EnhanceAndPrepare_DefaultSafetySettings(t *testing.T) {
 	cfg := &mockConfigProvider{}
 	st := &ImageStrategy{model: "gemini-3.1-flash-image"}
-	req := &transform.GeminiRequest{}
+	req := &GeminiRequest{}
 
 	st.Enhance(req, cfg)
 	if len(req.SafetySettings) != 6 {
@@ -201,8 +201,8 @@ func TestImageStrategy_EnhanceAndPrepare_DefaultSafetySettings(t *testing.T) {
 
 func TestImageStrategy_Prepare_PreservesExplicitEmptySlice(t *testing.T) {
 	st := &ImageStrategy{model: "gemini-3.1-flash-image"}
-	req := &transform.GeminiRequest{
-		SafetySettings: []transform.SafetySetting{
+	req := &GeminiRequest{
+		SafetySettings: []SafetySetting{
 			{Category: "HARM_CATEGORY_JAILBREAK", Threshold: "BLOCK_NONE"},
 		},
 	}
@@ -226,8 +226,8 @@ func TestImageStrategy_Prepare(t *testing.T) {
 	for _, model := range models {
 		t.Run(model+" cleans jailbreak and civic integrity case-insensitively", func(t *testing.T) {
 			st := &ImageStrategy{model: model}
-			req := &transform.GeminiRequest{
-				SafetySettings: []transform.SafetySetting{
+			req := &GeminiRequest{
+				SafetySettings: []SafetySetting{
 					{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_NONE"},
 					{Category: " harm_category_jailbreak ", Threshold: "BLOCK_MEDIUM_AND_ABOVE"},
 					{Category: "Harm_Category_Civic_Integrity", Threshold: "BLOCK_LOW_AND_ABOVE"},
@@ -243,10 +243,10 @@ func TestImageStrategy_Prepare(t *testing.T) {
 
 func TestAudioStrategy_Prepare(t *testing.T) {
 	st := &AudioStrategy{model: "gemini-3.1-flash-tts-preview"}
-	req := &transform.GeminiRequest{
-		Tools: []transform.Tool{{FunctionDeclarations: []transform.FunctionDeclaration{{Name: "test"}}}},
-		GenerationConfig: &transform.GenerationConfig{
-			ThinkingConfig: &transform.ThinkingConfig{ThinkingLevel: "HIGH"},
+	req := &GeminiRequest{
+		Tools: []Tool{{FunctionDeclarations: []FunctionDeclaration{{Name: "test"}}}},
+		GenerationConfig: &GenerationConfig{
+			ThinkingConfig: &ThinkingConfig{ThinkingLevel: "HIGH"},
 		},
 	}
 	st.Prepare(req)
@@ -266,10 +266,10 @@ func TestAudioStrategy_EnhanceAndValidate(t *testing.T) {
 	cfg := &mockConfigProvider{}
 	st := &AudioStrategy{model: "gemini-3.1-flash-tts-preview"}
 
-	req := &transform.GeminiRequest{
-		Tools: []transform.Tool{{FunctionDeclarations: []transform.FunctionDeclaration{{Name: "test"}}}},
-		GenerationConfig: &transform.GenerationConfig{
-			ThinkingConfig: &transform.ThinkingConfig{ThinkingLevel: "HIGH"},
+	req := &GeminiRequest{
+		Tools: []Tool{{FunctionDeclarations: []FunctionDeclaration{{Name: "test"}}}},
+		GenerationConfig: &GenerationConfig{
+			ThinkingConfig: &ThinkingConfig{ThinkingLevel: "HIGH"},
 		},
 	}
 
@@ -287,5 +287,167 @@ func TestAudioStrategy_EnhanceAndValidate(t *testing.T) {
 
 	if err := st.Validate(req); err != nil {
 		t.Fatalf("expected Validate to pass after Enhance, got %v", err)
+	}
+}
+
+func TestStrategies_CalculateIdleTimeouts(t *testing.T) {
+	base := 15
+
+	t.Run("TextStrategy timeouts", func(t *testing.T) {
+		st := &TextStrategy{model: "gemini-2.5-flash"}
+		pre, post := st.CalculateIdleTimeouts(base)
+		if pre != 30*time.Second || post != 15*time.Second {
+			t.Errorf("TextStrategy expected 30s/15s, got pre=%v, post=%v", pre, post)
+		}
+
+		// 测试防御性下限 (base=1s)
+		preFloor, postFloor := st.CalculateIdleTimeouts(1)
+		if preFloor != 20*time.Second || postFloor != 10*time.Second {
+			t.Errorf("TextStrategy floor expected 20s/10s, got pre=%v, post=%v", preFloor, postFloor)
+		}
+	})
+
+	t.Run("ImageStrategy timeouts", func(t *testing.T) {
+		st := &ImageStrategy{model: "gemini-3.1-flash-image"}
+		pre, post := st.CalculateIdleTimeouts(base)
+		if pre != 60*time.Second || post != 30*time.Second {
+			t.Errorf("ImageStrategy expected 60s/30s, got pre=%v, post=%v", pre, post)
+		}
+
+		preFloor, postFloor := st.CalculateIdleTimeouts(1)
+		if preFloor != 60*time.Second || postFloor != 30*time.Second {
+			t.Errorf("ImageStrategy floor expected 60s/30s, got pre=%v, post=%v", preFloor, postFloor)
+		}
+	})
+
+	t.Run("AudioStrategy timeouts", func(t *testing.T) {
+		st := &AudioStrategy{model: "gemini-3.1-flash-tts-preview"}
+		pre, post := st.CalculateIdleTimeouts(base)
+		if pre != 45*time.Second || post != 30*time.Second {
+			t.Errorf("AudioStrategy expected 45s/30s, got pre=%v, post=%v", pre, post)
+		}
+
+		preFloor, postFloor := st.CalculateIdleTimeouts(1)
+		if preFloor != 40*time.Second || postFloor != 20*time.Second {
+			t.Errorf("AudioStrategy floor expected 40s/20s, got pre=%v, post=%v", preFloor, postFloor)
+		}
+	})
+}
+
+func TestStrategies_IsValidChunk(t *testing.T) {
+	textSt := &TextStrategy{model: "gemini-2.5-flash"}
+	imageSt := &ImageStrategy{model: "gemini-3.1-flash-image"}
+	audioSt := &AudioStrategy{model: "gemini-3.1-flash-tts-preview"}
+
+	// 1. Safety Block 帧 -> 所有家族策略均视作有效 Chunk
+	safetyChunk := &GeminiChunk{
+		Candidates: []*Candidate{
+			{FinishReason: "SAFETY"},
+		},
+	}
+	if !textSt.IsValidChunk(safetyChunk) || !imageSt.IsValidChunk(safetyChunk) || !audioSt.IsValidChunk(safetyChunk) {
+		t.Error("safetyChunk should be valid for all strategies")
+	}
+
+	// 2. 纯文本 Chunk -> Text & Image 放行, Audio 拦截
+	textChunk := &GeminiChunk{
+		Candidates: []*Candidate{
+			{
+				Content: &Content{
+					Parts: []Part{{Text: "Hello world"}},
+				},
+			},
+		},
+	}
+	if !textSt.IsValidChunk(textChunk) {
+		t.Error("textChunk should be valid for TextStrategy")
+	}
+	if !imageSt.IsValidChunk(textChunk) {
+		t.Error("textChunk should be valid for ImageStrategy in hybrid mode")
+	}
+	if audioSt.IsValidChunk(textChunk) {
+		t.Error("textChunk should NOT be valid for AudioStrategy")
+	}
+
+	// 3. 音频 InlineData Chunk -> Audio, Image, Text 均放行
+	audioChunk := &GeminiChunk{
+		Candidates: []*Candidate{
+			{
+				Content: &Content{
+					Parts: []Part{
+						{InlineData: &InlineData{MimeType: "audio/mp3", Data: "YXVkaW8="}},
+					},
+				},
+			},
+		},
+	}
+	if !audioSt.IsValidChunk(audioChunk) {
+		t.Error("audioChunk should be valid for AudioStrategy")
+	}
+
+	// 4. 图片 InlineData Chunk -> Image 放行
+	imageChunk := &GeminiChunk{
+		Candidates: []*Candidate{
+			{
+				Content: &Content{
+					Parts: []Part{
+						{InlineData: &InlineData{MimeType: "image/png", Data: "aW1hZ2U="}},
+					},
+				},
+			},
+		},
+	}
+	if !imageSt.IsValidChunk(imageChunk) {
+		t.Error("imageChunk should be valid for ImageStrategy")
+	}
+
+	// 5. 纯生图模型 (gemini-3-pro-image / imagen) 的纯文本 Chunk -> 拦截
+	pureImageSt := &ImageStrategy{model: "gemini-3-pro-image"}
+	if pureImageSt.IsValidChunk(textChunk) {
+		t.Error("textChunk should NOT be valid for pure image strategy (gemini-3-pro-image)")
+	}
+}
+
+func TestImageStrategy_IsValidResponse(t *testing.T) {
+	st := &ImageStrategy{model: "gemini-3.1-flash-image"}
+
+	// 1. 无图片无 Safety 的纯文本响应 -> 判定为无效 (非流式不能因为纯文本而误判为连通胜出)
+	textResp := &GeminiResponse{
+		Candidates: []*Candidate{
+			{
+				Content: &Content{
+					Parts: []Part{{Text: "Sorry, I cannot generate an image."}},
+				},
+			},
+		},
+	}
+	if st.IsValidResponse(textResp) {
+		t.Error("textResp without images or safety block should NOT be valid for ImageStrategy")
+	}
+
+	// 2. 包含图片 Payload 的响应 -> 判定为有效
+	imageResp := &GeminiResponse{
+		Candidates: []*Candidate{
+			{
+				Content: &Content{
+					Parts: []Part{
+						{InlineData: &InlineData{MimeType: "image/png", Data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}},
+					},
+				},
+			},
+		},
+	}
+	if !st.IsValidResponse(imageResp) {
+		t.Error("imageResp with image payload should be valid for ImageStrategy")
+	}
+
+	// 3. 包含 Safety 拦截的响应 -> 判定为有效
+	safetyResp := &GeminiResponse{
+		Candidates: []*Candidate{
+			{FinishReason: "SAFETY"},
+		},
+	}
+	if !st.IsValidResponse(safetyResp) {
+		t.Error("safetyResp should be valid for ImageStrategy")
 	}
 }

@@ -20,15 +20,6 @@ import (
 // 首包前触发会自动重试/故障转移；首包后触发向客户端推送超时 error chunk。
 var ErrStreamIdleTimeout = errors.New("stream idle timeout")
 
-// 流式包间空闲超时的防御性下限（对称防护）。
-// 正常值 pre=idle*2、post=idle；下限沿用同一 *2 联动关系：
-// post 下限 10s（容忍思考模型停顿+网络抖动，留余量防误杀），pre 下限 = post 下限 * 2 = 20s。
-// 仅兜住 idle<10 的极端激进配置；idle>=20 的正常用户完全不受影响。
-const (
-	minPostStreamTimeout = 10 * time.Second         // 包间防御性下限：容忍思考停顿，防零字节秒杀（新增对称防护）
-	minPreStreamTimeout  = 2 * minPostStreamTimeout // 首包前防御性下限：与 post 下限 *2 联动，单一原则
-)
-
 // maxPendingMetadataChunks 是首内容帧前缓存元数据帧的防御性上限。
 // 正常 Gemini 流式响应首内容帧前仅 1~3 个元数据帧；超额时静默丢弃后续元数据帧，
 // 仅保留前 maxPendingMetadataChunks 帧待首内容帧到来时一并 flush。
@@ -78,7 +69,7 @@ func (c *VertexAIClient) StreamChat(ctx context.Context, model string, req *tran
 		}()
 		return ch
 	}
-	StreamParallel(ctx, c.cfg, op, yield)
+	StreamParallel(ctx, c.cfg, model, op, yield)
 }
 
 func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model string, req *transform.GeminiRequest, proxyURI string, yield func(StreamChunk) bool) {
@@ -126,9 +117,10 @@ retryLoop:
 
 		validChunkCount := 0
 		var pendingChunks []*transform.GeminiChunk
+		strategy := transform.NewModelFamilyRouter().For(model)
 
 		attemptErr := c.executeStreamingAttempt(ctx, sess, model, req, recaptchaToken, isFirstAuth, func(ch *transform.GeminiChunk) bool {
-			if isValidContentChunkTyped(ch) {
+			if strategy.IsValidChunk(ch) {
 				for _, p := range pendingChunks {
 					if !yield(StreamChunk{Data: p}) {
 						return false
@@ -297,8 +289,8 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	streamReqCtx, cancelStreamReq := context.WithCancel(ctx)
 	defer cancelStreamReq()
 
-	preTimeout := max(time.Duration(cfg.StreamIdleTimeoutSeconds()*2)*time.Second, minPreStreamTimeout)
-	postTimeout := max(time.Duration(cfg.StreamIdleTimeoutSeconds())*time.Second, minPostStreamTimeout)
+	strategy := transform.NewModelFamilyRouter().For(model)
+	preTimeout, postTimeout := strategy.CalculateIdleTimeouts(cfg.StreamIdleTimeoutSeconds())
 
 	var (
 		srRef              atomic.Pointer[transport.StreamResponse]

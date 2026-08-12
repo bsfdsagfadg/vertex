@@ -15,5 +15,10 @@
     "gemini-3.1-flash-lite-image",
     "gemini-3.1-flash-tts-preview"
   ],
-  "alias_map": {}
+  "alias_map": {
+    "Nano Banana 2": "gemini-3.1-flash-image",
+    "Nano Banana 2 Lite": "gemini-3.1-flash-lite-image",
+    "Nano Banana Pro": "gemini-3-pro-image",
+    "Nano Banana Pro (Gemini 3 Pro Image)": "gemini-3-pro-image"
+  }
 }

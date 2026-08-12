@@ -1,37 +1,48 @@
-package api
+package transform
 
 import (
 	"strings"
+	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
-// ModelStrategy 是单个模型家族的载荷增强策略：每个家族只写自己该有的增强，
-// 结构上杜绝跨家族污染（图像载荷绝不含 thinkingConfig、语音载荷绝不含 tools）。
+// ModelStrategy 是单个模型家族的载荷增强与响应断言策略：
+// 每个家族独占实施自己上行与下行两端的家族特化逻辑，结构上杜绝跨家族污染。
 type ModelStrategy interface {
-	// Family 返回家族。
-	Family() transform.ModelFamily
+	// ── 上行请求侧 ──
+	// Family 返回家族枚举。
+	Family() ModelFamily
 	// Enhance 按家族注入 imageConfig / responseModalities / thinkingConfig 等。
-	Enhance(req *transform.GeminiRequest, cfg config.ConfigProvider)
+	Enhance(req *GeminiRequest, cfg config.ConfigProvider)
 	// Validate 校验请求：禁止图载荷含不准许的 thinking、禁止语音载荷含 tools 等。
-	Validate(req *transform.GeminiRequest) error
-	// Prepare 在通过校验后做出口前的家族特化数据清洗与整理（如图像剥离特定 safety Category、语音防御性置空 tools/thinking 等）。
-	Prepare(req *transform.GeminiRequest)
+	Validate(req *GeminiRequest) error
+	// Prepare 在通过校验后做出口前的家族特化数据清洗与整理。
+	Prepare(req *GeminiRequest)
+
+	// ── 下行响应侧 ──
+	// CalculateIdleTimeouts 根据基础配置秒数，计算该家族特化的首包超时 (preTimeout) 与包间超时 (postTimeout)。
+	CalculateIdleTimeouts(baseSeconds int) (preTimeout, postTimeout time.Duration)
+
+	// IsValidChunk 判定单个 SSE Chunk 是否包含该家族的实质有效增量（用于竞速胜出与流式解锁）。
+	IsValidChunk(chunk *GeminiChunk) bool
+
+	// IsValidResponse 判定非流式完整响应是否包含该家族的实质有效交付内容（用于非流式对冲重试胜出）。
+	IsValidResponse(resp *GeminiResponse) bool
 }
 
 // FamilyFor 按实际模型名归一模型家族。
 //
 // 判定优先级：TTS（含 "tts"）→ 音频；含 "image" → 图像；其余文本。
-func FamilyFor(model string) transform.ModelFamily {
+func FamilyFor(model string) ModelFamily {
 	lower := strings.ToLower(strings.TrimSpace(model))
 	if strings.Contains(lower, "tts") {
-		return transform.FamilyAudio
+		return FamilyAudio
 	}
 	if strings.Contains(lower, "image") {
-		return transform.FamilyImage
+		return FamilyImage
 	}
-	return transform.FamilyText
+	return FamilyText
 }
 
 // ModelFamilyRouter 是汇聚点的家族路由表：按实际模型名取出对应策略。
@@ -54,9 +65,9 @@ func (r *ModelFamilyRouter) Audio(model string) ModelStrategy { return &AudioStr
 // For 按模型名取策略（未知模型按文本家族处理）。
 func (r *ModelFamilyRouter) For(model string) ModelStrategy {
 	switch FamilyFor(model) {
-	case transform.FamilyImage:
+	case FamilyImage:
 		return &ImageStrategy{model: model}
-	case transform.FamilyAudio:
+	case FamilyAudio:
 		return &AudioStrategy{model: model}
 	default:
 		return &TextStrategy{model: model}

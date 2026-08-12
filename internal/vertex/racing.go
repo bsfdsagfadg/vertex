@@ -6,14 +6,17 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
-func StreamParallel(ctx context.Context, cfg config.ConfigProvider,
+func StreamParallel(ctx context.Context, cfg config.ConfigProvider, model string,
 	op func(context.Context, string) <-chan StreamChunk,
 	yield func(StreamChunk) bool,
 ) {
 	streamCtx, streamCancel := context.WithCancel(ctx)
 	defer streamCancel()
+
+	strategy := transform.NewModelFamilyRouter().For(model)
 
 	wrappedOp := func(ctx context.Context, uri string) (<-chan StreamChunk, error) {
 		ch := op(ctx, uri)
@@ -31,7 +34,7 @@ func StreamParallel(ctx context.Context, cfg config.ConfigProvider,
 				firstErr = chunk.Err
 				break
 			}
-			if chunk.Data != nil && isValidContentChunkTyped(chunk.Data) {
+			if chunk.Data != nil && strategy.IsValidChunk(chunk.Data) {
 				hasValidContent = true
 				break
 			}
