@@ -16,6 +16,8 @@ type ModelStrategy interface {
 	Enhance(req *transform.GeminiRequest, cfg config.ConfigProvider)
 	// Validate 校验请求：禁止图载荷含不准许的 thinking、禁止语音载荷含 tools 等。
 	Validate(req *transform.GeminiRequest) error
+	// Prepare 在通过校验后做出口前的家族特化数据清洗与整理（如图像剥离特定 safety Category、语音防御性置空 tools/thinking 等）。
+	Prepare(req *transform.GeminiRequest)
 }
 
 // FamilyFor 按实际模型名归一模型家族。

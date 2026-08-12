@@ -21,6 +21,7 @@ func (h *handler) coreGenerateTyped(ctx context.Context, rawModel string, req *t
 	if err := strategy.Validate(req); err != nil {
 		return nil, vertex.NewInvalidArgumentError(err.Error(), nil)
 	}
+	strategy.Prepare(req)
 	cli.UpdateReqModel(vertex.RequestIDFromContext(ctx), actualModel)
 	resp, err := h.vc.CompleteChatTyped(ctx, actualModel, req)
 	if err != nil {
@@ -39,6 +40,7 @@ func (h *handler) coreStreamGenerateTyped(ctx context.Context, rawModel string, 
 		onChunk(nil, vertex.NewInvalidArgumentError(err.Error(), nil))
 		return
 	}
+	strategy.Prepare(req)
 	cli.UpdateReqModel(vertex.RequestIDFromContext(ctx), actualModel)
 	h.vc.StreamChatTyped(ctx, actualModel, req, func(ch vertex.StreamChunkTyped) bool {
 		if ch.Err != nil {

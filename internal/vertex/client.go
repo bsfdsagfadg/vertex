@@ -30,7 +30,6 @@ var defaultSafetySettingsTyped = []transform.SafetySetting{ //nolint:gochecknogl
 	{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_NONE"},
 	{Category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", Threshold: "BLOCK_NONE"},
 	{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold: "BLOCK_NONE"},
-	{Category: "HARM_CATEGORY_CIVIC_INTEGRITY", Threshold: "BLOCK_NONE"},
 }
 
 // RequestIDKey 是 context 中存储 reqID 的键类型。

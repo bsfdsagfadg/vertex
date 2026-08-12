@@ -234,7 +234,7 @@ settings = append(settings, SafetySetting{
 		}
 	}
 	if gemini.SafetySettings == nil && cfg != nil {
-		if built := buildSafetySettingsTyped(cfg); len(built) > 0 {
+		if built := BuildSafetySettingsTyped(cfg); len(built) > 0 {
 			gemini.SafetySettings = built
 		}
 	}

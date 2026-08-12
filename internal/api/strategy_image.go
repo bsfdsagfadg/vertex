@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
@@ -49,15 +50,8 @@ func (s *ImageStrategy) Enhance(req *transform.GeminiRequest, cfg config.ConfigP
 		gc.ThinkingConfig = transform.NormalizeThinkingConfig(gc.ThinkingConfig, s.model)
 	}
 
-	if len(req.SafetySettings) > 0 {
-		cleaned := make([]transform.SafetySetting, 0, len(req.SafetySettings))
-		for _, ss := range req.SafetySettings {
-			cat := ss.Category
-			if cat != "HARM_CATEGORY_JAILBREAK" && cat != "HARM_CATEGORY_CIVIC_INTEGRITY" {
-				cleaned = append(cleaned, ss)
-			}
-		}
-		req.SafetySettings = cleaned
+	if len(req.SafetySettings) == 0 && cfg != nil {
+		req.SafetySettings = transform.BuildSafetySettingsTyped(cfg)
 	}
 }
 
@@ -80,4 +74,22 @@ func (s *ImageStrategy) Validate(req *transform.GeminiRequest) error {
 		return fmt.Errorf("模型 %s 仅允许 thinkingLevel 为 %v，收到 %q", s.model, allowed, lvl)
 	}
 	return nil
+}
+
+// Prepare 图像家族特化数据清洗：对 SafetySettings 进行 Trim+Upper 规范化，并独占剥离 JAILBREAK 与 CIVIC_INTEGRITY。
+func (s *ImageStrategy) Prepare(req *transform.GeminiRequest) {
+	if req.SafetySettings == nil {
+		return
+	}
+	cleaned := make([]transform.SafetySetting, 0, len(req.SafetySettings))
+	for _, ss := range req.SafetySettings {
+		cat := strings.ToUpper(strings.TrimSpace(ss.Category))
+		if cat != "HARM_CATEGORY_JAILBREAK" && cat != "HARM_CATEGORY_CIVIC_INTEGRITY" {
+			cleaned = append(cleaned, transform.SafetySetting{
+				Category:  cat,
+				Threshold: strings.ToUpper(strings.TrimSpace(ss.Threshold)),
+			})
+		}
+	}
+	req.SafetySettings = cleaned
 }

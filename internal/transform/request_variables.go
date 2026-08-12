@@ -42,7 +42,7 @@ func BuildGeminiVariablesTyped(model string, req *GeminiRequest, cfg config.Conf
 
 	safetySettings := req.SafetySettings
 	if len(safetySettings) == 0 && cfg != nil {
-		safetySettings = buildSafetySettingsTyped(cfg)
+		safetySettings = BuildSafetySettingsTyped(cfg)
 	}
 
 	out := &GeminiRequest{
@@ -50,7 +50,7 @@ func BuildGeminiVariablesTyped(model string, req *GeminiRequest, cfg config.Conf
 		SystemInstruction: sysInstruction,
 		Tools:             prepareNativeTools(req.Tools),
 		ToolConfig:        prepareNativeToolConfig(req.ToolConfig),
-		SafetySettings:    prepareNativeSafetySettings(model, safetySettings),
+		SafetySettings:    prepareNativeSafetySettings(safetySettings),
 		GenerationConfig:  prepareNativeGenerationConfig(req.GenerationConfig),
 		CachedContent:     req.CachedContent,
 		ServiceTier:       req.ServiceTier,
@@ -275,18 +275,13 @@ func prepareNativeToolConfig(tc *ToolConfig) *ToolConfig {
 }
 
 // prepareNativeSafetySettings 规范化 SafetySettings 中的 Category 与 Threshold 枚举为全大写并去除首尾空格。
-// 对于图像模型，剔除上游不支持的 HARM_CATEGORY_JAILBREAK 与 HARM_CATEGORY_CIVIC_INTEGRITY 分类。
-func prepareNativeSafetySettings(model string, settings []SafetySetting) []SafetySetting {
+func prepareNativeSafetySettings(settings []SafetySetting) []SafetySetting {
 	if len(settings) == 0 {
 		return nil
 	}
-	isImage := IsImageModel(model)
 	out := make([]SafetySetting, 0, len(settings))
 	for _, s := range settings {
 		cat := strings.ToUpper(strings.TrimSpace(s.Category))
-		if isImage && (cat == "HARM_CATEGORY_JAILBREAK" || cat == "HARM_CATEGORY_CIVIC_INTEGRITY") {
-			continue
-		}
 		out = append(out, SafetySetting{
 			Category:  cat,
 			Threshold: strings.ToUpper(strings.TrimSpace(s.Threshold)),

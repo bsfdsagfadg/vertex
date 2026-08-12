@@ -178,8 +178,44 @@ func TestImageStrategy_All4Models_ThinkingIsolation(t *testing.T) {
 	}
 }
 
-func TestImageStrategy_SafetySettings_CleanJailbreak(t *testing.T) {
+func TestImageStrategy_EnhanceAndPrepare_DefaultSafetySettings(t *testing.T) {
 	cfg := &mockConfigProvider{}
+	st := &ImageStrategy{model: "gemini-3.1-flash-image"}
+	req := &transform.GeminiRequest{}
+
+	st.Enhance(req, cfg)
+	if len(req.SafetySettings) != 6 {
+		t.Fatalf("expected 6 default safety settings after Enhance, got %d", len(req.SafetySettings))
+	}
+
+	st.Prepare(req)
+	if len(req.SafetySettings) != 4 {
+		t.Fatalf("expected 4 remaining safety settings after Prepare, got %d", len(req.SafetySettings))
+	}
+	for _, ss := range req.SafetySettings {
+		if ss.Category == "HARM_CATEGORY_JAILBREAK" || ss.Category == "HARM_CATEGORY_CIVIC_INTEGRITY" {
+			t.Fatalf("found unexpected purged category %s in req.SafetySettings", ss.Category)
+		}
+	}
+}
+
+func TestImageStrategy_Prepare_PreservesExplicitEmptySlice(t *testing.T) {
+	st := &ImageStrategy{model: "gemini-3.1-flash-image"}
+	req := &transform.GeminiRequest{
+		SafetySettings: []transform.SafetySetting{
+			{Category: "HARM_CATEGORY_JAILBREAK", Threshold: "BLOCK_NONE"},
+		},
+	}
+	st.Prepare(req)
+	if req.SafetySettings == nil {
+		t.Fatalf("expected req.SafetySettings to be empty non-nil slice, got nil")
+	}
+	if len(req.SafetySettings) != 0 {
+		t.Fatalf("expected 0 safety settings, got %d", len(req.SafetySettings))
+	}
+}
+
+func TestImageStrategy_Prepare(t *testing.T) {
 	models := []string{
 		"gemini-2.5-flash-image",
 		"gemini-3-pro-image",
@@ -188,24 +224,41 @@ func TestImageStrategy_SafetySettings_CleanJailbreak(t *testing.T) {
 	}
 
 	for _, model := range models {
-		t.Run(model+" cleans jailbreak", func(t *testing.T) {
+		t.Run(model+" cleans jailbreak and civic integrity case-insensitively", func(t *testing.T) {
 			st := &ImageStrategy{model: model}
 			req := &transform.GeminiRequest{
 				SafetySettings: []transform.SafetySetting{
 					{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_NONE"},
-					{Category: "HARM_CATEGORY_JAILBREAK", Threshold: "BLOCK_MEDIUM_AND_ABOVE"},
+					{Category: " harm_category_jailbreak ", Threshold: "BLOCK_MEDIUM_AND_ABOVE"},
+					{Category: "Harm_Category_Civic_Integrity", Threshold: "BLOCK_LOW_AND_ABOVE"},
 				},
 			}
-			st.Enhance(req, cfg)
-			for _, ss := range req.SafetySettings {
-				if ss.Category == "HARM_CATEGORY_JAILBREAK" {
-					t.Fatalf("model %s still has HARM_CATEGORY_JAILBREAK in SafetySettings after Enhance", model)
-				}
-			}
+			st.Prepare(req)
 			if len(req.SafetySettings) != 1 || req.SafetySettings[0].Category != "HARM_CATEGORY_HATE_SPEECH" {
-				t.Fatalf("expected 1 safety setting for model %s, got %v", model, req.SafetySettings)
+				t.Fatalf("expected 1 remaining safety setting HARM_CATEGORY_HATE_SPEECH for model %s, got %v", model, req.SafetySettings)
 			}
 		})
+	}
+}
+
+func TestAudioStrategy_Prepare(t *testing.T) {
+	st := &AudioStrategy{model: "gemini-3.1-flash-tts-preview"}
+	req := &transform.GeminiRequest{
+		Tools: []transform.Tool{{FunctionDeclarations: []transform.FunctionDeclaration{{Name: "test"}}}},
+		GenerationConfig: &transform.GenerationConfig{
+			ThinkingConfig: &transform.ThinkingConfig{ThinkingLevel: "HIGH"},
+		},
+	}
+	st.Prepare(req)
+
+	if len(req.Tools) > 0 {
+		t.Fatalf("expected tools to be purged in Prepare, got %v", req.Tools)
+	}
+	if req.GenerationConfig.ThinkingConfig != nil {
+		t.Fatalf("expected thinkingConfig to be purged in Prepare, got %v", req.GenerationConfig.ThinkingConfig)
+	}
+	if len(req.GenerationConfig.ResponseModalities) != 1 || req.GenerationConfig.ResponseModalities[0] != "AUDIO" {
+		t.Fatalf("expected responseModalities AUDIO in Prepare, got %v", req.GenerationConfig.ResponseModalities)
 	}
 }
 

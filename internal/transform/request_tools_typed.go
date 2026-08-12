@@ -290,8 +290,8 @@ var safetyCategories = []string{ //nolint:gochecknoglobals
 	"HARM_CATEGORY_JAILBREAK",
 }
 
-// buildSafetySettingsTyped 构建默认安全设置。
-func buildSafetySettingsTyped(cfg ConfigFace) []SafetySetting {
+// BuildSafetySettingsTyped 构建默认安全设置。
+func BuildSafetySettingsTyped(cfg ConfigFace) []SafetySetting {
 	if cfg == nil {
 		return nil
 	}

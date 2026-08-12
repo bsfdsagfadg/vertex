@@ -33,3 +33,6 @@ func (s *TextStrategy) Enhance(req *transform.GeminiRequest, cfg config.ConfigPr
 
 // Validate 文本家族无跨家族载荷硬约束。
 func (s *TextStrategy) Validate(req *transform.GeminiRequest) error { return nil }
+
+// Prepare 文本家族无特化数据清洗逻辑。
+func (s *TextStrategy) Prepare(req *transform.GeminiRequest) {}

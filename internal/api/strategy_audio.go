@@ -40,3 +40,14 @@ func (s *AudioStrategy) Validate(req *transform.GeminiRequest) error {
 	}
 	return nil
 }
+
+// Prepare 语音家族防御性再次确保 Tools 与 ThinkingConfig 为 nil，且 ResponseModalities 维持 ["AUDIO"]。
+func (s *AudioStrategy) Prepare(req *transform.GeminiRequest) {
+	req.Tools = nil
+	if req.GenerationConfig != nil {
+		req.GenerationConfig.ThinkingConfig = nil
+		if len(req.GenerationConfig.ResponseModalities) == 0 {
+			req.GenerationConfig.ResponseModalities = []string{"AUDIO"}
+		}
+	}
+}

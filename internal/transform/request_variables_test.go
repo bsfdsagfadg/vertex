@@ -483,19 +483,16 @@ func TestBuildGeminiVariablesTyped_DefaultSafetySettings(t *testing.T) {
 	}
 	cfg := &dummyConfig{}
 
-	t.Run("Image model strips HARM_CATEGORY_JAILBREAK and HARM_CATEGORY_CIVIC_INTEGRITY", func(t *testing.T) {
+	t.Run("BuildGeminiVariablesTyped preserves default safety settings with normalization without strategy filtering", func(t *testing.T) {
 		vars := BuildGeminiVariablesTyped("gemini-3.1-flash-image", req, cfg)
 		if vars == nil || vars.GeminiRequest == nil {
 			t.Fatal("vars or GeminiRequest is nil")
 		}
 		settings := vars.SafetySettings
-		if len(settings) != 4 {
-			t.Fatalf("expected 4 default safety settings for image model, got %d", len(settings))
+		if len(settings) != 6 {
+			t.Fatalf("expected 6 default safety settings for model at raw transform layer, got %d", len(settings))
 		}
 		for _, s := range settings {
-			if s.Category == "HARM_CATEGORY_JAILBREAK" || s.Category == "HARM_CATEGORY_CIVIC_INTEGRITY" {
-				t.Errorf("image model should not contain %s", s.Category)
-			}
 			if s.Threshold != "BLOCK_NONE" {
 				t.Errorf("expected BLOCK_NONE threshold, got %s", s.Threshold)
 			}
