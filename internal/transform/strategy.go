@@ -20,6 +20,12 @@ type ModelStrategy interface {
 	// Prepare 在通过校验后做出口前的家族特化数据清洗与整理。
 	Prepare(req *GeminiRequest)
 
+	// ── 传输模式管控与上行变量构建 ──
+	// FamilyStreamMode 返回家族支持的流式传输模式。
+	FamilyStreamMode() StreamMode
+	// BuildVariables 独立构建家族特化的上行 GeminiVariables 载荷。
+	BuildVariables(model string, req *GeminiRequest, cfg config.ConfigProvider) *GeminiVariables
+
 	// ── 下行响应侧 ──
 	// CalculateIdleTimeouts 根据基础配置秒数，计算该家族特化的首包超时 (preTimeout) 与包间超时 (postTimeout)。
 	CalculateIdleTimeouts(baseSeconds int) (preTimeout, postTimeout time.Duration)

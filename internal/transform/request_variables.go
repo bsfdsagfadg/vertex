@@ -7,60 +7,14 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/config"
 )
 
-// 本文件是"强类型请求 → 上游 variables"的构建层（取代旧 request_text.go 的
-// BuildVertexVariables map 版）。输入是已增强的 GeminiRequest，输出是发往
-// batchGraphql 的 variables 结构。所有对内容的后处理（同 role 合并、空内容
-// 过滤、systemInstruction 降级、尾部"继续"补足）都在 typed 上完成，零 map 往返。
+// 本文件是"强类型请求 → 上游 variables"的构建层。
+// 输入是已增强的 GeminiRequest，通过各家族 Strategy 分发构建对应的强类型 variables 结构。
 
-// BuildGeminiVariablesTyped 由强类型请求构建发往上游的强类型 variables 结构体。
+// BuildGeminiVariablesTyped 由强类型请求按模型家族 Strategy 构建发往上游的强类型 variables 结构体。
 func BuildGeminiVariablesTyped(model string, req *GeminiRequest, cfg config.ConfigProvider) *GeminiVariables {
-	if req == nil {
-		req = &GeminiRequest{}
-	}
-
-	contents := sanitizeContentRolesTyped(req.Contents)
-	contents = mergeContiguousRolesTyped(contents)
-	contents = filterEmptyContentsTyped(contents)
-	applyHistorySignatures(contents)
-	sysInstruction := req.SystemInstruction
-
-	// systemInstruction 降级：contents 不含任何 user 回合时，把 system 文本
-	// 提前为首条 user message（对齐旧 handleSystemInstruction 语义）。
-	if sysInstruction != nil && !contentsHasUser(contents) {
-		if text := extractTextTyped(sysInstruction); text != "" {
-			contents = append([]Content{{Role: "user", Parts: []Part{{Text: text}}}}, contents...)
-			sysInstruction = nil
-		}
-	}
-
-	// 尾部兼容（TrailingModelFix）：命中清单且历史以 model 回合结尾时补 user 回合。
-	if cfg != nil && cfg.TrailingModelFixEnabled() && matchTrailingFixModel(model, cfg.TrailingFixModels()) {
-		if endsWithModelTurnTyped(contents) {
-			contents = append(contents, Content{Role: "user", Parts: []Part{{Text: "继续"}}})
-		}
-	}
-
-	safetySettings := req.SafetySettings
-	if len(safetySettings) == 0 && cfg != nil {
-		safetySettings = BuildSafetySettingsTyped(cfg)
-	}
-
-	out := &GeminiRequest{
-		Contents:          contents,
-		SystemInstruction: sysInstruction,
-		Tools:             prepareNativeTools(req.Tools),
-		ToolConfig:        prepareNativeToolConfig(req.ToolConfig),
-		SafetySettings:    prepareNativeSafetySettings(safetySettings),
-		GenerationConfig:  prepareNativeGenerationConfig(req.GenerationConfig),
-		CachedContent:     req.CachedContent,
-		ServiceTier:       req.ServiceTier,
-		Store:             req.Store,
-	}
-
-	return &GeminiVariables{
-		Model:         config.ResolveModelName(model),
-		GeminiRequest: out,
-	}
+	router := NewModelFamilyRouter()
+	strategy := router.For(model)
+	return strategy.BuildVariables(model, req, cfg)
 }
 
 // BuildGeminiVariables 由强类型请求构建发往上游的 variables map 兼容层。

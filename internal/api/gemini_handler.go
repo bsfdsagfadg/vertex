@@ -15,8 +15,7 @@ import (
 )
 
 // GeminiHandler 提供 Gemini 原生 REST 入口。
-// 入站 Gemini JSON 解包为强类型 *transform.GeminiRequest，走统一的 typed 提交通道，
-// 响应侧保持 Gemini 协议字段（SSE 帧序列化后与旧 map 版一致）。
+// 入站 Gemini JSON 解包为强类型 *transform.GeminiRequest，经 ModelResolver 解析后按家族路由至物理隔离的 Pipeline。
 type GeminiHandler struct {
 	handler
 }
@@ -98,7 +97,7 @@ func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (
 	return req, true
 }
 
-func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, model string) {
+func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, rawModel string) {
 	req, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -106,10 +105,21 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.RequestTimeoutSeconds())*time.Second)
 	defer cancel()
 
-	actualModel, _ := stripFakePrefix(model, g.cfg.FakePrefixes())
-	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
+	resolved := transform.ResolveModel(rawModel, g.cfg)
+	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s, 家族=%s", rawModel, resolved.ActualModel, resolved.Family)
 
-	resp, ve := g.coreGenerateTyped(requestCtx, model, req)
+	var resp *transform.GeminiResponse
+	var ve *vertex.VertexError
+
+	switch resolved.Family {
+	case transform.FamilyImage:
+		resp, ve = g.ExecuteImageGenerate(requestCtx, resolved, req)
+	case transform.FamilyAudio:
+		resp, ve = g.ExecuteAudioSpeech(requestCtx, resolved, req)
+	default:
+		resp, ve = g.ExecuteTextComplete(requestCtx, resolved, req)
+	}
+
 	if ve != nil {
 		if isSafetyBlock(ve) {
 			writeJSON(w, http.StatusOK, geminiSafetyResponse(ve))
@@ -121,7 +131,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *http.Request, model string) {
+func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *http.Request, rawModel string) {
 	req, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -129,13 +139,29 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.RequestTimeoutSeconds())*time.Second)
 	defer cancel()
 
-	actualModel, useFake := stripFakePrefix(model, g.cfg.FakePrefixes())
-	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 假非流=%v, 聚合流=%v", model, actualModel, useFake, g.cfg.AggregateStream())
+	resolved := transform.ResolveModel(rawModel, g.cfg)
+	streamMode := resolved.Strategy.FamilyStreamMode()
+	if resolved.IsFake || g.cfg.AggregateStream() {
+		streamMode = transform.StreamModeAggregate
+	}
+
+	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 家族=%s, 流模式=%s", rawModel, resolved.ActualModel, resolved.Family, streamMode)
 
 	sw := newSSEWriter(w, "text/event-stream")
 
-	if useFake || g.cfg.AggregateStream() {
-		resp, ve := g.coreGenerateTyped(requestCtx, model, req)
+	if streamMode == transform.StreamModeAggregate {
+		var resp *transform.GeminiResponse
+		var ve *vertex.VertexError
+
+		switch resolved.Family {
+		case transform.FamilyImage:
+			resp, ve = g.ExecuteImageGenerate(requestCtx, resolved, req)
+		case transform.FamilyAudio:
+			resp, ve = g.ExecuteAudioSpeech(requestCtx, resolved, req)
+		default:
+			resp, ve = g.ExecuteTextComplete(requestCtx, resolved, req)
+		}
+
 		if ve != nil {
 			if !sw.hasWritten() {
 				writeJSON(w, ve.Code, vertexErrorToGemini(ve))
@@ -152,10 +178,27 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 		return
 	}
 
+	if resolved.Family == transform.FamilyImage {
+		g.ExecuteImageStream(requestCtx, resolved, req, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
+			if err != nil {
+				writeJSON(w, err.Code, vertexErrorToGemini(err))
+				return false
+			}
+			_ = sw.write(g.geminiSSETyped(&transform.GeminiResponse{
+				Candidates:     chunk.Candidates,
+				PromptFeedback: chunk.PromptFeedback,
+				UsageMetadata:  chunk.UsageMetadata,
+				ModelVersion:   chunk.ModelVersion,
+			}))
+			return true
+		})
+		return
+	}
+
 	hasFinish := false
 	streamErrWritten := false
 
-	g.coreStreamGenerateTyped(requestCtx, model, req, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
+	g.ExecuteTextStream(requestCtx, resolved, req, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
 		if err != nil {
 			if !sw.hasWritten() {
 				writeJSON(w, err.Code, vertexErrorToGemini(err))
@@ -231,17 +274,17 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	}
 }
 
-func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request, model string) {
-	actualModel, _ := stripFakePrefix(model, g.cfg.FakePrefixes())
+func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request, rawModel string) {
+	resolved := transform.ResolveModel(rawModel, g.cfg)
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
 	}
-	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
-	log.Printf("[Server] [CountTokens] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), resolved.ActualModel)
+	log.Printf("[Server] [CountTokens] 收到请求: 模型=%s, 真模型=%s", rawModel, resolved.ActualModel)
 
 	contents := body.Contents
-	total := g.vc.CountTokens(r.Context(), actualModel, geminiContentsToAny(contents))
+	total := g.vc.CountTokens(r.Context(), resolved.ActualModel, geminiContentsToAny(contents))
 	writeJSON(w, http.StatusOK, map[string]any{"totalTokens": total})
 }
 

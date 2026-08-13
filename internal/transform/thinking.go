@@ -50,6 +50,10 @@ var modelThinkingCapabilities = map[string]thinkingCapability{
 	"gemini-3.6-flash": {
 		mechanism: ThinkingLevel,
 	},
+	"gemini-3.7-flash": {
+		mechanism: ThinkingLevel,
+		levels:    map[string]bool{"低": true, "中": true, "高": true},
+	},
 	"gemini-3.1-flash-image": {
 		mechanism: ThinkingLevel,
 		levels: map[string]bool{"最低": true, "高": true},

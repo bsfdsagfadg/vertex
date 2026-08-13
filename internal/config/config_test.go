@@ -10,10 +10,10 @@ import (
 // TestTrailingFixModels_DefaultsAndNormalization 验证尾部兼容模型清单：
 // 默认值预填、WriteSettings 写入后归一化（Trim/去空/去重）、切片防御性拷贝。
 func TestTrailingFixModels_DefaultsAndNormalization(t *testing.T) {
-	t.Run("默认配置预填 2 个默认模型", func(t *testing.T) {
+	t.Run("默认配置预填 3 个默认模型", func(t *testing.T) {
 		cfg := StaticProvider(DefaultConfig())
 		got := cfg.TrailingFixModels()
-		want := []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}
+		want := []string{"gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("TrailingFixModels()=%v, want %v", got, want)
 		}

@@ -26,7 +26,7 @@ const SETTINGS_FIELDS = [
 ];
 
 let curSettings = {};
-const DEFAULT_TRAILING_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.6-flash'];
+const DEFAULT_TRAILING_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.7-flash'];
 
 // renderModelSelect 渲染挂在“尾部模型回合兼容”开关右侧的下拉勾选组件。
 // 面板列出系统已注册模型；配置中已有的非注册模型追加在列表尾部（带“已配置”标记，向后兼容不丢数据）。

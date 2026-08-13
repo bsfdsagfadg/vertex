@@ -46,7 +46,7 @@ func TestAdminSettings_TrailingFixModelsRoundTrip(t *testing.T) {
 
 	cookie := adminLogin(t, fx.server.URL)
 
-	t.Run("GET 返回默认 2 条清单", func(t *testing.T) {
+	t.Run("GET 返回默认 3 条清单", func(t *testing.T) {
 		body := adminGetSettingsRaw(t, fx.server.URL, cookie)
 		settings, ok := body["settings"].(map[string]any)
 		if !ok {
@@ -56,7 +56,7 @@ func TestAdminSettings_TrailingFixModelsRoundTrip(t *testing.T) {
 		if !ok {
 			t.Fatalf("settings 缺少 trailing_fix_models 数组, got %v", settings["trailing_fix_models"])
 		}
-		want := []string{"gemini-3.5-flash-lite", "gemini-3.6-flash"}
+		want := []string{"gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"}
 		var got []string
 		for _, item := range raw {
 			got = append(got, item.(string))

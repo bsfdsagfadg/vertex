@@ -48,24 +48,25 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 	voice := transform.ResolveVoice(body.Voice)
 	respFmt := strings.ToLower(firstNonEmptyStr(body.ResponseFormat, "mp3"))
 
-	geminiReq, model, convErr := transform.NewAudioAdaptor().ToGeminiRequest(&body, a.cfg)
+	geminiReq, rawModel, convErr := transform.NewAudioAdaptor().ToGeminiRequest(&body, a.cfg)
 	if convErr != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": "请求参数有误: " + convErr.Error(), "type": "invalid_request_error", "code": 400}})
 		return
 	}
-	if model == "" {
-		model = ttsDefaultModel
+	if rawModel == "" {
+		rawModel = ttsDefaultModel
 	}
 
-	log.Printf("[Server] [AudioSpeech] 收到请求: 模型=%s, 语音=%s, 格式=%s", model, voice, respFmt)
+	resolved := transform.ResolveModel(rawModel, a.cfg)
+	log.Printf("[Server] [AudioSpeech] 收到请求: 模型=%s, 真模型=%s, 语音=%s, 格式=%s", rawModel, resolved.ActualModel, voice, respFmt)
 
 	fmtInfo, ok := ttsFormatInfo[respFmt]
 	if !ok {
 		fmtInfo = ttsFormat{"audio/wav", true}
 	}
 
-	resp, ve := a.coreGenerateTyped(r.Context(), model, geminiReq)
+	resp, ve := a.ExecuteAudioSpeech(r.Context(), resolved, geminiReq)
 	if ve != nil {
 		writeJSON(w, ve.Code, vertexErrorToOAI(ve))
 		return

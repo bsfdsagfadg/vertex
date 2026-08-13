@@ -19,6 +19,9 @@ type ImageStrategy struct {
 // Family 返回图像家族。
 func (s *ImageStrategy) Family() ModelFamily { return FamilyImage }
 
+// FamilyStreamMode 图像家族默认聚合单包流（降级保护）。
+func (s *ImageStrategy) FamilyStreamMode() StreamMode { return StreamModeAggregate }
+
 // Enhance 唯一注入 imageConfig / responseModalities / thinkingConfig：
 //   - imageSize：客户端未设置时用默认档位（按能力回退 1K）；
 //   - responseModalities：客户端未设置时按默认配置（["TEXT","IMAGE"] 或 ["IMAGE"]）；
@@ -91,6 +94,48 @@ func (s *ImageStrategy) Prepare(req *GeminiRequest) {
 		}
 	}
 	req.SafetySettings = cleaned
+}
+
+// BuildVariables 实现生图家族独占的上行 variables 构建：
+// 纯净转换生图载荷，硬性过滤 Tools、ToolConfig 与 ThinkingConfig，并彻底屏蔽语言模型的思维链签名注入。
+func (s *ImageStrategy) BuildVariables(model string, req *GeminiRequest, cfg config.ConfigProvider) *GeminiVariables {
+	if req == nil {
+		req = &GeminiRequest{}
+	}
+
+	contents := sanitizeContentRolesTyped(req.Contents)
+	contents = filterEmptyContentsTyped(contents)
+
+	safetySettings := req.SafetySettings
+	if len(safetySettings) == 0 && cfg != nil {
+		safetySettings = BuildSafetySettingsTyped(cfg)
+	}
+
+	gc := prepareNativeGenerationConfig(req.GenerationConfig)
+	// 如果生图模型不支持 thinkingConfig，硬性清空
+	if gc != nil && gc.ThinkingConfig != nil {
+		mech, _, known := ThinkingCapInfo(model)
+		if !known || mech == ThinkingUnsupported {
+			gc.ThinkingConfig = nil
+		}
+	}
+
+	out := &GeminiRequest{
+		Contents:          contents,
+		SystemInstruction: req.SystemInstruction,
+		Tools:             nil, // 生图硬性过滤 Tools
+		ToolConfig:        nil, // 生图硬性过滤 ToolConfig
+		SafetySettings:    prepareNativeSafetySettings(safetySettings),
+		GenerationConfig:  gc,
+		CachedContent:     req.CachedContent,
+		ServiceTier:       req.ServiceTier,
+		Store:             req.Store,
+	}
+
+	return &GeminiVariables{
+		Model:         config.ResolveModelName(model),
+		GeminiRequest: out,
+	}
 }
 
 // CalculateIdleTimeouts 生图放大超时：

@@ -21,7 +21,7 @@ import (
 )
 
 // ImageHandler 提供 OpenAI /v1/images/* 入口。
-// 汇聚点使用 Image family 的 typed 提交通道（coreGenerateTyped + ImageAdaptor）。
+// 汇聚点使用 Image family 的 typed 提交通道（ExecuteImageGenerate + ImageAdaptor）。
 type ImageHandler struct {
 	handler
 }
@@ -38,9 +38,15 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	geminiReq, model, convErr := transform.NewImageAdaptor().ToGeminiRequest(&body, img.cfg)
+	geminiReq, rawModel, convErr := transform.NewImageAdaptor().ToGeminiRequest(&body, img.cfg)
 	if convErr != nil {
 		img.oaiBadRequest(w, "请求参数有误: "+convErr.Error())
+		return
+	}
+
+	resolved := transform.ResolveModel(rawModel, img.cfg)
+	if resolved.Family != transform.FamilyImage {
+		img.oaiBadRequest(w, fmt.Sprintf("模型 %s 不是生图模型，无法用于图片生成", rawModel))
 		return
 	}
 
@@ -60,9 +66,9 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 	if size == "" {
 		size = "1024x1024"
 	}
-	log.Printf("[Server] [ImageGenerations] 收到请求: 模型=%s, 尺寸=%s, 格式=%s, n=%d", model, size, respFmt, n)
+	log.Printf("[Server] [ImageGenerations] 收到请求: 模型=%s, 尺寸=%s, 格式=%s, n=%d", resolved.ActualModel, size, respFmt, n)
 
-	if model == "" {
+	if rawModel == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": "缺少model字段", "type": "invalid_request_error", "code": nil}})
 		return
@@ -73,7 +79,7 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	img.runOAIImageRequest(r.Context(), w, model, geminiReq, n, respFmt)
+	img.runOAIImageRequest(r.Context(), w, resolved, geminiReq, n, respFmt)
 }
 
 func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request) {
@@ -106,15 +112,21 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 		mask = &m
 	}
 
-	model := transform.ResolveImageModel(formValue(r, "model"))
+	rawModel := transform.ResolveImageModel(formValue(r, "model"))
+	resolved := transform.ResolveModel(rawModel, img.cfg)
+	if resolved.Family != transform.FamilyImage {
+		img.oaiBadRequest(w, fmt.Sprintf("模型 %s 不是生图模型，无法用于图片编辑", rawModel))
+		return
+	}
+
 	prompt := firstNonEmptyStr(formValue(r, "prompt"), "Edit the provided image.")
 	prompt = transform.AppendNegativePrompt(prompt, formValue(r, "negative_prompt"))
 	n := coerceOAIN(formValue(r, "n"))
 	respFmt := firstNonEmptyStr(formValue(r, "response_format"), "b64_json")
 
-	log.Printf("[Server] [ImageEdits] 收到请求: 模型=%s, 格式=%s, 图片数=%d", model, respFmt, len(images))
+	log.Printf("[Server] [ImageEdits] 收到请求: 模型=%s, 格式=%s, 图片数=%d", resolved.ActualModel, respFmt, len(images))
 
-	geminiReq, err := buildTypedImageEditRequest(model, prompt, images, mask,
+	geminiReq, err := buildTypedImageEditRequest(resolved.ActualModel, prompt, images, mask,
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"),
 		formValue(r, "background"), "edit")
 	if err != nil {
@@ -122,7 +134,7 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	img.runOAIImageRequest(r.Context(), w, model, geminiReq, n, respFmt)
+	img.runOAIImageRequest(r.Context(), w, resolved, geminiReq, n, respFmt)
 }
 
 func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Request) {
@@ -146,30 +158,36 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	model := transform.ResolveImageModel(formValue(r, "model"))
+	rawModel := transform.ResolveImageModel(formValue(r, "model"))
+	resolved := transform.ResolveModel(rawModel, img.cfg)
+	if resolved.Family != transform.FamilyImage {
+		img.oaiBadRequest(w, fmt.Sprintf("模型 %s 不是生图模型，无法用于图片变体", rawModel))
+		return
+	}
+
 	prompt := firstNonEmptyStr(formValue(r, "prompt"), "Create a variation of the provided image.")
 	prompt = transform.AppendNegativePrompt(prompt, formValue(r, "negative_prompt"))
 	n := coerceOAIN(formValue(r, "n"))
 	respFmt := firstNonEmptyStr(formValue(r, "response_format"), "b64_json")
 
-	log.Printf("[Server] [ImageVariations] 收到请求: 模型=%s, 格式=%s, 图片数=%d", model, respFmt, len(images))
+	log.Printf("[Server] [ImageVariations] 收到请求: 模型=%s, 格式=%s, 图片数=%d", resolved.ActualModel, respFmt, len(images))
 
-	geminiReq, err := buildTypedImageVariationRequest(model, prompt, images,
+	geminiReq, err := buildTypedImageVariationRequest(resolved.ActualModel, prompt, images,
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"), "variation")
 	if err != nil {
 		img.oaiBadRequest(w, "请求参数有误: "+err.Error())
 		return
 	}
 
-	img.runImageRequest(r.Context(), w, model, geminiReq, n, respFmt)
+	img.runImageRequest(r.Context(), w, resolved, geminiReq, n, respFmt)
 }
 
 // runOAIImageRequest 并发 n 路图片生成请求并聚合 base64/url。
-func (img *ImageHandler) runOAIImageRequest(ctx context.Context, w http.ResponseWriter, model string, geminiReq *transform.GeminiRequest, n int, responseFormat string) {
-	img.runImageRequest(ctx, w, model, geminiReq, n, responseFormat)
+func (img *ImageHandler) runOAIImageRequest(ctx context.Context, w http.ResponseWriter, resolved *transform.ResolvedModel, geminiReq *transform.GeminiRequest, n int, responseFormat string) {
+	img.runImageRequest(ctx, w, resolved, geminiReq, n, responseFormat)
 }
 
-func (img *ImageHandler) runImageRequest(ctx context.Context, w http.ResponseWriter, model string, geminiReq *transform.GeminiRequest, n int, responseFormat string) {
+func (img *ImageHandler) runImageRequest(ctx context.Context, w http.ResponseWriter, resolved *transform.ResolvedModel, geminiReq *transform.GeminiRequest, n int, responseFormat string) {
 	wantURL := responseFormat == "url"
 
 	type rResult struct {
@@ -188,7 +206,7 @@ func (img *ImageHandler) runImageRequest(ctx context.Context, w http.ResponseWri
 				}
 			}()
 			log.Printf("[Server] [runOAIImageRequest] 开始获取图片 (第 %d/%d 张)", idx+1, n)
-			resp, ve := img.coreGenerateTyped(ctx, model, geminiReq)
+			resp, ve := img.ExecuteImageGenerate(ctx, resolved, geminiReq)
 			if ve != nil {
 				results[idx] = rResult{err: ve}
 				return

@@ -17,8 +17,7 @@ import (
 
 // ChatHandler 是 OpenAI /v1/chat/completions 入口。汇聚点全链路已强类型化：
 // 入站解码为 *transform.ChatCompletionRequest，经 TextAdaptor 转为 *GeminiRequest，
-// 由 coreGenerateTyped / coreStreamGenerateTyped 统一调度（家族路由 + 策略增强 +
-// typed 提交通道），响应侧经 TextAdaptor 还原为 OpenAI DTO。
+// 经 ModelResolver 解析后分发至对应的 Family Pipeline 执行，响应侧经 TextAdaptor 还原为 OpenAI DTO。
 type ChatHandler struct {
 	handler
 	adaptor *transform.TextAdaptor
@@ -50,12 +49,12 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	actualModel, useFake := stripFakePrefix(rawModel, c.cfg.FakePrefixes())
-	body.Model = actualModel
-	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
+	resolved := transform.ResolveModel(rawModel, c.cfg)
+	body.Model = resolved.ActualModel
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), resolved.ActualModel)
 
 	stream := body.Stream
-	aggregateStream := stream && c.cfg.AggregateStream()
+	aggregateStream := stream && (c.cfg.AggregateStream() || resolved.IsFake || resolved.Strategy.FamilyStreamMode() == transform.StreamModeAggregate)
 
 	geminiReq, modelName, convErr := c.adaptor.ToGeminiRequest(&body, c.cfg)
 	if convErr != nil {
@@ -81,12 +80,46 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(c.cfg.RequestTimeoutSeconds())*time.Second)
 	defer cancel()
 
-	log.Printf("[Server] [ChatCompletions] 收到请求: 模型=%s, 真模型=%s, 流式=%v, n=%d", rawModel, actualModel, stream, n)
+	log.Printf("[Server] [ChatCompletions] 收到请求: 模型=%s, 真模型=%s, 家族=%s, 流式=%v, n=%d", rawModel, resolved.ActualModel, resolved.Family, stream, n)
 
-	if aggregateStream || (stream && useFake) {
+	// 如果客户端误传生图模型至 chat 端点，或设置了聚合流/假非流
+	if resolved.Family == transform.FamilyImage {
+		if stream {
+			sw := newSSEWriter(w, "text/event-stream")
+			c.ExecuteImageStream(requestCtx, resolved, geminiReq, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
+				if err != nil {
+					if !sw.hasWritten() {
+						writeJSON(w, err.Code, vertexErrorToOAI(err))
+						return false
+					}
+					c.writeStreamError(sw.write, err, reqID24(), modelName)
+					return false
+				}
+				oai := c.adaptor.FromGeminiResponse(&transform.GeminiResponse{
+					Candidates:     chunk.Candidates,
+					PromptFeedback: chunk.PromptFeedback,
+					UsageMetadata:  chunk.UsageMetadata,
+					ModelVersion:   chunk.ModelVersion,
+				}, modelName)
+				c.oaiSinglePacketSSE(sw, oai, modelName, reqID24())
+				return true
+			})
+			return
+		}
+		resp, ve := c.ExecuteImageGenerate(requestCtx, resolved, geminiReq)
+		if ve != nil {
+			writeJSON(w, ve.Code, vertexErrorToOAI(ve))
+			return
+		}
+		oaiResp := c.adaptor.FromGeminiResponse(resp, modelName)
+		writeJSON(w, http.StatusOK, oaiResp)
+		return
+	}
+
+	if aggregateStream {
 		requestID := reqID24()
 		sw := newSSEWriter(w, "text/event-stream")
-		resp, ve := c.coreGenerateTyped(requestCtx, rawModel, geminiReq)
+		resp, ve := c.ExecuteTextComplete(requestCtx, resolved, geminiReq)
 		if ve != nil {
 			if !sw.hasWritten() {
 				writeJSON(w, ve.Code, vertexErrorToOAI(ve))
@@ -101,7 +134,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	if stream {
-		c.streamChatCompletionsCore(requestCtx, w, modelName, geminiReq)
+		c.streamChatCompletionsCore(requestCtx, w, resolved, modelName, geminiReq)
 		return
 	}
 
@@ -121,7 +154,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 						results[idx] = coreResult{err: vertex.NewInternalError(fmt.Sprintf("candidate panic: %v", rec), nil)}
 					}
 				}()
-				r, ve := c.coreGenerateTyped(requestCtx, rawModel, geminiReq)
+				r, ve := c.ExecuteTextComplete(requestCtx, resolved, geminiReq)
 				results[idx] = coreResult{resp: r, err: ve}
 			}(i)
 		}
@@ -154,7 +187,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	geminiResp, ve := c.coreGenerateTyped(requestCtx, rawModel, geminiReq)
+	geminiResp, ve := c.ExecuteTextComplete(requestCtx, resolved, geminiReq)
 	if ve != nil {
 		if isSafetyBlock(ve) {
 			log.Printf("[Vertex] 请求被 Google 安全审查拦截, 请求ID=%s, 原因: %s", vertex.RequestIDFromContext(r.Context()), ve.Status)
@@ -172,7 +205,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 // streamChatCompletionsCore 强类型真流式核心：回调收到 typed GeminiChunk，
 // 经 TextAdaptor 转 OAI SSE 行并写出；控制流（断开、finish、缺 finish 补 length)
 // 语义与旧 map 实现保持完全一致。
-func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.ResponseWriter, model string, geminiReq *transform.GeminiRequest) {
+func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.ResponseWriter, resolved *transform.ResolvedModel, modelName string, geminiReq *transform.GeminiRequest) {
 	rid := vertex.RequestIDFromContext(ctx)
 	if rid == "" {
 		rid = reqID24()
@@ -200,18 +233,18 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 	isFirst := true
 	toolCallTracker := transform.NewStreamToolCallTracker()
 
-	c.coreStreamGenerateTyped(streamCtx, model, geminiReq, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
+	c.ExecuteTextStream(streamCtx, resolved, geminiReq, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
 		if err != nil {
 			if !sw.hasWritten() {
 				writeJSON(w, err.Code, vertexErrorToOAI(err))
 				streamErrWritten = true
 				return false
 			}
-			c.writeStreamError(write, err, rid, model)
+			c.writeStreamError(write, err, rid, modelName)
 			streamErrWritten = true
 			return false
 		}
-		events := c.adaptor.FromGeminiChunk(chunk, model, sseID, isFirst, toolCallTracker)
+		events := c.adaptor.FromGeminiChunk(chunk, modelName, sseID, isFirst, toolCallTracker)
 		observer.observeTyped(ctx, events)
 		for _, ev := range events {
 			if ev == "" {
@@ -234,7 +267,7 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 		if toolCallTracker.HasCalls() {
 			finishReason = "tool_calls"
 		}
-		base := streamChunkBase(model, sseID)
+		base := streamChunkBase(modelName, sseID)
 		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}
 		_ = sw.write(sseEvent(base))
 	}

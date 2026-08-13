@@ -15,7 +15,7 @@
   "default_thinking_level": "自动",
   "default_response_modalities": "图文",
   "stream_idle_timeout_seconds": 20,
-  "trailing_fix_models": ["gemini-3.5-flash-lite", "gemini-3.6-flash"],
+  "trailing_fix_models": ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"],
   "trailing_model_fix_enabled": false,
   "telemetry_enabled": false
 }

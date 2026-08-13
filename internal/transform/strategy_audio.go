@@ -16,6 +16,9 @@ type AudioStrategy struct {
 // Family 返回音频家族。
 func (s *AudioStrategy) Family() ModelFamily { return FamilyAudio }
 
+// FamilyStreamMode 音频 TTS 家族禁用流式通道。
+func (s *AudioStrategy) FamilyStreamMode() StreamMode { return StreamModeForbidden }
+
 // Enhance 兜底注入 AUDIO 响应模态，强行清空/屏蔽 tools 与 thinkingConfig。
 func (s *AudioStrategy) Enhance(req *GeminiRequest, cfg config.ConfigProvider) {
 	gc := req.GenerationConfig
@@ -50,6 +53,47 @@ func (s *AudioStrategy) Prepare(req *GeminiRequest) {
 		if len(req.GenerationConfig.ResponseModalities) == 0 {
 			req.GenerationConfig.ResponseModalities = []string{"AUDIO"}
 		}
+	}
+}
+
+// BuildVariables 实现语音家族独占的上行 variables 构建：
+// 纯净转换 TTS 载荷，硬性过滤 Tools、ToolConfig 与 ThinkingConfig。
+func (s *AudioStrategy) BuildVariables(model string, req *GeminiRequest, cfg config.ConfigProvider) *GeminiVariables {
+	if req == nil {
+		req = &GeminiRequest{}
+	}
+
+	contents := sanitizeContentRolesTyped(req.Contents)
+	contents = filterEmptyContentsTyped(contents)
+
+	safetySettings := req.SafetySettings
+	if len(safetySettings) == 0 && cfg != nil {
+		safetySettings = BuildSafetySettingsTyped(cfg)
+	}
+
+	gc := prepareNativeGenerationConfig(req.GenerationConfig)
+	if gc != nil {
+		gc.ThinkingConfig = nil // 语音模型强行置空 thinkingConfig
+		if len(gc.ResponseModalities) == 0 {
+			gc.ResponseModalities = []string{"AUDIO"}
+		}
+	}
+
+	out := &GeminiRequest{
+		Contents:          contents,
+		SystemInstruction: req.SystemInstruction,
+		Tools:             nil, // 语音硬性过滤 Tools
+		ToolConfig:        nil, // 语音硬性过滤 ToolConfig
+		SafetySettings:    prepareNativeSafetySettings(safetySettings),
+		GenerationConfig:  gc,
+		CachedContent:     req.CachedContent,
+		ServiceTier:       req.ServiceTier,
+		Store:             req.Store,
+	}
+
+	return &GeminiVariables{
+		Model:         config.ResolveModelName(model),
+		GeminiRequest: out,
 	}
 }
 
