@@ -241,7 +241,7 @@ func TestRunRace_CompleteChat_HardErrorDoesNotBlockSTOP(t *testing.T) {
 		for i, r := range results {
 			cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
 		}
-		return pickBestResult(cr)
+		return pickBestResult(cr, &transform.TextStrategy{})
 	}))
 
 	if err != nil {
@@ -272,7 +272,7 @@ func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 		for i, r := range results {
 			cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
 		}
-		return pickBestResult(cr)
+		return pickBestResult(cr, &transform.TextStrategy{})
 	}
 
 	t.Run("MAX_TOKENS_over_longer_non_MAX_TOKENS", func(t *testing.T) {
@@ -319,9 +319,9 @@ func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 		run := func(ctx context.Context, uri string) (*transform.GeminiResponse, error) {
 			order := atomic.AddInt32(&callOrder, 1)
 			if order == 1 {
-				return makeResult("SAFETY", "short"), nil
+				return makeResult("OTHER_FINISH", "short"), nil
 			}
-			return makeResult("SAFETY", "this is a much longer response"), nil
+			return makeResult("OTHER_FINISH", "this is a much longer response"), nil
 		}
 
 		result, err := RunRace(ctx, cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
@@ -331,8 +331,8 @@ func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if finish := candidateFinishTyped(result); finish != "SAFETY" {
-			t.Errorf("expected SAFETY finish, got %s", finish)
+		if finish := candidateFinishTyped(result); finish != "OTHER_FINISH" {
+			t.Errorf("expected OTHER_FINISH finish, got %s", finish)
 		}
 		text := responseContentLengthTyped(result)
 		if text <= len("short") {
@@ -552,7 +552,7 @@ func TestRunRace_ContextCanceled_PreservesCollectedResultsAndFailedErrors(t *tes
 			for i, r := range results {
 				cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
 			}
-			return pickBestResult(cr)
+			return pickBestResult(cr, &transform.TextStrategy{})
 		}))
 
 		if err != nil {

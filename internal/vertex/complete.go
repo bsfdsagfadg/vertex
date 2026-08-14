@@ -14,17 +14,18 @@ type candidateResult struct {
 }
 
 func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, req *transform.GeminiRequest) (*transform.GeminiResponse, error) {
+	strategy := transform.NewModelFamilyRouter().For(model)
 	run := func(ctx context.Context, proxyURI string) (*transform.GeminiResponse, error) {
 		return c.runSingleCandidate(ctx, model, req, proxyURI)
 	}
 	return RunRace(ctx, c.cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
-		return candidateFinishTyped(resp) == "STOP"
+		return candidateFinishTyped(resp) == "STOP" && strategy.IsValidResponse(resp)
 	}), WithCollectedFinalizer(func(results []raceResult[*transform.GeminiResponse]) (*transform.GeminiResponse, error) {
 		cr := make([]candidateResult, len(results))
 		for i, r := range results {
 			cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
 		}
-		return pickBestResult(cr)
+		return pickBestResult(cr, strategy)
 	}))
 }
 
@@ -70,9 +71,9 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, r
 	return resp, nil
 }
 
-func pickBestResult(results []candidateResult) (*transform.GeminiResponse, error) {
+func pickBestResult(results []candidateResult, strategy transform.ModelStrategy) (*transform.GeminiResponse, error) {
 	if len(results) == 0 {
-		return nil, NewInternalError("no viable candidate results", nil)
+		return nil, NewEmptyResponseError("no viable candidate results", nil)
 	}
 	sort.Slice(results, func(i, j int) bool {
 		fi := candidateFinishTyped(results[i].resp)
@@ -86,18 +87,40 @@ func pickBestResult(results []candidateResult) (*transform.GeminiResponse, error
 		return responseContentLengthTyped(results[i].resp) > responseContentLengthTyped(results[j].resp)
 	})
 	for _, r := range results {
-		if hasViableResponseTyped(r.resp) {
+		if isSafetyBlockedResponse(r.resp) {
+			continue
+		}
+		if strategy != nil {
+			if strategy.IsValidResponse(r.resp) {
+				return r.resp, nil
+			}
+		} else if hasViableResponseTyped(r.resp) {
 			return r.resp, nil
 		}
 	}
-	// 所有候选均无有效内容时：若任一候选被安全审查拦截（finishReason=SAFETY），
-	// 返回 safety 错误而非退化为 500 内部错误，避免网关误判为服务故障。
+	// 所有候选均无有效内容时：若任一候选被安全审查拦截（finishReason=SAFETY 或 BlockReason），
+	// 返回 safety 错误而非退化为 502/500 内部错误，避免网关误判为服务故障。
 	for _, r := range results {
-		if candidateFinishTyped(r.resp) == "SAFETY" {
+		if isSafetyBlockedResponse(r.resp) {
 			return nil, NewSafetyError("Blocked by safety filter", "SAFETY", nil)
 		}
 	}
-	return nil, NewInternalError("no viable candidate results", nil)
+	return nil, NewEmptyResponseError("no viable candidate results", nil)
+}
+
+func isSafetyBlockedResponse(resp *transform.GeminiResponse) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" && resp.PromptFeedback.BlockReason != "BLOCKED_REASON_UNSPECIFIED" {
+		return true
+	}
+	for _, cand := range resp.Candidates {
+		if cand != nil && cand.FinishReason == "SAFETY" {
+			return true
+		}
+	}
+	return false
 }
 
 func candidateFinishTyped(resp *transform.GeminiResponse) string {

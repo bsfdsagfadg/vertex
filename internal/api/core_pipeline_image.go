@@ -23,6 +23,9 @@ func (h *handler) ExecuteImageGenerate(ctx context.Context, resolved *transform.
 		return nil, toVertexError(err)
 	}
 	cleanGeminiFinishReasonTyped(resp)
+	if !strategy.IsValidResponse(resp) {
+		return nil, vertex.NewEmptyResponseError("Upstream returned no image payload", nil)
+	}
 	return resp, nil
 }
 

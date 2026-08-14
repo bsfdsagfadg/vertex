@@ -101,7 +101,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 					UsageMetadata:  chunk.UsageMetadata,
 					ModelVersion:   chunk.ModelVersion,
 				}, modelName)
-				c.oaiSinglePacketSSE(sw, oai, modelName, reqID24())
+				c.oaiSinglePacketSSE(w, sw, oai, modelName, reqID24())
 				return true
 			})
 			return
@@ -112,6 +112,10 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		oaiResp := c.adaptor.FromGeminiResponse(resp, modelName)
+		if !hasDeliverableOAIContent(oaiResp) {
+			writeJSON(w, http.StatusBadGateway, vertexErrorToOAI(vertex.NewEmptyResponseError("Upstream returned empty content", nil)))
+			return
+		}
 		writeJSON(w, http.StatusOK, oaiResp)
 		return
 	}
@@ -129,7 +133,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		oai := c.adaptor.FromGeminiResponse(resp, modelName)
-		c.oaiSinglePacketSSE(sw, oai, modelName, requestID)
+		c.oaiSinglePacketSSE(w, sw, oai, modelName, requestID)
 		return
 	}
 
@@ -183,7 +187,12 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			writeJSON(w, firstErr.Code, vertexErrorToOAI(firstErr))
 			return
 		}
-		writeJSON(w, http.StatusOK, c.adaptor.AggregateN(ok, modelName))
+		oaiResp := c.adaptor.AggregateN(ok, modelName)
+		if !hasDeliverableOAIContent(oaiResp) {
+			writeJSON(w, http.StatusBadGateway, vertexErrorToOAI(vertex.NewEmptyResponseError("Upstream returned empty content", nil)))
+			return
+		}
+		writeJSON(w, http.StatusOK, oaiResp)
 		return
 	}
 
@@ -199,6 +208,10 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	oaiResp := c.adaptor.FromGeminiResponse(geminiResp, modelName)
+	if !hasDeliverableOAIContent(oaiResp) {
+		writeJSON(w, http.StatusBadGateway, vertexErrorToOAI(vertex.NewEmptyResponseError("Upstream returned empty content", nil)))
+		return
+	}
 	writeJSON(w, http.StatusOK, oaiResp)
 }
 
@@ -290,18 +303,49 @@ func (c *ChatHandler) writeStreamError(write func(string) bool, e *vertex.Vertex
 	_ = write("data: [DONE]\n\n")
 }
 
+// hasDeliverableOAIContent 判定 OpenAI Chat 格式响应是否包含可交付的有效内容。
+func hasDeliverableOAIContent(oai any) bool {
+	oaiResp, ok := oai.(*transform.ChatCompletionResponse)
+	if !ok || oaiResp == nil || len(oaiResp.Choices) == 0 {
+		return false
+	}
+	ch := oaiResp.Choices[0]
+	if ch.FinishReason == "content_filter" {
+		return true
+	}
+	msg := ch.Message
+	if msg.Content != nil {
+		if s, ok := msg.Content.(string); ok {
+			if strings.TrimSpace(s) != "" {
+				return true
+			}
+		} else {
+			return true
+		}
+	}
+	if len(msg.ToolCalls) > 0 {
+		return true
+	}
+	if strings.TrimSpace(msg.ReasoningContent) != "" {
+		return true
+	}
+	return false
+}
+
 // oaiSinglePacketSSE 把完整 OAI 响应转为单包 SSE 事件 + [DONE]。
 // oai 为 *transform.ChatCompletionResponse（TextAdaptor 输出）。
-func (c *ChatHandler) oaiSinglePacketSSE(sw *sseWriter, oai any, model, requestID string) {
-	base := streamChunkBase(model, requestID)
-
-	oaiResp, ok := oai.(*transform.ChatCompletionResponse)
-	if !ok || len(oaiResp.Choices) == 0 {
-		_ = sw.write(sseEvent(base))
-		_ = sw.write("data: [DONE]\n\n")
+func (c *ChatHandler) oaiSinglePacketSSE(w http.ResponseWriter, sw *sseWriter, oai any, model, requestID string) {
+	oaiResp, _ := oai.(*transform.ChatCompletionResponse)
+	if !hasDeliverableOAIContent(oaiResp) {
+		if !sw.hasWritten() {
+			writeJSON(w, http.StatusBadGateway, vertexErrorToOAI(vertex.NewEmptyResponseError("Upstream returned empty content", nil)))
+			return
+		}
+		c.writeStreamError(sw.write, vertex.NewEmptyResponseError("Upstream returned empty content", nil), requestID, model)
 		return
 	}
 
+	base := streamChunkBase(model, requestID)
 	ch := oaiResp.Choices[0]
 	msg := ch.Message
 	delta := map[string]any{}

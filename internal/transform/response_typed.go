@@ -36,9 +36,13 @@ func SplitResponseParts(parts []Part) (text, reasoning string, toolCalls []Respo
 					Arguments: string(argBytes),
 				},
 			})
-		case p.InlineData != nil && strings.HasPrefix(p.InlineData.MimeType, "image/"):
-			if p.InlineData.Data != "" {
-				images = append(images, "\n![image](data:"+p.InlineData.MimeType+";base64,"+p.InlineData.Data+")")
+		case p.InlineData != nil && p.InlineData.Data != "":
+			mime := strings.ToLower(strings.TrimSpace(p.InlineData.MimeType))
+			if mime == "" {
+				mime = "image/png"
+			}
+			if strings.HasPrefix(mime, "image/") {
+				images = append(images, "\n![image](data:"+mime+";base64,"+p.InlineData.Data+")")
 			}
 		case p.Thought && p.Text != "":
 			thoughts = append(thoughts, p.Text)

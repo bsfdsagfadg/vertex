@@ -2,9 +2,12 @@ package api
 
 import (
 	"encoding/binary"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/bsfdsagfadg/vertex/internal/config"
 )
 
 // ---- ttsWAVHeader：字节级断言 RIFF/WAVE 头结构 ----
@@ -236,5 +239,37 @@ func TestTTSBuildGeminiPayloadShape(t *testing.T) {
 		if !want[k] {
 			t.Errorf("意外顶层键 %q", k)
 		}
+	}
+}
+
+// ---- audio empty response error handling ----
+
+func TestAudioSpeech_EmptyResponse_Returns502(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fx := newTestServerCustomMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		// 上游返回带有 STOP 但没有任何 audio inlineData 的空包
+		resp := `[{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"finishReason":"STOP","content":{"parts":[]}}]}}}}]}]`
+		w.Write([]byte(resp))
+	}, func(cfg *config.AppConfig) {
+		cfg.ParallelPoolEnabled = false
+		cfg.MaxRetries = 0
+		cfg.RequestTimeoutSeconds = 30
+	})
+
+	body := map[string]any{
+		"model": "gemini-2.5-flash",
+		"input": "hello world",
+		"voice": "alloy",
+	}
+	resp := doPost(t, fx.server.URL+"/v1/audio/speech", "sk-test-key", body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status=%d, want 502", resp.StatusCode)
 	}
 }

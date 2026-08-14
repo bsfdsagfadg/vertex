@@ -73,12 +73,6 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 	}
 
 	audio := transform.ExtractAudioTyped(resp)
-	if len(audio.Bytes) == 0 {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{
-			"message": "上游未返回音频数据 (no audio returned)", "type": "server_error", "code": 502}})
-		return
-	}
-
 	out := audio.Bytes
 	if fmtInfo.wrapWAV {
 		sampleRate := audio.SampleRate

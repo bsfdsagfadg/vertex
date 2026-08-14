@@ -23,5 +23,8 @@ func (h *handler) ExecuteAudioSpeech(ctx context.Context, resolved *transform.Re
 		return nil, toVertexError(err)
 	}
 	cleanGeminiFinishReasonTyped(resp)
+	if !strategy.IsValidResponse(resp) {
+		return nil, vertex.NewEmptyResponseError("Upstream returned no audio payload", nil)
+	}
 	return resp, nil
 }

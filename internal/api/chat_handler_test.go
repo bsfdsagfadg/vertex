@@ -773,3 +773,151 @@ func TestSinglePacketSSE_Gemini_FakeNonStream_Unspecified(t *testing.T) {
 	data, _ := io.ReadAll(resp.Body)
 	assertGeminiRichSSEUnspecified(t, data)
 }
+
+// TestChatCompletion_EmptyTextResponse_Returns502 验证上游返回无有效文本内容的空包时返回 502。
+func TestChatCompletion_EmptyTextResponse_Returns502(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fx := newTestServerCustomMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		resp := `[{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"finishReason":"STOP","content":{"parts":[]}}]}}}}]}]`
+		w.Write([]byte(resp))
+	}, func(cfg *config.AppConfig) {
+		cfg.ParallelPoolEnabled = false
+		cfg.MaxRetries = 0
+		cfg.RequestTimeoutSeconds = 30
+	})
+
+	body := map[string]any{
+		"model":    "gemini-2.5-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "Say hello"}},
+		"stream":   false,
+	}
+	resp := doPost(t, fx.server.URL+"/v1/chat/completions", "sk-test-key", body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status=%d, want 502", resp.StatusCode)
+	}
+}
+
+// TestChatCompletion_ImageStream_EmptyResponse_Returns502 验证生图模型走 Chat 端点且 stream=true 时空响应返回 502。
+func TestChatCompletion_ImageStream_EmptyResponse_Returns502(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fx := newTestServerCustomMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		resp := `[{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"finishReason":"STOP","content":{"parts":[]}}]}}}}]}]`
+		w.Write([]byte(resp))
+	}, func(cfg *config.AppConfig) {
+		cfg.ParallelPoolEnabled = false
+		cfg.MaxRetries = 0
+		cfg.RequestTimeoutSeconds = 30
+	})
+
+	body := map[string]any{
+		"model":    "gemini-3.1-flash-image",
+		"messages": []any{map[string]any{"role": "user", "content": "Generate a cute cat"}},
+		"stream":   true,
+	}
+	resp := doPost(t, fx.server.URL+"/v1/chat/completions", "sk-test-key", body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status=%d, want 502", resp.StatusCode)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	var errObj map[string]any
+	if err := json.Unmarshal(data, &errObj); err != nil {
+		t.Fatalf("failed to unmarshal error json: %v", err)
+	}
+	if _, ok := errObj["error"]; !ok {
+		t.Fatalf("expected 'error' field in 502 response, got: %s", string(data))
+	}
+}
+
+// TestChatCompletion_ImageNonStream_EmptyResponse_Returns502 验证生图模型走 Chat 端点且 stream=false 时空响应返回 502。
+func TestChatCompletion_ImageNonStream_EmptyResponse_Returns502(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fx := newTestServerCustomMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		resp := `[{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"finishReason":"STOP","content":{"parts":[]}}]}}}}]}]`
+		w.Write([]byte(resp))
+	}, func(cfg *config.AppConfig) {
+		cfg.ParallelPoolEnabled = false
+		cfg.MaxRetries = 0
+		cfg.RequestTimeoutSeconds = 30
+	})
+
+	body := map[string]any{
+		"model":    "gemini-3.1-flash-image",
+		"messages": []any{map[string]any{"role": "user", "content": "Generate a cute cat"}},
+		"stream":   false,
+	}
+	resp := doPost(t, fx.server.URL+"/v1/chat/completions", "sk-test-key", body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status=%d, want 502", resp.StatusCode)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	var errObj map[string]any
+	if err := json.Unmarshal(data, &errObj); err != nil {
+		t.Fatalf("failed to unmarshal error json: %v", err)
+	}
+	if _, ok := errObj["error"]; !ok {
+		t.Fatalf("expected 'error' field in 502 response, got: %s", string(data))
+	}
+}
+
+// TestChatCompletion_ImageStream_ValidImage_Returns200SSE 验证正常返回有效 InlineData 图片时返回 200 且 SSE 包含 markdown 图片内容。
+func TestChatCompletion_ImageStream_ValidImage_Returns200SSE(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fx := newTestServerCustomMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		resp := `[{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"finishReason":"STOP","content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}}]}}]}}}}]}]`
+		w.Write([]byte(resp))
+	}, func(cfg *config.AppConfig) {
+		cfg.ParallelPoolEnabled = false
+		cfg.MaxRetries = 0
+		cfg.RequestTimeoutSeconds = 30
+	})
+
+	body := map[string]any{
+		"model":    "gemini-3.1-flash-image",
+		"messages": []any{map[string]any{"role": "user", "content": "Generate a cute cat"}},
+		"stream":   true,
+	}
+	resp := doPost(t, fx.server.URL+"/v1/chat/completions", "sk-test-key", body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200", resp.StatusCode)
+	}
+
+	data, _ := io.ReadAll(resp.Body)
+	sseStr := string(data)
+	if !strings.Contains(sseStr, "data:") {
+		t.Fatalf("expected SSE data format, got: %s", sseStr)
+	}
+	if !strings.Contains(sseStr, "![image](data:image/png;base64,") {
+		t.Fatalf("expected markdown image format in SSE output, got: %s", sseStr)
+	}
+	if !strings.Contains(sseStr, "data: [DONE]") {
+		t.Fatalf("expected [DONE] terminator in SSE output, got: %s", sseStr)
+	}
+}

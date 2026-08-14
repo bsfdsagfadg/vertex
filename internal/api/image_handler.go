@@ -222,12 +222,10 @@ func (img *ImageHandler) runImageRequest(ctx context.Context, w http.ResponseWri
 		}
 	}
 	if len(allImages) == 0 {
-		if firstErr != nil {
-			writeJSON(w, firstErr.Code, vertexErrorToOAI(firstErr))
-			return
+		if firstErr == nil {
+			firstErr = vertex.NewEmptyResponseError("上游未返回图片数据 (no image returned)", nil)
 		}
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{
-			"message": "上游未返回图片数据 (no image returned)", "type": "server_error", "code": 502}})
+		writeJSON(w, firstErr.Code, vertexErrorToOAI(firstErr))
 		return
 	}
 

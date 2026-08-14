@@ -43,6 +43,9 @@ func (h *handler) ExecuteTextComplete(ctx context.Context, resolved *transform.R
 		return nil, toVertexError(err)
 	}
 	cleanGeminiFinishReasonTyped(resp)
+	if !strategy.IsValidResponse(resp) {
+		return nil, vertex.NewEmptyResponseError("Upstream returned empty response (no valid text/tool content)", nil)
+	}
 	return resp, nil
 }
 
