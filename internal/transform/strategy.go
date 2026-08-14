@@ -39,13 +39,13 @@ type ModelStrategy interface {
 
 // FamilyFor 按实际模型名归一模型家族。
 //
-// 判定优先级：TTS（含 "tts"）→ 音频；含 "image" → 图像；其余文本。
+// 判定优先级：TTS（含 "tts"）→ 音频；生图（含 "image" 或 "imagen"）→ 图像；其余文本。
 func FamilyFor(model string) ModelFamily {
 	lower := strings.ToLower(strings.TrimSpace(model))
 	if strings.Contains(lower, "tts") {
 		return FamilyAudio
 	}
-	if strings.Contains(lower, "image") {
+	if strings.Contains(lower, "image") || strings.Contains(lower, "imagen") {
 		return FamilyImage
 	}
 	return FamilyText

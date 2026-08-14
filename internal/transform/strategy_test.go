@@ -451,3 +451,93 @@ func TestImageStrategy_IsValidResponse(t *testing.T) {
 		t.Error("safetyResp should be valid for ImageStrategy")
 	}
 }
+
+func TestImageStrategy_BuildVariables_WhitelistAndTools(t *testing.T) {
+	cfg := &mockConfigProvider{
+		defaultImageSize:          "1K",
+		defaultResponseModalities: "图文",
+	}
+
+	t.Run("gemini-3.1-flash-lite-image filters tools and clamps size", func(t *testing.T) {
+		st := &ImageStrategy{model: "gemini-3.1-flash-lite-image"}
+		req := &GeminiRequest{
+			Contents: []Content{{Role: "user", Parts: []Part{{Text: "draw cat"}}}},
+			Tools: []Tool{
+				{GoogleSearch: map[string]any{}},
+				{FunctionDeclarations: []FunctionDeclaration{{Name: "fn1"}}},
+			},
+			GenerationConfig: &GenerationConfig{
+				ImageConfig: &ImageConfig{
+					ImageSize:      "4K", // lite 不支持 4K -> 回退到 1K
+					AspectRatio:    "auto",
+					OutputMimeType: "image/png",
+				},
+				ThinkingConfig: &ThinkingConfig{ThinkingLevel: "HIGH"},
+			},
+		}
+		vars := st.BuildVariables("gemini-3.1-flash-lite-image", req, cfg)
+		outReq := vars.GeminiRequest
+
+		// Tools 必须被清空（lite 不支持 search 也绝不允许 functions）
+		if len(outReq.Tools) > 0 {
+			t.Fatalf("expected 0 tools for lite-image, got %d", len(outReq.Tools))
+		}
+		if outReq.GenerationConfig.ImageConfig.ImageSize != "1K" {
+			t.Fatalf("expected clamped 1K, got %q", outReq.GenerationConfig.ImageConfig.ImageSize)
+		}
+		if outReq.GenerationConfig.ThinkingConfig == nil || outReq.GenerationConfig.ThinkingConfig.ThinkingLevel != "HIGH" {
+			t.Fatalf("expected HIGH thinkingLevel preserved for lite-image, got %v", outReq.GenerationConfig.ThinkingConfig)
+		}
+	})
+
+	t.Run("gemini-3.1-flash-image preserves GoogleSearch and removes functions", func(t *testing.T) {
+		st := &ImageStrategy{model: "gemini-3.1-flash-image"}
+		req := &GeminiRequest{
+			Contents: []Content{{Role: "user", Parts: []Part{{Text: "draw dog"}}}},
+			Tools: []Tool{
+				{GoogleSearch: map[string]any{}},
+				{FunctionDeclarations: []FunctionDeclaration{{Name: "calc"}}},
+			},
+			GenerationConfig: &GenerationConfig{
+				ImageConfig: &ImageConfig{
+					ImageSize:      "4K",
+					AspectRatio:    "16:9",
+					OutputMimeType: "image/jpeg",
+				},
+				ThinkingConfig: &ThinkingConfig{ThinkingLevel: "HIGH"},
+			},
+		}
+		vars := st.BuildVariables("gemini-3.1-flash-image", req, cfg)
+		outReq := vars.GeminiRequest
+
+		if len(outReq.Tools) != 1 || outReq.Tools[0].GoogleSearch == nil || len(outReq.Tools[0].FunctionDeclarations) > 0 {
+			t.Fatalf("expected exactly 1 tool with GoogleSearch only, got %v", outReq.Tools)
+		}
+		if outReq.GenerationConfig.ImageConfig.ImageSize != "4K" {
+			t.Fatalf("expected 4K imageSize, got %q", outReq.GenerationConfig.ImageConfig.ImageSize)
+		}
+	})
+
+	t.Run("gemini-3-pro-image auto aspect ratio downgraded to 1:1 and purges thinking", func(t *testing.T) {
+		st := &ImageStrategy{model: "gemini-3-pro-image"}
+		req := &GeminiRequest{
+			Contents: []Content{{Role: "user", Parts: []Part{{Text: "draw landscape"}}}},
+			GenerationConfig: &GenerationConfig{
+				ImageConfig: &ImageConfig{
+					ImageSize:   "2K",
+					AspectRatio: "auto", // pro 不支持 auto -> 回退到 1:1
+				},
+				ThinkingConfig: &ThinkingConfig{ThinkingLevel: "HIGH"}, // pro 不支持思考 -> 清空
+			},
+		}
+		vars := st.BuildVariables("gemini-3-pro-image", req, cfg)
+		outReq := vars.GeminiRequest
+
+		if outReq.GenerationConfig.ImageConfig.AspectRatio != "1:1" {
+			t.Fatalf("expected 1:1 aspect ratio fallback for pro-image, got %q", outReq.GenerationConfig.ImageConfig.AspectRatio)
+		}
+		if outReq.GenerationConfig.ThinkingConfig != nil {
+			t.Fatalf("expected nil thinkingConfig for pro-image, got %v", outReq.GenerationConfig.ThinkingConfig)
+		}
+	})
+}

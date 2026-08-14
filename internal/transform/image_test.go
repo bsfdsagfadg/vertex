@@ -42,54 +42,33 @@ func TestAspectRatioAllowedFor(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := aspectRatioAllowedFor(c.model, c.ratio); got != c.want {
-				t.Errorf("aspectRatioAllowedFor(%q,%q)=%v，期望 %v", c.model, c.ratio, got, c.want)
+			if got := AspectRatioAllowedFor(c.model, c.ratio); got != c.want {
+				t.Errorf("AspectRatioAllowedFor(%q,%q)=%v，期望 %v", c.model, c.ratio, got, c.want)
 			}
 		})
 	}
 }
 
-// ============ 图像分辨率 ApplyImageConfig ============
-
-func TestResolveImageConfig(t *testing.T) {
-	flashModel := "gemini-3.1-flash-image"
-	liteModel := "gemini-3.1-flash-lite-image"
-	proModel := "gemini-3-pro-image"
-
-	// image_size 档位
-	ic := ResolveImageConfigPassthrough(map[string]any{"image_size": "2K"}, flashModel)
-	if ic == nil || ic.ImageSize != "2K" {
-		t.Error("image_size=2K 未解析")
+func TestOutputMimeTypeAllowedFor(t *testing.T) {
+	cases := []struct {
+		name  string
+		model string
+		mime  string
+		want  bool
+	}{
+		{"flash-png", "gemini-3.1-flash-image", "image/png", true},
+		{"flash-jpeg", "gemini-3.1-flash-image", "image/jpeg", true},
+		{"flash-webp unsupported", "gemini-3.1-flash-image", "image/webp", false},
+		{"pro-png", "gemini-3-pro-image", "image/png", true},
+		{"pro-jpeg", "gemini-3-pro-image", "image/jpeg", true},
+		{"unknown-png", "unknown-model", "image/png", true},
 	}
-
-	// imageConfig 顶层透传
-	ic3 := ResolveImageConfigPassthrough(map[string]any{"aspectRatio": "16:9"}, flashModel)
-	if ic3 == nil || ic3.AspectRatio != "16:9" {
-		t.Error("imageConfig 透传失败")
-	}
-
-	// 不命中
-	ic4 := ResolveImageConfigPassthrough(map[string]any{}, flashModel)
-	if ic4 != nil {
-		t.Errorf("无分辨率参数时不应返回 config: %v", ic4)
-	}
-
-	// lite-image：image_size="4K" → imageSize 不写入（4K 被过滤）
-	ic9 := ResolveImageConfigPassthrough(map[string]any{"image_size": "4K"}, liteModel)
-	if ic9 != nil && ic9.ImageSize != "" {
-		t.Error("lite-image 的 4K 应被过滤丢弃")
-	}
-
-	// pro-image：imageConfig.aspectRatio="auto" → passthrough 时 auto 降级为 1:1
-	ic10 := ResolveImageConfigPassthrough(map[string]any{"aspectRatio": "auto"}, proModel)
-	if ic10 == nil || ic10.AspectRatio != "1:1" {
-		t.Errorf("pro-image 不支持 auto，应自动降级为 1:1，得到: %v", ic10)
-	}
-
-	// flash-image：imageConfig.imageSize="8K" → passthrough 被过滤丢弃
-	ic12 := ResolveImageConfigPassthrough(map[string]any{"imageSize": "8K"}, flashModel)
-	if ic12 != nil && ic12.ImageSize != "" {
-		t.Error("8K 不应被透传")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := OutputMimeTypeAllowedFor(c.model, c.mime); got != c.want {
+				t.Errorf("OutputMimeTypeAllowedFor(%q,%q)=%v, want %v", c.model, c.mime, got, c.want)
+			}
+		})
 	}
 }
 
@@ -160,17 +139,12 @@ func TestImageAdaptor_All4Models(t *testing.T) {
 			t.Errorf("expected AspectRatio 1:1, got %q", ic.AspectRatio)
 		}
 
-		payload := BuildImagePayload("gemini-2.5-flash-image", "A futuristic city", nil, nil, "1024x1024", "", "", "", "")
-		genCfg, ok := payload["generationConfig"].(map[string]any)
-		if !ok {
-			t.Fatalf("expected generationConfig map in BuildImagePayload result")
+		typedReq := BuildTypedImageRequest("gemini-2.5-flash-image", "A futuristic city", nil, nil, "1024x1024", "", "", "", "")
+		if typedReq.GenerationConfig == nil || typedReq.GenerationConfig.ImageConfig == nil {
+			t.Fatalf("expected generationConfig.imageConfig in BuildTypedImageRequest result")
 		}
-		imgCfg, ok := genCfg["imageConfig"].(map[string]any)
-		if !ok {
-			t.Fatalf("expected imageConfig map in BuildImagePayload result")
-		}
-		if imgCfg["imageSize"] != "1K" {
-			t.Errorf("expected payload imageSize 1K for gemini-2.5-flash-image, got %v", imgCfg["imageSize"])
+		if typedReq.GenerationConfig.ImageConfig.ImageSize != "1K" {
+			t.Errorf("expected typedReq imageSize 1K for gemini-2.5-flash-image, got %v", typedReq.GenerationConfig.ImageConfig.ImageSize)
 		}
 	})
 

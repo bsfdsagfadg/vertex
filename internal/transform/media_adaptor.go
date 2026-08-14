@@ -50,7 +50,7 @@ func (a *ImageAdaptor) ToGeminiRequest(raw any, cfg config.ConfigProvider) (*Gem
 		if is := sizeToImageSize(size); is != "" && ImageSizeAllowedFor(model, is) {
 			ic.ImageSize = is
 		}
-		if ic.AspectRatio != "" || ic.ImageSize != "" || ic.ImageType != "" {
+		if ic.AspectRatio != "" || ic.ImageSize != "" || ic.OutputMimeType != "" {
 			req.GenerationConfig.ImageConfig = ic
 		}
 		// 模型上层策略 Enhance 会补 imageSize 默认档位 / responseModalities 覆盖。

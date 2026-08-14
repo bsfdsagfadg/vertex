@@ -24,13 +24,14 @@ type ResolvedModel struct {
 	Strategy    ModelStrategy // 绑定的家族策略
 }
 
-// trimGeminiPathPrefix 清理 GCP 规范前缀 (models/ 与 publishers/*/models/)。
+// trimGeminiPathPrefix 清理 GCP 规范前缀 (models/ 与 publishers/*/models/)，不区分大小写。
 func trimGeminiPathPrefix(model string) string {
 	m := strings.TrimSpace(model)
-	if strings.HasPrefix(m, "models/") {
-		return strings.TrimPrefix(m, "models/")
+	lower := strings.ToLower(m)
+	if strings.HasPrefix(lower, "models/") {
+		return m[len("models/"):]
 	}
-	if idx := strings.Index(m, "/models/"); idx != -1 {
+	if idx := strings.Index(lower, "/models/"); idx != -1 {
 		return m[idx+len("/models/"):]
 	}
 	return m

@@ -27,6 +27,8 @@ func (s *ImageStrategy) FamilyStreamMode() StreamMode { return StreamModeAggrega
 //   - responseModalities：客户端未设置时按默认配置（["TEXT","IMAGE"] 或 ["IMAGE"]）；
 //   - thinkingConfig：客户端未显式传入时按能力白名单解析（不支持模型返回 nil）。
 func (s *ImageStrategy) Enhance(req *GeminiRequest, cfg config.ConfigProvider) {
+	spec := GetImageModelSpec(s.model)
+
 	gc := req.GenerationConfig
 	if gc == nil {
 		gc = &GenerationConfig{}
@@ -52,9 +54,34 @@ func (s *ImageStrategy) Enhance(req *GeminiRequest, cfg config.ConfigProvider) {
 		gc.ThinkingConfig = NormalizeThinkingConfig(gc.ThinkingConfig, s.model)
 	}
 
+	// 拦截并清理不被支持模型的 Tools 与 ToolConfig（除非该模型支持 GoogleSearch 且客户端配置了 GoogleSearch）
+	if !spec.AllowSearch {
+		req.Tools = nil
+		req.ToolConfig = nil
+	} else if len(req.Tools) > 0 {
+		req.Tools = filterAllowedGoogleSearch(req.Tools)
+		if len(req.Tools) == 0 {
+			req.ToolConfig = nil
+		}
+	}
+
 	if len(req.SafetySettings) == 0 && cfg != nil {
 		req.SafetySettings = BuildSafetySettingsTyped(cfg)
 	}
+}
+
+// filterAllowedGoogleSearch 过滤出合法的 GoogleSearch 工具定义。
+func filterAllowedGoogleSearch(tools []Tool) []Tool {
+	var filtered []Tool
+	for _, t := range tools {
+		if t.GoogleSearch != nil || t.GoogleSearchRetrieval != nil {
+			filtered = append(filtered, Tool{
+				GoogleSearch:          t.GoogleSearch,
+				GoogleSearchRetrieval: t.GoogleSearchRetrieval,
+			})
+		}
+	}
+	return filtered
 }
 
 // Validate 校验图载荷的 thinkingConfig 合法性。
@@ -97,34 +124,131 @@ func (s *ImageStrategy) Prepare(req *GeminiRequest) {
 }
 
 // BuildVariables 实现生图家族独占的上行 variables 构建：
-// 纯净转换生图载荷，硬性过滤 Tools、ToolConfig 与 ThinkingConfig，并彻底屏蔽语言模型的思维链签名注入。
+// 从零正向构建 GeminiRequest，严格按照生图模型白名单抽取参数，彻底屏蔽语言模型的思维链签名注入与无关字段。
 func (s *ImageStrategy) BuildVariables(model string, req *GeminiRequest, cfg config.ConfigProvider) *GeminiVariables {
 	if req == nil {
 		req = &GeminiRequest{}
 	}
 
+	spec := GetImageModelSpec(model)
+
+	// 1. 内容部分：清理角色并过滤空内容
 	contents := sanitizeContentRolesTyped(req.Contents)
 	contents = filterEmptyContentsTyped(contents)
 
+	// 2. 安全设置：正向输出 4 项
 	safetySettings := req.SafetySettings
 	if len(safetySettings) == 0 && cfg != nil {
 		safetySettings = BuildSafetySettingsTyped(cfg)
 	}
 
-	gc := prepareNativeGenerationConfig(req.GenerationConfig)
-	// 如果生图模型不支持 thinkingConfig，硬性清空
-	if gc != nil && gc.ThinkingConfig != nil {
-		mech, _, known := ThinkingCapInfo(model)
-		if !known || mech == ThinkingUnsupported {
-			gc.ThinkingConfig = nil
+	// 3. GenerationConfig：正向构建
+	var gc *GenerationConfig
+	if req.GenerationConfig != nil {
+		orig := req.GenerationConfig
+		gc = &GenerationConfig{}
+
+		// 3.1 基础超参限制：temperature (0~2.0), topP (0~1.0), maxOutputTokens (固定上限 32768)
+		if orig.Temperature != nil {
+			t := *orig.Temperature
+			if t < 0 {
+				t = 0
+			} else if t > 2.0 {
+				t = 2.0
+			}
+			gc.Temperature = &t
 		}
+		if orig.TopP != nil {
+			p := *orig.TopP
+			if p < 0 {
+				p = 0
+			} else if p > 1.0 {
+				p = 1.0
+			}
+			gc.TopP = &p
+		}
+		if orig.MaxOutputTokens != nil {
+			tokens := *orig.MaxOutputTokens
+			if tokens > 32768 {
+				tokens = 32768
+			}
+			gc.MaxOutputTokens = &tokens
+		}
+
+		// 3.2 响应模态 (ResponseModalities)
+		if len(orig.ResponseModalities) > 0 {
+			modalities := make([]string, 0, len(orig.ResponseModalities))
+			for _, m := range orig.ResponseModalities {
+				mod := strings.ToUpper(strings.TrimSpace(m))
+				if mod == "IMAGE" || mod == "TEXT" {
+					modalities = append(modalities, mod)
+				}
+			}
+			if len(modalities) > 0 {
+				gc.ResponseModalities = modalities
+			}
+		}
+
+		// 3.3 图像配置 (ImageConfig)：严格白名单
+		if orig.ImageConfig != nil {
+			origIC := orig.ImageConfig
+			ic := &ImageConfig{}
+
+			// aspectRatio 校验与回退
+			if origIC.AspectRatio != "" {
+				ar := strings.ToLower(strings.TrimSpace(origIC.AspectRatio))
+				if spec.SupportedRatios[ar] {
+					ic.AspectRatio = ar
+				} else if ar == "auto" {
+					// pro-image 等不支持 auto 的模型回退为 1:1
+					ic.AspectRatio = "1:1"
+				}
+			}
+
+			// imageSize 校验与回退
+			if origIC.ImageSize != "" {
+				is := strings.ToUpper(strings.TrimSpace(origIC.ImageSize))
+				if spec.SupportedSizes[is] {
+					ic.ImageSize = is
+				} else {
+					// 不支持的档位回退到 1K
+					ic.ImageSize = "1K"
+				}
+			}
+
+			// outputMimeType 校验
+			if origIC.OutputMimeType != "" {
+				mime := strings.ToLower(strings.TrimSpace(origIC.OutputMimeType))
+				if spec.SupportedMimes[mime] {
+					ic.OutputMimeType = mime
+				}
+			}
+
+			if ic.AspectRatio != "" || ic.ImageSize != "" || ic.OutputMimeType != "" {
+				gc.ImageConfig = ic
+			}
+		}
+
+		// 3.4 思考配置 (ThinkingConfig)：仅支持模型正向保留
+		if orig.ThinkingConfig != nil && spec.SupportsThinking {
+			tc := NormalizeThinkingConfig(orig.ThinkingConfig, model)
+			if tc != nil && tc.ThinkingLevel != "" && spec.ThinkingLevels[tc.ThinkingLevel] {
+				gc.ThinkingConfig = &ThinkingConfig{ThinkingLevel: tc.ThinkingLevel}
+			}
+		}
+	}
+
+	// 4. 工具配置 (Tools / ToolConfig)：仅 AllowSearch 模型正向保留 GoogleSearch
+	var tools []Tool
+	if spec.AllowSearch && len(req.Tools) > 0 {
+		tools = filterAllowedGoogleSearch(req.Tools)
 	}
 
 	out := &GeminiRequest{
 		Contents:          contents,
 		SystemInstruction: req.SystemInstruction,
-		Tools:             nil, // 生图硬性过滤 Tools
-		ToolConfig:        nil, // 生图硬性过滤 ToolConfig
+		Tools:             tools,
+		ToolConfig:        nil, // 生图不保留 FunctionCalling ToolConfig
 		SafetySettings:    prepareNativeSafetySettings(safetySettings),
 		GenerationConfig:  gc,
 		CachedContent:     req.CachedContent,

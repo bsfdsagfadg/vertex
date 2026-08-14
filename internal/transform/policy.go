@@ -168,62 +168,13 @@ func parseBudgetToLevelEnum(budget int) string {
 // ResolveResponseModalities 按默认配置解析图模型的 responseModalities；
 // 非图像模型与空默认均返回 nil（不注入）。
 func ResolveResponseModalities(defaultModalities, model string) []string {
-	if !strings.Contains(strings.ToLower(model), "image") {
+	if !IsImageModel(model) {
 		return nil
 	}
 	if defaultModalities == "仅图片" {
 		return []string{"IMAGE"}
 	}
 	return []string{"TEXT", "IMAGE"}
-}
-
-// ResolveImageConfigPassthrough 把客户端 imageConfig 透传按模型能力过滤成强类型 ImageConfig。
-func ResolveImageConfigPassthrough(raw map[string]any, model string) *ImageConfig {
-	if len(raw) == 0 {
-		return nil
-	}
-	out := &ImageConfig{}
-	for k, v := range raw {
-		s, _ := v.(string)
-		switch k {
-		case "imageSize", "image_size":
-			if s != "" && ImageSizeAllowedFor(model, s) {
-				out.ImageSize = s
-			}
-		case "aspectRatio", "aspect_ratio":
-			if s != "" {
-				if aspectRatioAllowedFor(model, s) {
-					out.AspectRatio = s
-				} else if strings.ToLower(s) == "auto" {
-					out.AspectRatio = "1:1"
-				}
-			}
-		case "imageType", "image_type":
-			if s != "" {
-				out.ImageType = s
-			}
-		}
-	}
-	if out.ImageSize == "" && out.AspectRatio == "" && out.ImageType == "" {
-		return nil
-	}
-	return out
-}
-
-// ResolveImageSizeFields 按尺寸关系补充 aspectRatio（若 imageSize 语义可推断）。
-// 优先保留客户端已设的 aspectRatio，且仅当比例在模型能力集内才写入。
-func ResolveImageSizeFields(ic *ImageConfig, sizeText, model string) {
-	if ic == nil {
-		return
-	}
-	if ar := sizeToAspectRatio(sizeText); ar != "" && aspectRatioAllowedFor(model, ar) && ic.AspectRatio == "" {
-		ic.AspectRatio = ar
-	}
-	if ic.ImageSize == "" {
-		if tier := normalizeImageSize(sizeText); tier != "" && ImageSizeAllowedFor(model, tier) {
-			ic.ImageSize = tier
-		}
-	}
 }
 
 // ResolveMediaResolution 归一 media_resolution 枚举（无法识别返回 ""）。

@@ -113,6 +113,11 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 
 	switch resolved.Family {
 	case transform.FamilyImage:
+		// Gemini 原生非流式端点强约束纯图片模态
+		if req.GenerationConfig == nil {
+			req.GenerationConfig = &transform.GenerationConfig{}
+		}
+		req.GenerationConfig.ResponseModalities = []string{"IMAGE"}
 		resp, ve = g.ExecuteImageGenerate(requestCtx, resolved, req)
 	case transform.FamilyAudio:
 		resp, ve = g.ExecuteAudioSpeech(requestCtx, resolved, req)

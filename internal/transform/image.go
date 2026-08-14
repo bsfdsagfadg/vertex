@@ -22,67 +22,114 @@ var openaiImageModelAliases = map[string]bool{
 	"gpt-image-1": true, "dall-e-2": true, "dall-e-3": true,
 }
 
-// imageCapability 描述一个图模型支持的 imageSize 档位与 aspectRatio 集合。
-type imageCapability struct {
-	sizes  map[string]bool
-	ratios map[string]bool
+// ImageModelSpec 描述单个生图模型的静态白名单能力规格。
+type ImageModelSpec struct {
+	SupportedSizes   map[string]bool
+	SupportedRatios  map[string]bool
+	SupportedMimes   map[string]bool
+	DefaultSize      string
+	DefaultRatio     string
+	AllowAutoRatio   bool
+	AllowSearch      bool
+	ThinkingLevels   map[string]bool
+	SupportsThinking bool
 }
 
-// modelImageCapabilities 是已知图模型的能力矩阵（源自 Google 反代页调研）。
-// 未命中表项的模型按保守默认：sizes={1K}，ratios=空（让 ApplyImageConfig 走推导）。
+// imageModelSpecs 是 4 大生图模型权威能力规格白名单矩阵（源自 logs/模型参数清单.txt）。
 //
-//nolint:gochecknoglobals // Read-only capability table
-var modelImageCapabilities = map[string]imageCapability{
+//nolint:gochecknoglobals // Read-only capability specs
+var imageModelSpecs = map[string]ImageModelSpec{
 	"gemini-3.1-flash-lite-image": {
-		sizes:  map[string]bool{"1K": true},
-		ratios: map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true},
+		SupportedSizes:   map[string]bool{"1K": true},
+		SupportedRatios:  map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true},
+		SupportedMimes:   map[string]bool{"image/png": true, "image/jpeg": true},
+		DefaultSize:      "1K",
+		DefaultRatio:     "auto",
+		AllowAutoRatio:   true,
+		AllowSearch:      false,
+		ThinkingLevels:   map[string]bool{"MINIMAL": true, "HIGH": true},
+		SupportsThinking: true,
 	},
 	"gemini-3.1-flash-image": {
-		sizes:  map[string]bool{"512": true, "1K": true, "2K": true, "4K": true},
-		ratios: map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true},
+		SupportedSizes:   map[string]bool{"512": true, "1K": true, "2K": true, "4K": true},
+		SupportedRatios:  map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true},
+		SupportedMimes:   map[string]bool{"image/png": true, "image/jpeg": true},
+		DefaultSize:      "1K",
+		DefaultRatio:     "auto",
+		AllowAutoRatio:   true,
+		AllowSearch:      true,
+		ThinkingLevels:   map[string]bool{"MINIMAL": true, "HIGH": true},
+		SupportsThinking: true,
 	},
 	"gemini-3-pro-image": {
-		sizes:  map[string]bool{"1K": true, "2K": true, "4K": true},
-		ratios: map[string]bool{"1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "21:9": true},
+		SupportedSizes:   map[string]bool{"1K": true, "2K": true, "4K": true},
+		SupportedRatios:  map[string]bool{"1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "21:9": true},
+		SupportedMimes:   map[string]bool{"image/png": true, "image/jpeg": true},
+		DefaultSize:      "1K",
+		DefaultRatio:     "1:1",
+		AllowAutoRatio:   false,
+		AllowSearch:      true,
+		ThinkingLevels:   nil,
+		SupportsThinking: false,
 	},
 	"gemini-2.5-flash-image": {
-		sizes:  map[string]bool{"1K": true, "2K": true, "4K": true},
-		ratios: map[string]bool{"1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "21:9": true},
+		SupportedSizes:   map[string]bool{"1K": true, "2K": true, "4K": true},
+		SupportedRatios:  map[string]bool{"1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "21:9": true},
+		SupportedMimes:   map[string]bool{"image/png": true, "image/jpeg": true},
+		DefaultSize:      "1K",
+		DefaultRatio:     "1:1",
+		AllowAutoRatio:   false,
+		AllowSearch:      false,
+		ThinkingLevels:   nil,
+		SupportsThinking: false,
 	},
 }
 
-// unknownModelWarned 避免为同一未知模型重复打日志。
+// unknownModelWarned 避免同一未知图模型重复刷日志。
 //
-//nolint:gochecknoglobals // Once-per-model dedup
+//nolint:gochecknoglobals
 var unknownModelWarned sync.Map
 
-// imageCapabilityFor 返回模型能力；未知模型 sizes 保守为仅 1K，ratios 默认全允许。
-func imageCapabilityFor(model string) imageCapability {
-	if c, ok := modelImageCapabilities[model]; ok {
-		return c
+// GetImageModelSpec 获取指定图模型的白名单规格（未知模型返回保守默认）。
+func GetImageModelSpec(model string) ImageModelSpec {
+	if spec, ok := imageModelSpecs[model]; ok {
+		return spec
 	}
 	if _, loaded := unknownModelWarned.LoadOrStore(model, true); !loaded {
-		log.Printf("[Image] 未知图模型 %q，sizes 按保守默认（仅 1K）处理，ratios 全允许", model)
+		log.Printf("[Image] 未知图模型 %q，按保守默认（sizes={1K}, ratios=全允许, 不支持搜索与思考）处理", model)
 	}
-	return imageCapability{sizes: map[string]bool{"1K": true}, ratios: imageAspectRatioSupported}
+	return ImageModelSpec{
+		SupportedSizes:   map[string]bool{"1K": true},
+		SupportedRatios:  imageAspectRatioSupported,
+		SupportedMimes:   map[string]bool{"image/png": true, "image/jpeg": true},
+		DefaultSize:      "1K",
+		DefaultRatio:     "1:1",
+		AllowAutoRatio:   false,
+		AllowSearch:      false,
+		ThinkingLevels:   nil,
+		SupportsThinking: false,
+	}
 }
 
 // ImageSizeAllowedFor 模型是否支持某档位。
 func ImageSizeAllowedFor(model, tier string) bool {
-	return imageCapabilityFor(model).sizes[tier]
+	spec := GetImageModelSpec(model)
+	return spec.SupportedSizes[tier]
 }
 
-// IsImageModel 判断模型是否为图像模型（在能力表中，或者模型名包含 "image"）。
+// IsImageModel 判断模型是否为图像模型（在能力表中，或者模型名包含 "image" / "imagen"）。
 func IsImageModel(model string) bool {
-	if _, ok := modelImageCapabilities[model]; ok {
+	if _, ok := imageModelSpecs[model]; ok {
 		return true
 	}
-	return strings.Contains(strings.ToLower(model), "image")
+	lower := strings.ToLower(model)
+	return strings.Contains(lower, "image") || strings.Contains(lower, "imagen")
 }
 
-// aspectRatioAllowedFor 模型是否支持某比例。
-func aspectRatioAllowedFor(model, ratio string) bool {
-	return imageCapabilityFor(model).ratios[ratio]
+// AspectRatioAllowedFor 模型是否支持某比例。
+func AspectRatioAllowedFor(model, ratio string) bool {
+	spec := GetImageModelSpec(model)
+	return spec.SupportedRatios[ratio]
 }
 
 // ResolveImageSize 返回模型可用的 imageSize：优先使用配置值，不合法则回退到 1K。
@@ -100,6 +147,12 @@ var imageAspectRatioSupported = map[string]bool{
 	"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true,
 	"4:5": true, "5:4": true, "9:16": true, "16:9": true,
 	"1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true,
+}
+
+// OutputMimeTypeAllowedFor 模型是否支持某输出图片格式。
+func OutputMimeTypeAllowedFor(model, mime string) bool {
+	spec := GetImageModelSpec(model)
+	return spec.SupportedMimes[strings.ToLower(strings.TrimSpace(mime))]
 }
 
 // InlineImage 是一张上传图片的 inlineData 结构（mimeType + base64 data）。
@@ -120,46 +173,54 @@ func ResolveImageModel(model string) string {
 	return model
 }
 
-// BuildImagePayload 构建图片生成/编辑/变体的 Gemini payload。
+// BuildTypedImageRequest 构建图片生成/编辑/变体的 Gemini 强类型请求。
 //
 //   - prompt 经 buildImagePrompt 拼接尺寸/质量/风格/背景等自然语言约束。
 //   - images（编辑/变体的输入图）与 mask（编辑遮罩）以 inlineData 追加（base64 规范化）。
-//   - generationConfig.responseModalities=["TEXT","IMAGE"]；按 size 推 aspectRatio / imageSize
-//     （imageSize 按模型能力矩阵配置）。
-func BuildImagePayload(model, prompt string, images []InlineImage, mask *InlineImage, size, quality, style, background, mode string) map[string]any {
+//   - generationConfig.responseModalities 预置为 ["IMAGE"]；按 size 推 aspectRatio / imageSize。
+func BuildTypedImageRequest(model, prompt string, images []InlineImage, mask *InlineImage, size, quality, style, background, mode string) *GeminiRequest {
 	promptText := buildImagePrompt(prompt, size, quality, style, background, mode, mask != nil)
 
-	parts := []any{map[string]any{"text": promptText}}
+	parts := []Part{{Text: promptText}}
 	for _, img := range images {
 		if img.Data != "" && img.MimeType != "" {
-			parts = append(parts, map[string]any{"inlineData": map[string]any{
-				"mimeType": img.MimeType, "data": NormalizeBase64(img.Data),
-			}})
+			parts = append(parts, Part{
+				InlineData: &InlineData{
+					MimeType: img.MimeType,
+					Data:     NormalizeBase64(img.Data),
+				},
+			})
 		}
 	}
 	if mask != nil && mask.Data != "" && mask.MimeType != "" {
-		parts = append(parts, map[string]any{"text": "Use the following image as the edit mask when applying the requested change."})
-		parts = append(parts, map[string]any{"inlineData": map[string]any{
-			"mimeType": mask.MimeType, "data": NormalizeBase64(mask.Data),
-		}})
+		parts = append(parts, Part{Text: "Use the following image as the edit mask when applying the requested change."})
+		parts = append(parts, Part{
+			InlineData: &InlineData{
+				MimeType: mask.MimeType,
+				Data:     NormalizeBase64(mask.Data),
+			},
+		})
 	}
 
-	genCfg := map[string]any{"responseModalities": []any{"TEXT", "IMAGE"}}
-	imageConfig := map[string]any{}
+	req := &GeminiRequest{
+		Contents: []Content{{Role: "user", Parts: parts}},
+		GenerationConfig: &GenerationConfig{
+			ResponseModalities: []string{"IMAGE"},
+		},
+	}
+
+	ic := &ImageConfig{}
 	if ar := sizeToAspectRatio(size); ar != "" {
-		imageConfig["aspectRatio"] = ar
+		ic.AspectRatio = ar
 	}
 	if is := sizeToImageSize(size); is != "" && ImageSizeAllowedFor(model, is) {
-		imageConfig["imageSize"] = is
+		ic.ImageSize = is
 	}
-	if len(imageConfig) > 0 {
-		genCfg["imageConfig"] = imageConfig
+	if ic.AspectRatio != "" || ic.ImageSize != "" || ic.OutputMimeType != "" {
+		req.GenerationConfig.ImageConfig = ic
 	}
 
-	return map[string]any{
-		"contents":         []any{map[string]any{"role": "user", "parts": parts}},
-		"generationConfig": genCfg,
-	}
+	return req
 }
 
 // AppendNegativePrompt 把 negative_prompt 追加成 "Avoid: ..." 行。

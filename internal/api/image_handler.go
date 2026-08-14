@@ -126,13 +126,9 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 
 	log.Printf("[Server] [ImageEdits] 收到请求: 模型=%s, 格式=%s, 图片数=%d", resolved.ActualModel, respFmt, len(images))
 
-	geminiReq, err := buildTypedImageEditRequest(resolved.ActualModel, prompt, images, mask,
+	geminiReq := transform.BuildTypedImageRequest(resolved.ActualModel, prompt, images, mask,
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"),
 		formValue(r, "background"), "edit")
-	if err != nil {
-		img.oaiBadRequest(w, "请求参数有误: "+err.Error())
-		return
-	}
 
 	img.runOAIImageRequest(r.Context(), w, resolved, geminiReq, n, respFmt)
 }
@@ -172,12 +168,8 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 
 	log.Printf("[Server] [ImageVariations] 收到请求: 模型=%s, 格式=%s, 图片数=%d", resolved.ActualModel, respFmt, len(images))
 
-	geminiReq, err := buildTypedImageVariationRequest(resolved.ActualModel, prompt, images,
-		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"), "variation")
-	if err != nil {
-		img.oaiBadRequest(w, "请求参数有误: "+err.Error())
-		return
-	}
+	geminiReq := transform.BuildTypedImageRequest(resolved.ActualModel, prompt, images, nil,
+		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"), "", "variation")
 
 	img.runImageRequest(r.Context(), w, resolved, geminiReq, n, respFmt)
 }
@@ -359,47 +351,4 @@ func firstNonEmptyStr(a, b string) string {
 		return a
 	}
 	return b
-}
-
-// stringValOr 从 map 读取字符串字段，缺失或非字符串返回默认值。
-func stringValOr(body map[string]any, key, def string) string {
-	v, ok := body[key]
-	if !ok {
-		return def
-	}
-	s, ok := v.(string)
-	if !ok {
-		return def
-	}
-	return s
-}
-
-// hasImageSize 判断载荷里是否已设置非空 imageSize。
-func hasImageSize(payload map[string]any) bool {
-	gc, ok := payload["generationConfig"].(map[string]any)
-	if !ok {
-		return false
-	}
-	ic, ok := gc["imageConfig"].(map[string]any)
-	if !ok {
-		return false
-	}
-	v, ok := ic["imageSize"]
-	if !ok {
-		return false
-	}
-	s, _ := v.(string)
-	return s != ""
-}
-
-// buildTypedImageEditRequest 构造 edit 请求的 typed 载荷。
-func buildTypedImageEditRequest(model, prompt string, images []transform.InlineImage, mask *transform.InlineImage, size, quality, style, background, mode string) (*transform.GeminiRequest, error) {
-	payload := transform.BuildImagePayload(model, prompt, images, mask, size, quality, style, background, mode)
-	return transform.NormalizeGeminiRequestMap(payload)
-}
-
-// buildTypedImageVariationRequest 构造 variation 请求的 typed 载荷。
-func buildTypedImageVariationRequest(model, prompt string, images []transform.InlineImage, size, quality, style, mode string) (*transform.GeminiRequest, error) {
-	payload := transform.BuildImagePayload(model, prompt, images, nil, size, quality, style, "", mode)
-	return transform.NormalizeGeminiRequestMap(payload)
 }

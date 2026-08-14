@@ -118,11 +118,11 @@ type ThinkingConfig struct {
 	ThinkingLevel  string  `json:"thinkingLevel,omitempty"`
 }
 
-// ImageConfig 是图像生成配置。
+// ImageConfig 是图像生成配置（严格对齐 Google GenAI REST 规范：aspect_ratio, image_size, output_mime_type）。
 type ImageConfig struct {
-	AspectRatio string `json:"aspectRatio,omitempty"`
-	ImageSize   string `json:"imageSize,omitempty"`
-	ImageType   string `json:"imageType,omitempty"`
+	AspectRatio    string `json:"aspectRatio,omitempty"`
+	ImageSize      string `json:"imageSize,omitempty"`
+	OutputMimeType string `json:"outputMimeType,omitempty"`
 }
 
 // SpeechConfig 是 TTS 语音配置。

@@ -88,6 +88,27 @@ func TestResolveModel(t *testing.T) {
 			expectedFake:   false,
 			expectedFamily: transform.FamilyAudio,
 		},
+		{
+			name:           "Uppercase Models prefix image model",
+			rawModel:       "Models/gemini-3.1-flash-image",
+			expectedActual: "gemini-3.1-flash-image",
+			expectedFake:   false,
+			expectedFamily: transform.FamilyImage,
+		},
+		{
+			name:           "Publishers uppercase Models prefix",
+			rawModel:       "projects/p/locations/l/publishers/google/Models/gemini-3-pro-image",
+			expectedActual: "gemini-3-pro-image",
+			expectedFake:   false,
+			expectedFamily: transform.FamilyImage,
+		},
+		{
+			name:           "Imagen model family routing",
+			rawModel:       "imagen-3.0-generate-002",
+			expectedActual: "imagen-3.0-generate-002",
+			expectedFake:   false,
+			expectedFamily: transform.FamilyImage,
+		},
 	}
 
 	for _, tt := range tests {
