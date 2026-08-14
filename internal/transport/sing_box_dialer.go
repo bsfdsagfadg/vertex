@@ -452,13 +452,15 @@ func makeBoxDialFunc(nb *nodeBox) func(ctx context.Context, network, addr string
 			nb.closed.Store(true)
 			nb.box.Close()
 			go func() {
+				timer := time.NewTimer(10 * time.Second) // 终极兜底，防 transport 不响应 context
+				defer timer.Stop()
 				select {
 				case r := <-ch:
 					if r.conn != nil {
 						_ = r.conn.Close()
 					}
 				case <-ctx.Done(): // 父请求结束即退出，不必白等
-				case <-time.After(30 * time.Second): // 终极兜底，防 transport 不响应 context
+				case <-timer.C:
 				}
 			}()
 			return nil, fmt.Errorf("dial timeout after %v", secondHopDialTimeout)

@@ -87,6 +87,25 @@ func TestCleanupAdminSessions(t *testing.T) {
 	}
 }
 
+func TestStartAdminSessionCleanup(t *testing.T) {
+	resetAdminSessions()
+	now := time.Now()
+	adminSessionsMu.Lock()
+	adminSessions["dead"] = now.Add(-time.Hour)
+	adminSessionsMu.Unlock()
+
+	stop := StartAdminSessionCleanup(10 * time.Millisecond)
+	time.Sleep(30 * time.Millisecond)
+	stop()
+
+	adminSessionsMu.Lock()
+	left := len(adminSessions)
+	adminSessionsMu.Unlock()
+	if left != 0 {
+		t.Fatalf("StartAdminSessionCleanup 应定期清理过期会话，实际剩余 %d", left)
+	}
+}
+
 // ---- key 脱敏 ----
 
 func TestMaskKey(t *testing.T) {

@@ -20,6 +20,15 @@ import (
 //
 // onObject 返回 (stop, err)：stop=true（命中真实 finishReason）即正常结束扫描；客户端断开由 ctx.Err() 路径处理；
 // err 非 nil 即中断并上抛（上游错误）。
+const maxRecycleBufferSize = 256 * 1024 // 256KB 累积缓冲池最大复用阈值，防止单次超大包导致常驻内存泄漏
+
+var accumBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 0, 32*1024)
+		return &buf
+	},
+}
+
 var scanBufferPool = sync.Pool{
 	New: func() any {
 		buf := make([]byte, 16*1024)
@@ -33,7 +42,15 @@ func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]an
 	defer scanBufferPool.Put(bufPtr)
 	readBuf := *bufPtr
 
-	var buffer []byte
+	accumBufPtr := accumBufferPool.Get().(*[]byte)
+	buffer := (*accumBufPtr)[:0]
+	defer func() {
+		if cap(buffer) <= maxRecycleBufferSize {
+			*accumBufPtr = buffer[:0]
+			accumBufferPool.Put(accumBufPtr)
+		}
+	}()
+
 	scanPos := 0  // 已扫到的位置（buffer 内），下个网络 chunk 从这里续扫。
 	startIdx := 0 // 当前对象的起始 '{' 位置。
 	braceCount := 0

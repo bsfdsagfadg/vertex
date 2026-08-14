@@ -76,6 +76,7 @@ func StreamParallel(ctx context.Context, cfg config.ConfigProvider, model string
 	}
 	for chunk := range winnerCh {
 		if !yield(chunk) {
+			streamCancel()
 			return
 		}
 	}

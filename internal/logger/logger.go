@@ -12,9 +12,11 @@ import (
 // DailyLogger implements an io.Writer that writes to logs_latest.log.
 // On Close, it appends the content to a daily log file and clears logs_latest.log.
 type DailyLogger struct {
-	mu       sync.Mutex
-	logDir   string
-	latestFd *os.File
+	mu        sync.Mutex
+	logDir    string
+	latestFd  *os.File
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // NewDailyLogger creates a new DailyLogger that writes logs to the specified directory.
@@ -33,6 +35,7 @@ func NewDailyLogger(dir string) *DailyLogger {
 	dl := &DailyLogger{
 		logDir:   dir,
 		latestFd: f,
+		done:     make(chan struct{}),
 	}
 	go dl.cleanupRoutine()
 	return dl
@@ -48,6 +51,10 @@ func (l *DailyLogger) Write(p []byte) (n int, err error) {
 }
 
 func (l *DailyLogger) Close() error {
+	l.closeOnce.Do(func() {
+		close(l.done)
+	})
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -78,9 +85,15 @@ func (l *DailyLogger) Close() error {
 }
 
 func (l *DailyLogger) cleanupRoutine() {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
 	for {
-		l.cleanup()
-		time.Sleep(1 * time.Hour)
+		select {
+		case <-ticker.C:
+			l.cleanup()
+		case <-l.done:
+			return
+		}
 	}
 }
 

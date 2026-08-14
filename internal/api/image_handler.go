@@ -91,6 +91,11 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 		img.oaiBadRequest(w, "图片编辑请求解析失败，请检查 multipart 表单 (failed to parse edit request)")
 		return
 	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
 
 	imageUploads := formUploads(r, "image")
 	if len(imageUploads) == 0 {
@@ -142,6 +147,11 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 		img.oaiBadRequest(w, "图片变体请求解析失败，请检查 multipart 表单 (failed to parse variation request)")
 		return
 	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
 
 	imageUploads := formUploads(r, "image")
 	if len(imageUploads) == 0 {

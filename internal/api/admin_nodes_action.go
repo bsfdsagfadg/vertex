@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -18,9 +19,29 @@ import (
 )
 
 const (
-	batchTestConcurrency     = 50
 	singleNodeTestTimeoutSec = 15
 )
+
+// getBatchTestConcurrency 根据操作系统与 CPU 核心数自适应计算批量测速并发度，防止端口或调度过载
+func getBatchTestConcurrency() int {
+	concurrency := runtime.NumCPU() * 4
+	if runtime.GOOS == "windows" {
+		if concurrency > 30 {
+			return 30
+		}
+		if concurrency < 10 {
+			return 10
+		}
+		return concurrency
+	}
+	if concurrency > 50 {
+		return 50
+	}
+	if concurrency < 10 {
+		return 10
+	}
+	return concurrency
+}
 
 var (
 	testAllCancel context.CancelFunc
@@ -71,12 +92,13 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 			log.Printf("[Admin] [TestAll] 已有批量测试正在进行中，拒绝重复触发")
 			return
 		}
-		rounds := (totalEnabled + batchTestConcurrency - 1) / batchTestConcurrency
+		actualConcurrency := getBatchTestConcurrency()
+		rounds := (totalEnabled + actualConcurrency - 1) / actualConcurrency
 		dynamicTimeout := time.Duration(rounds*2)*singleNodeTestTimeoutSec*time.Second + 2*time.Minute
 		if dynamicTimeout < 5*time.Minute {
 			dynamicTimeout = 5 * time.Minute
 		}
-		log.Printf("[Admin] [TestAll] 加载待测节点数: %d/%d, 并发数: %d, 全局超时时间: %v", totalEnabled, len(list), batchTestConcurrency, dynamicTimeout)
+		log.Printf("[Admin] [TestAll] 加载待测节点数: %d/%d, 并发数: %d, 全局超时时间: %v", totalEnabled, len(list), actualConcurrency, dynamicTimeout)
 
 		ctx, cancel := context.WithTimeout(context.Background(), dynamicTimeout)
 		testAllMu.Lock()
@@ -97,7 +119,7 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 		}()
 
 		var wg sync.WaitGroup
-		sem := make(chan struct{}, batchTestConcurrency)
+		sem := make(chan struct{}, actualConcurrency)
 
 		for _, n := range enabledNodes {
 			wg.Add(1)

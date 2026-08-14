@@ -182,7 +182,7 @@ func main() {
 	keys.LoadKeys()
 
 	api.EnsureAdminPassword()
-	api.StartAdminSessionCleanup(time.Hour)
+	stopAdminCleanup := api.StartAdminSessionCleanup(time.Hour)
 
 	vc := vertex.NewVertexAIClient(cfg, netClient)
 
@@ -217,6 +217,7 @@ func main() {
 		}
 		cancel()
 		dialer.StopAll()
+		stopAdminCleanup()
 		telemetry.Stop()
 		_ = dailyLogger.Close()
 	}

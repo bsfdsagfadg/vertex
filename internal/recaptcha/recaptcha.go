@@ -116,10 +116,12 @@ func FetchRecaptchaToken(ctx context.Context, net *transport.NetworkClient, prox
 		}
 		if retry < 2 {
 			delay := time.Duration((retry+1)*200) * time.Millisecond
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return "", ctx.Err()
-			case <-time.After(delay):
+			case <-timer.C:
 			}
 		}
 	}
