@@ -106,7 +106,7 @@ func errorPriority(err error) int {
 // 若相同优先级，返回第一个遇到的。
 func pickBestError(errs []error) error {
 	if len(errs) == 0 {
-		return fmt.Errorf("all nodes failed")
+		return NewInternalError("all nodes failed", nil)
 	}
 	best := errs[0]
 	bestPrio := errorPriority(best)
@@ -116,7 +116,29 @@ func pickBestError(errs []error) error {
 			bestPrio = p
 		}
 	}
-	return best
+	return NormalizeError(best)
+}
+
+// convergeRaceFailure 统一收敛竞速失败结果为规范化的 *VertexError。
+func convergeRaceFailure(ctx context.Context, failedErrors []error, lastErr error) *VertexError {
+	if ctx != nil && ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return NormalizeError(ctx.Err())
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if len(failedErrors) > 0 {
+				return NormalizeError(pickBestError(failedErrors))
+			}
+			return NormalizeError(ctx.Err())
+		}
+	}
+	if len(failedErrors) > 0 {
+		return NormalizeError(pickBestError(failedErrors))
+	}
+	if lastErr != nil {
+		return NormalizeError(lastErr)
+	}
+	return NewInternalError("all nodes failed", nil)
 }
 
 // RunRace runs a hedge race across multiple candidate nodes.
@@ -144,12 +166,17 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		o(&rc)
 	}
 
+	var zero T
 	cands := nodes.SelectForParallel(cfg.ParallelPoolSize(), cfg.DebugMode())
 
 	if !cfg.ParallelPoolEnabled() || len(cands) == 0 {
 		proxy := cfg.ActiveNodeURI()
 		log.Printf("[Vertex] [RunParallel] 降级为单节点运行: %s", nodes.GetNodeName(proxy))
-		return run(ctx, proxy)
+		val, err := run(ctx, proxy)
+		if err != nil {
+			return zero, NormalizeError(err)
+		}
+		return val, nil
 	}
 
 	if cfg.DebugMode() {
@@ -255,14 +282,13 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		nextIdx = 1
 	}
 	defer timer.Stop()
-	var zero T
 	var failedErrors []error
 
 	for {
 		select {
 		case <-ctx.Done():
 			cancel()
-			return zero, ctx.Err()
+			return zero, convergeRaceFailure(ctx, failedErrors, ctx.Err())
 
 		case <-timer.C:
 			if nextIdx < len(cands) && ctxRace.Err() == nil {
@@ -318,18 +344,18 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 
 					failedErrors = append(failedErrors, res.err)
 
-ve := asVertexError(res.err)
-				if ve != nil {
-					// 流式包间空闲超时：节点僵死/极慢，进入 15 秒短时避让，
-					// 避免下一轮竞速反复选中同一节点。
-					if errors.Is(res.err, ErrStreamIdleTimeout) ||
-						(ve.Kind == "network" && strings.Contains(ve.Message, "idle timeout")) {
-						if cfg.DebugMode() {
-							log.Printf("[Racing] 节点 %s 触发流式包间空闲超时，进入 15 秒短时避让", name)
+					ve := asVertexError(res.err)
+					if ve != nil {
+						// 流式包间空闲超时：节点僵死/极慢，进入 15 秒短时避让，
+						// 避免下一轮竞速反复选中同一节点。
+						if errors.Is(res.err, ErrStreamIdleTimeout) ||
+							(ve.Kind == "network" && strings.Contains(ve.Message, "idle timeout")) {
+							if cfg.DebugMode() {
+								log.Printf("[Racing] 节点 %s 触发流式包间空闲超时，进入 15 秒短时避让", name)
+							}
+							nodes.RecordRateLimit(res.uri, 15)
 						}
-						nodes.RecordRateLimit(res.uri, 15)
-					}
-					switch ve.Kind {
+						switch ve.Kind {
 						case "ratelimit":
 							if cfg.DebugMode() {
 								log.Printf("[Racing] 节点 %s 触发 429 API 限制，进入 30 秒短时歇息", name)
@@ -351,7 +377,7 @@ ve := asVertexError(res.err)
 							log.Printf("[Racing] 节点 %s 触发请求级全局硬错误(%s)，终止竞速: %s", name, ve.Kind, ve.Message)
 						}
 						cancel()
-						return zero, res.err
+						return zero, ve
 					}
 
 					if nextIdx < len(cands) && ctxRace.Err() == nil {
@@ -370,7 +396,7 @@ ve := asVertexError(res.err)
 					// 若已有 collectedResults 或 failedErrors，则交由下方统一终结评估点按优先级收敛。
 					if atomic.LoadInt32(&active) == 0 && len(rc.collectedResults) == 0 && len(failedErrors) == 0 {
 						cancel()
-						return zero, res.err
+						return zero, convergeRaceFailure(ctx, failedErrors, res.err)
 					}
 				}
 			}
@@ -379,27 +405,15 @@ ve := asVertexError(res.err)
 				cancel()
 				if len(rc.collectedResults) > 0 {
 					if rc.finalizeCollected != nil {
-						return rc.finalizeCollected(rc.collectedResults)
+						val, finErr := rc.finalizeCollected(rc.collectedResults)
+						if finErr != nil {
+							return zero, NormalizeError(finErr)
+						}
+						return val, nil
 					}
 					return rc.collectedResults[0].val, nil
 				}
-				// 父 Context 取消/超时优先于历史节点错误归因（避免误报上游 502）。
-				if ctx.Err() != nil {
-					return zero, ctx.Err()
-				}
-				if len(failedErrors) > 0 {
-					return zero, pickBestError(failedErrors)
-				}
-				if res.err != nil {
-					if ctxRace.Err() != nil {
-						return zero, ctxRace.Err()
-					}
-					return zero, res.err
-				}
-				if err := ctxRace.Err(); err != nil {
-					return zero, err
-				}
-				return zero, fmt.Errorf("all nodes failed")
+				return zero, convergeRaceFailure(ctx, failedErrors, res.err)
 			}
 		}
 	}

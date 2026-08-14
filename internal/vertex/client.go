@@ -475,11 +475,13 @@ func asVertexError(err error) *VertexError {
 	return nil
 }
 
-// classifyNetworkError 将网络原生 error 统一包装为 *VertexError。
+// NormalizeError 将任意 error 统一归一化为 *VertexError。
 //
-// 返回的 VertexError 保留原始 cause，供 errors.Is/As 穿透。
-// 若 err 已是 *VertexError，直接返回避免双重包装。
-func classifyNetworkError(err error) *VertexError {
+// 1. 若 err 已是 *VertexError，直接返回避免双重包装；
+// 2. 若包含 context.Canceled / context.DeadlineExceeded，包装为保留 cause 的 ContextError；
+// 3. 若为 net.Error，包装为 502 NetworkError；
+// 4. 其他未知错误包装为 500 InternalError。
+func NormalizeError(err error) *VertexError {
 	if err == nil {
 		return nil
 	}
@@ -498,6 +500,11 @@ func classifyNetworkError(err error) *VertexError {
 	}
 
 	return NewInternalError(err.Error(), err)
+}
+
+// classifyNetworkError 将网络原生 error 统一包装为 *VertexError（内部复用 NormalizeError）。
+func classifyNetworkError(err error) *VertexError {
+	return NormalizeError(err)
 }
 
 func setIfPresent(m map[string]any, key string, v any) {

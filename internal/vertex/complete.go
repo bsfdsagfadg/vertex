@@ -61,7 +61,7 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, r
 
 	if req.SafetySettings == nil && candidateFinishTyped(resp) == "SAFETY" {
 		if ctx.Err() != nil {
-			return nil, context.Canceled
+			return nil, NormalizeError(ctx.Err())
 		}
 		retryReq := *req
 		retryReq.SafetySettings = defaultSafetySettingsTyped

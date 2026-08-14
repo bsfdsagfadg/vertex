@@ -33,20 +33,19 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 	}
 	var body transform.ImagesRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-			"message": "请求体必须是合法JSON", "type": "invalid_request_error", "code": nil}})
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("请求体必须是合法JSON", "", nil))
 		return
 	}
 
 	geminiReq, rawModel, convErr := transform.NewImageAdaptor().ToGeminiRequest(&body, img.cfg)
 	if convErr != nil {
-		img.oaiBadRequest(w, "请求参数有误: "+convErr.Error())
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("请求参数有误: "+convErr.Error(), "", nil))
 		return
 	}
 
 	resolved := transform.ResolveModel(rawModel, img.cfg)
 	if resolved.Family != transform.FamilyImage {
-		img.oaiBadRequest(w, fmt.Sprintf("模型 %s 不是生图模型，无法用于图片生成", rawModel))
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError(fmt.Sprintf("模型 %s 不是生图模型，无法用于图片生成", rawModel), "", nil))
 		return
 	}
 
@@ -56,9 +55,7 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 	}
 	n, nErr := resolveN(body.N, 8)
 	if nErr != "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-			"message": nErr, "type": "invalid_request_error", "code": 400, "param": "n",
-		}})
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError(nErr, "n", nil))
 		return
 	}
 
@@ -69,17 +66,18 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 	log.Printf("[Server] [ImageGenerations] 收到请求: 模型=%s, 尺寸=%s, 格式=%s, n=%d", resolved.ActualModel, size, respFmt, n)
 
 	if rawModel == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-			"message": "缺少model字段", "type": "invalid_request_error", "code": nil}})
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("缺少model字段", "model", nil))
 		return
 	}
 	if body.Prompt == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-			"message": "缺少 prompt 字段 (missing prompt)", "type": "invalid_request_error", "code": 400}})
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("缺少 prompt 字段 (missing prompt)", "prompt", nil))
 		return
 	}
 
-	img.runOAIImageRequest(r.Context(), w, resolved, geminiReq, n, respFmt)
+	requestCtx, cancel := img.newRequestCtx(r)
+	defer cancel()
+
+	img.runOAIImageRequest(requestCtx, w, resolved, geminiReq, n, respFmt)
 }
 
 func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request) {
@@ -88,7 +86,7 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := r.ParseMultipartForm(multipartMemoryLimit); err != nil {
-		img.oaiBadRequest(w, "图片编辑请求解析失败，请检查 multipart 表单 (failed to parse edit request)")
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("图片编辑请求解析失败，请检查 multipart 表单 (failed to parse edit request)", "", nil))
 		return
 	}
 	defer func() {
@@ -99,19 +97,19 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 
 	imageUploads := formUploads(r, "image")
 	if len(imageUploads) == 0 {
-		img.oaiBadRequest(w, "缺少 image 字段 (image is required)")
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("缺少 image 字段 (image is required)", "image", nil))
 		return
 	}
 	images, err := uploadsToInlineImages(imageUploads)
 	if err != nil {
-		img.oaiBadRequest(w, err.Error())
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError(err.Error(), "", nil))
 		return
 	}
 	var mask *transform.InlineImage
 	if maskUploads := formUploads(r, "mask"); len(maskUploads) > 0 {
 		m, err := uploadToInlineImage(maskUploads[0])
 		if err != nil {
-			img.oaiBadRequest(w, err.Error())
+			writeOAIError(w, r.Context(), vertex.NewInvalidParamError(err.Error(), "", nil))
 			return
 		}
 		mask = &m
@@ -120,7 +118,7 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 	rawModel := transform.ResolveImageModel(formValue(r, "model"))
 	resolved := transform.ResolveModel(rawModel, img.cfg)
 	if resolved.Family != transform.FamilyImage {
-		img.oaiBadRequest(w, fmt.Sprintf("模型 %s 不是生图模型，无法用于图片编辑", rawModel))
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError(fmt.Sprintf("模型 %s 不是生图模型，无法用于图片编辑", rawModel), "", nil))
 		return
 	}
 
@@ -135,7 +133,10 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"),
 		formValue(r, "background"), "edit")
 
-	img.runOAIImageRequest(r.Context(), w, resolved, geminiReq, n, respFmt)
+	requestCtx, cancel := img.newRequestCtx(r)
+	defer cancel()
+
+	img.runOAIImageRequest(requestCtx, w, resolved, geminiReq, n, respFmt)
 }
 
 func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +145,7 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if err := r.ParseMultipartForm(multipartMemoryLimit); err != nil {
-		img.oaiBadRequest(w, "图片变体请求解析失败，请检查 multipart 表单 (failed to parse variation request)")
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("图片变体请求解析失败，请检查 multipart 表单 (failed to parse variation request)", "", nil))
 		return
 	}
 	defer func() {
@@ -155,19 +156,19 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 
 	imageUploads := formUploads(r, "image")
 	if len(imageUploads) == 0 {
-		img.oaiBadRequest(w, "缺少 image 字段 (image is required)")
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("缺少 image 字段 (image is required)", "image", nil))
 		return
 	}
 	images, err := uploadsToInlineImages(imageUploads)
 	if err != nil {
-		img.oaiBadRequest(w, err.Error())
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError(err.Error(), "", nil))
 		return
 	}
 
 	rawModel := transform.ResolveImageModel(formValue(r, "model"))
 	resolved := transform.ResolveModel(rawModel, img.cfg)
 	if resolved.Family != transform.FamilyImage {
-		img.oaiBadRequest(w, fmt.Sprintf("模型 %s 不是生图模型，无法用于图片变体", rawModel))
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError(fmt.Sprintf("模型 %s 不是生图模型，无法用于图片变体", rawModel), "", nil))
 		return
 	}
 
@@ -181,7 +182,10 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 	geminiReq := transform.BuildTypedImageRequest(resolved.ActualModel, prompt, images, nil,
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"), "", "variation")
 
-	img.runImageRequest(r.Context(), w, resolved, geminiReq, n, respFmt)
+	requestCtx, cancel := img.newRequestCtx(r)
+	defer cancel()
+
+	img.runImageRequest(requestCtx, w, resolved, geminiReq, n, respFmt)
 }
 
 // runOAIImageRequest 并发 n 路图片生成请求并聚合 base64/url。
@@ -235,7 +239,7 @@ func (img *ImageHandler) runImageRequest(ctx context.Context, w http.ResponseWri
 		if firstErr == nil {
 			firstErr = vertex.NewEmptyResponseError("上游未返回图片数据 (no image returned)", nil)
 		}
-		writeJSON(w, firstErr.Code, vertexErrorToOAI(firstErr))
+		writeOAIError(w, ctx, firstErr)
 		return
 	}
 
@@ -258,11 +262,6 @@ func (img *ImageHandler) runImageRequest(ctx context.Context, w http.ResponseWri
 		items = items[:n]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": items})
-}
-
-func (img *ImageHandler) oaiBadRequest(w http.ResponseWriter, message string) {
-	writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-		"message": message, "type": "invalid_request_error", "code": 400}})
 }
 
 const multipartMemoryLimit = 8 << 20

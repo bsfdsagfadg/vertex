@@ -77,10 +77,10 @@ func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		if _, ok := err.(*json.SyntaxError); ok && strings.Contains(err.Error(), "invalid UTF-8") {
-			g.geminiError(w, http.StatusBadRequest, "请求体编码错误，需为 UTF-8 (request body must be UTF-8 encoded)", "INVALID_ARGUMENT")
+			writeGeminiError(w, r.Context(), vertex.NewInvalidParamError("请求体编码错误，需为 UTF-8 (request body must be UTF-8 encoded)", "", nil))
 			return nil, false
 		}
-		g.geminiError(w, http.StatusBadRequest, "请求格式错误，JSON 解析失败 (invalid JSON)", "INVALID_ARGUMENT")
+		writeGeminiError(w, r.Context(), vertex.NewInvalidParamError("请求格式错误，JSON 解析失败 (invalid JSON)", "", nil))
 		return nil, false
 	}
 	if body == nil {
@@ -91,7 +91,7 @@ func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (
 	}
 	req, err := normalizeGeminiBodyTyped(body)
 	if err != nil {
-		g.geminiError(w, http.StatusBadRequest, "请求参数有误: "+err.Error()+" (invalid argument)", "INVALID_ARGUMENT")
+		writeGeminiError(w, r.Context(), vertex.NewInvalidParamError("请求参数有误: "+err.Error()+" (invalid argument)", "", nil))
 		return nil, false
 	}
 	return req, true
@@ -130,7 +130,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 			writeJSON(w, http.StatusOK, geminiSafetyResponse(ve))
 			return
 		}
-		writeJSON(w, ve.Code, vertexErrorToGemini(ve))
+		writeGeminiError(w, r.Context(), ve)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -169,7 +169,7 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 
 		if ve != nil {
 			if !sw.hasWritten() {
-				writeJSON(w, ve.Code, vertexErrorToGemini(ve))
+				writeGeminiError(w, r.Context(), ve)
 				return
 			}
 			if isSafetyBlock(ve) {
@@ -186,7 +186,7 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	if resolved.Family == transform.FamilyImage {
 		g.ExecuteImageStream(requestCtx, resolved, req, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
 			if err != nil {
-				writeJSON(w, err.Code, vertexErrorToGemini(err))
+				writeGeminiError(w, r.Context(), err)
 				return false
 			}
 			_ = sw.write(g.geminiSSETyped(&transform.GeminiResponse{
@@ -206,7 +206,7 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	g.ExecuteTextStream(requestCtx, resolved, req, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
 		if err != nil {
 			if !sw.hasWritten() {
-				writeJSON(w, err.Code, vertexErrorToGemini(err))
+				writeGeminiError(w, r.Context(), err)
 				streamErrWritten = true
 				return false
 			}

@@ -192,7 +192,7 @@ retryLoop:
 			sess.Close()
 			newSess, e := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
 			if e != nil {
-				yield(StreamChunk{Err: NewInternalError("recreate session: " + e.Error(), nil)})
+				yield(StreamChunk{Err: NormalizeError(e)})
 				return
 			}
 			sess = newSess
@@ -217,7 +217,7 @@ retryLoop:
 			sess.Close()
 			newSess, e := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
 			if e != nil {
-				yield(StreamChunk{Err: NewInternalError("recreate session: " + e.Error(), nil)})
+				yield(StreamChunk{Err: NormalizeError(e)})
 				return
 			}
 			sess = newSess
@@ -236,7 +236,7 @@ retryLoop:
 			sess.Close()
 			newSess, e := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
 			if e != nil {
-				yield(StreamChunk{Err: NewInternalError("recreate session: " + e.Error(), nil)})
+				yield(StreamChunk{Err: NormalizeError(e)})
 				return
 			}
 			sess = newSess
@@ -246,7 +246,7 @@ retryLoop:
 			}
 
 		default:
-			lastError = NewInternalError(attemptErr.Error(), nil)
+			lastError = NormalizeError(attemptErr)
 			break retryLoop
 		}
 	}
@@ -326,16 +326,16 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 					if idleTriggered.CompareAndSwap(false, true) {
 						log.Printf("[Vertex] [Stream] 触发流包间空闲超时 (已静默 %v > 阈值 %v), 切断连接, 请求ID=%s", elapsed.Round(time.Millisecond), timeout, reqID)
 						cancelStreamReq()
-						if sr := srRef.Load(); sr != nil && sr.Body != nil {
-							_ = sr.Body.Close()
+						if sr := srRef.Load(); sr != nil {
+							sr.Abort()
 						}
 					}
 					return
 				}
 			case <-ctx.Done():
 				cancelStreamReq()
-				if sr := srRef.Load(); sr != nil && sr.Body != nil {
-					_ = sr.Body.Close()
+				if sr := srRef.Load(); sr != nil {
+					sr.Abort()
 				}
 				return
 			case <-done:
@@ -355,7 +355,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 
 	srRef.Store(sr)
 	if idleTriggered.Load() {
-		sr.Close()
+		sr.Abort()
 		return NewNetworkError(ErrStreamIdleTimeout)
 	}
 	defer sr.Close() // 排干 → close，防串流。
@@ -399,7 +399,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		}
 	}
 
-	scanErr := scanStream(ctx, sr.Body, func(obj map[string]any) (stop bool, err error) {
+	scanErr := scanStream(streamReqCtx, sr.Body, func(obj map[string]any) (stop bool, err error) {
 		if cfg.DebugMode() {
 			log.Printf("[DEBUG] [Stream] 上游帧摘要: %s, 请求ID=%s, 节点=%s", summarizeUpstreamObject(obj), reqID, nodes.GetNodeName(sess.ProxyURI))
 		}

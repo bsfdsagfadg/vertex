@@ -33,23 +33,24 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	var body transform.ChatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		if _, ok := err.(*json.SyntaxError); ok && strings.Contains(err.Error(), "invalid UTF-8") {
-			oaiError(w, http.StatusBadRequest, "请求体编码错误，需为 UTF-8 (request body must be UTF-8 encoded)", "invalid_request_error")
+			writeOAIError(w, r.Context(), vertex.NewInvalidParamError("请求体编码错误，需为 UTF-8 (request body must be UTF-8 encoded)", "", nil))
 			return
 		}
-		oaiError(w, http.StatusBadRequest, "请求格式错误，JSON 解析失败 (invalid JSON)", "invalid_request_error")
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("请求格式错误，JSON 解析失败 (invalid JSON)", "", nil))
 		return
 	}
 
 	rawModel := strings.TrimSpace(body.Model)
 	if rawModel == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-			"message": "请求参数有误: 缺少必需字段 model (missing required field 'model')",
-			"type":    "invalid_request_error", "code": 400, "param": "model",
-		}})
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("请求参数有误: 缺少必需字段 model (missing required field 'model')", "model", nil))
 		return
 	}
 
 	resolved := transform.ResolveModel(rawModel, c.cfg)
+	if resolved.Family == transform.FamilyAudio {
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("TTS 语音模型仅可通过 /v1/audio/speech 使用，请改用语音合成接口 (TTS models are only available via /v1/audio/speech)", "model", nil))
+		return
+	}
 	body.Model = resolved.ActualModel
 	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), resolved.ActualModel)
 
@@ -58,22 +59,17 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	geminiReq, modelName, convErr := c.adaptor.ToGeminiRequest(&body, c.cfg)
 	if convErr != nil {
-		oaiError(w, http.StatusBadRequest, "请求参数有误: "+convErr.Error()+" (invalid argument)", "invalid_request_error")
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("请求参数有误: "+convErr.Error()+" (invalid argument)", "", nil))
 		return
 	}
 
 	n, nErr := resolveN(body.N, c.cfg.MaxN())
 	if nErr != "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-			"message": nErr, "type": "invalid_request_error", "code": 400, "param": "n",
-		}})
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError(nErr, "n", nil))
 		return
 	}
 	if stream && n > 1 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-			"message": "流式不支持 n>1，请设 stream=false 或 n=1 (streaming supports only n=1; set stream=false or n=1 for multiple choices)",
-			"type":    "invalid_request_error", "code": 400, "param": "n",
-		}})
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("流式不支持 n>1，请设 stream=false 或 n=1 (streaming supports only n=1; set stream=false or n=1 for multiple choices)", "n", nil))
 		return
 	}
 
@@ -89,7 +85,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			c.ExecuteImageStream(requestCtx, resolved, geminiReq, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
 				if err != nil {
 					if !sw.hasWritten() {
-						writeJSON(w, err.Code, vertexErrorToOAI(err))
+						writeOAIError(w, r.Context(), err)
 						return false
 					}
 					c.writeStreamError(sw.write, err, reqID24(), modelName)
@@ -101,19 +97,19 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 					UsageMetadata:  chunk.UsageMetadata,
 					ModelVersion:   chunk.ModelVersion,
 				}, modelName)
-				c.oaiSinglePacketSSE(w, sw, oai, modelName, reqID24())
+				c.oaiSinglePacketSSE(requestCtx, w, sw, oai, modelName, reqID24())
 				return true
 			})
 			return
 		}
 		resp, ve := c.ExecuteImageGenerate(requestCtx, resolved, geminiReq)
 		if ve != nil {
-			writeJSON(w, ve.Code, vertexErrorToOAI(ve))
+			writeOAIError(w, r.Context(), ve)
 			return
 		}
 		oaiResp := c.adaptor.FromGeminiResponse(resp, modelName)
 		if !hasDeliverableOAIContent(oaiResp) {
-			writeJSON(w, http.StatusBadGateway, vertexErrorToOAI(vertex.NewEmptyResponseError("Upstream returned empty content", nil)))
+			writeOAIError(w, r.Context(), vertex.NewEmptyResponseError("Upstream returned empty content", nil))
 			return
 		}
 		writeJSON(w, http.StatusOK, oaiResp)
@@ -126,14 +122,14 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		resp, ve := c.ExecuteTextComplete(requestCtx, resolved, geminiReq)
 		if ve != nil {
 			if !sw.hasWritten() {
-				writeJSON(w, ve.Code, vertexErrorToOAI(ve))
+				writeOAIError(w, r.Context(), ve)
 				return
 			}
 			c.writeStreamError(sw.write, ve, requestID, modelName)
 			return
 		}
 		oai := c.adaptor.FromGeminiResponse(resp, modelName)
-		c.oaiSinglePacketSSE(w, sw, oai, modelName, requestID)
+		c.oaiSinglePacketSSE(requestCtx, w, sw, oai, modelName, requestID)
 		return
 	}
 
@@ -184,12 +180,12 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 				writeJSON(w, http.StatusOK, oaiSafetyResponse(modelName))
 				return
 			}
-			writeJSON(w, firstErr.Code, vertexErrorToOAI(firstErr))
+			writeOAIError(w, r.Context(), firstErr)
 			return
 		}
 		oaiResp := c.adaptor.AggregateN(ok, modelName)
 		if !hasDeliverableOAIContent(oaiResp) {
-			writeJSON(w, http.StatusBadGateway, vertexErrorToOAI(vertex.NewEmptyResponseError("Upstream returned empty content", nil)))
+			writeOAIError(w, r.Context(), vertex.NewEmptyResponseError("Upstream returned empty content", nil))
 			return
 		}
 		writeJSON(w, http.StatusOK, oaiResp)
@@ -203,13 +199,13 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			writeJSON(w, http.StatusOK, oaiSafetyResponse(modelName))
 			return
 		}
-		writeJSON(w, ve.Code, vertexErrorToOAI(ve))
+		writeOAIError(w, r.Context(), ve)
 		return
 	}
 
 	oaiResp := c.adaptor.FromGeminiResponse(geminiResp, modelName)
 	if !hasDeliverableOAIContent(oaiResp) {
-		writeJSON(w, http.StatusBadGateway, vertexErrorToOAI(vertex.NewEmptyResponseError("Upstream returned empty content", nil)))
+		writeOAIError(w, r.Context(), vertex.NewEmptyResponseError("Upstream returned empty content", nil))
 		return
 	}
 	writeJSON(w, http.StatusOK, oaiResp)
@@ -249,7 +245,7 @@ func (c *ChatHandler) streamChatCompletionsCore(ctx context.Context, w http.Resp
 	c.ExecuteTextStream(streamCtx, resolved, geminiReq, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
 		if err != nil {
 			if !sw.hasWritten() {
-				writeJSON(w, err.Code, vertexErrorToOAI(err))
+				writeOAIError(w, ctx, err)
 				streamErrWritten = true
 				return false
 			}
@@ -334,11 +330,11 @@ func hasDeliverableOAIContent(oai any) bool {
 
 // oaiSinglePacketSSE 把完整 OAI 响应转为单包 SSE 事件 + [DONE]。
 // oai 为 *transform.ChatCompletionResponse（TextAdaptor 输出）。
-func (c *ChatHandler) oaiSinglePacketSSE(w http.ResponseWriter, sw *sseWriter, oai any, model, requestID string) {
+func (c *ChatHandler) oaiSinglePacketSSE(ctx context.Context, w http.ResponseWriter, sw *sseWriter, oai any, model, requestID string) {
 	oaiResp, _ := oai.(*transform.ChatCompletionResponse)
 	if !hasDeliverableOAIContent(oaiResp) {
 		if !sw.hasWritten() {
-			writeJSON(w, http.StatusBadGateway, vertexErrorToOAI(vertex.NewEmptyResponseError("Upstream returned empty content", nil)))
+			writeOAIError(w, ctx, vertex.NewEmptyResponseError("Upstream returned empty content", nil))
 			return
 		}
 		c.writeStreamError(sw.write, vertex.NewEmptyResponseError("Upstream returned empty content", nil), requestID, model)

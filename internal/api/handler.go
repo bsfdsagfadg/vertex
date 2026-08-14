@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -33,6 +34,12 @@ func (h *handler) dialer() transport.ProxyDialer {
 		return h.vc.Net().Dialer()
 	}
 	return nil
+}
+
+// newRequestCtx 从客户端请求 context 派生服务端请求时限 context，供各 LLM 生成入口统一复用，
+// 避免各端点各自重复 WithTimeout/RequestTimeoutSeconds 组合导致未来取消语义调整时端点漂移。
+func (h *handler) newRequestCtx(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), time.Duration(h.cfg.RequestTimeoutSeconds())*time.Second)
 }
 
 func (h *handler) decodeAdminBody(w http.ResponseWriter, r *http.Request, dst any) bool {
@@ -69,6 +76,30 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write(data)
+}
+
+// writeOAIError 在客户端未断开时将 VertexError 渲染为 OpenAI JSON 错误。
+// 若 clientCtx 命中 context.Canceled，直接跳过写入。
+func writeOAIError(w http.ResponseWriter, clientCtx context.Context, e *vertex.VertexError) {
+	if clientCtx != nil && errors.Is(clientCtx.Err(), context.Canceled) {
+		return
+	}
+	if e == nil {
+		e = vertex.NewInternalError("internal server error", nil)
+	}
+	writeJSON(w, e.Code, vertexErrorToOAI(e))
+}
+
+// writeGeminiError 在客户端未断开时将 VertexError 渲染为 Gemini JSON 错误。
+// 若 clientCtx 命中 context.Canceled，直接跳过写入。
+func writeGeminiError(w http.ResponseWriter, clientCtx context.Context, e *vertex.VertexError) {
+	if clientCtx != nil && errors.Is(clientCtx.Err(), context.Canceled) {
+		return
+	}
+	if e == nil {
+		e = vertex.NewInternalError("internal server error", nil)
+	}
+	writeJSON(w, e.Code, vertexErrorToGemini(e))
 }
 
 func oaiError(w http.ResponseWriter, status int, msg, errType string) {
@@ -135,11 +166,15 @@ func vertexErrorToOAI(e *vertex.VertexError) map[string]any {
 	default:
 		errType = "server_error"
 	}
-	return map[string]any{"error": map[string]any{
+	errObj := map[string]any{
 		"message": withUpstreamDetail(vertex.FriendlyErrorMessage(e), e),
 		"type":    errType,
 		"code":    e.Code,
-	}}
+	}
+	if e.Param != "" {
+		errObj["param"] = e.Param
+	}
+	return map[string]any{"error": errObj}
 }
 
 func withUpstreamDetail(friendly string, e *vertex.VertexError) string {
@@ -157,11 +192,7 @@ func withUpstreamDetail(friendly string, e *vertex.VertexError) string {
 }
 
 func toVertexError(err error) *vertex.VertexError {
-	var ve *vertex.VertexError
-	if errors.As(err, &ve) {
-		return ve
-	}
-	return vertex.NewInternalError(err.Error(), nil)
+	return vertex.NormalizeError(err)
 }
 
 func isSafetyBlock(e *vertex.VertexError) bool {

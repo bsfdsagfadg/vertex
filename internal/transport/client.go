@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"sync"
 
 	http "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
@@ -56,6 +57,7 @@ func (s *Session) DoAndRead(ctx context.Context, method, url string, header http
 type StreamResponse struct { //nolint:govet
 	StatusCode int
 	Body       io.ReadCloser
+	closeOnce  sync.Once
 }
 
 func (sr *StreamResponse) Close() {
@@ -63,7 +65,20 @@ func (sr *StreamResponse) Close() {
 		return
 	}
 	_, _ = io.Copy(io.Discard, sr.Body)
-	_ = sr.Body.Close()
+	sr.closeOnce.Do(func() {
+		_ = sr.Body.Close()
+	})
+}
+
+// Abort 强制中断流连接并关闭 Body，绝不执行 drain 排空。
+// 适用于取消、空闲超时和异常中断路径。
+func (sr *StreamResponse) Abort() {
+	if sr.Body == nil {
+		return
+	}
+	sr.closeOnce.Do(func() {
+		_ = sr.Body.Close()
+	})
 }
 
 func (s *Session) DoStream(ctx context.Context, method, url string, header http.Header, body io.Reader) (*StreamResponse, error) {

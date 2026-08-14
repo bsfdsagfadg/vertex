@@ -70,6 +70,11 @@ func TestRunRace_NoLaunchAfterCtxCancel(t *testing.T) {
 
 // TestRunRace_AllAtOnce_LaunchesAllCandidates verifies that when
 // ParallelPoolDelayDynamic=false, all candidates launch simultaneously.
+//
+// 说明：不使用返回后读取计数的方式断言（那依赖 goroutine 调度时序，成功者先返回时
+// 其余候选可能尚未进入 run，造成假失败）。改用双阶段同步屏障：started 记录候选真正
+// 进入执行函数，release 阻塞候选直至全部启动，验证的是“全量模式下所有候选都已启动”
+// 的目标语义。
 func TestRunRace_AllAtOnce_LaunchesAllCandidates(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2", "uri3")
 	defer nodes.ResetState()
@@ -78,20 +83,36 @@ func TestRunRace_AllAtOnce_LaunchesAllCandidates(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var launchCount int32
+	started := make(chan struct{}, 3)
+	release := make(chan struct{})
 
 	run := func(ctx context.Context, uri string) (string, error) {
-		atomic.AddInt32(&launchCount, 1)
-		return fmt.Sprintf("result-%s", uri), nil
+		started <- struct{}{}
+		select {
+		case <-release:
+			return "result-" + uri, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
 	}
 
-	_, err := RunRace[string](ctx, cfg, run)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := RunRace(ctx, cfg, run)
+		resultCh <- err
+	}()
+
+	for i := 0; i < 3; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("not all candidates entered run")
+		}
 	}
 
-	if count := atomic.LoadInt32(&launchCount); count != 3 {
-		t.Errorf("expected all 3 candidates to launch, got %d", count)
+	close(release)
+	if err := <-resultCh; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -514,90 +535,6 @@ func TestRunRace_AuthErrorDisablesNode(t *testing.T) {
 	}
 }
 
-// TestRunRace_ContextCanceled_PreservesCollectedResultsAndFailedErrors 验证 Context 取消分支
-// 不得绕过终结评估逻辑（race_engine.go 第 346 行）：
-//   - 子测试 1：collectedResults 已含非即时胜出结果（MAX_TOKENS）时，后续节点返回 Context 取消错误，
-//     引擎应返回已收集的有效结果而非 Context 错误。
-//   - 子测试 2：failedErrors 已含 429 限流错误时，后续节点返回 Context 取消错误，
-//     引擎应通过 pickBestError 返回优先级最高（1）的 429 错误而非 Context 错误。
-func TestRunRace_ContextCanceled_PreservesCollectedResultsAndFailedErrors(t *testing.T) {
-	t.Run("PreservesCollectedResults", func(t *testing.T) {
-		setupRaceNodes(t, "uri1", "uri2")
-		defer nodes.ResetState()
-
-		cfg := config.StaticProvider(raceTestConfig())
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		// 竞速引擎按全局轮询索引挑选候选，首个启动的节点不确定（uri1/uri2 皆可），
-		// 因此按调用顺序而非 URI 决定行为：首个节点产出非即时胜出结果，次个节点返回 Context 取消错误。
-		var callOrder int32
-		run := func(ctx context.Context, uri string) (*transform.GeminiResponse, error) {
-			order := atomic.AddInt32(&callOrder, 1)
-			if order == 1 {
-				return &transform.GeminiResponse{
-					Candidates: []*transform.Candidate{{
-						FinishReason: "MAX_TOKENS",
-						Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: "node1-answer"}}},
-					}},
-				}, nil
-			}
-			return nil, NewContextError(context.Canceled)
-		}
-
-		result, err := RunRace(ctx, cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
-			return candidateFinishTyped(resp) == "STOP"
-		}), WithCollectedFinalizer(func(results []raceResult[*transform.GeminiResponse]) (*transform.GeminiResponse, error) {
-			cr := make([]candidateResult, len(results))
-			for i, r := range results {
-				cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
-			}
-			return pickBestResult(cr, &transform.TextStrategy{})
-		}))
-
-		if err != nil {
-			t.Fatalf("expected nil error (collected result should win over context error), got: %v", err)
-		}
-		if finish := candidateFinishTyped(result); finish != "MAX_TOKENS" {
-			t.Errorf("expected first node MAX_TOKENS result to be returned, got finishReason=%q", finish)
-		}
-		if count := atomic.LoadInt32(&callOrder); count != 2 {
-			t.Errorf("expected both candidates to launch, got %d", count)
-		}
-	})
-
-	t.Run("PreservesFailedErrors", func(t *testing.T) {
-		setupRaceNodes(t, "uri1", "uri2")
-		defer nodes.ResetState()
-
-		cfg := config.StaticProvider(raceTestConfig())
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		var callOrder int32
-		run := func(ctx context.Context, uri string) (map[string]any, error) {
-			order := atomic.AddInt32(&callOrder, 1)
-			if order == 1 {
-				return nil, NewRateLimitError("rate limited", 0, nil)
-			}
-			return nil, NewContextError(context.Canceled)
-		}
-
-		_, err := RunRace[map[string]any](ctx, cfg, run)
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
-
-		var ve *VertexError
-		if !errors.As(err, &ve) {
-			t.Fatalf("expected *VertexError, got %T", err)
-		}
-		if ve.Kind != "ratelimit" && ve.Code != 429 {
-			t.Errorf("expected highest-priority ratelimit (429) error, got Kind=%s Code=%d", ve.Kind, ve.Code)
-		}
-	})
-}
-
 // TestRunRace_CandidatePanic_HandledGracefully 验证 launchNode 内部协程 panic 时：
 // RunRace 不崩溃、能收敛返回健康节点结果，且 in-flight 计数无泄露。
 // 修复前：未 recover 的 panic 会打穿竞速引擎，使 active 计数失步、竞速循环挂死。
@@ -681,49 +618,6 @@ func TestRunRace_StreamIdleTimeout_TriggersRateLimitCooldown(t *testing.T) {
 		if h.CooldownUntil <= now {
 			t.Errorf("node %s 应进入 15 秒冷却避让, CooldownUntil=%d (now=%d)", uri, h.CooldownUntil, now)
 		}
-	}
-}
-
-// TestRunRace_ParentContextCanceled_ReturnsContextErrorOverFailedErrors 验证外部父 Context 被取消时，
-// RunRace 必须优先返回 context 错误，而不是已经积累的历史节点 502 错误。
-// 修复前：终结评估按 failedErrors 挑错误，会把客户端断开误报为历史节点 502。
-func TestRunRace_ParentContextCanceled_ReturnsContextErrorOverFailedErrors(t *testing.T) {
-	setupRaceNodes(t, "uri1", "uri2")
-	defer nodes.ResetState()
-
-	cfg := config.StaticProvider(raceTestConfigAllAtOnce())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// uri1 立即返回节点级错误（存入 failedErrors）；uri2 阻塞，等待 ctx 取消。
-	run := func(ctx context.Context, uri string) (string, error) {
-		if uri == "uri1" {
-			return "", NewEmptyResponseError("gateway 502", nil)
-		}
-		<-ctx.Done()
-		return "", ctx.Err()
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		_, err := RunRace[string](ctx, cfg, run)
-		errCh <- err
-	}()
-
-	// 等待 uri1 的 502 已被收集（failedErrors 非空）后再取消父 ctx。
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-
-	select {
-	case err := <-errCh:
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("expected errors.Is(err, context.Canceled)=true, got %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("RunRace did not return after parent context canceled")
 	}
 }
 

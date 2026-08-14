@@ -1,14 +1,17 @@
 package api
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/transform"
+	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
 type AudioHandler struct {
@@ -40,8 +43,7 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 
 	var body transform.SpeechRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-			"message": "请求体必须是合法JSON (invalid JSON)", "type": "invalid_request_error", "code": 400}})
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("请求体必须是合法JSON (invalid JSON)", "", nil))
 		return
 	}
 
@@ -50,8 +52,7 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 
 	geminiReq, rawModel, convErr := transform.NewAudioAdaptor().ToGeminiRequest(&body, a.cfg)
 	if convErr != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
-			"message": "请求参数有误: " + convErr.Error(), "type": "invalid_request_error", "code": 400}})
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("请求参数有误: "+convErr.Error(), "", nil))
 		return
 	}
 	if rawModel == "" {
@@ -59,6 +60,10 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 	}
 
 	resolved := transform.ResolveModel(rawModel, a.cfg)
+	if resolved.Family != transform.FamilyAudio {
+		writeOAIError(w, r.Context(), vertex.NewInvalidParamError("该模型不支持 TTS 语音合成，仅音频模型可通过 /v1/audio/speech 使用 (model is not a TTS model; use /v1/audio/speech with a TTS model)", "model", nil))
+		return
+	}
 	log.Printf("[Server] [AudioSpeech] 收到请求: 模型=%s, 真模型=%s, 语音=%s, 格式=%s", rawModel, resolved.ActualModel, voice, respFmt)
 
 	fmtInfo, ok := ttsFormatInfo[respFmt]
@@ -66,9 +71,12 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 		fmtInfo = ttsFormat{"audio/wav", true}
 	}
 
-	resp, ve := a.ExecuteAudioSpeech(r.Context(), resolved, geminiReq)
+	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(a.cfg.RequestTimeoutSeconds())*time.Second)
+	defer cancel()
+
+	resp, ve := a.ExecuteAudioSpeech(requestCtx, resolved, geminiReq)
 	if ve != nil {
-		writeJSON(w, ve.Code, vertexErrorToOAI(ve))
+		writeOAIError(w, r.Context(), ve)
 		return
 	}
 

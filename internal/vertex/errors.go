@@ -31,6 +31,7 @@ type VertexError struct { //nolint:govet
 	Code             int
 	Status           string
 	Kind             string
+	Param            string // 仅 OpenAI 参数错误用，空值不输出
 	Details          map[string]any
 	UpstreamResponse string
 	RetryAfter       int   // 仅 ratelimit 用，0 表示未设
@@ -93,6 +94,11 @@ func NewPermissionDeniedError(msg string, cause error) *VertexError {
 // NewInvalidArgumentError 参数错误（400）。
 func NewInvalidArgumentError(msg string, cause error) *VertexError {
 	return &VertexError{Message: msg, Code: 400, Status: StatusInvalidArgument, Kind: "invalid", cause: cause}
+}
+
+// NewInvalidParamError 带参数字段名的参数错误（400）。
+func NewInvalidParamError(msg, param string, cause error) *VertexError {
+	return &VertexError{Message: msg, Code: 400, Status: StatusInvalidArgument, Kind: "invalid", Param: param, cause: cause}
 }
 
 // NewNotFoundError 资源不存在（404）。

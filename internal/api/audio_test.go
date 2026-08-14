@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"net/http"
 	"reflect"
 	"strings"
@@ -262,7 +263,7 @@ func TestAudioSpeech_EmptyResponse_Returns502(t *testing.T) {
 	})
 
 	body := map[string]any{
-		"model": "gemini-2.5-flash",
+		"model": "gemini-3.1-flash-tts-preview",
 		"input": "hello world",
 		"voice": "alloy",
 	}
@@ -271,5 +272,48 @@ func TestAudioSpeech_EmptyResponse_Returns502(t *testing.T) {
 
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status=%d, want 502", resp.StatusCode)
+	}
+}
+
+// TestAudioSpeech_RejectsNonAudioFamily 验证非音频家族模型（文本/生图）访问 /v1/audio/speech
+// 会被家族校验直接 400 拦截，且带 Param "model"，不得携带音频请求体打向上游。
+func TestAudioSpeech_RejectsNonAudioFamily(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fx := newTestServer(t)
+
+	for _, tc := range []struct {
+		name  string
+		model string
+	}{
+		{"text model", "gemini-2.5-flash"},
+		{"image model", "gemini-3.1-flash-image"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{
+				"model": tc.model,
+				"input": "hello world",
+				"voice": "alloy",
+			}
+			resp := doPost(t, fx.server.URL+"/v1/audio/speech", "sk-test-key", body)
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status=%d, want 400", resp.StatusCode)
+			}
+			var errResp map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			oaiErr, ok := errResp["error"].(map[string]any)
+			if !ok {
+				t.Fatal("missing error field")
+			}
+			if oaiErr["param"] != "model" {
+				t.Errorf("param=%v, want model", oaiErr["param"])
+			}
+		})
 	}
 }

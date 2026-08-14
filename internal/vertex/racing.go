@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
@@ -66,12 +67,10 @@ func StreamParallel(ctx context.Context, cfg config.ConfigProvider, model string
 
 	winnerCh, err := RunRace(streamCtx, cfg, wrappedOp, WithPreserveRaceCtxOnWin[<-chan StreamChunk](), WithFailFastOnHardError[<-chan StreamChunk]())
 	if err != nil {
-		vertexErr, ok := err.(*VertexError)
-		if ok {
-			yield(StreamChunk{Err: vertexErr})
-		} else {
-			yield(StreamChunk{Err: NewInternalError(err.Error(), nil)})
+		if errors.Is(err, context.Canceled) {
+			return
 		}
+		yield(StreamChunk{Err: NormalizeError(err)})
 		return
 	}
 	for chunk := range winnerCh {
