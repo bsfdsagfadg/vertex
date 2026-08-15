@@ -13,11 +13,14 @@ import (
 func StreamParallel(ctx context.Context, cfg config.ConfigProvider, model string,
 	op func(context.Context, string) <-chan StreamChunk,
 	yield func(StreamChunk) bool,
+	strategy transform.ModelStrategy,
 ) {
 	streamCtx, streamCancel := context.WithCancel(ctx)
 	defer streamCancel()
 
-	strategy := transform.NewModelFamilyRouter().For(model)
+	if strategy == nil {
+		strategy = transform.NewModelFamilyRouter().For(model)
+	}
 
 	wrappedOp := func(ctx context.Context, uri string) (<-chan StreamChunk, error) {
 		ch := op(ctx, uri)

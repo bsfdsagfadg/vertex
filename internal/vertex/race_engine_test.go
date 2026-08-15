@@ -469,7 +469,7 @@ func TestStreamParallel_FailoverOnEmptyResponse(t *testing.T) {
 		return true
 	}
 
-	StreamParallel(ctx, cfg, "gemini-2.5-flash", op, yield)
+	StreamParallel(ctx, cfg, "gemini-2.5-flash", op, yield, nil)
 	launched.Wait()
 
 	if len(gotChunks) == 0 {

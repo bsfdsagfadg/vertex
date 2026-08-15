@@ -61,6 +61,9 @@ func ResolveModel(rawModel string, cfg config.ConfigProvider) *ResolvedModel {
 	}
 
 	family := FamilyFor(m)
+	if family != FamilyText {
+		isFake = false
+	}
 	router := NewModelFamilyRouter()
 	strategy := router.For(m)
 

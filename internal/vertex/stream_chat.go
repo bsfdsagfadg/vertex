@@ -53,7 +53,10 @@ type StreamChunk struct {
 }
 
 // StreamChat 真流式入口。
-func (c *VertexAIClient) StreamChat(ctx context.Context, model string, req *transform.GeminiRequest, yield func(StreamChunk) bool) {
+func (c *VertexAIClient) StreamChat(ctx context.Context, model string, req *transform.GeminiRequest, yield func(StreamChunk) bool, strategy transform.ModelStrategy) {
+	if strategy == nil {
+		strategy = transform.NewModelFamilyRouter().For(model)
+	}
 	op := func(ctx context.Context, proxyURI string) <-chan StreamChunk {
 		ch := make(chan StreamChunk, 64)
 		go func() {
@@ -65,17 +68,21 @@ func (c *VertexAIClient) StreamChat(ctx context.Context, model string, req *tran
 				case <-ctx.Done():
 					return false
 				}
-			})
+			}, strategy)
 		}()
 		return ch
 	}
-	StreamParallel(ctx, c.cfg, model, op, yield)
+	StreamParallel(ctx, c.cfg, model, op, yield, strategy)
 }
 
-func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model string, req *transform.GeminiRequest, proxyURI string, yield func(StreamChunk) bool) {
+func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model string, req *transform.GeminiRequest, proxyURI string, yield func(StreamChunk) bool, strategy transform.ModelStrategy) {
 	if ctx.Err() != nil {
 		yield(StreamChunk{Err: NewContextError(ctx.Err())})
 		return
+	}
+
+	if strategy == nil {
+		strategy = transform.NewModelFamilyRouter().For(model)
 	}
 
 	cfg := c.cfg
@@ -117,7 +124,6 @@ retryLoop:
 
 		validChunkCount := 0
 		var pendingChunks []*transform.GeminiChunk
-		strategy := transform.NewModelFamilyRouter().For(model)
 
 		attemptErr := c.executeStreamingAttempt(ctx, sess, model, req, recaptchaToken, isFirstAuth, func(ch *transform.GeminiChunk) bool {
 			if strategy.IsValidChunk(ch) {
@@ -138,7 +144,7 @@ retryLoop:
 				pendingChunks = append(pendingChunks, ch)
 			}
 			return true
-		})
+		}, strategy)
 
 		if attemptErr == nil {
 			if validChunkCount > 0 {
@@ -264,10 +270,13 @@ retryLoop:
 // emit 回调把清洗后的 Gemini chunk 推给上层；
 // emit 始终返回 true；客户端断开由 ctx 取消触发 read 报错，scanStream 干净结束。
 // ctx 绑定 to 上游流连接：ctx 取消时 Body.Read 报错，scanStream 干净结束（返回 nil，不 panic）。
-func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *transport.Session, model string, req *transform.GeminiRequest, recaptchaToken string, _ bool, emit func(*transform.GeminiChunk) bool) error {
+func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *transport.Session, model string, req *transform.GeminiRequest, recaptchaToken string, _ bool, emit func(*transform.GeminiChunk) bool, strategy transform.ModelStrategy) error {
 	reqID := RequestIDFromContext(ctx)
 	log.Printf("[Vertex] [executeStreamingAttempt] 准备发送流式请求: 模型=%s, 请求ID=%s, 代理=%s", model, reqID, nodes.GetNodeName(sess.ProxyURI))
 	cfg := c.cfg
+	if strategy == nil {
+		strategy = transform.NewModelFamilyRouter().For(model)
+	}
 	newBody := buildTypedRequestPayload(model, req, recaptchaToken, cfg)
 	// 上游请求 payload 序列化到 spool 缓冲（大媒体自动落盘）。流式：请求体在 DoStream 发送期被读取，
 	// 缓冲存活到本函数返回（整个流消费完）后由 defer Close 删除临时文件。
@@ -289,7 +298,6 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	streamReqCtx, cancelStreamReq := context.WithCancel(ctx)
 	defer cancelStreamReq()
 
-	strategy := transform.NewModelFamilyRouter().For(model)
 	preTimeout, postTimeout := strategy.CalculateIdleTimeouts(cfg.StreamIdleTimeoutSeconds())
 
 	var (

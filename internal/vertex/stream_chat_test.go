@@ -110,7 +110,7 @@ func TestExecuteStreamingAttempt_IdleTimeout(t *testing.T) {
 			emitted = append(emitted, *ch)
 		}
 		return true
-	})
+	}, &transform.TextStrategy{})
 
 	if err == nil {
 		t.Fatal("expected idle timeout error, got nil")
@@ -170,7 +170,7 @@ func TestExecuteStreamingAttempt_IdleTimeout_InDoStream(t *testing.T) {
 			emitted = append(emitted, *ch)
 		}
 		return true
-	})
+	}, &transform.TextStrategy{})
 
 	if err == nil {
 		t.Fatal("expected idle timeout error, got nil")
@@ -209,7 +209,7 @@ func TestExecuteStreamingWithRetries_ClientCancel(t *testing.T) {
 	}
 
 	// 不应 panic
-	vc.executeStreamingWithRetries(ctx, "test-model", &transform.GeminiRequest{}, "test-proxy", yield)
+	vc.executeStreamingWithRetries(ctx, "test-model", &transform.GeminiRequest{}, "test-proxy", yield, &transform.TextStrategy{})
 
 	if gotErr == nil {
 		t.Fatal("expected context error, got nil")
@@ -277,7 +277,7 @@ func TestExecuteStreamingWithRetries_NetworkError_RecreatesSession(t *testing.T)
 		return true
 	}
 
-	vc.executeStreamingWithRetries(ctx, "test-model", &transform.GeminiRequest{}, "", yield)
+	vc.executeStreamingWithRetries(ctx, "test-model", &transform.GeminiRequest{}, "", yield, &transform.TextStrategy{})
 
 	if gotText != "recovered" {
 		t.Errorf("expected retries to recover valid content, got %q", gotText)
@@ -348,7 +348,7 @@ func TestExecuteStreamingAttempt_PendingChunksCap(t *testing.T) {
 			emitted = append(emitted, chunk.Data)
 		}
 		return true
-	})
+	}, &transform.TextStrategy{})
 
 	if gotErr != nil {
 		t.Fatalf("unexpected error chunk: %v", gotErr)

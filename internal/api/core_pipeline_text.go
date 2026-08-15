@@ -38,14 +38,11 @@ func (h *handler) ExecuteTextComplete(ctx context.Context, resolved *transform.R
 	strategy.Prepare(req)
 
 	cli.UpdateReqModel(vertex.RequestIDFromContext(ctx), resolved.ActualModel)
-	resp, err := h.vc.CompleteChatTyped(ctx, resolved.ActualModel, req)
+	resp, err := h.vc.CompleteChatTyped(ctx, resolved.ActualModel, req, strategy)
 	if err != nil {
 		return nil, toVertexError(err)
 	}
 	cleanGeminiFinishReasonTyped(resp)
-	if !strategy.IsValidResponse(resp) {
-		return nil, vertex.NewEmptyResponseError("Upstream returned empty response (no valid text/tool content)", nil)
-	}
 	return resp, nil
 }
 
@@ -66,5 +63,5 @@ func (h *handler) ExecuteTextStream(ctx context.Context, resolved *transform.Res
 		}
 		cleanGeminiFinishReasonTyped(ch.Data)
 		return onChunk(ch.Data, nil)
-	})
+	}, strategy)
 }

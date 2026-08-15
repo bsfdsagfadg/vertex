@@ -184,19 +184,12 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	}
 
 	if resolved.Family == transform.FamilyImage {
-		g.ExecuteImageStream(requestCtx, resolved, req, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
-			if err != nil {
-				writeGeminiError(w, r.Context(), err)
-				return false
-			}
-			_ = sw.write(g.geminiSSETyped(&transform.GeminiResponse{
-				Candidates:     chunk.Candidates,
-				PromptFeedback: chunk.PromptFeedback,
-				UsageMetadata:  chunk.UsageMetadata,
-				ModelVersion:   chunk.ModelVersion,
-			}))
-			return true
-		})
+		resp, ve := g.ExecuteImageGenerate(requestCtx, resolved, req)
+		if ve != nil {
+			writeGeminiError(w, r.Context(), ve)
+			return
+		}
+		_ = sw.write(g.geminiSSETyped(resp))
 		return
 	}
 
@@ -269,12 +262,17 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 		return
 	}
 	if !hasFinish {
-		_ = sw.write(g.geminiSSE(map[string]any{
-			"candidates": []any{map[string]any{
-				"content":      map[string]any{"parts": []any{map[string]any{"text": ""}}, "role": "model"},
-				"finishReason": "STOP",
-				"index":        0,
-			}},
+		_ = sw.write(g.geminiSSETyped(&transform.GeminiResponse{
+			Candidates: []*transform.Candidate{
+				{
+					Index: 0,
+					Content: &transform.Content{
+						Role:  "model",
+						Parts: []transform.Part{{Text: ""}},
+					},
+					FinishReason: "STOP",
+				},
+			},
 		}))
 	}
 }
@@ -319,7 +317,7 @@ func (g *GeminiHandler) geminiSSE(obj map[string]any) string {
 	return "data: " + string(data) + "\n\n"
 }
 
-func (g *GeminiHandler) geminiSSETyped(obj *transform.GeminiResponse) string {
+func (g *GeminiHandler) geminiSSETyped(obj any) string {
 	data, err := jsonx.Marshal(obj)
 	if err != nil {
 		return "data: {}\n\n"

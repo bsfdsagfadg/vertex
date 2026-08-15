@@ -18,13 +18,10 @@ func (h *handler) ExecuteAudioSpeech(ctx context.Context, resolved *transform.Re
 	strategy.Prepare(req)
 
 	cli.UpdateReqModel(vertex.RequestIDFromContext(ctx), resolved.ActualModel)
-	resp, err := h.vc.CompleteChatTyped(ctx, resolved.ActualModel, req)
+	resp, err := h.vc.CompleteChatTyped(ctx, resolved.ActualModel, req, strategy)
 	if err != nil {
 		return nil, toVertexError(err)
 	}
 	cleanGeminiFinishReasonTyped(resp)
-	if !strategy.IsValidResponse(resp) {
-		return nil, vertex.NewEmptyResponseError("Upstream returned no audio payload", nil)
-	}
 	return resp, nil
 }

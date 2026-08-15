@@ -18,29 +18,10 @@ func (h *handler) ExecuteImageGenerate(ctx context.Context, resolved *transform.
 	strategy.Prepare(req)
 
 	cli.UpdateReqModel(vertex.RequestIDFromContext(ctx), resolved.ActualModel)
-	resp, err := h.vc.CompleteChatTyped(ctx, resolved.ActualModel, req)
+	resp, err := h.vc.CompleteChatTyped(ctx, resolved.ActualModel, req, strategy)
 	if err != nil {
 		return nil, toVertexError(err)
 	}
 	cleanGeminiFinishReasonTyped(resp)
-	if !strategy.IsValidResponse(resp) {
-		return nil, vertex.NewEmptyResponseError("Upstream returned no image payload", nil)
-	}
 	return resp, nil
-}
-
-// ExecuteImageStream 执行生图模型流式请求的安全降级守护：先完整非流式生成，再通过 onChunk 以单包 SSE 输出。
-func (h *handler) ExecuteImageStream(ctx context.Context, resolved *transform.ResolvedModel, req *transform.GeminiRequest, onChunk func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool) {
-	resp, ve := h.ExecuteImageGenerate(ctx, resolved, req)
-	if ve != nil {
-		onChunk(nil, ve)
-		return
-	}
-	chunk := &transform.GeminiChunk{
-		Candidates:     resp.Candidates,
-		PromptFeedback: resp.PromptFeedback,
-		UsageMetadata:  resp.UsageMetadata,
-		ModelVersion:   resp.ModelVersion,
-	}
-	onChunk(chunk, nil)
 }

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -119,14 +120,24 @@ func AliasMap() map[string]string {
 	return out
 }
 
+// isTextModelName 判断模型名是否为文本模型（不含 image、imagen、tts）。
+// 仅文本模型允许追加假非流前缀变体。
+func isTextModelName(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return !strings.Contains(lower, "image") && !strings.Contains(lower, "imagen") && !strings.Contains(lower, "tts")
+}
+
 // ModelsWithFakeVariants 返回每个基础模型 + 其假非流前缀变体的完整清单
-// （result 里依次塞入 m、假非流-m）。
+// （对文本模型依次塞入 m、假非流-m；非文本模型仅塞入 m）。
 // /v1/models、/v1beta/models、单模型 404 校验都用它，以保证假非流变体名自洽。
 func ModelsWithFakeVariants() []string {
 	base := loadModelsFile().Models
 	result := make([]string, 0, len(base)*2)
 	for _, m := range base {
-		result = append(result, m, fakePrefixes[0]+m)
+		result = append(result, m)
+		if isTextModelName(m) {
+			result = append(result, fakePrefixes[0]+m)
+		}
 	}
 	return result
 }

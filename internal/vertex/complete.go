@@ -13,10 +13,12 @@ type candidateResult struct {
 	err      error
 }
 
-func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, req *transform.GeminiRequest) (*transform.GeminiResponse, error) {
-	strategy := transform.NewModelFamilyRouter().For(model)
+func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, req *transform.GeminiRequest, strategy transform.ModelStrategy) (*transform.GeminiResponse, error) {
+	if strategy == nil {
+		strategy = transform.NewModelFamilyRouter().For(model)
+	}
 	run := func(ctx context.Context, proxyURI string) (*transform.GeminiResponse, error) {
-		return c.runSingleCandidate(ctx, model, req, proxyURI)
+		return c.runSingleCandidate(ctx, model, req, proxyURI, strategy)
 	}
 	return RunRace(ctx, c.cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
 		return candidateFinishTyped(resp) == "STOP" && strategy.IsValidResponse(resp)
@@ -29,7 +31,7 @@ func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, req *tr
 	}))
 }
 
-func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, req *transform.GeminiRequest, proxyURI string) (*transform.GeminiResponse, error) {
+func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, req *transform.GeminiRequest, proxyURI string, strategy transform.ModelStrategy) (*transform.GeminiResponse, error) {
 	var chunks []*transform.GeminiChunk
 	var firstErr *VertexError
 
@@ -44,7 +46,7 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, r
 			chunks = append(chunks, chunk.Data)
 		}
 		return true
-	})
+	}, strategy)
 
 	if firstErr != nil {
 		return nil, firstErr
@@ -65,7 +67,7 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, r
 		}
 		retryReq := *req
 		retryReq.SafetySettings = defaultSafetySettingsTyped
-		return c.runSingleCandidate(ctx, model, &retryReq, proxyURI)
+		return c.runSingleCandidate(ctx, model, &retryReq, proxyURI, strategy)
 	}
 
 	return resp, nil

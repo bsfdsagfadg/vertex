@@ -78,7 +78,7 @@ func TestResolveModel(t *testing.T) {
 			name:           "Alias image model with fake prefix",
 			rawModel:       "models/假非流-my-image-alias",
 			expectedActual: "gemini-3.1-flash-image",
-			expectedFake:   true,
+			expectedFake:   false,
 			expectedFamily: transform.FamilyImage,
 		},
 		{
