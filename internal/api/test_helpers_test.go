@@ -39,6 +39,7 @@ type testFixture struct {
 // 用例结束后关闭）。
 func newTestServer(t *testing.T) *testFixture {
 	t.Helper()
+	InitRegistry() // 显式注册节点回调（幂等，替代已移除的 init）
 
 	dir := t.TempDir()
 
@@ -124,6 +125,7 @@ func newTestServer(t *testing.T) *testFixture {
 // dialers 为可选的 dialer 参数，用于并行池测试。
 func newTestServerCustomMock(t *testing.T, mockHandler http.HandlerFunc, cfgMod func(*config.AppConfig), dialers ...transport.ProxyDialer) *testFixture {
 	t.Helper()
+	InitRegistry() // 显式注册节点回调（幂等，替代已移除的 init）
 
 	dir := t.TempDir()
 

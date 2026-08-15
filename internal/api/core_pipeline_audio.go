@@ -22,6 +22,6 @@ func (h *handler) ExecuteAudioSpeech(ctx context.Context, resolved *transform.Re
 	if err != nil {
 		return nil, toVertexError(err)
 	}
-	cleanGeminiFinishReasonTyped(resp)
+	transform.CleanFinishReasonUnspecified(resp)
 	return resp, nil
 }

@@ -10,32 +10,38 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 )
 
 var (
 	//nolint:gochecknoglobals // Internal spool state
 	maxMemSize int64 // 0 = unlimited（永不落盘）
 	//nolint:gochecknoglobals // Internal spool state
-	spilledBytes int64
+	spilledBytes atomic.Int64
 	//nolint:gochecknoglobals // Dynamic spill provider for hot-reload
-	maxSpillProvider func() int64
+	maxSpillProvider atomic.Pointer[func() int64]
 )
 
 // SetMaxSpillProvider 注册一个动态提供 spill 阈值的函数（支持热重载）。
-// 非 nil 时优先于 SetMaxSpillBytes 的静态值。
+// 非 nil 时优先于 SetMaxSpillBytes 的静态值；nil 表示清除动态 Provider，
+// 回退到静态阈值。并发读写安全。
 func SetMaxSpillProvider(fn func() int64) {
-	maxSpillProvider = fn
+	if fn == nil {
+		maxSpillProvider.Store(nil)
+		return
+	}
+	maxSpillProvider.Store(&fn)
 }
 
 func getMaxMemSize() int64 {
-	if maxSpillProvider != nil {
-		return maxSpillProvider()
+	if p := maxSpillProvider.Load(); p != nil {
+		return (*p)()
 	}
 	return maxMemSize
 }
 
 // SpilledBytes 返回进程启动以来写入临时文件的累计字节数。
-func SpilledBytes() int64 { return spilledBytes }
+func SpilledBytes() int64 { return spilledBytes.Load() }
 
 // Buffer 是"先写后读"字节缓冲，支持自动磁盘溢出。
 //
@@ -83,7 +89,7 @@ func (b *Buffer) Write(p []byte) (int, error) {
 			b.totalWritten = int64(len(b.mem)) + int64(n)
 		}
 		b.mem = nil
-		spilledBytes += b.totalWritten
+		spilledBytes.Add(b.totalWritten)
 		return n, err
 
 	}

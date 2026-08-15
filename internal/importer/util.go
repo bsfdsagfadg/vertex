@@ -1,4 +1,4 @@
-package api
+package importer
 
 import (
 	"encoding/base64"
@@ -10,7 +10,8 @@ import (
 	"strings"
 )
 
-func errToStr(err error) string {
+// ErrToStr 将 error 归一为字符串（nil → 空串），供 api 层测速结果落库复用。
+func ErrToStr(err error) string {
 	if err == nil {
 		return ""
 	}
@@ -260,7 +261,7 @@ func nestedObject(obj map[string]any, keys ...string) map[string]any {
 		if nested := mapValue(obj[key]); len(nested) > 0 {
 			return nested
 		}
-		if nested := parseJSONMapString(valueToString(obj[key])); len(nested) > 0 {
+		if nested := parseJSONMapString(ValueToString(obj[key])); len(nested) > 0 {
 			return nested
 		}
 	}
@@ -336,7 +337,8 @@ func importedAllowInsecure(v any) bool {
 	}
 }
 
-func valueToString(v any) string {
+// ValueToString 将 any 归一为字符串（nil → 空串），供 api 层配置项读取复用。
+func ValueToString(v any) string {
 	switch x := v.(type) {
 	case string:
 		return x
@@ -371,3 +373,5 @@ func normalizeYAMLValue(value any) any {
 		return v
 	}
 }
+
+

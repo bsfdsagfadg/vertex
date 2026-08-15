@@ -80,30 +80,6 @@ func TestRaiseForStatus(t *testing.T) {
 	}
 }
 
-func TestBuildRequestPayload(t *testing.T) {
-	cfg := config.StaticProvider(config.DefaultConfig())
-	payload := map[string]any{"contents": []any{
-		map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}},
-	}}
-	body := buildRequestPayload("gemini-3.1-flash", payload, "TOKEN123", cfg)
-	if body["querySignature"] != querySignature {
-		t.Error("querySignature 不匹配")
-	}
-	if body["operationName"] != "StreamGenerateContentAnonymous" {
-		t.Error("operationName 不匹配")
-	}
-	vars := body["variables"].(map[string]any)
-	if vars["region"] != "global" {
-		t.Errorf("region=%v, want global", vars["region"])
-	}
-	if vars["recaptchaToken"] != "TOKEN123" {
-		t.Errorf("recaptchaToken=%v", vars["recaptchaToken"])
-	}
-	if vars["model"] != "gemini-3.1-flash" {
-		t.Errorf("model=%v", vars["model"])
-	}
-}
-
 func TestBuildTypedRequestPayload(t *testing.T) {
 	cfg := config.StaticProvider(config.DefaultConfig())
 	req := &transform.GeminiRequest{
@@ -295,10 +271,10 @@ func TestClassifyNetworkError(t *testing.T) {
 	}
 }
 
-func TestBuildCompleteResponse_Empty(t *testing.T) {
+func TestBuildCompleteResponseTyped_Empty(t *testing.T) {
 	c := &VertexAIClient{}
-	// 无 parts、无 error、无 promptFeedback → EmptyResponseError
-	_, err := c.buildCompleteResponse(&ParseResult{PromptFeedback: map[string]any{}})
+	// 无 candidates、无 promptFeedback → EmptyResponseError
+	_, err := c.buildCompleteResponseTyped(&ParseResultTyped{})
 	if err == nil {
 		t.Error("空响应应返回 EmptyResponseError")
 	}
@@ -307,170 +283,142 @@ func TestBuildCompleteResponse_Empty(t *testing.T) {
 	}
 }
 
-func TestBuildCompleteResponse_MultiCandidate(t *testing.T) {
+func TestBuildCompleteResponseTyped_MultiCandidate(t *testing.T) {
 	c := &VertexAIClient{}
-	// 构造包含两个候选（index 0 和 1）的 ParseResult
-	r := &ParseResult{
-		Candidates: []map[string]any{
+	// 构造包含两个候选（index 0 和 1）的 ParseResultTyped
+	r := &ParseResultTyped{
+		Candidates: []*transform.Candidate{
 			{
-				"index":        0,
-				"content":      map[string]any{"parts": toAnySlice([]map[string]any{{"text": "hello from 0"}}), "role": "model"},
-				"finishReason": "STOP",
+				Index:        0,
+				Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: "hello from 0"}}},
+				FinishReason: "STOP",
 			},
 			{
-				"index":        1,
-				"content":      map[string]any{"parts": toAnySlice([]map[string]any{{"text": "hello from 1"}}), "role": "model"},
-				"finishReason": "STOP",
+				Index:        1,
+				Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: "hello from 1"}}},
+				FinishReason: "STOP",
 			},
 		},
 	}
-	resp, err := c.buildCompleteResponse(r)
+	resp, err := c.buildCompleteResponseTyped(r)
 	if err != nil {
-		t.Fatalf("buildCompleteResponse error: %v", err)
+		t.Fatalf("buildCompleteResponseTyped error: %v", err)
 	}
-	cands, ok := resp["candidates"].([]any)
-	if !ok {
-		t.Fatal("candidates should be []any")
-	}
-	if len(cands) != 2 {
-		t.Fatalf("len(candidates)=%d, want 2", len(cands))
+	if len(resp.Candidates) != 2 {
+		t.Fatalf("len(candidates)=%d, want 2", len(resp.Candidates))
 	}
 	// 验证第一个候选
-	c0 := cands[0].(map[string]any)
-	if c0["index"] != 0 {
-		t.Errorf("candidate[0].index=%v, want 0", c0["index"])
+	c0 := resp.Candidates[0]
+	if c0.Index != 0 {
+		t.Errorf("candidate[0].index=%d, want 0", c0.Index)
 	}
-	content0, _ := c0["content"].(map[string]any)
-	parts0, _ := content0["parts"].([]any)
-	if len(parts0) != 1 {
-		t.Fatalf("candidate[0] parts len=%d", len(parts0))
-	}
-	if p0 := parts0[0].(map[string]any); p0["text"] != "hello from 0" {
-		t.Errorf("candidate[0] text=%q, want 'hello from 0'", p0["text"])
+	if len(c0.Content.Parts) != 1 || c0.Content.Parts[0].Text != "hello from 0" {
+		t.Errorf("candidate[0] parts mismatch: %+v", c0.Content.Parts)
 	}
 	// 验证第二个候选
-	c1 := cands[1].(map[string]any)
-	if c1["index"] != 1 {
-		t.Errorf("candidate[1].index=%v, want 1", c1["index"])
+	c1 := resp.Candidates[1]
+	if c1.Index != 1 {
+		t.Errorf("candidate[1].index=%d, want 1", c1.Index)
+	}
+	if c1.Content == nil || c1.Content.Parts[0].Text != "hello from 1" {
+		t.Errorf("candidate[1] parts mismatch: %+v", c1.Content)
 	}
 }
 
-func TestCollectChunksToParseResult_MultiCandidate(t *testing.T) {
-	chunks := []map[string]any{
+func TestCollectChunksToParseResultTyped_MultiCandidate(t *testing.T) {
+	chunks := []*transform.GeminiChunk{
 		{
-			"candidates": []any{
-				map[string]any{
-					"index":        0,
-					"content":      map[string]any{"parts": []any{map[string]any{"text": "part0-a"}}, "role": "model"},
-					"finishReason": "FINISH_REASON_UNSPECIFIED",
+			Candidates: []*transform.Candidate{
+				{
+					Index:        0,
+					Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: "part0-a"}}},
+					FinishReason: "FINISH_REASON_UNSPECIFIED",
 				},
-				map[string]any{
-					"index":        1,
-					"content":      map[string]any{"parts": []any{map[string]any{"text": "part1-a"}}, "role": "model"},
-					"finishReason": "FINISH_REASON_UNSPECIFIED",
+				{
+					Index:        1,
+					Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: "part1-a"}}},
+					FinishReason: "FINISH_REASON_UNSPECIFIED",
 				},
 			},
 		},
 		{
-			"candidates": []any{
-				map[string]any{
-					"index":        0,
-					"content":      map[string]any{"parts": []any{map[string]any{"text": " part0-b"}}, "role": "model"},
-					"finishReason": "STOP",
+			Candidates: []*transform.Candidate{
+				{
+					Index:        0,
+					Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: " part0-b"}}},
+					FinishReason: "STOP",
 				},
-				map[string]any{
-					"index":        1,
-					"content":      map[string]any{"parts": []any{map[string]any{"text": " part1-b"}}, "role": "model"},
-					"finishReason": "STOP",
+				{
+					Index:        1,
+					Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: " part1-b"}}},
+					FinishReason: "STOP",
 				},
 			},
-			"usageMetadata": map[string]any{"totalTokenCount": float64(10)},
+			UsageMetadata: &transform.UsageMetadata{TotalTokenCount: 10},
 		},
 	}
 
-	result := collectChunksToParseResult(chunks)
+	result := collectChunksToParseResultTyped(chunks)
 	if result == nil {
-		t.Fatal("collectChunksToParseResult returned nil")
+		t.Fatal("collectChunksToParseResultTyped returned nil")
 	}
 
-	// 验证顶层快捷字段（首候选 index=0）
-	if len(result.Parts) != 1 {
-		t.Fatalf("result.Parts len=%d, want 1", len(result.Parts))
-	}
-	if result.Parts[0]["text"] != "part0-a part0-b" {
-		t.Errorf("result.Parts[0].text=%q, want 'part0-a part0-b'", result.Parts[0]["text"])
-	}
-	if result.FinishReason != "STOP" {
-		t.Errorf("result.FinishReason=%q, want STOP", result.FinishReason)
-	}
-	if result.CandidateIndex != 0 {
-		t.Errorf("result.CandidateIndex=%d, want 0", result.CandidateIndex)
-	}
-	if result.UsageMetadata == nil || result.UsageMetadata["totalTokenCount"] != float64(10) {
+	// 验证 UsageMetadata 传播
+	if result.UsageMetadata == nil || result.UsageMetadata.TotalTokenCount != 10 {
 		t.Error("usageMetadata should be propagated")
 	}
 
-	// 验证完整 Candidates
+	// 验证完整 Candidates（按 index 升序）
 	if len(result.Candidates) != 2 {
 		t.Fatalf("result.Candidates len=%d, want 2", len(result.Candidates))
 	}
-	// index=0 候选
+	// index=0 候选：同角色文本跨帧合并
 	c0 := result.Candidates[0]
-	if c0["index"] != 0 {
-		t.Errorf("candidates[0].index=%v, want 0", c0["index"])
+	if c0.Index != 0 {
+		t.Errorf("candidates[0].index=%d, want 0", c0.Index)
 	}
-	c0Content := c0["content"].(map[string]any)
-	c0Parts := c0Content["parts"].([]any)
-	if len(c0Parts) != 1 {
-		t.Fatalf("candidates[0] parts len=%d", len(c0Parts))
+	if len(c0.Content.Parts) != 1 || c0.Content.Parts[0].Text != "part0-a part0-b" {
+		t.Errorf("candidates[0] text=%q, want 'part0-a part0-b'", c0.Content.Parts[0].Text)
 	}
-	if p := c0Parts[0].(map[string]any); p["text"] != "part0-a part0-b" {
-		t.Errorf("candidates[0] text=%q, want 'part0-a part0-b'", p["text"])
-	}
-	if c0["finishReason"] != "STOP" {
-		t.Errorf("candidates[0].finishReason=%v, want STOP", c0["finishReason"])
+	if c0.FinishReason != "STOP" {
+		t.Errorf("candidates[0].finishReason=%q, want STOP", c0.FinishReason)
 	}
 	// index=1 候选
 	c1 := result.Candidates[1]
-	if c1["index"] != 1 {
-		t.Errorf("candidates[1].index=%v, want 1", c1["index"])
+	if c1.Index != 1 {
+		t.Errorf("candidates[1].index=%d, want 1", c1.Index)
 	}
-	c1Content := c1["content"].(map[string]any)
-	c1Parts := c1Content["parts"].([]any)
-	if len(c1Parts) != 1 {
-		t.Fatalf("candidates[1] parts len=%d", len(c1Parts))
+	if len(c1.Content.Parts) != 1 || c1.Content.Parts[0].Text != "part1-a part1-b" {
+		t.Errorf("candidates[1] text=%q, want 'part1-a part1-b'", c1.Content.Parts[0].Text)
 	}
-	if p := c1Parts[0].(map[string]any); p["text"] != "part1-a part1-b" {
-		t.Errorf("candidates[1] text=%q, want 'part1-a part1-b'", p["text"])
-	}
-	if c1["finishReason"] != "STOP" {
-		t.Errorf("candidates[1].finishReason=%v, want STOP", c1["finishReason"])
+	if c1.FinishReason != "STOP" {
+		t.Errorf("candidates[1].finishReason=%q, want STOP", c1.FinishReason)
 	}
 }
 
-func TestCollectChunksToParseResult_SingleCandidate(t *testing.T) {
+func TestCollectChunksToParseResultTyped_SingleCandidate(t *testing.T) {
 	// 确保单候选场景行为不变
-	chunks := []map[string]any{
+	chunks := []*transform.GeminiChunk{
 		{
-			"candidates": []any{
-				map[string]any{
-					"index":   0,
-					"content": map[string]any{"parts": []any{map[string]any{"text": "hello"}}, "role": "model"},
+			Candidates: []*transform.Candidate{
+				{
+					Index:   0,
+					Content: &transform.Content{Role: "model", Parts: []transform.Part{{Text: "hello"}}},
 				},
 			},
 		},
 	}
-	result := collectChunksToParseResult(chunks)
+	result := collectChunksToParseResultTyped(chunks)
 	if result == nil {
-		t.Fatal("collectChunksToParseResult returned nil")
-	}
-	if len(result.Parts) != 1 || result.Parts[0]["text"] != "hello" {
-		t.Errorf("single candidate parts mismatch: %v", result.Parts)
+		t.Fatal("collectChunksToParseResultTyped returned nil")
 	}
 	if len(result.Candidates) != 1 {
 		t.Fatalf("Candidates len=%d, want 1", len(result.Candidates))
 	}
-	if result.Candidates[0]["index"] != 0 {
-		t.Errorf("candidates[0].index=%v, want 0", result.Candidates[0]["index"])
+	if result.Candidates[0].Index != 0 {
+		t.Errorf("candidates[0].index=%d, want 0", result.Candidates[0].Index)
+	}
+	if len(result.Candidates[0].Content.Parts) != 1 || result.Candidates[0].Content.Parts[0].Text != "hello" {
+		t.Errorf("single candidate parts mismatch: %+v", result.Candidates[0].Content.Parts)
 	}
 }

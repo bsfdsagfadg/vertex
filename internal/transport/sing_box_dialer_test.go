@@ -743,10 +743,10 @@ func TestMakeBoxDialFunc_TimeoutMarksClosed(t *testing.T) {
 	}
 }
 
-// TestMakeBoxDialFunc_CleanupExitsOnParentCtxCancel 验证超时清理 goroutine 在父请求
-// ctx 结束后立即退出（不必等 DialContext 返回或 30s 兜底），避免瞬态 goroutine 堆积。
-// 关键机制：1ns 父 ctx 立即超时级联取消内部 dialCtx（15s），无需等满 15s。
-func TestMakeBoxDialFunc_CleanupExitsOnParentCtxCancel(t *testing.T) {
+// TestMakeBoxDialFunc_TimeoutIsPromptOnParentCtxCancel 验证超时分支的快速返回路径：
+// 1ns 父 ctx 立即超时级联取消内部 dialCtx（15s），dial 本身无需等满 15s。
+// 清理 goroutine 现在会存活到 DialContext 返回（或 10s 兜底），确保迟到的 conn 必被关闭。
+func TestMakeBoxDialFunc_TimeoutIsPromptOnParentCtxCancel(t *testing.T) {
 	fc := &fakeCloser{}
 	nb := &nodeBox{
 		box:      fc,
@@ -776,7 +776,126 @@ func TestMakeBoxDialFunc_CleanupExitsOnParentCtxCancel(t *testing.T) {
 		t.Error("nb.box.Close should have been called in timeout branch")
 	}
 
-	// 父 ctx 已超时：清理 goroutine 的 case <-ctx.Done() 立即就绪并退出，不白等到
-	// hangOutbound 的 2s 返回。此处不直接断言 goroutine 数（并发环境抖动），
-	// 语义保证为「更快或一样快」，由 select 第三条分路兜底。
+	// 父 ctx 已超时：清理 goroutine 不提前退出（修复后的契约），会存活到
+	// hangOutbound 2s 返回（conn 为 nil 无需关闭）或 10s 兜底。此处不直接断言
+	// goroutine 数（并发环境抖动），dial 超时分支本身必须快速返回。
+}
+
+// stubConn 是最小 net.Conn 桩：Close 置 closed 标志并通过通道通知，供并发等待断言。
+type stubConn struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newStubConn() *stubConn {
+	return &stubConn{closed: make(chan struct{})}
+}
+
+func (c *stubConn) Read([]byte) (int, error)        { return 0, errors.New("closed") }
+func (c *stubConn) Write(p []byte) (int, error)     { return len(p), nil }
+func (c *stubConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+func (c *stubConn) LocalAddr() net.Addr              { return nil }
+func (c *stubConn) RemoteAddr() net.Addr             { return nil }
+func (c *stubConn) SetDeadline(time.Time) error      { return nil }
+func (c *stubConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *stubConn) SetWriteDeadline(time.Time) error { return nil }
+
+// ctxRespectingOutbound 尊重 ctx：取消后立即返回一个 conn（模拟正常 transport）。
+type ctxRespectingOutbound struct{ conn *stubConn }
+
+func (o ctxRespectingOutbound) DialContext(ctx context.Context, _ string, _ M.Socksaddr) (net.Conn, error) {
+	<-ctx.Done()
+	return o.conn, nil
+}
+
+func (o ctxRespectingOutbound) ListenPacket(ctx context.Context, _ M.Socksaddr) (net.PacketConn, error) {
+	return nil, errors.New("not implemented")
+}
+
+// ctxIgnoringOutbound 忽略 ctx：固定 200ms 延迟后返回一个 conn（模拟黑洞 transport）。
+type ctxIgnoringOutbound struct{ conn *stubConn }
+
+func (o ctxIgnoringOutbound) DialContext(_ context.Context, _ string, _ M.Socksaddr) (net.Conn, error) {
+	time.Sleep(200 * time.Millisecond)
+	return o.conn, nil
+}
+
+func (o ctxIgnoringOutbound) ListenPacket(ctx context.Context, _ M.Socksaddr) (net.PacketConn, error) {
+	return nil, errors.New("not implemented")
+}
+
+// waitStubClosed 短轮询等待 stubConn 被关闭（间隔 20ms，上限 2s，符合单测 500ms 规范外的并发等待）。
+func waitStubClosed(t *testing.T, conn *stubConn, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-conn.closed:
+			return
+		default:
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	t.Fatalf("%s (conn 未在 2s 内被关闭)", msg)
+}
+
+// TestMakeBoxDialFunc_TimeoutClosesConn_CtxRespecting 验证：父 ctx 已取消 + 拨号挂起时，
+// 清理 goroutine 必须等到拨号返回并关闭 conn（修复前 case <-ctx.Done() 提前退出 → 泄漏）。
+func TestMakeBoxDialFunc_TimeoutClosesConn_CtxRespecting(t *testing.T) {
+	conn := newStubConn()
+	nb := &nodeBox{
+		box:      &fakeCloser{},
+		outbound: ctxRespectingOutbound{conn: conn},
+	}
+	dial := makeBoxDialFunc(nb)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+
+	if _, err := dial(ctx, "tcp", "1.2.3.4:443"); err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	waitStubClosed(t, conn, "ctx-respecting outbound conn 应在拨号超时后由清理 goroutine 关闭")
+}
+
+// TestMakeBoxDialFunc_TimeoutClosesConn_CtxIgnoring 验证：父 ctx 已取消 + 拨号忽略 ctx 时，
+// conn 同样在拨号返回后被清理 goroutine 关闭（修复前泄漏，修复后 200ms 内关闭）。
+func TestMakeBoxDialFunc_TimeoutClosesConn_CtxIgnoring(t *testing.T) {
+	conn := newStubConn()
+	nb := &nodeBox{
+		box:      &fakeCloser{},
+		outbound: ctxIgnoringOutbound{conn: conn},
+	}
+	dial := makeBoxDialFunc(nb)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+
+	if _, err := dial(ctx, "tcp", "1.2.3.4:443"); err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	waitStubClosed(t, conn, "ctx-ignoring outbound conn 应在拨号超时后由清理 goroutine 关闭")
+}
+
+// TestMakeBoxDialFunc_TimeoutReturnsError 断言超时分支错误文案稳定（重试语义依赖该前缀）。
+func TestMakeBoxDialFunc_TimeoutReturnsError(t *testing.T) {
+	nb := &nodeBox{
+		box:      &fakeCloser{},
+		outbound: ctxIgnoringOutbound{conn: newStubConn()},
+	}
+	dial := makeBoxDialFunc(nb)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+
+	_, err := dial(ctx, "tcp", "1.2.3.4:443")
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "dial timeout after") {
+		t.Errorf("error should contain 'dial timeout after', got: %v", err)
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bsfdsagfadg/vertex/internal/importer"
 	"github.com/bsfdsagfadg/vertex/internal/netx"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
@@ -68,7 +69,7 @@ func (adm *AdminHandler) adminFetchSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newNodes := parseImportedNodes(text)
+	newNodes := importer.ParseImportedNodes(text)
 	nodes.MergeNodes(newNodes)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(newNodes)})
 }
@@ -172,7 +173,7 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 					log.Printf("[Admin] [TestAll] 节点 %s 测试成功, recaptcha 耗时: %.0fms", node.Name, duration)
 				}
 				success := testErr == nil
-				nodes.RecordTest(node.RawURI, success, duration, errToStr(testErr))
+				nodes.RecordTest(node.RawURI, success, duration, importer.ErrToStr(testErr))
 				if !success {
 					nodes.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
 				}

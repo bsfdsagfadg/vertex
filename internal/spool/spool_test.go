@@ -1,7 +1,10 @@
 package spool
 
 import (
+	"bytes"
 	"io"
+	"os"
+	"sync"
 	"testing"
 
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
@@ -61,5 +64,110 @@ func TestBufferMemOnly(t *testing.T) {
 	}
 	if err := b.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestWrite_SpillToDisk 验证小阈值下写入超限数据会落盘、读回一致、Close 清理临时文件。
+func TestWrite_SpillToDisk(t *testing.T) {
+	prev := maxMemSize
+	t.Cleanup(func() { SetMaxSpillBytes(prev) })
+	SetMaxSpillBytes(1024)
+
+	b := New()
+	payload := bytes.Repeat([]byte("0123456789"), 1024) // 10KB
+	if _, err := b.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if b.Len() != int64(len(payload)) {
+		t.Fatalf("Len 应为 %d，got %d", len(payload), b.Len())
+	}
+	r, err := b.Reader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(r)
+	if !bytes.Equal(got, payload) {
+		t.Fatal("落盘后读回内容不一致")
+	}
+	if SpilledBytes() == 0 {
+		t.Fatal("SpilledBytes 应 > 0（已落盘）")
+	}
+	filePath := b.filePath
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(filePath); !os.IsNotExist(err) {
+		t.Fatalf("临时文件 %q 应已被删除", filePath)
+	}
+}
+
+// TestSpillConcurrent 并发溢出验证：多个 Buffer 并行写入超限数据，SpilledBytes
+// 基于前后增量断言（不假设全局计数从零开始）；配合 -race 验证无数据竞争。
+func TestSpillConcurrent(t *testing.T) {
+	prev := maxMemSize
+	t.Cleanup(func() { SetMaxSpillBytes(prev) })
+	SetMaxSpillBytes(512)
+
+	before := SpilledBytes()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b := New()
+			payload := bytes.Repeat([]byte("x"), 4096)
+			if _, err := b.Write(payload); err != nil {
+				t.Errorf("Write: %v", err)
+			}
+			_ = b.Close()
+		}()
+	}
+	wg.Wait()
+	if delta := SpilledBytes() - before; delta <= 0 {
+		t.Fatalf("并发写后 SpilledBytes 增量应为正，got %d", delta)
+	}
+}
+
+// TestMaxSpillProvider 验证动态 Provider 优先级、返回 0 表示永不落盘、nil 清除后回退静态阈值。
+func TestMaxSpillProvider(t *testing.T) {
+	prev := maxMemSize
+	t.Cleanup(func() {
+		SetMaxSpillBytes(prev)
+		SetMaxSpillProvider(nil)
+	})
+	SetMaxSpillBytes(0)
+
+	// Provider 生效：阈值来自 Provider
+	SetMaxSpillProvider(func() int64 { return 256 })
+	b := New()
+	before := SpilledBytes()
+	if _, err := b.Write(bytes.Repeat([]byte("y"), 512)); err != nil {
+		t.Fatal(err)
+	}
+	_ = b.Close()
+	if SpilledBytes()-before <= 0 {
+		t.Fatal("Provider 阈值下应触发落盘")
+	}
+
+	// Provider 返回 0：永不落盘
+	SetMaxSpillProvider(func() int64 { return 0 })
+	b2 := New()
+	before = SpilledBytes()
+	if _, err := b2.Write(bytes.Repeat([]byte("z"), 8192)); err != nil {
+		t.Fatal(err)
+	}
+	_ = b2.Close()
+	if SpilledBytes()-before != 0 {
+		t.Fatal("Provider 返回 0 表示永不落盘")
+	}
+
+	// nil 清除 Provider：回退静态阈值（此处静态 0 亦永不落盘，验证无 panic 且回退生效）
+	SetMaxSpillProvider(nil)
+	if limit := getMaxMemSize(); limit != 0 {
+		t.Fatalf("清除 Provider 后应回退静态阈值 0，got %d", limit)
+	}
+	SetMaxSpillBytes(64)
+	if limit := getMaxMemSize(); limit != 64 {
+		t.Fatalf("静态阈值应生效 64，got %d", limit)
 	}
 }

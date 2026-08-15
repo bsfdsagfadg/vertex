@@ -1,4 +1,4 @@
-package api
+package importer
 
 import (
 	"encoding/json"
@@ -8,30 +8,30 @@ import (
 )
 
 func applyCommonImportedProxyFields(proxy map[string]any, obj map[string]any) {
-	if sni := strings.TrimSpace(valueToString(obj["Sni"])); sni != "" {
+	if sni := strings.TrimSpace(ValueToString(obj["Sni"])); sni != "" {
 		proxy["sni"] = sni
 		proxy["servername"] = sni
 	}
-	if fp := strings.TrimSpace(valueToString(obj["Fingerprint"])); fp != "" {
+	if fp := strings.TrimSpace(ValueToString(obj["Fingerprint"])); fp != "" {
 		proxy["client-fingerprint"] = fp
 		proxy["fingerprint"] = fp
 	}
 	if importedAllowInsecure(obj["AllowInsecure"]) {
 		proxy["skip-cert-verify"] = true
 	}
-	if alpn := splitCSV(valueToString(obj["Alpn"])); len(alpn) > 0 {
+	if alpn := splitCSV(ValueToString(obj["Alpn"])); len(alpn) > 0 {
 		proxy["alpn"] = alpn
 	}
-	if cert := strings.TrimSpace(valueToString(obj["Cert"])); cert != "" {
+	if cert := strings.TrimSpace(ValueToString(obj["Cert"])); cert != "" {
 		proxy["certificate"] = cert
 	}
-	if privateKey := strings.TrimSpace(valueToString(obj["PrivateKey"])); privateKey != "" {
+	if privateKey := strings.TrimSpace(ValueToString(obj["PrivateKey"])); privateKey != "" {
 		proxy["private-key"] = privateKey
 	}
 }
 
 func applyTransportExtras(proxy map[string]any, obj map[string]any, transport map[string]any) {
-	network := normalizeImportedNetwork(valueToString(obj["Network"]))
+	network := normalizeImportedNetwork(ValueToString(obj["Network"]))
 	if network == "" {
 		return
 	}
@@ -40,16 +40,16 @@ func applyTransportExtras(proxy map[string]any, obj map[string]any, transport ma
 	case "ws":
 		proxy["network"] = "ws"
 		wsOpts := map[string]any{}
-		if path := strings.TrimSpace(valueToString(transport["Path"])); path != "" {
+		if path := strings.TrimSpace(ValueToString(transport["Path"])); path != "" {
 			wsOpts["path"] = path
 		}
-		if host := strings.TrimSpace(valueToString(transport["Host"])); host != "" {
+		if host := strings.TrimSpace(ValueToString(transport["Host"])); host != "" {
 			wsOpts["headers"] = map[string]any{"Host": host}
 		}
-		if ed := strings.TrimSpace(firstNonEmpty(valueToString(transport["MaxEarlyData"]), valueToString(transport["max-early-data"]), valueToString(transport["max_early_data"]), valueToString(transport["ed"]))); ed != "" {
+		if ed := strings.TrimSpace(firstNonEmpty(ValueToString(transport["MaxEarlyData"]), ValueToString(transport["max-early-data"]), ValueToString(transport["max_early_data"]), ValueToString(transport["ed"]))); ed != "" {
 			wsOpts["max-early-data"] = ed
 		}
-		if edHeader := strings.TrimSpace(firstNonEmpty(valueToString(transport["EarlyDataHeaderName"]), valueToString(transport["early-data-header-name"]), valueToString(transport["early_data_header_name"]))); edHeader != "" {
+		if edHeader := strings.TrimSpace(firstNonEmpty(ValueToString(transport["EarlyDataHeaderName"]), ValueToString(transport["early-data-header-name"]), ValueToString(transport["early_data_header_name"]))); edHeader != "" {
 			wsOpts["early-data-header-name"] = edHeader
 		}
 		if len(wsOpts) > 0 {
@@ -58,7 +58,7 @@ func applyTransportExtras(proxy map[string]any, obj map[string]any, transport ma
 	case "grpc":
 		proxy["network"] = "grpc"
 		grpcOpts := map[string]any{}
-		if serviceName := strings.TrimSpace(valueToString(transport["GrpcServiceName"])); serviceName != "" {
+		if serviceName := strings.TrimSpace(ValueToString(transport["GrpcServiceName"])); serviceName != "" {
 			grpcOpts["grpc-service-name"] = serviceName
 		}
 		if len(grpcOpts) > 0 {
@@ -67,10 +67,10 @@ func applyTransportExtras(proxy map[string]any, obj map[string]any, transport ma
 	case "http", "h2":
 		proxy["network"] = "http"
 		httpOpts := map[string]any{}
-		if path := strings.TrimSpace(valueToString(transport["Path"])); path != "" {
+		if path := strings.TrimSpace(ValueToString(transport["Path"])); path != "" {
 			httpOpts["path"] = []string{path}
 		}
-		if host := strings.TrimSpace(valueToString(transport["Host"])); host != "" {
+		if host := strings.TrimSpace(ValueToString(transport["Host"])); host != "" {
 			httpOpts["headers"] = map[string][]string{"Host": []string{host}}
 		}
 		if len(httpOpts) > 0 {
@@ -80,16 +80,16 @@ func applyTransportExtras(proxy map[string]any, obj map[string]any, transport ma
 	case "xhttp":
 		proxy["network"] = "xhttp"
 		xhttpOpts := map[string]any{}
-		if path := strings.TrimSpace(valueToString(transport["Path"])); path != "" {
+		if path := strings.TrimSpace(ValueToString(transport["Path"])); path != "" {
 			xhttpOpts["path"] = path
 		}
-		if host := strings.TrimSpace(valueToString(transport["Host"])); host != "" {
+		if host := strings.TrimSpace(ValueToString(transport["Host"])); host != "" {
 			xhttpOpts["host"] = host
 		}
-		if mode := strings.TrimSpace(valueToString(transport["XhttpMode"])); mode != "" {
+		if mode := strings.TrimSpace(ValueToString(transport["XhttpMode"])); mode != "" {
 			xhttpOpts["mode"] = mode
 		}
-		if headers := parseJSONMapString(valueToString(transport["XhttpExtra"])); len(headers) > 0 {
+		if headers := parseJSONMapString(ValueToString(transport["XhttpExtra"])); len(headers) > 0 {
 			xhttpOpts["extra"] = headers
 		}
 		if len(xhttpOpts) > 0 {
@@ -101,15 +101,15 @@ func applyTransportExtras(proxy map[string]any, obj map[string]any, transport ma
 }
 
 func applyImportedTLSFields(proxy map[string]any, obj map[string]any) {
-	streamSecurity := strings.ToLower(strings.TrimSpace(valueToString(obj["StreamSecurity"])))
+	streamSecurity := strings.ToLower(strings.TrimSpace(ValueToString(obj["StreamSecurity"])))
 	switch streamSecurity {
 	case "tls":
 		proxy["tls"] = true
 	case "reality":
 		proxy["tls"] = true
 		proxy["reality-opts"] = map[string]any{
-			"public-key": strings.TrimSpace(valueToString(obj["PublicKey"])),
-			"short-id":   strings.TrimSpace(valueToString(obj["ShortId"])),
+			"public-key": strings.TrimSpace(ValueToString(obj["PublicKey"])),
+			"short-id":   strings.TrimSpace(ValueToString(obj["ShortId"])),
 		}
 	}
 }
@@ -122,7 +122,7 @@ func buildImportedNodeFromProxyMap(proxy map[string]any) (nodes.Node, bool) {
 	if raw == "" {
 		return nodes.Node{}, false
 	}
-	return parseImportedNodeLine(raw)
+	return ParseImportedNodeLine(raw)
 }
 
 func buildImportedNodeFromMap(obj map[string]any) (nodes.Node, bool) {
@@ -155,7 +155,7 @@ func buildImportedNodesFromSlice(items []any) []nodes.Node {
 	return imported
 }
 
-func parseJSONImportedNodes(text string) []nodes.Node {
+func ParseJSONImportedNodes(text string) []nodes.Node {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
@@ -187,3 +187,6 @@ func parseJSONImportedNodes(text string) []nodes.Node {
 	}
 	return nil
 }
+
+
+

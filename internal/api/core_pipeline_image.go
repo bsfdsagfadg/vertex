@@ -22,6 +22,6 @@ func (h *handler) ExecuteImageGenerate(ctx context.Context, resolved *transform.
 	if err != nil {
 		return nil, toVertexError(err)
 	}
-	cleanGeminiFinishReasonTyped(resp)
+	transform.CleanFinishReasonUnspecified(resp)
 	return resp, nil
 }

@@ -8,26 +8,6 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
-// cleanGeminiFinishReasonTyped 清洗 typed 候选的 FINISH_REASON_UNSPECIFIED，
-// 返回首个真实 finishReason。
-func cleanGeminiFinishReasonTyped(resp *transform.GeminiResponse) string {
-	if resp == nil {
-		return ""
-	}
-	var realFR string
-	for _, cand := range resp.Candidates {
-		if cand == nil {
-			continue
-		}
-		if cand.FinishReason == "FINISH_REASON_UNSPECIFIED" {
-			cand.FinishReason = ""
-		} else if cand.FinishReason != "" && realFR == "" {
-			realFR = cand.FinishReason
-		}
-	}
-	return realFR
-}
-
 // ExecuteTextComplete 执行文本/语言模型非流式 Complete 生成。
 func (h *handler) ExecuteTextComplete(ctx context.Context, resolved *transform.ResolvedModel, req *transform.GeminiRequest) (*transform.GeminiResponse, *vertex.VertexError) {
 	strategy := resolved.Strategy
@@ -42,7 +22,7 @@ func (h *handler) ExecuteTextComplete(ctx context.Context, resolved *transform.R
 	if err != nil {
 		return nil, toVertexError(err)
 	}
-	cleanGeminiFinishReasonTyped(resp)
+	transform.CleanFinishReasonUnspecified(resp)
 	return resp, nil
 }
 
@@ -61,7 +41,7 @@ func (h *handler) ExecuteTextStream(ctx context.Context, resolved *transform.Res
 		if ch.Err != nil {
 			return onChunk(nil, ch.Err)
 		}
-		cleanGeminiFinishReasonTyped(ch.Data)
+		transform.CleanFinishReasonUnspecified(ch.Data)
 		return onChunk(ch.Data, nil)
 	}, strategy)
 }

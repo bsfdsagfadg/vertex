@@ -74,8 +74,10 @@ func (g *GeminiHandler) requirePost(w http.ResponseWriter, r *http.Request, fn f
 }
 
 func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (*transform.GeminiRequest, bool) {
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	// 单趟解码为 json.RawMessage 顶层值（保留原始字节，零 map[string]any 树构建）。
+	// 复用 decoder 双条件分流：SyntaxError 含 "invalid UTF-8" → 编码错误；其余 → 非法 JSON。
+	var raw json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		if _, ok := err.(*json.SyntaxError); ok && strings.Contains(err.Error(), "invalid UTF-8") {
 			writeGeminiError(w, r.Context(), vertex.NewInvalidParamError("请求体编码错误，需为 UTF-8 (request body must be UTF-8 encoded)", "", nil))
 			return nil, false
@@ -83,18 +85,23 @@ func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (
 		writeGeminiError(w, r.Context(), vertex.NewInvalidParamError("请求格式错误，JSON 解析失败 (invalid JSON)", "", nil))
 		return nil, false
 	}
-	if body == nil {
-		body = make(map[string]any)
+	// 顶层必须是对象（等价旧 decode 到 map 的 UnmarshalTypeError 分支）。
+	var indexed map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &indexed); err != nil {
+		writeGeminiError(w, r.Context(), vertex.NewInvalidParamError("请求格式错误，JSON 解析失败 (invalid JSON)", "", nil))
+		return nil, false
 	}
-	if reqObj, ok := body["generateContentRequest"].(map[string]any); ok {
-		body = reqObj
+	// generateContentRequest 解包（仅当值为对象，等价旧 map 类型断言，null/标量不 unwrap）。
+	payload := raw
+	if reqObj, ok := indexed["generateContentRequest"]; ok && len(reqObj) > 0 && reqObj[0] == '{' {
+		payload = reqObj
 	}
-	req, err := normalizeGeminiBodyTyped(body)
-	if err != nil {
+	var req transform.GeminiRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
 		writeGeminiError(w, r.Context(), vertex.NewInvalidParamError("请求参数有误: "+err.Error()+" (invalid argument)", "", nil))
 		return nil, false
 	}
-	return req, true
+	return &req, true
 }
 
 func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, rawModel string) {
@@ -287,7 +294,7 @@ func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request
 	log.Printf("[Server] [CountTokens] 收到请求: 模型=%s, 真模型=%s", rawModel, resolved.ActualModel)
 
 	contents := body.Contents
-	total := g.vc.CountTokens(r.Context(), resolved.ActualModel, geminiContentsToAny(contents))
+	total := g.vc.CountTokens(r.Context(), resolved.ActualModel, contents)
 	writeJSON(w, http.StatusOK, map[string]any{"totalTokens": total})
 }
 
@@ -393,19 +400,6 @@ func finishReasonChunk(_ *vertex.VertexError) map[string]any {
 	}
 }
 
-// normalizeGeminiBodyTyped 把 Gemini 原生 JSON 请求体映射为强类型请求。
-func normalizeGeminiBodyTyped(raw map[string]any) (*transform.GeminiRequest, error) {
-	data, err := jsonx.Marshal(raw)
-	if err != nil {
-		return nil, err
-	}
-	var req transform.GeminiRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, err
-	}
-	return &req, nil
-}
-
 // firstCandidateFinishReason 读取首候选 finishReason（原始未清洗）。
 func firstCandidateFinishReason(chunk *transform.GeminiResponse) string {
 	if chunk == nil {
@@ -417,23 +411,6 @@ func firstCandidateFinishReason(chunk *transform.GeminiResponse) string {
 		}
 	}
 	return ""
-}
-
-// geminiContentsToAny 把强类型 contents 逐项 JSON 转回 []any（供 CountTokens 复用旧实现）。
-func geminiContentsToAny(contents []transform.Content) []any {
-	out := make([]any, 0, len(contents))
-	for _, c := range contents {
-		b, err := jsonx.Marshal(c)
-		if err != nil {
-			continue
-		}
-		var m map[string]any
-		if err := json.Unmarshal(b, &m); err != nil {
-			continue
-		}
-		out = append(out, m)
-	}
-	return out
 }
 
 // toRawMap 便利序列化：map[string]map typed -> raw map（供 JsonxUnmarshal 使用）。

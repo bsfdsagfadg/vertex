@@ -4,9 +4,13 @@ import (
 	"log"
 
 	"github.com/bsfdsagfadg/vertex/internal/db"
+	"github.com/bsfdsagfadg/vertex/internal/nodestore"
 )
 
 // ---- SQLite 持久化与节点 CRUD ----
+//
+// 全部 SQL 操作委托 internal/nodestore 通用内核（表名固定 "nodes" / "node_health"），
+// 本文件仅保留内存态编排与回调编排。
 
 func ensureLoaded() {
 	if loaded {
@@ -18,34 +22,25 @@ func ensureLoaded() {
 		return
 	}
 
-	// Load nodes
-	rows, err := db.GlobalDB.Query("SELECT raw_uri, type, name, disabled FROM nodes")
-	if err == nil {
-		defer func() {
-			_ = rows.Close()
-		}()
-		nodes := []Node{}
-		for rows.Next() {
-			var n Node
-			if err := rows.Scan(&n.RawURI, &n.Type, &n.Name, &n.Disabled); err == nil {
-				nodes = append(nodes, n)
-			}
-		}
-		nodeList = nodes
-		rebuildNodeNameMapUnsafe()
-	}
+	// Load nodes（回调式扫描，装载各自结构体）
+	_ = nodestore.LoadNodesFull(db.GlobalDB, "nodes", func(rawURI, typ, name string, disabled bool) {
+		nodeList = append(nodeList, Node{RawURI: rawURI, Type: typ, Name: name, Disabled: disabled}) //nolint:exhaustruct
+	})
+	rebuildNodeNameMapUnsafe()
 
 	// Load health
-	hRows, err := db.GlobalDB.Query("SELECT raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until FROM node_health")
-	if err == nil {
-		defer func() {
-			_ = hRows.Close()
-		}()
-		for hRows.Next() {
-			var uri string
-			h := &NodeHealth{} //nolint:exhaustruct
-			if err := hRows.Scan(&uri, &h.SuccessCount, &h.FailCount, &h.ConsecutiveFailures, &h.LastTestMs, &h.LastTestError, &h.LastSuccessAt, &h.LastFailAt, &h.CooldownUntil); err == nil {
-				healthMap[uri] = h
+	if hs, err := nodestore.LoadHealth(db.GlobalDB, "node_health"); err == nil {
+		for i := range hs {
+			h := hs[i]
+			healthMap[h.RawURI] = &NodeHealth{ //nolint:exhaustruct
+				SuccessCount:        h.SuccessCount,
+				FailCount:           h.FailCount,
+				ConsecutiveFailures: h.ConsecutiveFailures,
+				LastTestMs:          h.LastTestMs,
+				LastTestError:       h.LastTestError,
+				LastSuccessAt:       h.LastSuccessAt,
+				LastFailAt:          h.LastFailAt,
+				CooldownUntil:       h.CooldownUntil,
 			}
 		}
 	}
@@ -74,61 +69,48 @@ func LoadHealth() map[string]*NodeHealth {
 }
 
 func saveNodesUnsafe() {
-	if db.GlobalDB == nil {
-		return
-	}
-	tx, err := db.GlobalDB.Begin()
-	if err != nil {
-		return
-	}
-	// 为了简单起见，可以先全量删除再插入，但最好的方式是逐个插入或在添加删除时调用单个 SQL
-	// 这里保持原来 saveNodesUnsafe 的全量保存语义，执行全量同步
-	_, _ = tx.Exec("DELETE FROM nodes")
-	stmt, _ := tx.Prepare("INSERT INTO nodes (raw_uri, type, name, disabled) VALUES (?, ?, ?, ?)")
+	rows := make([]nodestore.NodeRow, 0, len(nodeList))
 	for _, n := range nodeList {
-		if stmt != nil {
-			_, _ = stmt.Exec(n.RawURI, n.Type, n.Name, n.Disabled)
-		}
+		rows = append(rows, nodestore.NodeRow{RawURI: n.RawURI, Type: n.Type, Name: n.Name, Disabled: n.Disabled})
 	}
-	if stmt != nil {
-		_ = stmt.Close()
+	if err := nodestore.SaveNodes(db.GlobalDB, "nodes", rows); err != nil {
+		log.Printf("[Nodes] 保存节点失败: %v", err)
 	}
-	_ = tx.Commit()
 }
 
 func saveHealthUnsafe() {
-	if db.GlobalDB == nil {
-		return
-	}
-	tx, err := db.GlobalDB.Begin()
-	if err != nil {
-		return
-	}
-	stmt, _ := tx.Prepare(`INSERT OR REPLACE INTO node_health 
-		(raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if stmt == nil {
-		_ = tx.Rollback()
-		return
-	}
+	rows := make([]nodestore.HealthRow, 0, len(healthMap))
 	for uri, h := range healthMap {
-		_, _ = stmt.Exec(uri, h.SuccessCount, h.FailCount, h.ConsecutiveFailures, h.LastTestMs, h.LastTestError, h.LastSuccessAt, h.LastFailAt, h.CooldownUntil)
+		rows = append(rows, nodestore.HealthRow{
+			RawURI:              uri,
+			SuccessCount:        h.SuccessCount,
+			FailCount:           h.FailCount,
+			ConsecutiveFailures: h.ConsecutiveFailures,
+			LastTestMs:          h.LastTestMs,
+			LastTestError:       h.LastTestError,
+			LastSuccessAt:       h.LastSuccessAt,
+			LastFailAt:          h.LastFailAt,
+			CooldownUntil:       h.CooldownUntil,
+		})
 	}
-	_ = stmt.Close()
-	_ = tx.Commit()
+	if err := nodestore.SaveHealth(db.GlobalDB, "node_health", rows); err != nil {
+		log.Printf("[Nodes] 保存健康度失败: %v", err)
+	}
 }
 
 func pruneHealthUnsafe() {
-	for uri := range healthMap {
-		found := false
-		for _, n := range nodeList {
-			if n.RawURI == uri {
-				found = true
-				break
-			}
-		}
-		if !found {
-			delete(healthMap, uri)
+	nodeKeys := make(map[string]bool, len(nodeList))
+	for _, n := range nodeList {
+		nodeKeys[n.RawURI] = true
+	}
+	keys := make(map[string]bool, len(healthMap))
+	for k := range healthMap {
+		keys[k] = true
+	}
+	nodestore.PruneHealthKeys(keys, nodeKeys)
+	for k := range healthMap {
+		if !keys[k] {
+			delete(healthMap, k)
 		}
 	}
 }
@@ -249,22 +231,24 @@ func BatchUpdateNodesDisabled(uris []string, disabled bool) {
 	for _, u := range uris {
 		targets[u] = true
 	}
+	// 无数据库：直接按现状更新已加载的内存节点。
+	if db.GlobalDB == nil {
+		for i, n := range nodeList {
+			if targets[n.RawURI] {
+				nodeList[i].Disabled = disabled
+			}
+		}
+		return
+	}
+	// 有数据库：事务提交成功后才更新内存，失败则内存保持原状，
+	// 避免「内存成功、数据库失败」的伪成功状态。
+	if err := nodestore.UpdateDisabledBatch(db.GlobalDB, "nodes", uris, disabled); err != nil {
+		log.Printf("[Nodes] BatchUpdateNodesDisabled 更新失败: %v", err)
+		return
+	}
 	for i, n := range nodeList {
 		if targets[n.RawURI] {
 			nodeList[i].Disabled = disabled
-		}
-	}
-	if db.GlobalDB != nil && len(uris) > 0 {
-		tx, err := db.GlobalDB.Begin()
-		if err == nil {
-			stmt, _ := tx.Prepare("UPDATE nodes SET disabled = ? WHERE raw_uri = ?")
-			if stmt != nil {
-				for _, u := range uris {
-					_, _ = stmt.Exec(disabled, u)
-				}
-				_ = stmt.Close()
-			}
-			_ = tx.Commit()
 		}
 	}
 }

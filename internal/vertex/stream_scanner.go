@@ -20,6 +20,9 @@ import (
 //
 // onObject 返回 (stop, err)：stop=true（命中真实 finishReason）即正常结束扫描；客户端断开由 ctx.Err() 路径处理；
 // err 非 nil 即中断并上抛（上游错误）。
+//
+// raw 生命周期契约：onObject 收到的 raw 指向内部复用缓冲区的切片，仅在回调执行期间有效，
+// 禁止逃逸（不得存储、不得启动 goroutine 使用）；下游若需保留须自行 copy。
 const maxRecycleBufferSize = 256 * 1024 // 256KB 累积缓冲池最大复用阈值，防止单次超大包导致常驻内存泄漏
 
 var accumBufferPool = sync.Pool{
@@ -36,7 +39,7 @@ var scanBufferPool = sync.Pool{
 	},
 }
 
-func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]any) (bool, error), touchActivity func()) error {
+func scanStream(ctx context.Context, body io.Reader, onObject func(raw []byte) (bool, error), touchActivity func()) error {
 	reader := bufio.NewReader(body)
 	bufPtr := scanBufferPool.Get().(*[]byte)
 	defer scanBufferPool.Put(bufPtr)
@@ -129,20 +132,22 @@ func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]an
 					buffer = buffer[endIdx+1:]
 					scanPos = 0
 
-					obj := parseJSONObject(jsonStr)
-					if obj != nil {
-						stop, err := onObject(obj)
-						if err != nil {
-							return err
-						}
-						if stop {
-							return nil
-						}
-					} else {
-						log.Printf("[WARN-scanStream] 无法解析的 JSON 数据块 (前 200 字节): %s, raw_len: %d",
-							truncateStr(string(jsonStr), 200), len(jsonStr))
+// 畸形完整帧：花括号配平但 JSON 语法非法 → 可重试的上游协议错误
+				// （不能静默跳过，否则流末尾会误报空响应）。错误带稳定前缀、
+				// 截断预览与长度，不泄漏完整超长 payload；归为 network 类以便
+				// 上层按 MaxRetries 重试（IsRetryable=true）。
+				if !json.Valid(jsonStr) {
+					return NewNetworkError(fmt.Errorf("streamScan: invalid JSON object from upstream (protocol error), raw_len=%d, preview=%s",
+						len(jsonStr), truncateStr(string(jsonStr), 200)))
+				}
+
+					stop, err := onObject(jsonStr)
+					if err != nil {
+						return err
 					}
-					// jsonStr 解析失败（半截/畸形）静默跳过。
+					if stop {
+						return nil
+					}
 				} else {
 					// 未扫到完整对象：记下已扫位置，下个 chunk 续扫，不重扫前缀。
 					scanPos = len(buffer)
@@ -165,7 +170,8 @@ func scanStream(ctx context.Context, body io.Reader, onObject func(map[string]an
 	}
 }
 
-// parseJSONObject 把单个 JSON 对象字符串解析为 map，失败返回 nil（解析失败跳过）。
+// parseJSONObject 把单个 JSON 对象字符串解析为 map，失败返回 nil。
+// 保留供 typed 解码失败时的 legacy 回退路径与 Debug 摘要使用；热路径不再调用。
 func parseJSONObject(b []byte) map[string]any {
 	b = bytes.TrimSpace(b)
 	var obj map[string]any

@@ -1,4 +1,4 @@
-package api
+package importer
 
 import (
 	"strings"
@@ -13,7 +13,7 @@ proxies:
   - { name: 'HK Demo', type: ss, server: example.com, port: 12022, cipher: aes-128-gcm, password: secret, plugin: obfs, plugin-opts: { mode: http, host: edge.example.com }, udp: true }
 `
 
-	imported := parseClashYAMLToNodes(yamlText)
+	imported := ParseClashYAMLToNodes(yamlText)
 	if len(imported) != 1 {
 		t.Fatalf("expected 1 node, got %d", len(imported))
 	}
@@ -40,7 +40,7 @@ proxies:
   - { name: group-ish, type: select }
 `
 
-	imported := parseClashYAMLToNodes(yamlText)
+	imported := ParseClashYAMLToNodes(yamlText)
 	if len(imported) != 0 {
 		t.Fatalf("expected invalid proxy objects to be skipped, got %#v", imported)
 	}
@@ -49,7 +49,7 @@ proxies:
 func TestParseImportedNodesSupportsSingleTopLevelProxyObject(t *testing.T) {
 	text := `{ name: 'HK Demo', type: ss, server: example.com, port: 12022, cipher: aes-128-gcm, password: secret, plugin: obfs, plugin-opts: { mode: http, host: edge.example.com } }`
 
-	imported := parseImportedNodes(text)
+	imported := ParseImportedNodes(text)
 	if len(imported) != 1 {
 		t.Fatalf("expected 1 node, got %d", len(imported))
 	}
@@ -70,7 +70,7 @@ proxies:
   - { name: snell-a, type: snell, server: 5.6.7.8, port: 443, psk: xyz }
   - { name: valid-ss, type: ss, server: example.com, port: 8388, cipher: aes-128-gcm, password: secret }
 `
-	imported := parseClashYAMLToNodes(yamlText)
+	imported := ParseClashYAMLToNodes(yamlText)
 	if len(imported) != 1 {
 		t.Fatalf("expected only the supported ss node to be imported, got %d: %#v", len(imported), imported)
 	}
@@ -88,7 +88,7 @@ proxies:
   - { name: vless-ws, type: vless, server: cf.example.com, port: 443, uuid: 12345678-1234-1234-1234-123456789012, tls: true, servername: edge.example.com, client-fingerprint: chrome, network: ws, ws-opts: { path: /ws, headers: { Host: edge.example.com } } }
   - { name: hy2-p, type: hysteria2, server: 203.10.99.51, port: 20000, password: secret, sni: www.bing.com, skip-cert-verify: true, ports: 20000-55000 }
 `
-	imported := parseClashYAMLToNodes(yamlText)
+	imported := ParseClashYAMLToNodes(yamlText)
 	if len(imported) != 2 {
 		t.Fatalf("expected 2 nodes, got %d: %#v", len(imported), imported)
 	}
@@ -118,3 +118,4 @@ proxies:
 		t.Fatalf("hy2 should be supported: %s", hy2.UnsupportedReason)
 	}
 }
+

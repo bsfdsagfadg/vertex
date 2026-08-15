@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/db"
+	"github.com/bsfdsagfadg/vertex/internal/nodestore"
 )
 
 // ---- 健康度更新与测速结果落库 ----
@@ -43,17 +44,21 @@ func updateSingleNodeHealthUnsafe(uri string, h *NodeHealth) {
 	if db.GlobalDB == nil || h == nil {
 		return
 	}
-	_, _ = db.GlobalDB.Exec(`INSERT OR REPLACE INTO node_health 
-		(raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		uri, h.SuccessCount, h.FailCount, h.ConsecutiveFailures, h.LastTestMs, h.LastTestError, h.LastSuccessAt, h.LastFailAt, h.CooldownUntil)
+	_ = nodestore.UpsertHealth(db.GlobalDB, "node_health", nodestore.HealthRow{
+		RawURI:              uri,
+		SuccessCount:        h.SuccessCount,
+		FailCount:           h.FailCount,
+		ConsecutiveFailures: h.ConsecutiveFailures,
+		LastTestMs:          h.LastTestMs,
+		LastTestError:       h.LastTestError,
+		LastSuccessAt:       h.LastSuccessAt,
+		LastFailAt:          h.LastFailAt,
+		CooldownUntil:       h.CooldownUntil,
+	})
 }
 
 func updateSingleNodeDisabledUnsafe(uri string, disabled bool) {
-	if db.GlobalDB == nil {
-		return
-	}
-	_, _ = db.GlobalDB.Exec("UPDATE nodes SET disabled = ? WHERE raw_uri = ?", disabled, uri)
+	_ = nodestore.UpsertDisabled(db.GlobalDB, "nodes", uri, disabled)
 }
 
 func EnableNode(uri string) bool {

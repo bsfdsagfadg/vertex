@@ -169,6 +169,8 @@ func main() {
 	defer db.CloseDB()
 	nodes.StartHealthAsyncWorker()
 
+	api.InitRegistry() // 显式注册节点回调（替代隐式 init），必须早于 SyncEntryPool 之前
+
 	spool.SetMaxSpillProvider(func() int64 { return int64(config.Load().MaxSpillMB) << 20 })
 
 	dialer := transport.NewSingDialer(cfg)

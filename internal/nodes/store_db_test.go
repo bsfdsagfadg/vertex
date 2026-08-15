@@ -1,12 +1,14 @@
 package nodes
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/db"
 )
 
 func resetState() {
@@ -220,5 +222,121 @@ func TestDedupNodesSemantic(t *testing.T) {
 	result := LoadNodes()
 	if len(result) != 1 {
 		t.Errorf("Expected 1 node after dedup, got %d", len(result))
+	}
+}
+
+// ---- 真实 SQLite 持久化回归（补充方案第 7 条）----
+
+// setupTestDB 用临时文件初始化真实 SQLite 并挂载到 db.GlobalDB，测试结束自动关闭。
+func setupTestDB(t *testing.T) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "nodes-test.db")
+	if err := db.InitDB(path); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(db.CloseDB)
+}
+
+func TestNodesPersistenceRoundTrip(t *testing.T) {
+	setupTestDB(t)
+	resetState()
+	defer resetState()
+
+	seeds := []Node{
+		{RawURI: "vless://a@x.com:443#n1", Type: "vless", Name: "n1", Disabled: false},
+		{RawURI: "vmess://b@y.com:8443#n2", Type: "vmess", Name: "n2", Disabled: true},
+		{RawURI: "ss://c@z.com:8388#n3", Type: "ss", Name: "n3", Disabled: false},
+	}
+	MergeNodes(seeds)
+
+	// 模拟重启：清空内存与加载标志，重新从数据库加载
+	resetState()
+	got := LoadNodes()
+	if len(got) != len(seeds) {
+		t.Fatalf("roundtrip 数量=%d, want %d", len(got), len(seeds))
+	}
+	for i, want := range seeds {
+		n := got[i]
+		if n.RawURI != want.RawURI || n.Type != want.Type || n.Name != want.Name || n.Disabled != want.Disabled {
+			t.Errorf("roundtrip[%d] 字段不一致: got %+v, want %+v", i, n, want)
+		}
+	}
+}
+
+func TestBatchUpdateNodesDisabledPersistence(t *testing.T) {
+	setupTestDB(t)
+	resetState()
+	defer resetState()
+
+	MergeNodes([]Node{
+		{RawURI: "uri1", Name: "node1"},
+		{RawURI: "uri2", Name: "node2"},
+		{RawURI: "uri3", Name: "node3"},
+	})
+
+	// 重复 URI 也应幂等（targets 去重）
+	BatchUpdateNodesDisabled([]string{"uri1", "uri1", "uri3"}, true)
+
+	// 内存一致性
+	for _, n := range LoadNodes() {
+		switch n.RawURI {
+		case "uri1", "uri3":
+			if !n.Disabled {
+				t.Errorf("%s 应被禁用", n.RawURI)
+			}
+		case "uri2":
+			if n.Disabled {
+				t.Error("uri2 不应被禁用")
+			}
+		}
+	}
+	// 数据库一致性：直接查询
+	var count int
+	if err := db.GlobalDB.QueryRow("SELECT COUNT(*) FROM nodes WHERE disabled = 1").Scan(&count); err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("DB disabled 数量=%d, want 2", count)
+	}
+
+	// 反向启用
+	BatchUpdateNodesDisabled([]string{"uri1"}, false)
+	var d1 int
+	if err := db.GlobalDB.QueryRow("SELECT disabled FROM nodes WHERE raw_uri = 'uri1'").Scan(&d1); err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if d1 != 0 {
+		t.Errorf("DB uri1 disabled=%d, want 0", d1)
+	}
+	for _, n := range LoadNodes() {
+		if n.RawURI == "uri1" && n.Disabled {
+			t.Error("内存 uri1 应已启用")
+		}
+	}
+}
+
+func TestBatchUpdateNodesDisabledDBFailure(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	// 关闭连接但 GlobalDB 仍非 nil → Begin 失败，内存不得被修改
+	d, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "broken.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	db.GlobalDB = d
+	t.Cleanup(func() { db.GlobalDB = nil })
+
+	mu.Lock()
+	nodeList = []Node{{RawURI: "uri1", Name: "node1"}} //nolint:exhaustruct
+	loaded = true
+	mu.Unlock()
+
+	BatchUpdateNodesDisabled([]string{"uri1"}, true)
+	if got := LoadNodes(); len(got) != 1 || got[0].Disabled {
+		t.Errorf("DB 失败时内存不得被修改: %+v", got)
 	}
 }

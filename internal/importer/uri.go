@@ -1,4 +1,4 @@
-package api
+package importer
 
 import (
 	"encoding/base64"
@@ -17,12 +17,12 @@ func proxyMapToURI(proxy map[string]any) string {
 	if len(proxy) == 0 {
 		return ""
 	}
-	typ := strings.ToLower(strings.TrimSpace(valueToString(proxy["type"])))
+	typ := strings.ToLower(strings.TrimSpace(ValueToString(proxy["type"])))
 	if typ == "" {
 		return ""
 	}
-	name := valueToString(proxy["name"])
-	server := strings.TrimSpace(valueToString(proxy["server"]))
+	name := ValueToString(proxy["name"])
+	server := strings.TrimSpace(ValueToString(proxy["server"]))
 	port := intValue(proxy["port"])
 	if server == "" || port <= 0 {
 		return ""
@@ -49,7 +49,7 @@ func proxyMapToURI(proxy map[string]any) string {
 	case "hysteria":
 		return hysteriaProxyMapToURI(proxy, name, server, portStr)
 	case "anytls":
-		password := strings.TrimSpace(valueToString(proxy["password"]))
+		password := strings.TrimSpace(ValueToString(proxy["password"]))
 		if password == "" {
 			return ""
 		}
@@ -76,10 +76,10 @@ func proxyFirstString(v any) string {
 		}
 	case []any:
 		if len(x) > 0 {
-			return strings.TrimSpace(valueToString(x[0]))
+			return strings.TrimSpace(ValueToString(x[0]))
 		}
 	}
-	return strings.TrimSpace(valueToString(v))
+	return strings.TrimSpace(ValueToString(v))
 }
 
 func proxyStrList(v any) []string {
@@ -89,7 +89,7 @@ func proxyStrList(v any) []string {
 	case []any:
 		out := make([]string, 0, len(x))
 		for _, item := range x {
-			if s := strings.TrimSpace(valueToString(item)); s != "" {
+			if s := strings.TrimSpace(ValueToString(item)); s != "" {
 				out = append(out, s)
 			}
 		}
@@ -116,7 +116,7 @@ func applyMapTLSQuery(q url.Values, proxy map[string]any) {
 
 // applyMapTransport 把 clash 的 network/ws-opts/grpc-opts/http-opts 转 URI 查询参数。
 func applyMapTransport(q url.Values, proxy map[string]any) {
-	network := strings.ToLower(strings.TrimSpace(valueToString(proxy["network"])))
+	network := strings.ToLower(strings.TrimSpace(ValueToString(proxy["network"])))
 	if network == "" || network == "tcp" || network == "none" || network == "raw" {
 		return
 	}
@@ -168,15 +168,15 @@ func applyMapTransport(q url.Values, proxy map[string]any) {
 }
 
 func ssProxyMapToURI(proxy map[string]any, name, server, portStr string) string {
-	cipher := strings.TrimSpace(valueToString(proxy["cipher"]))
-	password := strings.TrimSpace(valueToString(proxy["password"]))
+	cipher := strings.TrimSpace(ValueToString(proxy["cipher"]))
+	password := strings.TrimSpace(ValueToString(proxy["password"]))
 	if cipher == "" || password == "" {
 		return ""
 	}
 	userinfo := base64.StdEncoding.EncodeToString([]byte(cipher + ":" + password))
 	raw := "ss://" + userinfo + "@" + net.JoinHostPort(server, portStr)
 	q := url.Values{}
-	if plugin := strings.TrimSpace(valueToString(proxy["plugin"])); plugin != "" {
+	if plugin := strings.TrimSpace(ValueToString(proxy["plugin"])); plugin != "" {
 		pluginURI := plugin
 		if opts := mapValue(proxy["plugin-opts"]); len(opts) > 0 {
 			var segments []string
@@ -188,7 +188,7 @@ func ssProxyMapToURI(proxy map[string]any, name, server, portStr string) string 
 				{"cert", "cert"},
 				{"password", "password"},
 			} {
-				if v := strings.TrimSpace(valueToString(opts[item.key])); v != "" {
+				if v := strings.TrimSpace(ValueToString(opts[item.key])); v != "" {
 					segments = append(segments, item.uriKey+"="+v)
 				}
 			}
@@ -208,7 +208,7 @@ func ssProxyMapToURI(proxy map[string]any, name, server, portStr string) string 
 }
 
 func vmessProxyMapToURI(proxy map[string]any, name, server, portStr string) string {
-	uuid := strings.TrimSpace(valueToString(proxy["uuid"]))
+	uuid := strings.TrimSpace(ValueToString(proxy["uuid"]))
 	if uuid == "" {
 		return ""
 	}
@@ -216,7 +216,7 @@ func vmessProxyMapToURI(proxy map[string]any, name, server, portStr string) stri
 	if alterID == 0 {
 		alterID = intValue(proxy["aid"])
 	}
-	network := strings.ToLower(strings.TrimSpace(valueToString(proxy["network"])))
+	network := strings.ToLower(strings.TrimSpace(ValueToString(proxy["network"])))
 	if network == "" || network == "tcp" || network == "none" || network == "raw" {
 		network = "tcp"
 	}
@@ -271,9 +271,9 @@ func vmessProxyMapToURI(proxy map[string]any, name, server, portStr string) stri
 }
 
 func vlessTrojanProxyMapToURI(scheme string, proxy map[string]any, name, server, portStr string) string {
-	credential := strings.TrimSpace(valueToString(proxy["uuid"]))
+	credential := strings.TrimSpace(ValueToString(proxy["uuid"]))
 	if scheme == "trojan" {
-		credential = strings.TrimSpace(valueToString(proxy["password"]))
+		credential = strings.TrimSpace(ValueToString(proxy["password"]))
 	}
 	if credential == "" {
 		return ""
@@ -293,7 +293,7 @@ func vlessTrojanProxyMapToURI(scheme string, proxy map[string]any, name, server,
 		case boolValue(proxy["tls"]):
 			q.Set("security", "tls")
 		}
-		if flow := strings.TrimSpace(valueToString(proxy["flow"])); flow != "" {
+		if flow := strings.TrimSpace(ValueToString(proxy["flow"])); flow != "" {
 			q.Set("flow", flow)
 		}
 	}
@@ -303,7 +303,7 @@ func vlessTrojanProxyMapToURI(scheme string, proxy map[string]any, name, server,
 }
 
 func hy2ProxyMapToURI(proxy map[string]any, name, server, portStr string) string {
-	password := strings.TrimSpace(valueToString(proxy["password"]))
+	password := strings.TrimSpace(ValueToString(proxy["password"]))
 	if password == "" {
 		return ""
 	}
@@ -312,30 +312,30 @@ func hy2ProxyMapToURI(proxy map[string]any, name, server, portStr string) string
 	if ports := firstNonEmpty(proxyStrKey(proxy, "ports"), proxyStrKey(proxy, "mport")); ports != "" {
 		q.Set("ports", ports)
 	}
-	if obfs := strings.TrimSpace(valueToString(proxy["obfs"])); obfs != "" {
+	if obfs := strings.TrimSpace(ValueToString(proxy["obfs"])); obfs != "" {
 		q.Set("obfs", obfs)
 	}
-	if obfsPassword := strings.TrimSpace(valueToString(proxy["obfs-password"])); obfsPassword != "" {
+	if obfsPassword := strings.TrimSpace(ValueToString(proxy["obfs-password"])); obfsPassword != "" {
 		q.Set("obfs-password", obfsPassword)
 	}
 	return buildProxyURI("hy2", password, server, portStr, name, q)
 }
 
 func ssrProxyMapToURI(proxy map[string]any, name, server string, port int) string {
-	cipher := strings.TrimSpace(valueToString(proxy["cipher"]))
-	password := strings.TrimSpace(valueToString(proxy["password"]))
-	protocol := strings.TrimSpace(valueToString(proxy["protocol"]))
-	obfs := strings.TrimSpace(valueToString(proxy["obfs"]))
+	cipher := strings.TrimSpace(ValueToString(proxy["cipher"]))
+	password := strings.TrimSpace(ValueToString(proxy["password"]))
+	protocol := strings.TrimSpace(ValueToString(proxy["protocol"]))
+	obfs := strings.TrimSpace(ValueToString(proxy["obfs"]))
 	if cipher == "" || password == "" || protocol == "" || obfs == "" {
 		return ""
 	}
 	body := fmt.Sprintf("%s:%d:%s:%s:%s:%s", server, port, protocol, cipher, obfs,
 		base64.StdEncoding.EncodeToString([]byte(password)))
 	q := url.Values{}
-	if obfsparam := strings.TrimSpace(valueToString(proxy["obfsparam"])); obfsparam != "" {
+	if obfsparam := strings.TrimSpace(ValueToString(proxy["obfsparam"])); obfsparam != "" {
 		q.Set("obfsparam", obfsparam)
 	}
-	if protoparam := strings.TrimSpace(valueToString(proxy["protoparam"])); protoparam != "" {
+	if protoparam := strings.TrimSpace(ValueToString(proxy["protoparam"])); protoparam != "" {
 		q.Set("protoparam", protoparam)
 	}
 	// 参数必须拼进 base64 体内（标准 SSR URI 格式）：codec 在解码后体内切 "?"，
@@ -351,8 +351,8 @@ func ssrProxyMapToURI(proxy map[string]any, name, server string, port int) strin
 }
 
 func userPassProxyMapToURI(scheme string, proxy map[string]any, name, server, portStr string) string {
-	username := strings.TrimSpace(valueToString(proxy["username"]))
-	password := strings.TrimSpace(valueToString(proxy["password"]))
+	username := strings.TrimSpace(ValueToString(proxy["username"]))
+	password := strings.TrimSpace(ValueToString(proxy["password"]))
 	var user *url.Userinfo
 	if username != "" && password != "" {
 		user = url.UserPassword(username, password)
@@ -364,9 +364,9 @@ func userPassProxyMapToURI(scheme string, proxy map[string]any, name, server, po
 
 // sshProxyMapToURI 转出 v2rayN 兼容的 ssh:// URI（pk/psk 参数承载私钥与口令）。
 func sshProxyMapToURI(proxy map[string]any, name, server, portStr string) string {
-	username := strings.TrimSpace(valueToString(proxy["username"]))
-	password := strings.TrimSpace(valueToString(proxy["password"]))
-	pk := strings.TrimSpace(valueToString(proxy["private-key"]))
+	username := strings.TrimSpace(ValueToString(proxy["username"]))
+	password := strings.TrimSpace(ValueToString(proxy["password"]))
+	pk := strings.TrimSpace(ValueToString(proxy["private-key"]))
 	if username == "" && pk == "" {
 		return ""
 	}
@@ -374,7 +374,7 @@ func sshProxyMapToURI(proxy map[string]any, name, server, portStr string) string
 	if pk != "" {
 		q.Set("pk", pk)
 	}
-	if psk := strings.TrimSpace(valueToString(proxy["private-key-passphrase"])); psk != "" {
+	if psk := strings.TrimSpace(ValueToString(proxy["private-key-passphrase"])); psk != "" {
 		q.Set("psk", psk)
 	}
 	var user *url.Userinfo
@@ -387,23 +387,23 @@ func sshProxyMapToURI(proxy map[string]any, name, server, portStr string) string
 }
 
 func hysteriaProxyMapToURI(proxy map[string]any, name, server, portStr string) string {
-	auth := strings.TrimSpace(valueToString(proxy["auth_str"]))
+	auth := strings.TrimSpace(ValueToString(proxy["auth_str"]))
 	if auth == "" {
-		auth = strings.TrimSpace(valueToString(proxy["auth-str"]))
+		auth = strings.TrimSpace(ValueToString(proxy["auth-str"]))
 	}
 	if auth == "" {
 		return ""
 	}
 	q := url.Values{}
 	applyMapTLSQuery(q, proxy)
-	if obfs := strings.TrimSpace(valueToString(proxy["obfs"])); obfs != "" {
+	if obfs := strings.TrimSpace(ValueToString(proxy["obfs"])); obfs != "" {
 		q.Set("obfs", obfs)
 	}
 	return buildProxyURI("hysteria", auth, server, portStr, name, q)
 }
 
 func tuicProxyMapToURI(proxy map[string]any, name, server, portStr string) string {
-	uuid := strings.TrimSpace(valueToString(proxy["uuid"]))
+	uuid := strings.TrimSpace(ValueToString(proxy["uuid"]))
 	if uuid == "" {
 		return ""
 	}
@@ -415,9 +415,9 @@ func tuicProxyMapToURI(proxy map[string]any, name, server, portStr string) strin
 	if udpMode := firstNonEmpty(proxyStrKey(proxy, "udp-relay-mode"), proxyStrKey(proxy, "udp_relay_mode")); udpMode != "" {
 		q.Set("udp_relay_mode", udpMode)
 	}
-	token := strings.TrimSpace(valueToString(proxy["token"]))
+	token := strings.TrimSpace(ValueToString(proxy["token"]))
 	if token == "" {
-		token = strings.TrimSpace(valueToString(proxy["password"]))
+		token = strings.TrimSpace(ValueToString(proxy["password"]))
 	}
 	var user *url.Userinfo
 	if token != "" {
@@ -441,3 +441,5 @@ func buildProxyURIWithUser(scheme string, user *url.Userinfo, server, port, name
 	}
 	return u.String()
 }
+
+

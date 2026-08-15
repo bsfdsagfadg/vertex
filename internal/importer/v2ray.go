@@ -1,4 +1,4 @@
-package api
+package importer
 
 import (
 	"encoding/base64"
@@ -48,11 +48,11 @@ func buildImportedProxyFromV2RayNProfile(obj map[string]any) map[string]any {
 		return nil
 	}
 
-	name := firstNonEmpty(valueToString(obj["Remarks"]), valueToString(obj["Name"]))
-	server := strings.TrimSpace(valueToString(obj["Address"]))
+	name := firstNonEmpty(ValueToString(obj["Remarks"]), ValueToString(obj["Name"]))
+	server := strings.TrimSpace(ValueToString(obj["Address"]))
 	port := intValue(obj["Port"])
-	password := strings.TrimSpace(valueToString(obj["Password"]))
-	username := strings.TrimSpace(valueToString(obj["Username"]))
+	password := strings.TrimSpace(ValueToString(obj["Password"]))
+	username := strings.TrimSpace(ValueToString(obj["Username"]))
 	proto := nestedObject(obj, "ProtoExtraObj", "ProtoExtra")
 	transportExtra := nestedObject(obj, "TransportExtraObj", "TransportExtra")
 
@@ -67,7 +67,7 @@ func buildImportedProxyFromV2RayNProfile(obj map[string]any) map[string]any {
 			"server":  server,
 			"port":    port,
 			"uuid":    password,
-			"cipher":  firstNonEmpty(valueToString(proto["VmessSecurity"]), "auto"),
+			"cipher":  firstNonEmpty(ValueToString(proto["VmessSecurity"]), "auto"),
 			"alterId": intValue(proto["AlterId"]),
 			"udp":     true,
 		}
@@ -76,7 +76,7 @@ func buildImportedProxyFromV2RayNProfile(obj map[string]any) map[string]any {
 		applyTransportExtras(proxy, obj, transportExtra)
 		return proxy
 	case 3:
-		method := strings.TrimSpace(valueToString(proto["SsMethod"]))
+		method := strings.TrimSpace(ValueToString(proto["SsMethod"]))
 		if server == "" || port == 0 || password == "" || method == "" {
 			return nil
 		}
@@ -114,10 +114,10 @@ func buildImportedProxyFromV2RayNProfile(obj map[string]any) map[string]any {
 			"server":     server,
 			"port":       port,
 			"uuid":       password,
-			"encryption": firstNonEmpty(valueToString(proto["VlessEncryption"]), "none"),
+			"encryption": firstNonEmpty(ValueToString(proto["VlessEncryption"]), "none"),
 			"udp":        true,
 		}
-		if flow := strings.TrimSpace(valueToString(proto["Flow"])); flow != "" {
+		if flow := strings.TrimSpace(ValueToString(proto["Flow"])); flow != "" {
 			proxy["flow"] = flow
 		}
 		applyCommonImportedProxyFields(proxy, obj)
@@ -152,10 +152,10 @@ func buildImportedProxyFromV2RayNProfile(obj map[string]any) map[string]any {
 			"password": password,
 			"udp":      true,
 		}
-		if ports := strings.TrimSpace(firstNonEmpty(valueToString(proto["Ports"]), valueToString(obj["Ports"]))); ports != "" {
+		if ports := strings.TrimSpace(firstNonEmpty(ValueToString(proto["Ports"]), ValueToString(obj["Ports"]))); ports != "" {
 			proxy["ports"] = strings.ReplaceAll(ports, ":", "-")
 		}
-		if obfsPassword := strings.TrimSpace(valueToString(proto["SalamanderPass"])); obfsPassword != "" {
+		if obfsPassword := strings.TrimSpace(ValueToString(proto["SalamanderPass"])); obfsPassword != "" {
 			proxy["obfs"] = "salamander"
 			proxy["obfs-password"] = obfsPassword
 		}
@@ -180,7 +180,7 @@ func buildImportedProxyFromV2RayNProfile(obj map[string]any) map[string]any {
 			proxy["uuid"] = password
 			proxy["token"] = password
 		}
-		if cc := strings.TrimSpace(valueToString(proto["CongestionControl"])); cc != "" {
+		if cc := strings.TrimSpace(ValueToString(proto["CongestionControl"])); cc != "" {
 			proxy["congestion-controller"] = cc
 		}
 		applyCommonImportedProxyFields(proxy, obj)
@@ -195,19 +195,19 @@ func buildImportedProxyFromV2RayNProfile(obj map[string]any) map[string]any {
 			"server":      server,
 			"port":        port,
 			"private-key": password,
-			"public-key":  strings.TrimSpace(valueToString(proto["WgPublicKey"])),
+			"public-key":  strings.TrimSpace(ValueToString(proto["WgPublicKey"])),
 			"udp":         true,
 		}
-		if preSharedKey := strings.TrimSpace(valueToString(proto["WgPresharedKey"])); preSharedKey != "" {
+		if preSharedKey := strings.TrimSpace(ValueToString(proto["WgPresharedKey"])); preSharedKey != "" {
 			proxy["pre-shared-key"] = preSharedKey
 		}
-		if reserved := parseReservedBytes(valueToString(proto["WgReserved"])); len(reserved) > 0 {
+		if reserved := parseReservedBytes(ValueToString(proto["WgReserved"])); len(reserved) > 0 {
 			proxy["reserved"] = reserved
 		}
 		if mtu := intValue(proto["WgMtu"]); mtu > 0 {
 			proxy["mtu"] = mtu
 		}
-		ip, ipv6 := splitInterfaceAddresses(valueToString(proto["WgInterfaceAddress"]))
+		ip, ipv6 := splitInterfaceAddresses(ValueToString(proto["WgInterfaceAddress"]))
 		if ip != "" {
 			proxy["ip"] = ip
 		}
@@ -253,16 +253,16 @@ func applyV2RayStreamSettings(proxy map[string]any, stream map[string]any) {
 		return
 	}
 
-	network := strings.ToLower(strings.TrimSpace(valueToString(stream["network"])))
+	network := strings.ToLower(strings.TrimSpace(ValueToString(stream["network"])))
 	switch network {
 	case "ws":
 		proxy["network"] = "ws"
 		wsSettings := mapValue(stream["wsSettings"])
 		wsOpts := map[string]any{}
-		if path := strings.TrimSpace(valueToString(wsSettings["path"])); path != "" {
+		if path := strings.TrimSpace(ValueToString(wsSettings["path"])); path != "" {
 			wsOpts["path"] = path
 		}
-		if host := strings.TrimSpace(valueToString(mapValue(wsSettings["headers"])["Host"])); host != "" {
+		if host := strings.TrimSpace(ValueToString(mapValue(wsSettings["headers"])["Host"])); host != "" {
 			wsOpts["headers"] = map[string]any{"Host": host}
 		}
 		if len(wsOpts) > 0 {
@@ -271,72 +271,72 @@ func applyV2RayStreamSettings(proxy map[string]any, stream map[string]any) {
 	case "grpc":
 		proxy["network"] = "grpc"
 		grpcSettings := mapValue(stream["grpcSettings"])
-		if serviceName := strings.TrimSpace(firstNonEmpty(valueToString(grpcSettings["serviceName"]), valueToString(grpcSettings["grpc-service-name"]))); serviceName != "" {
+		if serviceName := strings.TrimSpace(firstNonEmpty(ValueToString(grpcSettings["serviceName"]), ValueToString(grpcSettings["grpc-service-name"]))); serviceName != "" {
 			proxy["grpc-opts"] = map[string]any{"grpc-service-name": serviceName}
 		}
 	case "http", "h2":
 		proxy["network"] = "http"
 		httpSettings := mapValue(stream["httpSettings"])
 		httpOpts := map[string]any{"method": "GET"}
-		if path := strings.TrimSpace(valueToString(httpSettings["path"])); path != "" {
+		if path := strings.TrimSpace(ValueToString(httpSettings["path"])); path != "" {
 			httpOpts["path"] = []string{path}
 		}
 		hostValue := httpSettings["host"]
 		if hosts := sliceValue(hostValue); len(hosts) > 0 {
-			host := strings.TrimSpace(valueToString(hosts[0]))
+			host := strings.TrimSpace(ValueToString(hosts[0]))
 			if host != "" {
 				httpOpts["headers"] = map[string][]string{"Host": []string{host}}
 			}
-		} else if host := strings.TrimSpace(valueToString(hostValue)); host != "" {
+		} else if host := strings.TrimSpace(ValueToString(hostValue)); host != "" {
 			httpOpts["headers"] = map[string][]string{"Host": []string{host}}
 		}
 		proxy["http-opts"] = httpOpts
 	}
 
-	security := strings.ToLower(strings.TrimSpace(valueToString(stream["security"])))
+	security := strings.ToLower(strings.TrimSpace(ValueToString(stream["security"])))
 	switch security {
 	case "tls":
 		proxy["tls"] = true
 		tlsSettings := mapValue(stream["tlsSettings"])
-		if sni := strings.TrimSpace(firstNonEmpty(valueToString(tlsSettings["serverName"]), valueToString(tlsSettings["sni"]))); sni != "" {
+		if sni := strings.TrimSpace(firstNonEmpty(ValueToString(tlsSettings["serverName"]), ValueToString(tlsSettings["sni"]))); sni != "" {
 			proxy["servername"] = sni
 			proxy["sni"] = sni
 		}
-		if fp := strings.TrimSpace(firstNonEmpty(valueToString(tlsSettings["fingerprint"]), valueToString(tlsSettings["fp"]))); fp != "" {
+		if fp := strings.TrimSpace(firstNonEmpty(ValueToString(tlsSettings["fingerprint"]), ValueToString(tlsSettings["fp"]))); fp != "" {
 			proxy["client-fingerprint"] = fp
 			proxy["fingerprint"] = fp
 		}
 		if boolValue(tlsSettings["allowInsecure"]) {
 			proxy["skip-cert-verify"] = true
 		}
-		if alpn := splitCSV(valueToString(tlsSettings["alpn"])); len(alpn) > 0 {
+		if alpn := splitCSV(ValueToString(tlsSettings["alpn"])); len(alpn) > 0 {
 			proxy["alpn"] = alpn
 		}
 	case "reality":
 		proxy["tls"] = true
 		realitySettings := mapValue(stream["realitySettings"])
-		if sni := strings.TrimSpace(firstNonEmpty(valueToString(realitySettings["serverName"]), valueToString(realitySettings["sni"]))); sni != "" {
+		if sni := strings.TrimSpace(firstNonEmpty(ValueToString(realitySettings["serverName"]), ValueToString(realitySettings["sni"]))); sni != "" {
 			proxy["servername"] = sni
 			proxy["sni"] = sni
 		}
-		if fp := strings.TrimSpace(firstNonEmpty(valueToString(realitySettings["fingerprint"]), valueToString(realitySettings["fp"]))); fp != "" {
+		if fp := strings.TrimSpace(firstNonEmpty(ValueToString(realitySettings["fingerprint"]), ValueToString(realitySettings["fp"]))); fp != "" {
 			proxy["client-fingerprint"] = fp
 			proxy["fingerprint"] = fp
 		}
 		proxy["reality-opts"] = map[string]any{
-			"public-key": strings.TrimSpace(valueToString(realitySettings["publicKey"])),
-			"short-id":   strings.TrimSpace(firstNonEmpty(valueToString(realitySettings["shortId"]), valueToString(realitySettings["short-id"]))),
+			"public-key": strings.TrimSpace(ValueToString(realitySettings["publicKey"])),
+			"short-id":   strings.TrimSpace(firstNonEmpty(ValueToString(realitySettings["shortId"]), ValueToString(realitySettings["short-id"]))),
 		}
 	}
 }
 
 func buildImportedProxyFromV2RayOutbound(obj map[string]any) map[string]any {
-	protocol := strings.ToLower(strings.TrimSpace(valueToString(obj["protocol"])))
+	protocol := strings.ToLower(strings.TrimSpace(ValueToString(obj["protocol"])))
 	if protocol == "" {
 		return nil
 	}
 
-	name := firstNonEmpty(valueToString(obj["remarks"]), valueToString(obj["tag"]), protocol)
+	name := firstNonEmpty(ValueToString(obj["remarks"]), ValueToString(obj["tag"]), protocol)
 	settings := mapValue(obj["settings"])
 	streamSettings := mapValue(obj["streamSettings"])
 
@@ -344,9 +344,9 @@ func buildImportedProxyFromV2RayOutbound(obj map[string]any) map[string]any {
 	case "vmess", "vless":
 		vnext := firstMapValue(settings["vnext"])
 		user := firstMapValue(vnext["users"])
-		server := strings.TrimSpace(valueToString(vnext["address"]))
+		server := strings.TrimSpace(ValueToString(vnext["address"]))
 		port := intValue(vnext["port"])
-		id := strings.TrimSpace(valueToString(user["id"]))
+		id := strings.TrimSpace(ValueToString(user["id"]))
 		if server == "" || port == 0 || id == "" {
 			return nil
 		}
@@ -359,11 +359,11 @@ func buildImportedProxyFromV2RayOutbound(obj map[string]any) map[string]any {
 			"udp":    true,
 		}
 		if protocol == "vmess" {
-			proxy["cipher"] = firstNonEmpty(valueToString(user["security"]), "auto")
+			proxy["cipher"] = firstNonEmpty(ValueToString(user["security"]), "auto")
 			proxy["alterId"] = intValue(user["alterId"])
 		} else {
-			proxy["encryption"] = firstNonEmpty(valueToString(user["encryption"]), "none")
-			if flow := strings.TrimSpace(valueToString(user["flow"])); flow != "" {
+			proxy["encryption"] = firstNonEmpty(ValueToString(user["encryption"]), "none")
+			if flow := strings.TrimSpace(ValueToString(user["flow"])); flow != "" {
 				proxy["flow"] = flow
 			}
 		}
@@ -371,9 +371,9 @@ func buildImportedProxyFromV2RayOutbound(obj map[string]any) map[string]any {
 		return proxy
 	case "trojan":
 		serverInfo := firstMapValue(settings["servers"])
-		server := strings.TrimSpace(valueToString(serverInfo["address"]))
+		server := strings.TrimSpace(ValueToString(serverInfo["address"]))
 		port := intValue(serverInfo["port"])
-		password := strings.TrimSpace(valueToString(serverInfo["password"]))
+		password := strings.TrimSpace(ValueToString(serverInfo["password"]))
 		if server == "" || port == 0 || password == "" {
 			return nil
 		}
@@ -389,10 +389,10 @@ func buildImportedProxyFromV2RayOutbound(obj map[string]any) map[string]any {
 		return proxy
 	case "shadowsocks":
 		serverInfo := firstMapValue(settings["servers"])
-		server := strings.TrimSpace(valueToString(serverInfo["address"]))
+		server := strings.TrimSpace(ValueToString(serverInfo["address"]))
 		port := intValue(serverInfo["port"])
-		password := strings.TrimSpace(valueToString(serverInfo["password"]))
-		method := strings.TrimSpace(valueToString(serverInfo["method"]))
+		password := strings.TrimSpace(ValueToString(serverInfo["password"]))
+		method := strings.TrimSpace(ValueToString(serverInfo["method"]))
 		if server == "" || port == 0 || password == "" || method == "" {
 			return nil
 		}
@@ -407,7 +407,7 @@ func buildImportedProxyFromV2RayOutbound(obj map[string]any) map[string]any {
 		}
 	case "socks":
 		serverInfo := firstMapValue(settings["servers"])
-		server := strings.TrimSpace(valueToString(serverInfo["address"]))
+		server := strings.TrimSpace(ValueToString(serverInfo["address"]))
 		port := intValue(serverInfo["port"])
 		if server == "" || port == 0 {
 			return nil
@@ -417,13 +417,13 @@ func buildImportedProxyFromV2RayOutbound(obj map[string]any) map[string]any {
 			"type":     "socks5",
 			"server":   server,
 			"port":     port,
-			"username": strings.TrimSpace(valueToString(serverInfo["user"])),
-			"password": strings.TrimSpace(valueToString(serverInfo["pass"])),
+			"username": strings.TrimSpace(ValueToString(serverInfo["user"])),
+			"password": strings.TrimSpace(ValueToString(serverInfo["pass"])),
 			"udp":      true,
 		}
 	case "http":
 		serverInfo := firstMapValue(settings["servers"])
-		server := strings.TrimSpace(valueToString(serverInfo["address"]))
+		server := strings.TrimSpace(ValueToString(serverInfo["address"]))
 		port := intValue(serverInfo["port"])
 		if server == "" || port == 0 {
 			return nil
@@ -433,8 +433,8 @@ func buildImportedProxyFromV2RayOutbound(obj map[string]any) map[string]any {
 			"type":     "http",
 			"server":   server,
 			"port":     port,
-			"username": strings.TrimSpace(valueToString(serverInfo["user"])),
-			"password": strings.TrimSpace(valueToString(serverInfo["pass"])),
+			"username": strings.TrimSpace(ValueToString(serverInfo["user"])),
+			"password": strings.TrimSpace(ValueToString(serverInfo["pass"])),
 		}
 	default:
 		return nil
@@ -442,15 +442,15 @@ func buildImportedProxyFromV2RayOutbound(obj map[string]any) map[string]any {
 }
 
 func buildImportedProxyFromSIP008(obj map[string]any) map[string]any {
-	server := strings.TrimSpace(valueToString(obj["server"]))
+	server := strings.TrimSpace(ValueToString(obj["server"]))
 	port := intValue(obj["server_port"])
-	method := strings.TrimSpace(firstNonEmpty(valueToString(obj["method"]), valueToString(obj["cipher"])))
-	password := strings.TrimSpace(valueToString(obj["password"]))
+	method := strings.TrimSpace(firstNonEmpty(ValueToString(obj["method"]), ValueToString(obj["cipher"])))
+	password := strings.TrimSpace(ValueToString(obj["password"]))
 	if server == "" || port == 0 || method == "" || password == "" {
 		return nil
 	}
 	return map[string]any{
-		"name":     firstNonEmpty(valueToString(obj["remarks"]), valueToString(obj["name"])),
+		"name":     firstNonEmpty(ValueToString(obj["remarks"]), ValueToString(obj["name"])),
 		"type":     "ss",
 		"server":   server,
 		"port":     port,
@@ -460,7 +460,7 @@ func buildImportedProxyFromSIP008(obj map[string]any) map[string]any {
 	}
 }
 
-func parseV2RayNNodeLine(line string) (nodes.Node, bool) {
+func ParseV2RayNNodeLine(line string) (nodes.Node, bool) {
 	raw := strings.TrimSpace(line)
 	if !strings.HasPrefix(strings.ToLower(raw), "v2rayn://") {
 		return nodes.Node{}, false
@@ -494,3 +494,6 @@ func parseV2RayNNodeLine(line string) (nodes.Node, bool) {
 	}
 	return buildImportedNodeFromMap(normalized)
 }
+
+
+

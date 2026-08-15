@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/db"
+	"github.com/bsfdsagfadg/vertex/internal/nodestore"
 )
 
 // ---- 前置节点健康度记录与可选筛选 ----
@@ -14,20 +15,24 @@ import (
 const entryFailCooldownSec = 60
 
 func updateSingleEntryDisabledUnsafe(uri string, disabled bool) {
-	if db.GlobalDB == nil {
-		return
-	}
-	_, _ = db.GlobalDB.Exec("UPDATE entry_nodes SET disabled = ? WHERE raw_uri = ?", disabled, uri)
+	_ = nodestore.UpsertDisabled(db.GlobalDB, "entry_nodes", uri, disabled)
 }
 
 func saveSingleEntryHealthUnsafe(uri string, h *NodeHealth) {
-	if db.GlobalDB == nil || h == nil {
+	if h == nil {
 		return
 	}
-	_, _ = db.GlobalDB.Exec(`INSERT OR REPLACE INTO entry_node_health 
-		(raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		uri, h.SuccessCount, h.FailCount, h.ConsecutiveFailures, h.LastTestMs, h.LastTestError, h.LastSuccessAt, h.LastFailAt, h.CooldownUntil)
+	_ = nodestore.UpsertHealth(db.GlobalDB, "entry_node_health", nodestore.HealthRow{
+		RawURI:              uri,
+		SuccessCount:        h.SuccessCount,
+		FailCount:           h.FailCount,
+		ConsecutiveFailures: h.ConsecutiveFailures,
+		LastTestMs:          h.LastTestMs,
+		LastTestError:       h.LastTestError,
+		LastSuccessAt:       h.LastSuccessAt,
+		LastFailAt:          h.LastFailAt,
+		CooldownUntil:       h.CooldownUntil,
+	})
 }
 
 // RecordEntryTest 记录一次前置代理 204 连通性测试结果并落库。

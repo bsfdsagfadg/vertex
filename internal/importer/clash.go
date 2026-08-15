@@ -1,4 +1,4 @@
-package api
+package importer
 
 import (
 	"encoding/base64"
@@ -21,15 +21,15 @@ func supportedClashProxyType(typ string) bool {
 }
 
 func looksLikeClashProxyMap(obj map[string]any) bool {
-	typ := strings.ToLower(strings.TrimSpace(valueToString(obj["type"])))
+	typ := strings.ToLower(strings.TrimSpace(ValueToString(obj["type"])))
 	if !supportedClashProxyType(typ) {
 		return false
 	}
 	if typ == "wireguard" {
-		return strings.TrimSpace(valueToString(obj["private-key"])) != "" &&
-			(strings.TrimSpace(valueToString(obj["server"])) != "" || len(sliceValue(obj["peers"])) > 0)
+		return strings.TrimSpace(ValueToString(obj["private-key"])) != "" &&
+			(strings.TrimSpace(ValueToString(obj["server"])) != "" || len(sliceValue(obj["peers"])) > 0)
 	}
-	return strings.TrimSpace(valueToString(obj["server"])) != "" && intValue(obj["port"]) > 0
+	return strings.TrimSpace(ValueToString(obj["server"])) != "" && intValue(obj["port"]) > 0
 }
 
 func clashProxyToURI(attrs map[string]string) string {
@@ -236,7 +236,7 @@ func clashProxyToURI(attrs map[string]string) string {
 	return ""
 }
 
-func parseClashYAMLToNodes(yamlText string) []nodes.Node {
+func ParseClashYAMLToNodes(yamlText string) []nodes.Node {
 	yamlText = strings.TrimSpace(yamlText)
 	if yamlText == "" {
 		return nil
@@ -310,7 +310,7 @@ func parseInlineClashYAMLNodes(yamlText string) []nodes.Node {
 		cleaned := inline[1 : len(inline)-1]
 		attrs := parseInlineYamlAttrs(cleaned)
 		if uri := clashProxyToURI(attrs); uri != "" {
-			if node, ok := parseImportedNodeLine(uri); ok {
+			if node, ok := ParseImportedNodeLine(uri); ok {
 				imported = append(imported, node)
 			}
 		}
@@ -342,5 +342,8 @@ func buildClashNode(proxy map[string]any) (nodes.Node, bool) {
 	if rawURI == "" {
 		return nodes.Node{}, false
 	}
-	return parseImportedNodeLine(rawURI)
+	return ParseImportedNodeLine(rawURI)
 }
+
+
+

@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"strconv"
+
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
 // CountTokens 统计给定 contents 在指定模型下的 token 数（纯本地离线估算）。
@@ -13,42 +15,34 @@ import (
 //   - 非 ASCII 字符（中文/Emoji/日韩文等）：1.5 token/字符（nonAsciiCount * 3 / 2）
 //   - 媒体/图片 Part（inlineData / fileData）：固定 1024 token
 //
-// 返回估算值，0 表示空 contents 或解析失败。
-func (c *VertexAIClient) CountTokens(ctx context.Context, model string, contents []any) int {
-	result := estimateTokens(contents)
+// 返回估算值，0 表示空 contents。
+func (c *VertexAIClient) CountTokens(ctx context.Context, model string, contents []transform.Content) int {
+	result := estimateTokensTyped(contents)
 	if c.cfg.DebugMode() {
 		log.Printf("[Vertex] [CountTokens] 离线估算: 模型=%s, tokens=%d", model, result)
 	}
 	return result
 }
 
-// estimateTokens 对 contents 进行纯本地 token 估算。
-func estimateTokens(contents []any) int {
+// estimateTokensTyped 对强类型 contents 进行纯本地 token 估算（零 map 中转）。
+func estimateTokensTyped(contents []transform.Content) int {
 	total := 0
-	for _, c := range contents {
-		cm, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		parts, _ := cm["parts"].([]any)
-		total += estimatePartsTokens(parts)
+	for _, cm := range contents {
+		total += estimatePartsTokensTyped(cm.Parts)
 	}
 	return total
 }
 
-func estimatePartsTokens(parts []any) int {
+// estimatePartsTokensTyped 统计单个 content 内 parts 的 token 估算。
+func estimatePartsTokensTyped(parts []transform.Part) int {
 	total := 0
 	for _, p := range parts {
-		pm, ok := p.(map[string]any)
-		if !ok {
-			continue
+		if p.Text != "" {
+			total += estimateTextTokens(p.Text)
 		}
-		if text, ok := pm["text"].(string); ok {
-			total += estimateTextTokens(text)
-		}
-		if _, ok := pm["inlineData"]; ok {
+		if p.InlineData != nil {
 			total += 1024
-		} else if _, ok := pm["fileData"]; ok {
+		} else if p.FileData != nil {
 			total += 1024
 		}
 	}
@@ -84,5 +78,3 @@ func coerceTokenCount(v any) int {
 	}
 	return 0
 }
-
-

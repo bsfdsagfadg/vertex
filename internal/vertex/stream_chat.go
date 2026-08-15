@@ -407,11 +407,11 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		}
 	}
 
-	scanErr := scanStream(streamReqCtx, sr.Body, func(obj map[string]any) (stop bool, err error) {
+	scanErr := scanStream(streamReqCtx, sr.Body, func(raw []byte) (stop bool, err error) {
 		if cfg.DebugMode() {
-			log.Printf("[DEBUG] [Stream] 上游帧摘要: %s, 请求ID=%s, 节点=%s", summarizeUpstreamObject(obj), reqID, nodes.GetNodeName(sess.ProxyURI))
+			log.Printf("[DEBUG] [Stream] 上游帧摘要: %s, 请求ID=%s, 节点=%s", summarizeUpstreamObject(parseJSONObject(raw)), reqID, nodes.GetNodeName(sess.ProxyURI))
 		}
-		return processStreamingObject(obj, emitSink, &seenFinish)
+		return processStreamingObject(raw, emitSink, &seenFinish)
 	}, touchActivity)
 
 	if scanErr != nil && cfg.DebugMode() && !errors.Is(scanErr, context.Canceled) {

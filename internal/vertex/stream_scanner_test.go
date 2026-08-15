@@ -3,6 +3,7 @@ package vertex
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"sync/atomic"
@@ -23,7 +24,7 @@ func TestScanStream_BufferHardLimit(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- scanStream(context.Background(), bytes.NewReader(data), func(obj map[string]any) (bool, error) {
+		done <- scanStream(context.Background(), bytes.NewReader(data), func(raw []byte) (bool, error) {
 			return false, nil
 		}, nil)
 	}()
@@ -49,8 +50,8 @@ func collectStream(t *testing.T, raw string) (emitted []*transform.GeminiChunk, 
 		return true
 	}
 	var seenFinish bool
-	scanErr = scanStream(context.Background(), strings.NewReader(raw), func(obj map[string]any) (bool, error) {
-		stop, err := processStreamingObject(obj, emit, &seenFinish)
+	scanErr = scanStream(context.Background(), strings.NewReader(raw), func(raw []byte) (bool, error) {
+		stop, err := processStreamingObject(raw, emit, &seenFinish)
 		if stop {
 			finished = true
 		}
@@ -133,8 +134,8 @@ func TestScanStream_SplitAcrossReads(t *testing.T) {
 	raw := wrap(`{"candidates":[{"content":{"parts":[{"text":"split me"}],"role":"model"},"finishReason":"STOP"}]}`)
 	// 逐字节投喂（最极端的分片），状态机必须能正确续扫。
 	var emitted []*transform.GeminiChunk
-	err := scanStream(context.Background(), &splitReader{data: []byte(raw), chunk: 1}, func(obj map[string]any) (bool, error) {
-		stop, err := processStreamingObject(obj, func(ch *transform.GeminiChunk) bool {
+	err := scanStream(context.Background(), &splitReader{data: []byte(raw), chunk: 1}, func(raw []byte) (bool, error) {
+		stop, err := processStreamingObject(raw, func(ch *transform.GeminiChunk) bool {
 			emitted = append(emitted, ch)
 			return true
 		})
@@ -199,8 +200,8 @@ func TestScanStream_UsageMetadataDelayedSplitRead(t *testing.T) {
 	var seenFinish bool
 	var finished bool
 	// 使用 splitReader 按 STOP 帧长度分块，确保两帧在不同 Read 调用中到达
-	err := scanStream(context.Background(), &splitReader{data: []byte(raw), chunk: len(stopFrame)}, func(obj map[string]any) (bool, error) {
-		stop, err := processStreamingObject(obj, func(ch *transform.GeminiChunk) bool {
+	err := scanStream(context.Background(), &splitReader{data: []byte(raw), chunk: len(stopFrame)}, func(raw []byte) (bool, error) {
+		stop, err := processStreamingObject(raw, func(ch *transform.GeminiChunk) bool {
 			emitted = append(emitted, ch)
 			return true
 		}, &seenFinish)
@@ -253,7 +254,7 @@ func BenchmarkScanStream(b *testing.B) {
 	b.ResetTimer()
 
 	for range b.N {
-		_ = scanStream(context.Background(), strings.NewReader(input), func(obj map[string]any) (bool, error) {
+		_ = scanStream(context.Background(), strings.NewReader(input), func(raw []byte) (bool, error) {
 			return true, nil
 		}, nil)
 	}
@@ -267,7 +268,7 @@ func TestScanStream_TouchActivity(t *testing.T) {
 	}
 	data := wrap(`{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"STOP"}]}`)
 
-	err := scanStream(context.Background(), strings.NewReader(data), func(obj map[string]any) (bool, error) {
+	err := scanStream(context.Background(), strings.NewReader(data), func(raw []byte) (bool, error) {
 		return true, nil
 	}, touchActivity)
 
@@ -324,7 +325,7 @@ func TestIdleWatcher_TriggersOnTimeout(t *testing.T) {
 	defer cancel()
 
 	go func() {
-		errCh <- scanStream(ctx, pr, func(obj map[string]any) (bool, error) {
+		errCh <- scanStream(ctx, pr, func(raw []byte) (bool, error) {
 			return false, nil
 		}, touchActivity)
 	}()
@@ -351,6 +352,42 @@ func TestIdleWatcher_TriggersOnTimeout(t *testing.T) {
 		pw.Close()
 		close(done)
 		t.Fatal("超时：idle watcher 未能在预期时间内触发")
+	}
+}
+
+// TestScanStream_MalformedCompleteFrame_ReturnsProtocolError 补充方案：花括号配平但
+// JSON 语法非法的完整帧 → 可重试协议错误（不静默跳过），回调不被调用。
+func TestScanStream_MalformedCompleteFrame_ReturnsProtocolError(t *testing.T) {
+	called := 0
+	err := scanStream(context.Background(), strings.NewReader(`{"a":}`), func(raw []byte) (bool, error) {
+		called++
+		return false, nil
+	}, nil)
+	if err == nil {
+		t.Fatal("expected protocol error")
+	}
+	if !strings.Contains(err.Error(), "protocol error") {
+		t.Errorf("err should contain 'protocol error', got: %v", err)
+	}
+	if called != 0 {
+		t.Errorf("callback should not be called for malformed frame, got %d calls", called)
+	}
+}
+
+// 超长畸形帧：错误信息必须截断预览，不得泄漏完整 payload。
+func TestScanStream_MalformedFrame_TruncatesPayloadInError(t *testing.T) {
+	long := strings.Repeat("x", 10000)
+	err := scanStream(context.Background(), strings.NewReader(`{"a":`+long+`}`), func(raw []byte) (bool, error) {
+		return false, nil
+	}, nil)
+	if err == nil {
+		t.Fatal("expected protocol error")
+	}
+	if len(err.Error()) > 500 {
+		t.Errorf("error 应截断 payload, len=%d: %v", len(err.Error()), err)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("raw_len=%d", len(long)+6)) {
+		t.Errorf("err should carry raw_len, got: %v", err)
 	}
 }
 

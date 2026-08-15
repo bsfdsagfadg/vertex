@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bsfdsagfadg/vertex/internal/transform"
@@ -8,10 +9,8 @@ import (
 
 // results 内的 "Failed to verify action" → AuthenticationError（触发同 token 重试）。
 func TestProcessStreamingObject_VerifyFailError(t *testing.T) {
-	obj := map[string]any{"results": []any{
-		map[string]any{"errors": []any{map[string]any{"message": "Failed to verify action"}}},
-	}}
-	_, err := processStreamingObject(obj, func(*transform.GeminiChunk) bool { return true }, nil)
+	raw := []byte(`{"results":[{"errors":[{"message":"Failed to verify action"}]}]}`)
+	_, err := processStreamingObject(raw, func(*transform.GeminiChunk) bool { return true }, nil)
 	if err == nil {
 		t.Fatal("expected AuthenticationError")
 	}
@@ -22,15 +21,27 @@ func TestProcessStreamingObject_VerifyFailError(t *testing.T) {
 
 // results 内真实错误（非 verify-fail）→ 结构化 VertexError。
 func TestProcessStreamingObject_RealError(t *testing.T) {
-	obj := map[string]any{"results": []any{
-		map[string]any{"errors": []any{map[string]any{"message": "Resource exhausted", "code": float64(429)}}},
-	}}
-	_, err := processStreamingObject(obj, func(*transform.GeminiChunk) bool { return true }, nil)
+	raw := []byte(`{"results":[{"errors":[{"message":"Resource exhausted","code":429}]}]}`)
+	_, err := processStreamingObject(raw, func(*transform.GeminiChunk) bool { return true }, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	if ve := asVertexError(err); ve == nil {
 		t.Errorf("err=%v, want VertexError", err)
+	}
+}
+
+// 畸形完整帧（JSON 语法非法）→ 可重试协议错误，不静默跳过。
+func TestProcessStreamingObject_InvalidJSONFrame(t *testing.T) {
+	_, err := processStreamingObject([]byte(`{"a":}`), func(*transform.GeminiChunk) bool { return true }, nil)
+	if err == nil {
+		t.Fatal("expected protocol error")
+	}
+	if !strings.Contains(err.Error(), "protocol error") {
+		t.Errorf("err should contain 'protocol error', got: %v", err)
+	}
+	if len(err.Error()) > 400 {
+		t.Errorf("错误不应泄漏完整超长 payload, len=%d", len(err.Error()))
 	}
 }
 
@@ -540,3 +551,6 @@ func TestEmitAndCheckFinish(t *testing.T) {
 		t.Error("STOP 应结束流")
 	}
 }
+
+// ── Task A：typed 直解链单元测试 ──
+

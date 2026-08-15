@@ -47,6 +47,61 @@ func TestIsEmptyResponseError_NonVertexError(t *testing.T) {
 	}
 }
 
+// TestExecuteStreamingAttempt_MalformedFrame_NetworkError 补充方案：HTTP 流返回畸形完整帧时，
+// 必须报 network 类 VertexError（而非空响应错误），按 MaxRetries=0 立即失败。
+func TestExecuteStreamingAttempt_MalformedFrame_NetworkError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"a":}`))
+	}))
+	defer server.Close()
+
+	origURL := batchGraphqlURL
+	batchGraphqlURL = server.URL + "/batchGraphql"
+	defer func() { batchGraphqlURL = origURL }()
+
+	cfg := config.DefaultConfig()
+	cfg.MaxRetries = 0
+	provider := config.StaticProvider(cfg)
+
+	netClient := transport.NewNetworkClient(nil)
+	vc := &VertexAIClient{
+		net:  netClient,
+		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
+			return "test-token", nil
+		}),
+		cfg: provider,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sess, err := netClient.CreateSession(180, "", "test-malformed-frame")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	defer sess.Close()
+
+	err = vc.executeStreamingAttempt(ctx, sess, "test-model", &transform.GeminiRequest{}, "test-token", true, func(ch *transform.GeminiChunk) bool {
+		return true
+	}, &transform.TextStrategy{})
+
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if isEmptyResponseError(err) {
+		t.Fatalf("畸形帧不应被误报为 empty response: %v", err)
+	}
+	ve := asVertexError(err)
+	if ve == nil {
+		t.Fatalf("expected VertexError, got %T: %v", err, err)
+	}
+	if ve.Kind != "network" {
+		t.Errorf("expected network kind, got %q: %v", ve.Kind, err)
+	}
+}
+
 // TestExecuteStreamingAttempt_IdleTimeout 验证 executeStreamingAttempt 在静默后触发空闲超时返回 ErrStreamIdleTimeout。
 func TestExecuteStreamingAttempt_IdleTimeout(t *testing.T) {
 	// ── mock 上游服务器：发送 1 帧后挂起 ──

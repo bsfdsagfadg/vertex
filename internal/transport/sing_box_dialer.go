@@ -452,6 +452,10 @@ func makeBoxDialFunc(nb *nodeBox) func(ctx context.Context, network, addr string
 			nb.closed.Store(true)
 			nb.box.Close()
 			go func() {
+				// 清理 goroutine 必须存活到拨号返回：dialCtx 由 ctx 派生，父 ctx 取消会
+				// 同步取消 dialCtx，DialContext 若尊重 context 会在取消后迅速返回，
+				// 此处即可收到 ch 并关闭 conn。若此处监听 ctx.Done() 提前退出，
+				// 后台拨号稍后返回的 conn 将永远无人关闭（socket 泄漏）。
 				timer := time.NewTimer(10 * time.Second) // 终极兜底，防 transport 不响应 context
 				defer timer.Stop()
 				select {
@@ -459,7 +463,6 @@ func makeBoxDialFunc(nb *nodeBox) func(ctx context.Context, network, addr string
 					if r.conn != nil {
 						_ = r.conn.Close()
 					}
-				case <-ctx.Done(): // 父请求结束即退出，不必白等
 				case <-timer.C:
 				}
 			}()

@@ -1,4 +1,4 @@
-package api
+package importer
 
 import (
 	"encoding/base64"
@@ -30,7 +30,7 @@ func TestParseImportedNodesSupportsV2RayNInnerURI(t *testing.T) {
 	}
 
 	text := "v2rayn://vless/" + base64.RawURLEncoding.EncodeToString(payload)
-	imported := parseImportedNodes(text)
+	imported := ParseImportedNodes(text)
 	if len(imported) != 1 {
 		t.Fatalf("expected 1 node, got %d", len(imported))
 	}
@@ -50,7 +50,7 @@ func TestParseImportedNodesSupportsV2RayNInnerURI(t *testing.T) {
 func TestParseImportedNodesSupportsSIP008(t *testing.T) {
 	text := `{"servers":[{"remarks":"ss demo","server":"1.2.3.4","server_port":8388,"method":"aes-128-gcm","password":"secret"}]}`
 
-	imported := parseImportedNodes(text)
+	imported := ParseImportedNodes(text)
 	if len(imported) != 1 {
 		t.Fatalf("expected 1 node, got %d", len(imported))
 	}
@@ -105,7 +105,7 @@ func TestParseImportedNodesSupportsV2RayOutbounds(t *testing.T) {
   ]
 }`
 
-	imported := parseImportedNodes(text)
+	imported := ParseImportedNodes(text)
 	if len(imported) != 1 {
 		t.Fatalf("expected 1 node, got %d", len(imported))
 	}
@@ -147,7 +147,7 @@ func tuicNodeRawURI(username string) string {
 }
 
 func TestParseImportedNodesTUICWithoutUsername(t *testing.T) {
-	imported := parseImportedNodes(tuicNodeRawURI(""))
+	imported := ParseImportedNodes(tuicNodeRawURI(""))
 	if len(imported) != 1 {
 		t.Fatalf("expected 1 node, got %d", len(imported))
 	}
@@ -166,7 +166,7 @@ func TestParseImportedNodesTUICWithoutUsername(t *testing.T) {
 }
 
 func TestParseImportedNodesTUICWithUsername(t *testing.T) {
-	imported := parseImportedNodes(tuicNodeRawURI("user-uuid"))
+	imported := ParseImportedNodes(tuicNodeRawURI("user-uuid"))
 	if len(imported) != 1 {
 		t.Fatalf("expected 1 node, got %d", len(imported))
 	}
@@ -182,3 +182,4 @@ func TestParseImportedNodesTUICWithUsername(t *testing.T) {
 		t.Fatalf("unexpected tuic userinfo: %q:%q", out.UUID, out.Password)
 	}
 }
+

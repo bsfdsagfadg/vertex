@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/importer"
 )
 
 //nolint:gochecknoglobals // Constant-like map of allowed settings
@@ -109,7 +110,7 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 func normalizeTrailingFixModelsInput(list []any) []string {
 	out := make([]string, 0, len(list))
 	for _, item := range list {
-		s := strings.TrimSpace(valueToString(item))
+		s := strings.TrimSpace(importer.ValueToString(item))
 		if s == "" {
 			continue
 		}

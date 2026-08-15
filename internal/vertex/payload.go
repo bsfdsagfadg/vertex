@@ -2,7 +2,6 @@ package vertex
 
 import (
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"math/big"
 
@@ -77,22 +76,6 @@ type Localization struct {
 	Timezone string `json:"timezone"`
 }
 
-// buildRequestPayload 构建发往上游的完整请求体（对齐 _build_request_payload）：
-// 用 transform 构建 variables，再强制注入 region=global 与 recaptchaToken，最后包壳。
-//
-// 注意：本函数为旧 map 链路保留；新链路使用 buildTypedRequestPayload。
-func buildRequestPayload(model string, geminiPayload map[string]any, recaptchaToken string, cfg config.ConfigProvider) map[string]any {
-	b, err := json.Marshal(geminiPayload)
-	if err != nil {
-		vars := transform.BuildGeminiVariables(model, nil, cfg)
-		return wrapPayload(vars, recaptchaToken)
-	}
-	var req transform.GeminiRequest
-	_ = json.Unmarshal(b, &req)
-	vars := transform.BuildGeminiVariables(model, &req, cfg)
-	return wrapPayload(vars, recaptchaToken)
-}
-
 // buildTypedRequestPayload 由强类型 GeminiRequest 构建发往上游的完整请求体强类型指针。
 func buildTypedRequestPayload(model string, req *transform.GeminiRequest, recaptchaToken string, cfg config.ConfigProvider) *BatchGraphQLPayload {
 	vars := transform.BuildGeminiVariablesTyped(model, req, cfg)
@@ -117,31 +100,5 @@ func buildTypedRequestPayload(model string, req *transform.GeminiRequest, recapt
 		QuerySignature: querySignature,
 		OperationName:  operationName,
 		Variables:      vars,
-	}
-}
-
-// wrapPayload 把 variables 包裹为 batchGraphql envelope。
-func wrapPayload(vars map[string]any, recaptchaToken string) map[string]any {
-	vars["region"] = "global"
-	vars["recaptchaToken"] = recaptchaToken
-	trackingID := randomTrackingID()
-	return map[string]any{
-		"requestContext": map[string]any{
-			"clientVersion":    "boq_cloud-boq-clientweb-vertexaistudio_20260630.00_p0",
-			"pagePath":         "/agent-platform/studio/multimodal",
-			"pageViewId":       randomPageViewID(),
-			"trackingId":       trackingID,
-			"backendOverrides": map[string]any{},
-			"clientSessionId":  randomUUID(),
-			"selectedPurview":  map[string]any{},
-			"jurisdiction":     "global",
-			"localizationData": map[string]any{
-				"locale":   "zh_CN",
-				"timezone": "Asia/Hong_Kong",
-			},
-		},
-		"querySignature": querySignature,
-		"operationName":  operationName,
-		"variables":      vars,
 	}
 }
