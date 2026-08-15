@@ -31,7 +31,7 @@ type VertexError struct { //nolint:govet
 	Code             int
 	Status           string
 	Kind             string
-	Param            string // 仅 OpenAI 参数错误用，空值不输出
+	Param            string // 错误关联参数名，空值不输出
 	Details          map[string]any
 	UpstreamResponse string
 	RetryAfter       int   // 仅 ratelimit 用，0 表示未设

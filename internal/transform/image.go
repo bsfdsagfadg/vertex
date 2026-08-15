@@ -7,20 +7,8 @@ import (
 	"sync"
 )
 
-// 本文件实现 OpenAI Images API → Gemini 图片请求转换，及其辅助（追加 negative
-// prompt / 构建 image prompt / size→aspectRatio / size→imageSize）+ 从 Gemini
-// 响应抽取 OpenAI Images data。
-// 供 /v1/images/generations、/v1/images/edits、/v1/images/variations 端点用。
-
-// DefaultImageModel 取生产在用的 GA 图模型；OpenAI 图模型别名统一回退到它。
+// DefaultImageModel 取生产在用的 GA 图模型。
 const DefaultImageModel = "gemini-3.1-flash-image"
-
-// openaiImageModelAliases 是会被回退到 DefaultImageModel 的 OpenAI 图模型名。
-//
-//nolint:gochecknoglobals // Read-only alias map
-var openaiImageModelAliases = map[string]bool{
-	"gpt-image-1": true, "dall-e-2": true, "dall-e-3": true,
-}
 
 // ImageModelSpec 描述单个生图模型的静态白名单能力规格。
 type ImageModelSpec struct {
@@ -162,12 +150,9 @@ type InlineImage struct {
 	Data     string
 }
 
-// ResolveImageModel 解析图片模型名：空/OpenAI 别名 → DefaultImageModel，其余原样。
+// ResolveImageModel 解析图片模型名：空 → DefaultImageModel，其余原样。
 func ResolveImageModel(model string) string {
 	if model == "" {
-		return DefaultImageModel
-	}
-	if openaiImageModelAliases[model] {
 		return DefaultImageModel
 	}
 	return model
@@ -270,7 +255,7 @@ func appendable(v string) bool {
 	return v != "" && strings.ToLower(v) != "auto"
 }
 
-// sizeToAspectRatio 把 OpenAI size（WxH 或常见预设）映射到 Gemini aspectRatio：
+// sizeToAspectRatio 把分辨率字符串（WxH 或常见预设）映射到 Gemini aspectRatio：
 // 先匹配预设，再用约分 GCD 推比例，不在支持集合内返回 ""。
 func sizeToAspectRatio(size string) string {
 	if size == "" {

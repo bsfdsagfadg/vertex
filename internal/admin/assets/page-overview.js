@@ -9,7 +9,7 @@ async function loadOverview() {
   const models = (modelsD.models || []).length;
   const nodes = (nodesD.nodes || []).length;
   $('#ovCards').innerHTML =
-    card('服务状态', '运行中', 'green', 'OpenAI / Gemini 兼容') +
+    card('服务状态', '运行中', 'green', 'Gemini REST 原生代理') +
     card('API 密钥', keys, 'gold') +
     card('模型', models, 'blue') +
     card('代理节点', nodes, '');

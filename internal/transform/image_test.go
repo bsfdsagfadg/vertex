@@ -72,73 +72,8 @@ func TestOutputMimeTypeAllowedFor(t *testing.T) {
 	}
 }
 
-func TestAudioAdaptor_VoiceMapping(t *testing.T) {
-	adaptor := NewAudioAdaptor()
-
-	cases := []struct {
-		name      string
-		voice     string
-		wantVoice string
-	}{
-		{"alloy maps to Kore", "alloy", "Kore"},
-		{"nova maps to Aoede", "nova", "Aoede"},
-		{"Puck remains Puck", "Puck", "Puck"},
-		{"empty string defaults to Kore", "", "Kore"},
-		{"unknown voice defaults to Kore", "unknown_voice", "Kore"},
-		{"lowercase mapped voice", "echo", "Puck"},
-	}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			req := &SpeechRequest{
-				Model: "gemini-3.1-flash-tts-preview",
-				Input: "Hello world",
-				Voice: c.voice,
-			}
-			geminiReq, _, err := adaptor.ToGeminiRequest(req, nil)
-			if err != nil {
-				t.Fatalf("ToGeminiRequest error: %v", err)
-			}
-			if geminiReq.GenerationConfig == nil || geminiReq.GenerationConfig.SpeechConfig == nil ||
-				geminiReq.GenerationConfig.SpeechConfig.VoiceConfig == nil ||
-				geminiReq.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig == nil {
-				t.Fatalf("missing voiceConfig in GeminiRequest: %+v", geminiReq)
-			}
-			gotVoice := geminiReq.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName
-			if gotVoice != c.wantVoice {
-				t.Errorf("got voice %q, want %q", gotVoice, c.wantVoice)
-			}
-		})
-	}
-}
-
-func TestImageAdaptor_All4Models(t *testing.T) {
-	adaptor := NewImageAdaptor()
-
+func TestBuildTypedImageRequest_All4Models(t *testing.T) {
 	t.Run("gemini-2.5-flash-image - 1024x1024 generates 1K and 1:1", func(t *testing.T) {
-		req := &ImagesRequest{
-			Model:  "gemini-2.5-flash-image",
-			Prompt: "A futuristic city",
-			Size:   "1024x1024",
-		}
-		geminiReq, model, err := adaptor.ToGeminiRequest(req, nil)
-		if err != nil {
-			t.Fatalf("ToGeminiRequest error: %v", err)
-		}
-		if model != "gemini-2.5-flash-image" {
-			t.Errorf("expected model gemini-2.5-flash-image, got %q", model)
-		}
-		ic := geminiReq.GenerationConfig.ImageConfig
-		if ic == nil {
-			t.Fatalf("expected ImageConfig, got nil")
-		}
-		if ic.ImageSize != "1K" {
-			t.Errorf("expected ImageSize 1K for gemini-2.5-flash-image, got %q", ic.ImageSize)
-		}
-		if ic.AspectRatio != "1:1" {
-			t.Errorf("expected AspectRatio 1:1, got %q", ic.AspectRatio)
-		}
-
 		typedReq := BuildTypedImageRequest("gemini-2.5-flash-image", "A futuristic city", nil, nil, "1024x1024", "", "", "", "")
 		if typedReq.GenerationConfig == nil || typedReq.GenerationConfig.ImageConfig == nil {
 			t.Fatalf("expected generationConfig.imageConfig in BuildTypedImageRequest result")
@@ -146,57 +81,34 @@ func TestImageAdaptor_All4Models(t *testing.T) {
 		if typedReq.GenerationConfig.ImageConfig.ImageSize != "1K" {
 			t.Errorf("expected typedReq imageSize 1K for gemini-2.5-flash-image, got %v", typedReq.GenerationConfig.ImageConfig.ImageSize)
 		}
+		if typedReq.GenerationConfig.ImageConfig.AspectRatio != "1:1" {
+			t.Errorf("expected AspectRatio 1:1, got %q", typedReq.GenerationConfig.ImageConfig.AspectRatio)
+		}
 	})
 
 	t.Run("gemini-3-pro-image - 2048x2048 generates 2K", func(t *testing.T) {
-		req := &ImagesRequest{
-			Model:  "gemini-3-pro-image",
-			Prompt: "A portrait",
-			Size:   "2048x2048",
-		}
-		geminiReq, _, err := adaptor.ToGeminiRequest(req, nil)
-		if err != nil {
-			t.Fatalf("ToGeminiRequest error: %v", err)
-		}
-		ic := geminiReq.GenerationConfig.ImageConfig
+		typedReq := BuildTypedImageRequest("gemini-3-pro-image", "A portrait", nil, nil, "2048x2048", "", "", "", "")
+		ic := typedReq.GenerationConfig.ImageConfig
 		if ic == nil || ic.ImageSize != "2K" {
 			t.Errorf("expected ImageSize 2K for gemini-3-pro-image, got %v", ic)
 		}
 	})
 
 	t.Run("gemini-3.1-flash-lite-image - 2048x2048 downgraded to 1K", func(t *testing.T) {
-		req := &ImagesRequest{
-			Model:  "gemini-3.1-flash-lite-image",
-			Prompt: "A landscape",
-			Size:   "2048x2048",
-		}
-		geminiReq, model, err := adaptor.ToGeminiRequest(req, nil)
-		if err != nil {
-			t.Fatalf("ToGeminiRequest error: %v", err)
-		}
-		// 2K is disallowed for lite-image, so ToGeminiRequest leaves ImageSize empty
-		ic := geminiReq.GenerationConfig.ImageConfig
+		typedReq := BuildTypedImageRequest("gemini-3.1-flash-lite-image", "A landscape", nil, nil, "2048x2048", "", "", "", "")
+		ic := typedReq.GenerationConfig.ImageConfig
 		if ic != nil && ic.ImageSize == "2K" {
 			t.Errorf("2K should not be accepted for gemini-3.1-flash-lite-image")
 		}
-		// ResolveImageSize resolves fallback to 1K
-		size := ResolveImageSize(ic.ImageSize, model)
+		size := ResolveImageSize(ic.ImageSize, "gemini-3.1-flash-lite-image")
 		if size != "1K" {
 			t.Errorf("expected resolved image size 1K for lite-image, got %q", size)
 		}
 	})
 
 	t.Run("gemini-3.1-flash-image - 4096x4096 generates 4K", func(t *testing.T) {
-		req := &ImagesRequest{
-			Model:  "gemini-3.1-flash-image",
-			Prompt: "A wide mountain view",
-			Size:   "4096x4096",
-		}
-		geminiReq, _, err := adaptor.ToGeminiRequest(req, nil)
-		if err != nil {
-			t.Fatalf("ToGeminiRequest error: %v", err)
-		}
-		ic := geminiReq.GenerationConfig.ImageConfig
+		typedReq := BuildTypedImageRequest("gemini-3.1-flash-image", "A wide mountain view", nil, nil, "4096x4096", "", "", "", "")
+		ic := typedReq.GenerationConfig.ImageConfig
 		if ic == nil || ic.ImageSize != "4K" {
 			t.Errorf("expected ImageSize 4K for gemini-3.1-flash-image, got %v", ic)
 		}

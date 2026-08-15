@@ -11,7 +11,7 @@ import (
 
 // 本文件是流式工具调用 tracker 的独立载体：不再依赖旧的 map 形态
 // （旧 stream.go 的 ProcessFunctionCall 接收 map 参数），直接以函数名
-// 为输入，供 typed 流式链路（stream_typed.go 与 api 层）共用。
+// 为输入，供 typed 流式链路与 api 层共用。
 
 var (
 	streamReqIDFallback atomic.Bool
@@ -19,7 +19,7 @@ var (
 )
 
 // StreamToolCallTracker 跟踪流式工具调用 ID/Index，确保同一个 functionCall 在
-// 增量帧中 id 和 index 保持稳定（符合 OpenAI SSE 规范）。
+// 增量帧中 id 和 index 保持稳定。
 //
 // 状态机规则：
 //   - 每个 chunk 帧开始前必须调用 BeginFrame 重置帧内同名计数；

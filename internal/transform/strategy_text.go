@@ -52,7 +52,7 @@ func (s *TextStrategy) BuildVariables(model string, req *GeminiRequest, cfg conf
 	contents := sanitizeContentRolesTyped(req.Contents)
 	contents = mergeContiguousRolesTyped(contents)
 	contents = filterEmptyContentsTyped(contents)
-	applyHistorySignatures(contents)
+	NewSignatureResolver().ApplyContents(contents)
 	sysInstruction := req.SystemInstruction
 
 	// systemInstruction 降级：contents 不含任何 user 回合时，把 system 文本

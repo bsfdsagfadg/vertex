@@ -78,18 +78,6 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_, _ = w.Write(data)
 }
 
-// writeOAIError 在客户端未断开时将 VertexError 渲染为 OpenAI JSON 错误。
-// 若 clientCtx 命中 context.Canceled，直接跳过写入。
-func writeOAIError(w http.ResponseWriter, clientCtx context.Context, e *vertex.VertexError) {
-	if clientCtx != nil && errors.Is(clientCtx.Err(), context.Canceled) {
-		return
-	}
-	if e == nil {
-		e = vertex.NewInternalError("internal server error", nil)
-	}
-	writeJSON(w, e.Code, vertexErrorToOAI(e))
-}
-
 // writeGeminiError 在客户端未断开时将 VertexError 渲染为 Gemini JSON 错误。
 // 若 clientCtx 命中 context.Canceled，直接跳过写入。
 func writeGeminiError(w http.ResponseWriter, clientCtx context.Context, e *vertex.VertexError) {
@@ -100,29 +88,6 @@ func writeGeminiError(w http.ResponseWriter, clientCtx context.Context, e *verte
 		e = vertex.NewInternalError("internal server error", nil)
 	}
 	writeJSON(w, e.Code, vertexErrorToGemini(e))
-}
-
-func oaiError(w http.ResponseWriter, status int, msg, errType string) {
-	writeJSON(w, status, map[string]any{"error": map[string]any{
-		"message": msg, "type": errType, "code": status,
-	}})
-}
-
-func sseEvent(obj map[string]any) string {
-	data, err := jsonx.Marshal(obj)
-	if err != nil {
-		return "data: {}\n\n"
-	}
-	return "data: " + string(data) + "\n\n"
-}
-
-func streamChunkBase(model, requestID string) map[string]any {
-	return map[string]any{
-		"id":      "chatcmpl-" + requestID,
-		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
-		"model":   model,
-	}
 }
 
 func newSSEWriter(w http.ResponseWriter, contentType string) *sseWriter {
@@ -152,31 +117,6 @@ func reqID24() string {
 	return fmt.Sprintf("%016x%08x", uint64(time.Now().UnixNano()), reqIDCounter.Add(1))
 }
 
-func vertexErrorToOAI(e *vertex.VertexError) map[string]any {
-	var errType string
-	switch e.Kind {
-	case "invalid":
-		errType = "invalid_request_error"
-	case "ratelimit":
-		errType = "rate_limit_error"
-	case "auth":
-		errType = "server_error"
-	case "notfound", "permission":
-		errType = "invalid_request_error"
-	default:
-		errType = "server_error"
-	}
-	errObj := map[string]any{
-		"message": withUpstreamDetail(vertex.FriendlyErrorMessage(e), e),
-		"type":    errType,
-		"code":    e.Code,
-	}
-	if e.Param != "" {
-		errObj["param"] = e.Param
-	}
-	return map[string]any{"error": errObj}
-}
-
 func withUpstreamDetail(friendly string, e *vertex.VertexError) string {
 	detail := strings.TrimSpace(e.Message)
 	if detail == "" {
@@ -204,20 +144,6 @@ func isSafetyBlock(e *vertex.VertexError) bool {
 	}
 	status := strings.ToUpper(e.Status)
 	return status == "SAFETY" || status == "BLOCKED_REASON_SAFETY"
-}
-
-func oaiSafetyResponse(model string) map[string]any {
-	return map[string]any{
-		"id":      "chatcmpl-" + reqID24(),
-		"object":  "chat.completion",
-		"created": time.Now().Unix(),
-		"model":   model,
-		"choices": []any{map[string]any{
-			"index":         0,
-			"message":       map[string]any{"role": "assistant", "content": nil},
-			"finish_reason": "content_filter",
-		}},
-	}
 }
 
 func resolveN(raw any, maxN int) (int, string) {

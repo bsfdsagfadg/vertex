@@ -1,7 +1,6 @@
 package transform
 
 import (
-	"encoding/base64"
 	"strings"
 )
 
@@ -12,6 +11,34 @@ import (
 type ImagePayload struct {
 	B64JSON  string
 	MimeType string
+}
+
+// SplitResponseParts 从 Parts 提取文本、思考文本、工具调用与图片列表。
+func SplitResponseParts(parts []Part) (text string, thinking string, toolCalls []*FunctionCall, images []string) {
+	var textBuf strings.Builder
+	var thinkBuf strings.Builder
+
+	for _, p := range parts {
+		if p.Thought {
+			thinkBuf.WriteString(p.Text)
+		} else if p.Text != "" {
+			textBuf.WriteString(p.Text)
+		}
+		if p.FunctionCall != nil {
+			toolCalls = append(toolCalls, p.FunctionCall)
+		}
+		if p.InlineData != nil && p.InlineData.Data != "" {
+			mime := strings.ToLower(strings.TrimSpace(p.InlineData.MimeType))
+			if mime == "" {
+				mime = "image/png"
+			}
+			if strings.HasPrefix(mime, "image/") {
+				images = append(images, p.InlineData.Data)
+				textBuf.WriteString("\n![image](data:" + mime + ";base64," + p.InlineData.Data + ")")
+			}
+		}
+	}
+	return textBuf.String(), thinkBuf.String(), toolCalls, images
 }
 
 // ExtractImagesTyped 从强类型响应抽取图片。
@@ -142,14 +169,22 @@ func parsePCMRate(mimeType string) int {
 	return def
 }
 
-// decodeBase64Loose 容错解码 base64：先 standard、失败再 URL-safe、再补 padding。
-func decodeBase64Loose(s string) ([]byte, error) {
-	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
-		return b, nil
+// firstCandidateTyped 从强类型 GeminiResponse 安全获取首个 Candidate。
+func firstCandidateTyped(resp *GeminiResponse) (*Candidate, bool) {
+	if resp == nil || len(resp.Candidates) == 0 {
+		return nil, false
 	}
-	t := strings.ReplaceAll(strings.ReplaceAll(s, "-", "+"), "_", "/")
-	if pad := len(t) % 4; pad != 0 {
-		t += strings.Repeat("=", 4-pad)
+	c := resp.Candidates[0]
+	if c == nil {
+		return nil, false
 	}
-	return base64.StdEncoding.DecodeString(t)
+	return c, true
+}
+
+// candidatePartsTyped 从 Candidate 安全获取 Part 列表。
+func candidatePartsTyped(c *Candidate) []Part {
+	if c == nil || c.Content == nil {
+		return nil
+	}
+	return c.Content.Parts
 }

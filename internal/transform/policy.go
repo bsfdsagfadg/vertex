@@ -2,6 +2,8 @@ package transform
 
 import (
 	"strings"
+
+	"github.com/bsfdsagfadg/vertex/internal/config"
 )
 
 // 本文件是模型策略的纯函数基座：输入确定则输出确定、无副作用。
@@ -165,6 +167,36 @@ func parseBudgetToLevelEnum(budget int) string {
 	return ""
 }
 
+// BuildSafetySettingsTyped 根据系统配置中的安全屏蔽等级生成默认的 SafetySettings 列表。
+func BuildSafetySettingsTyped(cfg config.ConfigProvider) []SafetySetting {
+	categories := []string{
+		"HARM_CATEGORY_HATE_SPEECH",
+		"HARM_CATEGORY_HARASSMENT",
+		"HARM_CATEGORY_SEXUALLY_EXPLICIT",
+		"HARM_CATEGORY_DANGEROUS_CONTENT",
+		"HARM_CATEGORY_CIVIC_INTEGRITY",
+		"HARM_CATEGORY_JAILBREAK",
+	}
+
+	cfgMap := map[string]string{}
+	if cfg != nil {
+		cfgMap = cfg.SafetySettings()
+	}
+
+	settings := make([]SafetySetting, 0, len(categories))
+	for _, c := range categories {
+		threshold := "BLOCK_NONE"
+		if v, ok := cfgMap[c]; ok && v != "" {
+			threshold = v
+		}
+		settings = append(settings, SafetySetting{
+			Category:  c,
+			Threshold: threshold,
+		})
+	}
+	return settings
+}
+
 // ResolveResponseModalities 按默认配置解析图模型的 responseModalities；
 // 非图像模型与空默认均返回 nil（不注入）。
 func ResolveResponseModalities(defaultModalities, model string) []string {
@@ -179,7 +211,33 @@ func ResolveResponseModalities(defaultModalities, model string) []string {
 
 // ResolveMediaResolution 归一 media_resolution 枚举（无法识别返回 ""）。
 func ResolveMediaResolution(value any) string {
-	return normalizeMediaResolution(value)
+	s, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	s = strings.ToUpper(strings.TrimSpace(s))
+	switch s {
+	case "MEDIA_RESOLUTION_LOW", "LOW":
+		return "MEDIA_RESOLUTION_LOW"
+	case "MEDIA_RESOLUTION_MEDIUM", "MEDIUM", "MED":
+		return "MEDIA_RESOLUTION_MEDIUM"
+	case "MEDIA_RESOLUTION_HIGH", "HIGH":
+		return "MEDIA_RESOLUTION_HIGH"
+	case "MEDIA_RESOLUTION_UNSPECIFIED", "AUTO", "UNSPECIFIED":
+		return "MEDIA_RESOLUTION_UNSPECIFIED"
+	default:
+		return ""
+	}
+}
+
+// audioFormatMIME 定义常见的音频输入格式对应的 MIME 类型。
+var audioFormatMIME = map[string]string{
+	"wav":  "audio/wav",
+	"mp3":  "audio/mp3",
+	"aiff": "audio/aiff",
+	"aac":  "audio/aac",
+	"ogg":  "audio/ogg",
+	"flac": "audio/flac",
 }
 
 // AudioInputMIME 把 input_audio.format 映射到 Gemini inlineData mimeType。

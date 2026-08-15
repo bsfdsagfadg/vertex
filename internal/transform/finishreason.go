@@ -2,7 +2,9 @@ package transform
 
 import "strings"
 
-// FinishReasonMap 把 Gemini finishReason 映射到 OpenAI finish_reason。
+const FinishReasonUnspecified = "FINISH_REASON_UNSPECIFIED"
+
+// FinishReasonMap 记录 Gemini finishReason 到通用结束原因标识的映射。
 var FinishReasonMap = map[string]string{ //nolint:gochecknoglobals
 	"STOP":                    "stop",
 	"MAX_TOKENS":              "length",
@@ -16,7 +18,7 @@ var FinishReasonMap = map[string]string{ //nolint:gochecknoglobals
 	"OTHER":                   "stop",
 }
 
-// MapFinishReason 把 Gemini finishReason 转 OpenAI finish_reason。
+// MapFinishReason 将 Gemini finishReason 转换为通用结束原因字符串。
 func MapFinishReason(finish string, hasToolCalls bool) string {
 	if hasToolCalls {
 		return "tool_calls"

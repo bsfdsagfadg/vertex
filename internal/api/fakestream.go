@@ -3,7 +3,7 @@ package api
 import "net/http"
 
 // 本文件实现假非流：模型名带 "假非流-" 前缀时，先完整非流式生成、再以单包 SSE 返回。
-// OpenAI 端点与 Gemini 端点（use_fake 分支）共用此机制。
+// Gemini 端点（use_fake 分支）使用此机制。
 
 // sseWriter 是一个带 flush 的 SSE 行写出器；write 返回 false 表示客户端断开。
 // 仅当首次写入数据时才发送 200 OK 及 SSE Headers，允许在首帧前返回 JSON 错误。

@@ -19,18 +19,8 @@ func newStreamObserver(startTime time.Time) *streamObserver {
 	return &streamObserver{startTime: startTime}
 }
 
-func (o *streamObserver) observe(ctx context.Context, chunk vertex.StreamChunk, sseEvents []string) {
-	if o.triggered {
-		return
-	}
-	if chunk.Err != nil {
-		return
-	}
-	o.observeSSE(ctx, sseEvents)
-}
-
 // observeTyped 是强类型流式回调的观测入口（chunk 为 typed 时使用）。
-// 语义与 map 版 observe 一致：仅在有有效 SSE 输出时触发首个输出标记。
+// 仅在有有效 SSE 输出时触发首个输出标记。
 func (o *streamObserver) observeTyped(ctx context.Context, sseEvents []string) {
 	if o.triggered {
 		return

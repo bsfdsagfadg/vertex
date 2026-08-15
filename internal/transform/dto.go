@@ -1,10 +1,13 @@
-// Package transform 承载请求/响应协议转换的强类型 DTO 基座。
-//
-// 本文件定义 Gemini REST API 官方规范的强类型结构体（字段来源为官方规范，
-// 未做任何字段增删）。所有嵌套类型使用指针 + omitempty，从根上消除
-// "旧版序列化补全空默认值污染"（如 text:""、thoughtSignature:""）问题：
-// 指针为 nil / 标量为空时天然不序列化。
 package transform
+
+// ModelFamily 表示模型家族分类（文本/思考、生图/混模、TTS 语音）。
+type ModelFamily int
+
+const (
+	FamilyText ModelFamily = iota
+	FamilyImage
+	FamilyAudio
+)
 
 // GeminiRequest 对应 generateContent / streamGenerateContent 请求体。
 type GeminiRequest struct {
@@ -151,6 +154,9 @@ type SafetySetting struct {
 	Category  string `json:"category"`
 	Threshold string `json:"threshold"`
 }
+
+// GoogleSearch 是内置 Google 搜索工具标记。
+type GoogleSearch struct{}
 
 // Tool 是函数/内置工具声明容器。functionDeclarations 与内置工具可共存。
 type Tool struct {

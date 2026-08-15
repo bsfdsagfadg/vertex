@@ -207,7 +207,7 @@ func (adm *AdminHandler) handleAdminPage(w http.ResponseWriter, r *http.Request)
 	}
 	data, err := fs.ReadFile(admin.Assets, "assets/"+name)
 	if err != nil {
-		oaiError(w, http.StatusNotFound, "not found", "invalid_request_error")
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
 	w.Header().Set("Content-Type", contentTypeFor(name))

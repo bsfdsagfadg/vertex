@@ -1,28 +1,16 @@
 package transform
 
 import (
-	"encoding/json"
 	"testing"
 )
 
-func TestConvertToolsTyped_WebSearch(t *testing.T) {
-	// 测试场景 1：传入 {"type": "web_search"}
-	bodyJSON := `{
-		"model": "gemini-3.6-flash",
-		"messages": [{"role": "user", "content": "hello"}],
-		"tools": [
-			{"type": "web_search"}
-		]
-	}`
-
-	var req ChatCompletionRequest
-	if err := json.Unmarshal([]byte(bodyJSON), &req); err != nil {
-		t.Fatalf("failed to unmarshal request: %v", err)
-	}
-
-	geminiReq, _, err := ConvertChatRequestToGemini(&req, nil)
-	if err != nil {
-		t.Fatalf("ConvertChatRequestToGemini error: %v", err)
+func TestBuildGeminiVariables_WebSearch(t *testing.T) {
+	// 测试场景 1：传入带有 GoogleSearch 的 Tool
+	geminiReq := &GeminiRequest{
+		Contents: []Content{{Role: "user", Parts: []Part{{Text: "hello"}}}},
+		Tools: []Tool{
+			{GoogleSearch: &GoogleSearch{}},
+		},
 	}
 
 	if len(geminiReq.Tools) != 1 {
@@ -45,32 +33,22 @@ func TestConvertToolsTyped_WebSearch(t *testing.T) {
 	}
 }
 
-func TestConvertToolsTyped_WebSearchWithFunction(t *testing.T) {
-	// 测试场景 2：同时传入 function 声明与 web_search
-	bodyJSON := `{
-		"model": "gemini-3.6-flash",
-		"messages": [{"role": "user", "content": "hello"}],
-		"tools": [
-			{"type": "web_search"},
+func TestBuildGeminiVariables_WebSearchWithFunction(t *testing.T) {
+	// 测试场景 2：同时传入 function 声明与 googleSearch
+	geminiReq := &GeminiRequest{
+		Contents: []Content{{Role: "user", Parts: []Part{{Text: "hello"}}}},
+		Tools: []Tool{
 			{
-				"type": "function",
-				"function": {
-					"name": "get_weather",
-					"description": "get weather",
-					"parameters": {"type": "object", "properties": {}}
-				}
-			}
-		]
-	}`
-
-	var req ChatCompletionRequest
-	if err := json.Unmarshal([]byte(bodyJSON), &req); err != nil {
-		t.Fatalf("failed to unmarshal request: %v", err)
-	}
-
-	geminiReq, _, err := ConvertChatRequestToGemini(&req, nil)
-	if err != nil {
-		t.Fatalf("ConvertChatRequestToGemini error: %v", err)
+				GoogleSearch: &GoogleSearch{},
+				FunctionDeclarations: []FunctionDeclaration{
+					{
+						Name:        "get_weather",
+						Description: "get weather",
+						Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+					},
+				},
+			},
+		},
 	}
 
 	if len(geminiReq.Tools) != 1 {

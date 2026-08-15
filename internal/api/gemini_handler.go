@@ -106,7 +106,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 	defer cancel()
 
 	resolved := transform.ResolveModel(rawModel, g.cfg)
-	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s, 家族=%s", rawModel, resolved.ActualModel, resolved.Family)
+	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s, 家族=%v", rawModel, resolved.ActualModel, resolved.Family)
 
 	var resp *transform.GeminiResponse
 	var ve *vertex.VertexError
@@ -150,7 +150,7 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 		streamMode = transform.StreamModeAggregate
 	}
 
-	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 家族=%s, 流模式=%s", rawModel, resolved.ActualModel, resolved.Family, streamMode)
+	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 家族=%v, 流模式=%s", rawModel, resolved.ActualModel, resolved.Family, streamMode)
 
 	sw := newSSEWriter(w, "text/event-stream")
 
@@ -308,7 +308,7 @@ func (g *GeminiHandler) handleModelInfo(w http.ResponseWriter, modelName string)
 		}})
 		return
 	}
-	writeJSON(w, http.StatusOK, geminiModelInfo(name))
+	writeJSON(w, http.StatusOK, map[string]any{"name": "models/" + name, "displayName": name})
 }
 
 func (g *GeminiHandler) geminiSSE(obj map[string]any) string {
@@ -397,7 +397,15 @@ func finishReasonChunk(_ *vertex.VertexError) map[string]any {
 
 // normalizeGeminiBodyTyped 把 Gemini 原生 JSON 请求体映射为强类型请求。
 func normalizeGeminiBodyTyped(raw map[string]any) (*transform.GeminiRequest, error) {
-	return transform.NormalizeGeminiRequestMap(raw)
+	data, err := jsonx.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var req transform.GeminiRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, err
+	}
+	return &req, nil
 }
 
 // firstCandidateFinishReason 读取首候选 finishReason（原始未清洗）。

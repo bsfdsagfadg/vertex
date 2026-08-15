@@ -136,20 +136,17 @@ func TestSignatureApplyContents_NormalizesToBase64(t *testing.T) {
 	}
 }
 
-func TestConvertChatToGemini_AppliesSignaturesInBuildVariables(t *testing.T) {
-	req := &ChatCompletionRequest{
-		Model: "gemini-2.5-flash",
-		Messages: []Message{
-			{Role: "user", Content: MessageContent{String: stringPtr("check weather")}},
-			{Role: "assistant", Content: MessageContent{String: stringPtr("")}, ToolCalls: []OAIToolCall{
-				{ID: "call_1", Type: "function", Function: OAIToolCallFn{Name: "get_weather", Arguments: "{}"}},
+func TestBuildGeminiVariables_AppliesSignaturesInBuildVariables(t *testing.T) {
+	gem := &GeminiRequest{
+		Contents: []Content{
+			{Role: "user", Parts: []Part{{Text: "check weather"}}},
+			{Role: "model", Parts: []Part{
+				{FunctionCall: &FunctionCall{Name: "get_weather", Args: map[string]any{}}},
 			}},
-			{Role: "tool", Content: MessageContent{String: stringPtr("sunny")}, ToolCallID: "call_1", Name: "get_weather"},
+			{Role: "user", Parts: []Part{
+				{FunctionResponse: &FunctionResponse{Name: "get_weather", Response: map[string]any{"result": "sunny"}}},
+			}},
 		},
-	}
-	gem, _, err := ConvertChatRequestToGemini(req, nil)
-	if err != nil {
-		t.Fatalf("ConvertChatRequestTyped 返回 err: %v", err)
 	}
 
 	vars := BuildGeminiVariables("gemini-2.5-flash", gem, nil)
@@ -175,5 +172,3 @@ func TestConvertChatToGemini_AppliesSignaturesInBuildVariables(t *testing.T) {
 		t.Errorf("functionResponse part 不应带签名，got %v", sig)
 	}
 }
-
-func stringPtr(s string) *string { return &s }

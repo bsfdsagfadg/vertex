@@ -287,35 +287,13 @@ func TestBuildGeminiVariables_HistoryThoughtSignatureInjection(t *testing.T) {
 }
 
 func TestBuildGeminiVariables_ToolResponseIsolation(t *testing.T) {
-	// 构造 OpenAI 风格请求：user -> assistant(functionCall) -> tool(functionResponse) -> user(follow-up text)
-	strPtr := func(s string) *string { return &s }
-	chatReq := &ChatCompletionRequest{
-		Model: "gemini-3.6-flash",
-		Messages: []Message{
-			{Role: "user", Content: MessageContent{String: strPtr("Find files")}},
-			{
-				Role: "assistant",
-				ToolCalls: []OAIToolCall{
-					{
-						ID:       "call_123",
-						Type:     "function",
-						Function: OAIToolCallFn{Name: "glob", Arguments: `{"pattern":"*.go"}`},
-					},
-				},
-			},
-			{
-				Role:       "tool",
-				ToolCallID: "call_123",
-				Name:       "glob",
-				Content:    MessageContent{String: strPtr(`["main.go"]`)},
-			},
-			{Role: "user", Content: MessageContent{String: strPtr("Analyze main.go")}},
+	geminiReq := &GeminiRequest{
+		Contents: []Content{
+			{Role: "user", Parts: []Part{{Text: "Find files"}}},
+			{Role: "model", Parts: []Part{{FunctionCall: &FunctionCall{Name: "glob", Args: map[string]any{"pattern": "*.go"}}}}},
+			{Role: "user", Parts: []Part{{FunctionResponse: &FunctionResponse{Name: "glob", Response: map[string]any{"result": `["main.go"]`}}}}},
+			{Role: "user", Parts: []Part{{Text: "Analyze main.go"}}},
 		},
-	}
-
-	geminiReq, _, err := ConvertChatRequestToGemini(chatReq, nil)
-	if err != nil {
-		t.Fatalf("ConvertChatRequestToGemini failed: %v", err)
 	}
 
 	vars := BuildGeminiVariables("gemini-3.6-flash", geminiReq, nil)
@@ -373,47 +351,19 @@ func TestBuildGeminiVariables_ToolResponseIsolation(t *testing.T) {
 }
 
 func TestBuildGeminiVariables_MultipleParallelToolResponsesMerged(t *testing.T) {
-	// 构造多平行工具调用的 OpenAI 请求：
-	// user -> assistant(2 functionCalls: glob, read) -> tool1(glob) -> tool2(read) -> user(follow-up text)
-	strPtr := func(s string) *string { return &s }
-	chatReq := &ChatCompletionRequest{
-		Model: "gemini-3.6-flash",
-		Messages: []Message{
-			{Role: "user", Content: MessageContent{String: strPtr("Find and read files")}},
-			{
-				Role: "assistant",
-				ToolCalls: []OAIToolCall{
-					{
-						ID:       "call_1",
-						Type:     "function",
-						Function: OAIToolCallFn{Name: "glob", Arguments: `{"pattern":"*.go"}`},
-					},
-					{
-						ID:       "call_2",
-						Type:     "function",
-						Function: OAIToolCallFn{Name: "read", Arguments: `{"path":"main.go"}`},
-					},
-				},
-			},
-			{
-				Role:       "tool",
-				ToolCallID: "call_1",
-				Name:       "glob",
-				Content:    MessageContent{String: strPtr(`["main.go"]`)},
-			},
-			{
-				Role:       "tool",
-				ToolCallID: "call_2",
-				Name:       "read",
-				Content:    MessageContent{String: strPtr("package main")},
-			},
-			{Role: "user", Content: MessageContent{String: strPtr("Analyze the content")}},
+	geminiReq := &GeminiRequest{
+		Contents: []Content{
+			{Role: "user", Parts: []Part{{Text: "Find and read files"}}},
+			{Role: "model", Parts: []Part{
+				{FunctionCall: &FunctionCall{Name: "glob", Args: map[string]any{"pattern": "*.go"}}},
+				{FunctionCall: &FunctionCall{Name: "read", Args: map[string]any{"path": "main.go"}}},
+			}},
+			{Role: "user", Parts: []Part{
+				{FunctionResponse: &FunctionResponse{Name: "glob", Response: map[string]any{"result": `["main.go"]`}}},
+				{FunctionResponse: &FunctionResponse{Name: "read", Response: map[string]any{"result": "package main"}}},
+			}},
+			{Role: "user", Parts: []Part{{Text: "Analyze the content"}}},
 		},
-	}
-
-	geminiReq, _, err := ConvertChatRequestToGemini(chatReq, nil)
-	if err != nil {
-		t.Fatalf("ConvertChatRequestToGemini failed: %v", err)
 	}
 
 	vars := BuildGeminiVariables("gemini-3.6-flash", geminiReq, nil)
@@ -638,24 +588,13 @@ func TestBuildGeminiVariablesTyped_EmptyRoleMergeOrder(t *testing.T) {
 	}
 }
 
-func TestNormalizeGeminiRequestMap_EmptyRoleSanitized(t *testing.T) {
-	// 场景：raw map 中 contents 缺少 role 字段（复现日志 02.log 中的客户端行为）
-	raw := map[string]any{
-		"contents": []any{
-			map[string]any{
-				"parts": []any{map[string]any{"text": "hello"}},
-				// 注意：无 "role" 键
-			},
-		},
+func TestBuildGeminiVariables_Defaults(t *testing.T) {
+	req := &GeminiRequest{
+		Contents: []Content{{Role: "user", Parts: []Part{{Text: "hello"}}}},
 	}
-	gm, err := NormalizeGeminiRequestMap(raw)
-	if err != nil {
-		t.Fatalf("NormalizeGeminiRequestMap error: %v", err)
-	}
-	if len(gm.Contents) != 1 {
-		t.Fatalf("expected 1 content, got %d", len(gm.Contents))
-	}
-	if gm.Contents[0].Role != "user" {
-		t.Errorf("missing role should default to 'user', got %q", gm.Contents[0].Role)
+	vars := BuildGeminiVariables("gemini-3.6-flash", req, nil)
+	modelVal, _ := vars["model"].(string)
+	if modelVal != "gemini-3.6-flash" {
+		t.Errorf("Model=%q, want 'gemini-3.6-flash'", modelVal)
 	}
 }

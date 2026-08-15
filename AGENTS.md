@@ -50,13 +50,13 @@ graph TD
 
 | 主层分类 | 序号 | 领域子模块 | 主要文件与职责切片 |
 | :--- | :--- | :--- | :--- |
-| **1. 接入与协议适配层** | 1.1 | LLM 代理接入与物理隔离 Pipeline | **入口分流**：`chat_handler.go`、`gemini_handler.go`、`image_handler.go`、`audio_handler.go`、`models.go`、`handler.go`<br>**物理隔离专属调度 Pipeline**：`core_pipeline_text.go`（文本真流式/非流式）、`core_pipeline_image.go`（生图及单包聚合流式守护）、`core_pipeline_audio.go`（语音 TTS 纯二进制交付）<br>**认证与流控中间件**：`auth.go`、`middleware.go`、`fakestream.go`、`stream_observer.go` |
+| **1. 接入与协议适配层** | 1.1 | LLM 代理接入与物理隔离 Pipeline | **入口分流与路由**：`gemini_handler.go`（Gemini 原生 REST 协议入口）、`handler.go`、`server.go`（`/v1beta/models/*`、`/v1beta1/models/*` 等端点路由）<br>**物理隔离专属调度 Pipeline**：`core_pipeline_text.go`（文本真流式/非流式）、`core_pipeline_image.go`（生图及单包聚合流式守护）、`core_pipeline_audio.go`（语音 TTS 纯二进制交付）<br>**认证与流控中间件**：`auth.go`、`middleware.go`、`fakestream.go`、`stream_observer.go` |
 | | 1.2 | 后台管理 API | `admin_nodes_crud.go`、`admin_nodes_action.go`、`admin_proxy_nodes.go`（前置代理节点管理）、`admin_settings.go`、`admin_keys.go`、`admin_auth.go`、`admin_handler.go`、`nodes_registry.go` |
 | | 1.3 | 节点订阅导入 | `admin_import.go`、`admin_import_uri.go`、`admin_import_v2ray.go`、`admin_import_clash.go`、`admin_import_parser.go`、`admin_import_util.go` |
 | | 1.4 | Web 静态资源 | `admin.html`、`base.css` / `components.css` / `pages.css` / `admin.css`、`admin.js` / `api.js` / `utils.js`、`page-overview.js` / `page-nodes-api.js` / `page-nodes-ui.js` / `page-appearance-api.js` / `page-appearance-ui.js` / `page-settings.js` / `page-models.js` / `page-keys.js` / `page-logs.js` |
-| **2. 核心领域业务层** | 2.1 | 模型解析与家族自治策略 | **统一模型解析器**：`model_resolver.go`（GCP 规范前缀剥离、假非流修饰剥离、别名归一与家族绑定）<br>**强类型 DTO 与协议适配器**：`dto.go` / `oai_dto.go` / `oai_ext_dto.go`、`adaptor.go` / `text_adaptor.go` / `media_adaptor.go`<br>**模型家族自治策略（全生命周期解耦）**：`strategy.go`、`strategy_text.go`（文本/思考）、`strategy_image.go`（生图/混模）、`strategy_audio.go`（TTS 语音）、`policy.go`、`thinking.go`、`image.go`、`signature.go` |
+| **2. 核心领域业务层** | 2.1 | 模型解析与家族自治策略 | **统一模型解析器**：`model_resolver.go`（GCP 规范前缀剥离、假非流修饰剥离、别名归一与家族绑定）<br>**强类型 DTO 与 Schema 定义**：`dto.go`、`media_typed.go`、`schema.go`、`citation.go`、`strutil.go`<br>**模型家族自治策略（全生命周期解耦）**：`strategy.go`、`strategy_text.go`（文本/思考）、`strategy_image.go`（生图/混模）、`strategy_audio.go`（TTS 语音）、`policy.go`、`thinking.go`、`image.go`、`signature.go` |
 | | 2.2 | 家族独占变量构建 | `request_variables.go`（提供路由包装 `BuildGeminiVariablesTyped` / `BuildGeminiVariables`），实际构建由三大家族策略自治实施：<br>- **文本家族**（`strategy_text.go`）：同 Role 连续消息合并、空 Part 过滤、历史思维链签名注入、TrailingModelFix、系统指令降级<br>- **生图家族**（`strategy_image.go`）：生图特化参数清洗、硬性清空 Tools / ThinkingConfig<br>- **语音家族**（`strategy_audio.go`）：AUDIO 模态提纯、硬性清空/拦截 Tools / ThinkingConfig |
-| | 2.3 | 强类型流式协议与竞速调度引擎 | **流式协议与工具追踪**：`stream_typed.go`（OpenAI SSE 增量转换）、`stream_tracker.go`（`StreamToolCallTracker` 跨帧稳定工具追踪与空 Name 剥离）<br>**核心调度与竞速引擎**：`stream_chat.go`、`stream_transform.go`（UNSPECIFIED 清洗与上游 SSE 增量解析）、`race_engine.go` / `racing.go`（泛型 `RunRace[T]`、家族动态超时 `CalculateIdleTimeouts` 与增量有效性断言 `IsValidChunk` / `IsValidResponse` 竞速判定） |
+| | 2.3 | 强类型流式协议与竞速调度引擎 | **流式解析与工具追踪**：`stream_tracker.go`（`StreamToolCallTracker` 跨帧稳定工具追踪）<br>**核心调度与竞速引擎**：`stream_chat.go`、`stream_transform.go`（UNSPECIFIED 清洗与上游 Gemini SSE 增量解析）、`stream_scanner.go`、`race_engine.go` / `racing.go`（泛型 `RunRace[T]`、家族动态超时 `CalculateIdleTimeouts` 与增量有效性断言 `IsValidChunk` / `IsValidResponse` 竞速判定） |
 | **3. 基础设施与通用服务** | 3.1 | 节点池与状态管理 | **出口竞速节点池**：`internal/nodes`（`store_mem.go`、`store_db.go`、`store_health.go`）<br>**前置代理节点池**：`internal/entrynodes`（`store_mem.go`、`store_db.go`、`store_health.go`） |
 | | 3.2 | 网络代理与 TLS | **协议编解码与 Dialer**：`codec_uri.go`、`codec_protocols.go`、`sing_box_builder.go`、`sing_box_dialer.go`、`dialer.go`、`socks5_loopback.go`<br>**连接池与客户端**：`client.go`、`headers.go`、`node.go`、`internal/spool`（TLS 会话池与多路复用）、`internal/netx`（平台网络适配） |
 | | 3.3 | reCAPTCHA Token 池 | `recaptcha.go`、`pool.go` |
@@ -106,7 +106,7 @@ graph TD
 3. **家族自治与变量独占构建铁律（Family Autonomy & Dedicated BuildVariables）**：
    - **上行请求阶段**：通过各家族 `ModelStrategy` 独立实施 `Enhance`（默认参数与模态注入）、`Validate`（硬约束拦截）、`Prepare`（出口前特化清洗）与 `BuildVariables`（家族独占 variables 构建）。生图/语音家族硬性清空无关 Tools/ThinkingConfig，杜绝跨家族变量污染；
    - **下行响应阶段**：各家族独立实施 `CalculateIdleTimeouts`（如生图家族放大超时防误杀）、`IsValidChunk` 与 `IsValidResponse`（图文混合/纯生图/语音精准内容断言），竞速引擎保持零模型感知。
-4. **协议转换层无业务逻辑铁律（Pure Protocol Adaptors）**：协议转换层（`TextAdaptor`、`ImageAdaptor`、`AudioAdaptor`）仅负责 DTO 结构对齐与映射，严禁在 Adaptor 中散落家族特化增强、历史签名注入或 Native Tools 规范化等业务逻辑。
+4. **Gemini 原生 DTO 与 Schema 传输铁律（Gemini Native Only）**：全链路采用 Gemini 原生 REST 规范，严禁引入或退回任何中转协议映射层，所有入站及出站交互严格对齐强类型 `GeminiRequest` / `GeminiResponse` / `GeminiChunk` 数据契约。
 5. **强类型与零 map 往返铁律**：核心领域业务层必须维持强类型 `struct` 传递（利用指针 + `omitempty` 杜绝脏数据污染），严禁退回旧版的 `map[string]any` 中转与 in-place 修改范式。
 6. **注释语言**：代码注释、报错解释、逻辑说明使用简体中文；语法、变量名、函数名保持英文。
 7. **测试指令**：任何代码修改完成后，必须先运行受影响包测试；重大改动需运行全量测试。

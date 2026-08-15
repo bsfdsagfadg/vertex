@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"encoding/base64"
 	"fmt"
 	"regexp"
 	"strings"
@@ -145,9 +146,20 @@ func trimLowerSuffix(s string) string {
 	return strings.ToLower(s)
 }
 
-// hasRemotePrefix 判断 URL 是否为远程引用（http/https/gs）。
-func hasRemotePrefix(url string) bool {
-	return strings.HasPrefix(url, "http://") ||
-		strings.HasPrefix(url, "https://") ||
-		strings.HasPrefix(url, "gs://")
+func decodeBase64Loose(s string) ([]byte, error) {
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	t := strings.ReplaceAll(strings.ReplaceAll(s, "-", "+"), "_", "/")
+	if pad := len(t) % 4; pad != 0 {
+		t += strings.Repeat("=", 4-pad)
+	}
+	return base64.StdEncoding.DecodeString(t)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

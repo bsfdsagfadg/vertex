@@ -50,7 +50,7 @@ func (m *middleware) withRecover(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Printf("[Server] panic recovered: %v\n%s", rec, debug.Stack())
-				oaiError(w, http.StatusInternalServerError, "服务内部错误，请联系开发者 (internal error)", "server_error")
+				writeGeminiError(w, r.Context(), vertex.NewInternalError("服务内部错误，请联系开发者 (internal error)", nil))
 			}
 		}()
 		next.ServeHTTP(w, r)
