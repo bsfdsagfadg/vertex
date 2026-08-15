@@ -19,6 +19,8 @@ func (m *mockConfigProvider) DefaultImageSize() string         { return m.defaul
 func (m *mockConfigProvider) DefaultResponseModalities() string { return m.defaultResponseModalities }
 func (m *mockConfigProvider) DropMaxTokens() bool               { return false }
 func (m *mockConfigProvider) SafetySettings() map[string]string { return nil }
+func (m *mockConfigProvider) TrailingModelFixEnabled() bool    { return false }
+func (m *mockConfigProvider) TrailingFixModels() []string      { return nil }
 
 func TestTextStrategy_Enhance(t *testing.T) {
 	cfg := &mockConfigProvider{defaultThinkingLevel: "中"}
@@ -82,6 +84,64 @@ func TestTextStrategy_Enhance(t *testing.T) {
 		tc := req.GenerationConfig.ThinkingConfig
 		if tc == nil || tc.ThinkingLevel != "MEDIUM" {
 			t.Fatalf("expected console default MEDIUM, got %v", tc)
+		}
+	})
+
+	t.Run("3.7 flash - console default MINIMAL downgrades to LOW", func(t *testing.T) {
+		cfgMinimal := &mockConfigProvider{defaultThinkingLevel: "最低"}
+		st := &TextStrategy{model: "gemini-3.7-flash"}
+		req := &GeminiRequest{}
+		st.Enhance(req, cfgMinimal)
+		tc := req.GenerationConfig.ThinkingConfig
+		if tc == nil || tc.ThinkingLevel != "LOW" {
+			t.Fatalf("expected console default LOW after downgrade for 3.7-flash, got %v", tc)
+		}
+	})
+}
+
+func TestTextStrategy_ValidateAndBuildVariables(t *testing.T) {
+	cfg := &mockConfigProvider{defaultThinkingLevel: "中"}
+
+	t.Run("3.7 flash - validate invalid level MINIMAL throws error", func(t *testing.T) {
+		st := &TextStrategy{model: "gemini-3.7-flash"}
+		req := &GeminiRequest{
+			GenerationConfig: &GenerationConfig{
+				ThinkingConfig: &ThinkingConfig{ThinkingLevel: "MINIMAL"},
+			},
+		}
+		if err := st.Validate(req); err == nil {
+			t.Fatalf("expected validation error for MINIMAL on gemini-3.7-flash, got nil")
+		}
+	})
+
+	t.Run("3.7 flash - validate valid level LOW passes", func(t *testing.T) {
+		st := &TextStrategy{model: "gemini-3.7-flash"}
+		req := &GeminiRequest{
+			GenerationConfig: &GenerationConfig{
+				ThinkingConfig: &ThinkingConfig{ThinkingLevel: "LOW"},
+			},
+		}
+		if err := st.Validate(req); err != nil {
+			t.Fatalf("expected validation pass for LOW on gemini-3.7-flash, got %v", err)
+		}
+	})
+
+	t.Run("BuildVariables - parallel tool responses packed in single user turn", func(t *testing.T) {
+		st := &TextStrategy{model: "gemini-3.6-flash"}
+		req := &GeminiRequest{
+			Contents: []Content{
+				{Role: "user", Parts: []Part{{Text: "call tool"}}},
+				{Role: "user", Parts: []Part{{FunctionResponse: &FunctionResponse{Name: "fn1"}}}},
+				{Role: "user", Parts: []Part{{FunctionResponse: &FunctionResponse{Name: "fn2"}}}},
+			},
+		}
+		vars := st.BuildVariables("gemini-3.6-flash", req, cfg)
+		contents := vars.GeminiRequest.Contents
+		if len(contents) != 2 {
+			t.Fatalf("expected 2 content turns, got %d", len(contents))
+		}
+		if len(contents[1].Parts) != 2 {
+			t.Fatalf("expected 2 packed function responses in turn 2, got %d", len(contents[1].Parts))
 		}
 	})
 }

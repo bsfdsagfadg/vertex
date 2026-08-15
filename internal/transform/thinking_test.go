@@ -93,13 +93,13 @@ func TestResolveThinkingConfig_ImageModelsLevelRestriction(t *testing.T) {
 		want   string
 	}{
 		{"image-min-inject", "gemini-3.1-flash-image", "最低", true, "MINIMAL"},
-		{"image-low-skip", "gemini-3.1-flash-image", "低", false, ""},
-		{"image-med-skip", "gemini-3.1-flash-image", "中", false, ""},
+		{"image-low-downgrade", "gemini-3.1-flash-image", "低", true, "MINIMAL"},
+		{"image-med-downgrade", "gemini-3.1-flash-image", "中", true, "MINIMAL"},
 		{"image-high-inject", "gemini-3.1-flash-image", "高", true, "HIGH"},
 		{"lite-image-min-inject", "gemini-3.1-flash-lite-image", "最低", true, "MINIMAL"},
-		{"lite-image-low-skip", "gemini-3.1-flash-lite-image", "低", false, ""},
+		{"lite-image-low-downgrade", "gemini-3.1-flash-lite-image", "低", true, "MINIMAL"},
 		{"lite-image-high-inject", "gemini-3.1-flash-lite-image", "高", true, "HIGH"},
-		{"3.7-flash-min-skip", "gemini-3.7-flash", "最低", false, ""},
+		{"3.7-flash-min-downgrade", "gemini-3.7-flash", "最低", true, "LOW"},
 		{"3.7-flash-low-inject", "gemini-3.7-flash", "低", true, "LOW"},
 		{"3.7-flash-med-inject", "gemini-3.7-flash", "中", true, "MEDIUM"},
 		{"3.7-flash-high-inject", "gemini-3.7-flash", "高", true, "HIGH"},

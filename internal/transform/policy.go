@@ -17,6 +17,7 @@ func ResolveThinkingConfig(defaultLevel, model string) *ThinkingConfig {
 		return nil
 	}
 
+	targetLevel := defaultLevel
 	switch defaultLevel {
 	case "自动":
 		if capability.mechanism == ThinkingBudget {
@@ -25,8 +26,20 @@ func ResolveThinkingConfig(defaultLevel, model string) *ThinkingConfig {
 		}
 		return nil
 	case "最低", "低", "中", "高":
-		if capability.levels != nil && !capability.levels[defaultLevel] {
-			return nil
+		// 如果设定的档位不在 capability.levels 白名单中，执行平滑降级到最近的有效最低档位
+		if capability.levels != nil && len(capability.levels) > 0 && !capability.levels[defaultLevel] {
+			fallbackLevel := ""
+			order := []string{"最低", "低", "中", "高"}
+			for _, lvl := range order {
+				if capability.levels[lvl] {
+					fallbackLevel = lvl
+					break
+				}
+			}
+			if fallbackLevel == "" {
+				return nil
+			}
+			targetLevel = fallbackLevel
 		}
 	default:
 		return nil
@@ -34,11 +47,11 @@ func ResolveThinkingConfig(defaultLevel, model string) *ThinkingConfig {
 
 	switch capability.mechanism {
 	case ThinkingLevel:
-		if level, ok := levelToThinkingLevel[defaultLevel]; ok {
+		if level, ok := levelToThinkingLevel[targetLevel]; ok {
 			return &ThinkingConfig{ThinkingLevel: level}
 		}
 	case ThinkingBudget:
-		if ratio, ok := levelToBudgetRatio[defaultLevel]; ok {
+		if ratio, ok := levelToBudgetRatio[targetLevel]; ok {
 			budget := capability.maxBudget * ratio / 4
 			return &ThinkingConfig{ThinkingBudget: &budget}
 		}

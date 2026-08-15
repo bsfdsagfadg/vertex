@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -36,11 +37,45 @@ func (s *TextStrategy) Enhance(req *GeminiRequest, cfg config.ConfigProvider) {
 	}
 }
 
-// Validate 文本家族无跨家族载荷硬约束。
-func (s *TextStrategy) Validate(req *GeminiRequest) error { return nil }
+// Validate 结合 TextModelSpec 进行强约束拦截：
+//   - 若模型属于 ThinkingUnsupported 且客户端显式传入 thinkingConfig 时抛出 400 Invalid Argument；
+//   - 若模型属于 ThinkingLevel 机制，校验档位是否在 Spec 准许列表（如 HIGH/MEDIUM/LOW/MINIMAL）；
+//   - 校验工具透传约束。
+func (s *TextStrategy) Validate(req *GeminiRequest) error {
+	if req == nil {
+		return nil
+	}
+	spec := TextSpecFor(s.model)
 
-// Prepare 文本家族无特化数据清洗逻辑。
-func (s *TextStrategy) Prepare(req *GeminiRequest) {}
+	if req.GenerationConfig != nil && req.GenerationConfig.ThinkingConfig != nil {
+		tc := req.GenerationConfig.ThinkingConfig
+		if spec.Mechanism == ThinkingUnsupported {
+			return fmt.Errorf("thinkingConfig is not supported for model %s", s.model)
+		}
+		if spec.Mechanism == ThinkingLevel && tc.ThinkingLevel != "" {
+			level := strings.ToUpper(strings.TrimSpace(tc.ThinkingLevel))
+			if spec.AllowedLevels != nil && len(spec.AllowedLevels) > 0 && !spec.AllowedLevels[level] {
+				return fmt.Errorf("invalid thinking level %s for model %s", level, s.model)
+			}
+		}
+	}
+
+	if (!spec.SupportsTools) && (len(req.Tools) > 0 || req.ToolConfig != nil) {
+		return fmt.Errorf("tools and toolConfig are not supported for model %s", s.model)
+	}
+
+	return nil
+}
+
+// Prepare 执行特化清洗：对 SafetySettings 进行 Trim + Upper 规范化处理。
+func (s *TextStrategy) Prepare(req *GeminiRequest) {
+	if req == nil {
+		return
+	}
+	if len(req.SafetySettings) > 0 {
+		req.SafetySettings = prepareNativeSafetySettings(req.SafetySettings)
+	}
+}
 
 // BuildVariables 实现文本家族独占的上行 variables 构建：
 // 保留同 role 合并、历史思维链签名注入、TrailingModelFix、系统指令 fallback 等所有语言模型核心增强。

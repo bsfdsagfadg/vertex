@@ -31,43 +31,68 @@ func BuildGeminiVariables(model string, req *GeminiRequest, cfg config.ConfigPro
 	return m
 }
 
-// mergeContiguousRolesTyped 合并相邻同 role 的 content。
-//
-// 规则：
-// 1. 若相邻两个 Content 均为 FunctionResponse（即 partsIsOnlyFunctionResponsesTyped 为 true），
-//    则允许并推荐合并到一个 Content 中，满足 Vertex AI 上游对于多工具调用 (Parallel Tool Calls) 需打包在同一个 turn 的强要求；
-// 2. 若只有一个 Content 包含 FunctionResponse 而另一个是普通 user 内容（如随后的文本/图片提示词），
-//    则严格禁止合并，保持 FunctionResponse 在独立 Content turn 中隔离。
-func mergeContiguousRolesTyped(contents []Content) []Content {
+// packParallelToolResponses 专门处理 FunctionResponse 的打包：
+// 相邻且仅包含 FunctionResponse 的多个 Content turn，强制打包平滑合并在同一个 Content (role="user") 中，
+// 满足 Vertex AI 上游对于多工具调用 (Parallel Tool Calls) 需打包在同一个 turn 的强要求。
+func packParallelToolResponses(contents []Content) []Content {
 	if len(contents) == 0 {
 		return contents
 	}
-	merged := []Content{contents[0]}
-	for _, c := range contents[1:] {
+	merged := make([]Content, 0, len(contents))
+	for _, c := range contents {
+		currIsFR := partsIsOnlyFunctionResponsesTyped(c.Parts)
+		if !currIsFR {
+			merged = append(merged, c)
+			continue
+		}
+		if len(merged) > 0 {
+			prev := &merged[len(merged)-1]
+			if partsIsOnlyFunctionResponsesTyped(prev.Parts) {
+				prev.Parts = append(prev.Parts, c.Parts...)
+				continue
+			}
+		}
+		cCopy := c
+		cCopy.Role = "user"
+		merged = append(merged, cCopy)
+	}
+	return merged
+}
+
+// mergeContiguousTextRoles 专门处理普通非 FunctionResponse 消息：
+// 仅对相邻的普通同 Role（user->user 或 model->model）消息做 Part 级平滑合并。
+// 任何包含 FunctionResponse 的 Content turn 保持独立隔离，不与普通文本合并。
+func mergeContiguousTextRoles(contents []Content) []Content {
+	if len(contents) == 0 {
+		return contents
+	}
+	merged := make([]Content, 0, len(contents))
+	for _, c := range contents {
+		if len(merged) == 0 {
+			merged = append(merged, c)
+			continue
+		}
 		prev := &merged[len(merged)-1]
 		if c.Role != prev.Role {
 			merged = append(merged, c)
 			continue
 		}
-		prevIsFR := partsIsOnlyFunctionResponsesTyped(prev.Parts)
-		currIsFR := partsIsOnlyFunctionResponsesTyped(c.Parts)
-
-		if prevIsFR && currIsFR {
-			// 两者都是纯 FunctionResponse，合并为同一个 Content turn
-			prev.Parts = append(prev.Parts, c.Parts...)
-			continue
-		}
-
 		if partsContainFunctionResponseTyped(prev.Parts) || partsContainFunctionResponseTyped(c.Parts) {
-			// 其中一个为 FunctionResponse，另一个包含非 FunctionResponse 内容（如 user text），隔离禁止合并
 			merged = append(merged, c)
 			continue
 		}
-
-		// 普通同 role 消息合并
 		prev.Parts = append(prev.Parts, c.Parts...)
 	}
 	return merged
+}
+
+// mergeContiguousRolesTyped 组合 packParallelToolResponses 与 mergeContiguousTextRoles。
+func mergeContiguousRolesTyped(contents []Content) []Content {
+	if len(contents) == 0 {
+		return contents
+	}
+	packed := packParallelToolResponses(contents)
+	return mergeContiguousTextRoles(packed)
 }
 
 // sanitizeContentRolesTyped 将 contents 中 Role 为空或纯空白的 Content

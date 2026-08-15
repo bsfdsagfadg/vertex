@@ -78,8 +78,8 @@ var imageModelSpecs = map[string]ImageModelSpec{
 //nolint:gochecknoglobals
 var unknownModelWarned sync.Map
 
-// GetImageModelSpec 获取指定图模型的白名单规格（未知模型返回保守默认）。
-func GetImageModelSpec(model string) ImageModelSpec {
+// ImageSpecFor 获取指定图模型的白名单规格（遵循 Go 命名规范，无 Get 前缀）。
+func ImageSpecFor(model string) ImageModelSpec {
 	if spec, ok := imageModelSpecs[model]; ok {
 		return spec
 	}
@@ -97,6 +97,11 @@ func GetImageModelSpec(model string) ImageModelSpec {
 		ThinkingLevels:   nil,
 		SupportsThinking: false,
 	}
+}
+
+// GetImageModelSpec 获取指定图模型的白名单规格（保留为 ImageSpecFor 的兼容包装函数）。
+func GetImageModelSpec(model string) ImageModelSpec {
+	return ImageSpecFor(model)
 }
 
 // ImageSizeAllowedFor 模型是否支持某档位。
