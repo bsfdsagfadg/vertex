@@ -20,7 +20,7 @@ func TestInitDBAndMigrate(t *testing.T) {
 	// Create dummy legacy files to test migration
 	nodesContent := []byte(`{
 		"nodes": [
-			{"raw_uri": "http://127.0.0.1:8080", "type": "openai", "name": "Node A", "disabled": false}
+			{"raw_uri": "http://127.0.0.1:8080", "type": "socks5", "name": "Node A", "disabled": false}
 		]
 	}`)
 	_ = os.WriteFile(filepath.Join(tempDir, "nodes.json"), nodesContent, 0644)

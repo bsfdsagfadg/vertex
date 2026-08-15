@@ -1,13 +1,13 @@
 # Vertex AI Proxy
 
-免费使用 Google Gemini 模型的代理工具。将 **OpenAI 兼容的 API 请求**无缝转换为对 Google 匿名端点的调用——让你的客户端以为在调用 OpenAI，实际上使用的是免费的 Gemini 服务。也支持原始Gemini格式
+基于 Google Gemini 原生 REST API 规范的代理工具，支持匿名与多节点负载均衡调度。
 
 **免安装、解压即用的绿色软件。** 全面支持 Windows、Linux、macOS 以及 Android 手机等平台。
 
 ## ✨ 核心特性
 
-- **完整兼容 OpenAI 接口**：支持聊天（流式/非流式）、工具调用（Function Calling）、多模态输入（图片/文件）。
-- **丰富的多媒体支持**：支持文生图、图片编辑、语音合成（TTS）。
+- **原生 Gemini 协议驱动**：完整支持 `/v1beta/models/*` 架构下的聊天（文本/思考/真流式）、工具调用（Function Calling）、多模态输入。
+- **全家族自治支持**：针对文本/思考、生图/混模（Imagen）、TTS 语音合成（`FamilyAudio`）实施三大家族物理隔离与独占调度。
 - **内置反爬突破**：内置 TLS 指纹伪装及 reCAPTCHA token 自动获取，轻松通过 Google 匿名端点校验。
 - **内置代理节点池**：内嵌 sing-box 内核，支持批量导入订阅和节点，提供并发竞速功能，有效应对429
 - **可视化管理面板**：提供精美的 Web 后台，无需修改 JSON 文件，在浏览器中即可轻松管理 API 密钥、模型别名、代理节点和系统设置。

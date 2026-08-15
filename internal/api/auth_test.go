@@ -13,7 +13,7 @@ import (
 
 func newReq(t *testing.T, headers map[string]string, query string) *http.Request {
 	t.Helper()
-	rawURL := "http://example.com/v1/chat/completions"
+	rawURL := "http://example.com/v1beta/models/gemini-2.5-flash:generateContent"
 	if query != "" {
 		rawURL += "?" + query
 	}

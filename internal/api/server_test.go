@@ -137,7 +137,7 @@ func TestWithMetrics_PanicDoesNotLeakReq(t *testing.T) {
 		panic("boom")
 	}))).ServeHTTP(
 		rec,
-		httptest.NewRequest("POST", "/v1/chat/completions", nil),
+		httptest.NewRequest("POST", "/v1beta/models/gemini-2.5-flash:generateContent", nil),
 	)
 
 	if rec.Code != http.StatusInternalServerError {

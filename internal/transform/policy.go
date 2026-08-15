@@ -240,7 +240,7 @@ var audioFormatMIME = map[string]string{
 	"flac": "audio/flac",
 }
 
-// AudioInputMIME 把 input_audio.format 映射到 Gemini inlineData mimeType。
+// AudioInputMIME 把音频格式后缀映射到 Gemini inlineData mimeType。
 func AudioInputMIME(format string) string {
 	return audioFormatMIME[strings.ToLower(strings.TrimSpace(format))]
 }
