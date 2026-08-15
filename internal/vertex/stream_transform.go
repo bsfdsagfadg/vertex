@@ -140,6 +140,17 @@ func processStreamingObject(raw []byte, emit func(*transform.GeminiChunk) bool, 
 						}
 						ch := decodeChunkTyped(itemRaw)
 						if ch == nil {
+							// 空 item（如 {}）：legacy 先并入外层 meta 再 extractChunk，
+							// 仍可产出纯元数据帧——此处等价补发。
+							if meta := mergedMetaChunkTyped(itemProbe, &data); meta != nil {
+								if done := emitAndCheckFinish(meta, emit); done {
+									if meta.UsageMetadata != nil || sf == nil {
+										return true, nil
+									}
+									*sf = true
+									return false, nil
+								}
+							}
 							continue
 						}
 						mergeMetaTyped(ch, itemProbe, &data)
@@ -196,21 +207,28 @@ func decodeChunkTyped(payload []byte) *transform.GeminiChunk {
 		chunk.PromptFeedback = nil
 	}
 	// parts 清洗（等价 cleanStreamParts）+ role 归一（等价 extractChunk 的 model 默认值）。
+	// 空指针候选（上游 candidates:[null] 等异常帧）直接丢弃，等价 legacy 跳过非 map 元素；
+	// 无 content/parts 的候选（如纯 finishReason 帧）必须保留，等价 legacy 原样透传。
+	cands := chunk.Candidates[:0]
 	for _, cand := range chunk.Candidates {
-		if cand.Content == nil || cand.Content.Parts == nil {
+		if cand == nil {
 			continue
 		}
-		parts := cand.Content.Parts[:0]
-		for i := range cand.Content.Parts {
-			if cleanTypedPart(&cand.Content.Parts[i]) {
-				parts = append(parts, cand.Content.Parts[i])
+		if cand.Content != nil && cand.Content.Parts != nil {
+			parts := cand.Content.Parts[:0]
+			for i := range cand.Content.Parts {
+				if cleanTypedPart(&cand.Content.Parts[i]) {
+					parts = append(parts, cand.Content.Parts[i])
+				}
+			}
+			cand.Content.Parts = parts
+			if cand.Content.Role == "" {
+				cand.Content.Role = "model"
 			}
 		}
-		cand.Content.Parts = parts
-		if cand.Content.Role == "" {
-			cand.Content.Role = "model"
-		}
+		cands = append(cands, cand)
 	}
+	chunk.Candidates = cands
 	if chunkEmpty(&chunk) {
 		return nil
 	}
@@ -292,6 +310,47 @@ func mergeMetaTyped(ch *transform.GeminiChunk, itemProbe map[string]json.RawMess
 	}
 }
 
+// mergedMetaChunkTyped 为空 item（解码后无候选）构造等价 legacy 的合并 meta 帧：
+// item 自身 5 个 meta 键按真值过滤，缺失的 4 个外层键补入（已有键优先，等价浅拷贝+缺失合并）。
+func mergedMetaChunkTyped(itemProbe map[string]json.RawMessage, outer *streamingData) *transform.GeminiChunk {
+	var chunk transform.GeminiChunk
+	if raw, ok := itemProbe["usageMetadata"]; ok {
+		if rawTruthy(raw) {
+			_ = json.Unmarshal(raw, &chunk.UsageMetadata)
+		}
+	} else if rawTruthy(outer.UsageMetadata) {
+		_ = json.Unmarshal(outer.UsageMetadata, &chunk.UsageMetadata)
+	}
+	if v, ok := itemProbe["modelVersion"]; ok {
+		if rawTruthy(v) {
+			_ = json.Unmarshal(v, &chunk.ModelVersion)
+		}
+	} else if outer.ModelVersion != "" {
+		chunk.ModelVersion = outer.ModelVersion
+	}
+	if v, ok := itemProbe["responseId"]; ok {
+		if rawTruthy(v) {
+			_ = json.Unmarshal(v, &chunk.ResponseID)
+		}
+	} else if outer.ResponseID != "" {
+		chunk.ResponseID = outer.ResponseID
+	}
+	if v, ok := itemProbe["promptFeedback"]; ok {
+		if rawTruthy(v) {
+			_ = json.Unmarshal(v, &chunk.PromptFeedback)
+		}
+	} else if rawTruthy(outer.PromptFeedback) {
+		_ = json.Unmarshal(outer.PromptFeedback, &chunk.PromptFeedback)
+	}
+	if v, ok := itemProbe["createTime"]; ok && rawTruthy(v) {
+		_ = json.Unmarshal(v, &chunk.CreateTime)
+	}
+	if chunkEmpty(&chunk) {
+		return nil
+	}
+	return &chunk
+}
+
 // cleanTypedPart 清洗单个 typed part，严格镜像 cleanPart 的删除规则。
 // 返回 false 表示该 part 应被丢弃（等价 cleanPart 返回 nil）。
 func cleanTypedPart(p *transform.Part) bool {
@@ -368,8 +427,9 @@ func emitAndCheckFinish(chunk *transform.GeminiChunk, emit func(*transform.Gemin
 }
 
 // chunkFinishReasonTyped 取 chunk 的 candidates[0].finishReason。
+// Candidates[0] 可能为 nil（legacy map 回退对 candidates:[null] 的原样透传），必须防御。
 func chunkFinishReasonTyped(chunk *transform.GeminiChunk) string {
-	if chunk == nil || len(chunk.Candidates) == 0 {
+	if chunk == nil || len(chunk.Candidates) == 0 || chunk.Candidates[0] == nil {
 		return ""
 	}
 	return chunk.Candidates[0].FinishReason
