@@ -213,8 +213,9 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 			if isSafetyBlock(err) {
 				_ = sw.write(g.geminiSSE(geminiSafetyChunk(err)))
 			} else {
-				pkt := finishReasonChunk(err)
-				_ = sw.write(g.geminiSSE(pkt))
+				// 已向客户端输出内容后断流：透传真实错误（含 Truncated 标记的真实原因），
+				// 而非模糊 finishReason:OTHER；客户端可区分"网络中断"与"安全拦截"。
+				_ = sw.write(g.geminiSSE(vertexErrorToGemini(err)))
 			}
 			streamErrWritten = true
 			return false
@@ -390,13 +391,6 @@ func geminiSafetyChunk(e *vertex.VertexError) map[string]any {
 			"safetyRatings":      []any{},
 			"blockReasonMessage": e.Message,
 		},
-	}
-}
-
-// finishReasonChunk 构造一个仅带 finishReason 的 Gemini 错误帧。
-func finishReasonChunk(_ *vertex.VertexError) map[string]any {
-	return map[string]any{
-		"candidates": []any{map[string]any{"finishReason": "OTHER", "index": 0}},
 	}
 }
 

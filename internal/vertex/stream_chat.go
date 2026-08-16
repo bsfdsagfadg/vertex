@@ -20,12 +20,6 @@ import (
 // 首包前触发会自动重试/故障转移；首包后触发向客户端推送超时 error chunk。
 var ErrStreamIdleTimeout = errors.New("stream idle timeout")
 
-// maxPendingMetadataChunks 是首内容帧前缓存元数据帧的防御性上限。
-// 正常 Gemini 流式响应首内容帧前仅 1~3 个元数据帧；超额时静默丢弃后续元数据帧，
-// 仅保留前 maxPendingMetadataChunks 帧待首内容帧到来时一并 flush。
-// 丢弃的帧为纯元数据（promptFeedback/usageMetadata 等），不影响客户端内容解析正确性。
-const maxPendingMetadataChunks = 128
-
 // sessionTimeoutFromContext 从 context 的 deadline 推导 Session 的超时秒数。
 // 至少返回 1 秒（tls-client.WithTimeoutSeconds 只接受正秒），但 context 的 deadline
 // 仍由 Session.Do 优先检查；该值仅用于构造传输层超时。
@@ -57,212 +51,53 @@ func (c *VertexAIClient) StreamChat(ctx context.Context, model string, req *tran
 	if strategy == nil {
 		strategy = transform.NewModelFamilyRouter().For(model)
 	}
+	// L1 透传层：单候选一次尝试，原样上报真实错误（不重试、不分类、不转换）。
+	// 每轮独立建连 + 独立取 token；首帧已交付后断流时对错误标 Truncated（Committed 语义）。
 	op := func(ctx context.Context, proxyURI string) <-chan StreamChunk {
 		ch := make(chan StreamChunk, 64)
 		go func() {
 			defer close(ch)
-			c.executeStreamingWithRetries(ctx, model, req, proxyURI, func(chunk StreamChunk) bool {
+			sess, err := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, RequestIDFromContext(ctx))
+			if err != nil {
+				ch <- StreamChunk{Err: NewInternalError("create session: "+err.Error(), nil)}
+				return
+			}
+			defer sess.Close()
+			tok, err := c.pool.GetTokenShared(ctx)
+			if err != nil || tok == "" {
+				ch <- StreamChunk{Err: NewRecaptchaUnavailableError("Could not fetch recaptcha token", err)}
+				return
+			}
+			var contentYielded bool
+			emit := func(chunk *transform.GeminiChunk) bool {
+				if strategy.IsValidChunk(chunk) {
+					contentYielded = true
+				}
 				select {
-				case ch <- chunk:
+				case ch <- StreamChunk{Data: chunk}:
 					return true
 				case <-ctx.Done():
 					return false
 				}
-			}, strategy)
+			}
+			attemptErr := withRTFirstTryCompensation(ctx, func() error {
+				return c.executeStreamingAttempt(ctx, sess, model, req, tok, emit, strategy)
+			})
+			if attemptErr == nil {
+				if !contentYielded {
+					ch <- StreamChunk{Err: NewEmptyResponseError("Upstream returned empty response (no content)", nil)}
+				}
+				return
+			}
+			ve := NormalizeError(attemptErr)
+			if contentYielded {
+				ve.WithTruncated()
+			}
+			ch <- StreamChunk{Err: ve}
 		}()
 		return ch
 	}
 	StreamParallel(ctx, c.cfg, model, op, yield, strategy)
-}
-
-func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model string, req *transform.GeminiRequest, proxyURI string, yield func(StreamChunk) bool, strategy transform.ModelStrategy) {
-	if ctx.Err() != nil {
-		yield(StreamChunk{Err: NewContextError(ctx.Err())})
-		return
-	}
-
-	if strategy == nil {
-		strategy = transform.NewModelFamilyRouter().For(model)
-	}
-
-	cfg := c.cfg
-	maxRetries := cfg.MaxRetries()
-	if cfg.ParallelPoolEnabled() && !cfg.ParallelPoolRetryEnabled() {
-		maxRetries = 0
-	}
-	contentYielded := false
-	var lastError *VertexError
-
-	reqID := RequestIDFromContext(ctx)
-	sess, err := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
-	if err != nil {
-		yield(StreamChunk{Err: NewInternalError("create session: " + err.Error(), nil)})
-		return
-	}
-	defer func() { sess.Close() }()
-
-	recaptchaToken := ""
-	isFirstAuth := true
-	attempt := 0
-
-retryLoop:
-	for attempt <= maxRetries {
-		log.Printf("[Vertex] [StreamChat] 开始尝试 (Attempt %d/%d), 模型=%s, 请求ID=%s, 代理=%s", attempt, maxRetries, model, reqID, nodes.GetNodeName(proxyURI))
-		if recaptchaToken == "" {
-			tok, err := c.pool.GetTokenShared(ctx)
-			if err != nil {
-				log.Printf("[Vertex] [StreamChat] 获取 recaptcha token 失败: %v, 代理=%s", err, nodes.GetNodeName(proxyURI))
-			}
-			recaptchaToken = tok
-			isFirstAuth = true
-		}
-		if recaptchaToken == "" {
-			log.Printf("[Vertex] [StreamChat] 代理 %s 获取 recaptcha token 失败，停止重试", nodes.GetNodeName(proxyURI))
-			lastError = NewAuthenticationError("Could not fetch recaptcha token for node", nil)
-			break retryLoop
-		}
-
-		validChunkCount := 0
-		var pendingChunks []*transform.GeminiChunk
-
-		attemptErr := c.executeStreamingAttempt(ctx, sess, model, req, recaptchaToken, isFirstAuth, func(ch *transform.GeminiChunk) bool {
-			if strategy.IsValidChunk(ch) {
-				for _, p := range pendingChunks {
-					if !yield(StreamChunk{Data: p}) {
-						return false
-					}
-				}
-				pendingChunks = nil
-				contentYielded = true
-				validChunkCount++
-				return yield(StreamChunk{Data: ch})
-			}
-			if contentYielded {
-				return yield(StreamChunk{Data: ch})
-			}
-			if len(pendingChunks) < maxPendingMetadataChunks {
-				pendingChunks = append(pendingChunks, ch)
-			}
-			return true
-		}, strategy)
-
-		if attemptErr == nil {
-			if validChunkCount > 0 {
-				for _, p := range pendingChunks {
-					if !yield(StreamChunk{Data: p}) {
-						break
-					}
-				}
-				pendingChunks = nil
-				return
-			}
-			pendingChunks = nil
-			attemptErr = NewEmptyResponseError("Upstream returned empty response (no content)", nil)
-		}
-
-		if errors.Is(attemptErr, context.Canceled) || errors.Is(attemptErr, context.DeadlineExceeded) {
-			log.Printf("[Vertex] [StreamChat] 客户端取消请求/上下文超时，停止重试: 请求ID=%s, 代理=%s, err=%v", reqID, nodes.GetNodeName(proxyURI), attemptErr)
-			lastError = NewContextError(attemptErr)
-			break retryLoop
-		}
-
-		ve := asVertexError(attemptErr)
-		switch {
-		case ve != nil && ve.Kind == "auth":
-			isVerifyFail := strings.Contains(ve.Message, "Failed to verify action") ||
-				strings.Contains(ve.Message, "The caller does not have permission")
-			if isFirstAuth && isVerifyFail {
-				isFirstAuth = false
-				if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
-					break retryLoop
-				}
-				continue
-			}
-			recaptchaToken = ""
-			isFirstAuth = true
-			lastError = ve
-			if contentYielded || attempt >= maxRetries {
-				break retryLoop
-			}
-			attempt++
-			if err := sleepCtx(ctx, time.Second); err != nil {
-				break retryLoop
-			}
-
-		case ve != nil && ve.Kind == "ratelimit":
-			lastError = ve
-			if contentYielded || attempt >= maxRetries {
-				log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发 429 失败, 请求ID=%s, 代理=%s", attempt, maxRetries, model, reqID, nodes.GetNodeName(proxyURI))
-				break retryLoop
-			}
-			sess.Close()
-			newSess, e := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
-			if e != nil {
-				yield(StreamChunk{Err: NormalizeError(e)})
-				return
-			}
-			sess = newSess
-
-			wait := ve.RetryAfter
-			if wait <= 0 {
-				wait = min(10, 1+attempt)
-			}
-			log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发 429 将重试 (延迟 %ds), 请求ID=%s, 代理=%s", attempt, maxRetries, model, wait, reqID, nodes.GetNodeName(proxyURI))
-			attempt++
-			if err := sleepCtx(ctx, time.Duration(wait)*time.Second); err != nil {
-				break retryLoop
-			}
-
-		case ve != nil && isEmptyResponseError(ve):
-			log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发空响应错误，准备重试, 请求ID=%s, 代理=%s", attempt, maxRetries, model, reqID, nodes.GetNodeName(proxyURI))
-			isFirstAuth = true
-			lastError = ve
-			if contentYielded || attempt >= maxRetries {
-				break retryLoop
-			}
-			sess.Close()
-			newSess, e := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
-			if e != nil {
-				yield(StreamChunk{Err: NormalizeError(e)})
-				return
-			}
-			sess = newSess
-			attempt++
-			if err := sleepCtx(ctx, backoff(attempt)); err != nil {
-				break retryLoop
-			}
-
-		case ve != nil:
-			lastError = ve
-			if ve.Kind == "internal" || !ve.IsRetryable() || contentYielded || attempt >= maxRetries {
-				log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发异常错误失败: [%s] %s, 请求ID=%s, 代理=%s", attempt, maxRetries, model, ve.Kind, ve.Message, reqID, nodes.GetNodeName(proxyURI))
-				break retryLoop
-			}
-			log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发异常错误将重试: [%s] %s, 请求ID=%s, 代理=%s", attempt, maxRetries, model, ve.Kind, ve.Message, reqID, nodes.GetNodeName(proxyURI))
-			sess.Close()
-			newSess, e := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, reqID)
-			if e != nil {
-				yield(StreamChunk{Err: NormalizeError(e)})
-				return
-			}
-			sess = newSess
-			attempt++
-			if err := sleepCtx(ctx, backoff(attempt)); err != nil {
-				break retryLoop
-			}
-
-		default:
-			lastError = NormalizeError(attemptErr)
-			break retryLoop
-		}
-	}
-
-	if lastError != nil {
-		if contentYielded {
-			log.Printf("[Vertex] [StreamChat] 内容已输出后发生错误: [%s] %s, 请求ID=%s, 代理=%s", lastError.Kind, lastError.Message, reqID, nodes.GetNodeName(proxyURI))
-		}
-		yield(StreamChunk{Err: lastError})
-	}
 }
 
 // executeStreamingAttempt 执行单次流式请求：发请求 → 增量扫描 JSON → 提取 chunk → 过滤 finishReason。
@@ -270,7 +105,7 @@ retryLoop:
 // emit 回调把清洗后的 Gemini chunk 推给上层；
 // emit 始终返回 true；客户端断开由 ctx 取消触发 read 报错，scanStream 干净结束。
 // ctx 绑定 to 上游流连接：ctx 取消时 Body.Read 报错，scanStream 干净结束（返回 nil，不 panic）。
-func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *transport.Session, model string, req *transform.GeminiRequest, recaptchaToken string, _ bool, emit func(*transform.GeminiChunk) bool, strategy transform.ModelStrategy) error {
+func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *transport.Session, model string, req *transform.GeminiRequest, recaptchaToken string, emit func(*transform.GeminiChunk) bool, strategy transform.ModelStrategy) error {
 	reqID := RequestIDFromContext(ctx)
 	log.Printf("[Vertex] [executeStreamingAttempt] 准备发送流式请求: 模型=%s, 请求ID=%s, 代理=%s", model, reqID, nodes.GetNodeName(sess.ProxyURI))
 	cfg := c.cfg
@@ -282,12 +117,12 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	// 缓冲存活到本函数返回（整个流消费完）后由 defer Close 删除临时文件。
 	buf, err := spool.EncodeJSON(newBody)
 	if err != nil {
-		return NewInternalError("marshal payload: " + err.Error(), nil)
+		return NewInternalError("marshal payload: "+err.Error(), nil)
 	}
 	defer func() { _ = buf.Close() }()
 	reader, err := buf.Reader()
 	if err != nil {
-		return NewInternalError("spool reader: " + err.Error(), nil)
+		return NewInternalError("spool reader: "+err.Error(), nil)
 	}
 	header := transport.XHRHeaders(
 		"application/json", "*/*",
@@ -387,7 +222,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		if sr.StatusCode == 401 || sr.StatusCode == 403 ||
 			strings.Contains(errText, "Failed to verify action") ||
 			strings.Contains(errText, "The caller does not have permission") {
-			return NewAuthenticationError("Authentication/Recaptcha failed: " + errText, nil)
+			return NewAuthenticationError("Authentication/Recaptcha failed: "+errText, nil)
 		}
 		if parsed := parseErrorResponse(errText); parsed != nil {
 			parsed.UpstreamResponse = errText
@@ -433,6 +268,33 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	}
 
 	return nil
+}
+
+// isAuthVerifyFail 判定 auth 错误是否为 rT 验证时序失败（"Failed to verify action" 或
+// "The caller does not have permission"）。这类失败在同一 token 静置 500ms 后重试一次
+// 即可成功（rT 时序补偿机制），其余 auth 错误（token 彻底失效）交由预算循环换 token 承接。
+func isAuthVerifyFail(ve *VertexError) bool {
+	if ve == nil || ve.Kind != "auth" {
+		return false
+	}
+	return strings.Contains(ve.Message, "Failed to verify action") ||
+		strings.Contains(ve.Message, "The caller does not have permission")
+}
+
+// withRTFirstTryCompensation 是全局唯一的 rT 第一发补偿机制：
+// 每个真实请求的第一发必被上游 "Failed to verify action" 拒绝，必须以同一 token
+// 重发第二发才成功（与等待时长无关，保留旧版 500ms 间隔）。换新 token 同样首轮必败，
+// 故该机制无法由预算循环承接（预算每轮均为新 token），只能附着在"发起真实请求"的
+// 公共动作上，流式/非流式两个 L1 入口共用同一实现。
+func withRTFirstTryCompensation(ctx context.Context, attempt func() error) error {
+	err := attempt()
+	if err == nil || !isAuthVerifyFail(NormalizeError(err)) {
+		return err
+	}
+	if sleepCtx(ctx, 500*time.Millisecond) != nil {
+		return err
+	}
+	return attempt()
 }
 
 // isEmptyResponseError 判断 error 是否为空响应错误（NewEmptyResponseError 构造）。

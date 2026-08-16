@@ -8,7 +8,6 @@
   "request_timeout_seconds": 180,
   "parallel_pool_delay_dynamic": false,
   "parallel_pool_enabled": true,
-  "parallel_pool_retry_enabled": false,
   "parallel_pool_size": 15,
   "recaptcha_try_entry_or_direct": true,
   "default_image_size": "1K",

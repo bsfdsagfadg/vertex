@@ -31,15 +31,14 @@ type AppConfig struct { //nolint:govet
 	RequestTimeoutSeconds     int               `json:"request_timeout_seconds"`
 
 	// 并发池与节点锁定配置
-	ActiveNodeURI            string `json:"active_node_uri"`
-	ParallelPoolEnabled      bool   `json:"parallel_pool_enabled"`
-	ParallelPoolRetryEnabled bool   `json:"parallel_pool_retry_enabled"`
-	ParallelPoolSize         int    `json:"parallel_pool_size"`
-	DebugPprof               bool     `json:"debug_pprof"`
-	DebugMode                bool     `json:"debug_mode"`
-	TrailingModelFixEnabled  bool     `json:"trailing_model_fix_enabled"`
-	TrailingFixModels        []string `json:"trailing_fix_models,omitempty"`
-	ParallelPoolDelayDynamic bool     `json:"parallel_pool_delay_dynamic"`
+	ActiveNodeURI             string   `json:"active_node_uri"`
+	ParallelPoolEnabled       bool     `json:"parallel_pool_enabled"`
+	ParallelPoolSize          int      `json:"parallel_pool_size"`
+	DebugPprof                bool     `json:"debug_pprof"`
+	DebugMode                 bool     `json:"debug_mode"`
+	TrailingModelFixEnabled   bool     `json:"trailing_model_fix_enabled"`
+	TrailingFixModels         []string `json:"trailing_fix_models,omitempty"`
+	ParallelPoolDelayDynamic  bool     `json:"parallel_pool_delay_dynamic"`
 	RecaptchaTryEntryOrDirect bool     `json:"recaptcha_try_entry_or_direct"`
 	// 匿名遥测：仅发送实例 ID + 版本 + 平台，不含任何用户/网络/隐私数据。
 	// 用于了解软件的版本分布和活跃数。指针类型区分"未设置"和"显式 false"，未设置时默认开启。
@@ -76,7 +75,7 @@ func DefaultConfig() AppConfig {
 		MaxSpillMB:                2048,
 		RequestTimeoutSeconds:     180,
 		ParallelPoolEnabled:       true,
-		ParallelPoolSize:          15, // 默认为 15 并发
+		ParallelPoolSize:          15,    // 默认为 15 并发
 		ParallelPoolDelayDynamic:  false, // 建议默认关闭动态对冲，改为稳定的秒级接力
 		RecaptchaTryEntryOrDirect: true,  // 默认优先尝试前置/直连抓取 RT
 		BackgroundImage:           "url('background.jpg')",
@@ -84,10 +83,10 @@ func DefaultConfig() AppConfig {
 		FontColorType:             "adaptive",
 		FontColor:                 "#f6f1e9",
 		CustomBgPresets:           []string{},
-		DefaultImageSize:           "1K",
-		DefaultThinkingLevel:       "自动",
-		DefaultResponseModalities:  "图文",
-		StreamIdleTimeoutSeconds:   20,
+		DefaultImageSize:          "1K",
+		DefaultThinkingLevel:      "自动",
+		DefaultResponseModalities: "图文",
+		StreamIdleTimeoutSeconds:  20,
 		TrailingFixModels: []string{
 			"gemini-3.5-flash-lite",
 			"gemini-3.6-flash",

@@ -1,7 +1,6 @@
 const SETTINGS_FIELDS = [
   // 🚀 Group: pool (并发与 Token 池管理)
   { k: 'parallel_pool_enabled', label: '并发请求池', type: 'bool', group: 'pool', desc: '同时请求多个健康节点，首包到达即采纳，降低延迟' },
-  { k: 'parallel_pool_retry_enabled', label: '并发池单点重试', type: 'bool', group: 'pool', desc: '开启后允许并发池内节点429后依然等待并重试（适用于少节点场景）' },
   { k: 'parallel_pool_size', label: '并发数', type: 'number', max: 20, min: 1, group: 'pool', desc: '并发抢跑的节点数 (默认 15，最大 20)' },
   { k: 'parallel_pool_delay_dynamic', label: '动态对冲延迟', type: 'bool', group: 'pool', desc: '根据节点平均响应时间动态调整并发启动间隔，平衡延迟与流量消耗' },
   { k: 'recaptcha_try_entry_or_direct', label: '优先前置/直连抓取 RT', type: 'bool', group: 'pool', desc: '开启时获取 reCAPTCHA Token 优先尝试前置代理/直连；关闭或失败时顺次轮询健康候选节点' },
@@ -147,20 +146,17 @@ async function loadSettings() {
     window._hasSettingsUnloadListener = true;
   }
 
-  const parallelRetryEl = $('#set_parallel_pool_retry_enabled');
   const parallelEl = $('#set_parallel_pool_enabled');
-  if (parallelEl && parallelRetryEl) {
+  if (parallelEl) {
     const updateRetryDisabled = () => {
-      const disabled = !parallelEl.checked;
-      parallelRetryEl.disabled = disabled;
-      if (disabled) parallelRetryEl.checked = false;
-      const retryContainer = parallelRetryEl.closest('.field');
-      if (retryContainer) {
-        retryContainer.style.opacity = disabled ? '0.5' : '1';
-        retryContainer.style.pointerEvents = disabled ? 'none' : '';
-        const retryDesc = retryContainer.querySelector('.desc');
-        if (retryDesc) {
-          retryDesc.textContent = disabled ? '需先启用并发请求池' : '开启后允许并发池内节点429后依然等待并重试（适用于少节点场景）';
+      // 并发池关闭时禁用并发数配置（重试预算已统一按 max_retries 生效）
+      const parallelSizeEl = $('#set_parallel_pool_size');
+      if (parallelSizeEl) {
+        parallelSizeEl.disabled = !parallelEl.checked;
+        const sizeContainer = parallelSizeEl.closest('.field');
+        if (sizeContainer) {
+          sizeContainer.style.opacity = parallelEl.checked ? '1' : '0.5';
+          sizeContainer.style.pointerEvents = parallelEl.checked ? '' : 'none';
         }
       }
     };
@@ -239,9 +235,6 @@ async function saveSettings() {
   // Keep sending whatever telemetry_enabled is in curSettings to prevent config loss/errors
   if (curSettings.telemetry_enabled !== undefined) {
     out['telemetry_enabled'] = curSettings.telemetry_enabled;
-  }
-  if (!out['parallel_pool_enabled']) {
-    out['parallel_pool_retry_enabled'] = false;
   }
   await API.settings.put(out); toast('设置已保存');
   window.hasUnsavedSettings = false;

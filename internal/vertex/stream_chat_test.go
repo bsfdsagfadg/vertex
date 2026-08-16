@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
@@ -47,6 +47,167 @@ func TestIsEmptyResponseError_NonVertexError(t *testing.T) {
 	}
 }
 
+// ── isAuthVerifyFail（rT 时序补偿判定） ──
+
+func TestIsAuthVerifyFail(t *testing.T) {
+	cases := []struct {
+		name string
+		ve   *VertexError
+		want bool
+	}{
+		{"verify action", NewAuthenticationError("Authentication/Recaptcha failed: ... Failed to verify action ...", nil), true},
+		{"permission", NewAuthenticationError("The caller does not have permission", nil), true},
+		{"plain auth", NewAuthenticationError("token expired", nil), false},
+		{"network", NewNetworkError(fmt.Errorf("connection reset")), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isAuthVerifyFail(tc.ve); got != tc.want {
+				t.Errorf("isAuthVerifyFail(%v) = %v, want %v", tc.ve, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStreamChatOp_AuthVerifyFail_RetrySucceeds 验证 rT 时序补偿机制：
+// 首轮请求被上游 "Failed to verify action" 拒绝后，同一 token 静置 500ms 重试一次即成功，
+// 且不重新获取 token（GetTokenShared 仅调用 1 次）。
+func TestStreamChatOp_AuthVerifyFail_RetrySucceeds(t *testing.T) {
+	nodes.ResetState()
+	defer nodes.ResetState()
+
+	// mock 上游：第 1 次请求返回 401 verify fail，第 2 次返回正常内容帧。
+	var requestCount int
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestCount++
+		cur := requestCount
+		mu.Unlock()
+		if cur == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(401)
+			_, _ = w.Write([]byte(`{"error":{"message":"Failed to verify action"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		contentFrame := `{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}}}]}`
+		_, _ = w.Write([]byte(contentFrame))
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	origURL := batchGraphqlURL
+	batchGraphqlURL = server.URL + "/batchGraphql"
+	defer func() { batchGraphqlURL = origURL }()
+
+	cfg := config.DefaultConfig()
+	provider := config.StaticProvider(cfg)
+
+	tokenFetchCount := 0
+	var tokenMu sync.Mutex
+	netClient := transport.NewNetworkClient(nil)
+	vc := &VertexAIClient{
+		net: netClient,
+		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
+			tokenMu.Lock()
+			tokenFetchCount++
+			tokenMu.Unlock()
+			return "test-token", nil
+		}),
+		cfg: provider,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var gotData bool
+	var gotErr *VertexError
+	vc.StreamChat(ctx, "test-model", &transform.GeminiRequest{}, func(chunk StreamChunk) bool {
+		if chunk.Err != nil && gotErr == nil {
+			gotErr = chunk.Err
+			return false
+		}
+		if chunk.Data != nil && firstPartText(chunk.Data) == "hello" {
+			gotData = true
+		}
+		return true
+	}, &transform.TextStrategy{})
+
+	if gotErr != nil {
+		t.Fatalf("expected success, got error: %+v", gotErr)
+	}
+	if !gotData {
+		t.Fatal("expected content chunk after rT timing retry")
+	}
+	if requestCount != 2 {
+		t.Errorf("expected 2 upstream requests (1 fail + 1 retry), got %d", requestCount)
+	}
+	tokenMu.Lock()
+	fetches := tokenFetchCount
+	tokenMu.Unlock()
+	if fetches != 1 {
+		t.Errorf("expected single token fetch (same-token retry), got %d", fetches)
+	}
+}
+
+// TestStreamChatOp_AuthVerifyFail_RetryExhausted 验证时序补偿耗尽路径：
+// 首轮与同 token 重试均被 "Failed to verify action" 拒绝时，如实透传 auth 错误（不换 token、不误报）。
+func TestStreamChatOp_AuthVerifyFail_RetryExhausted(t *testing.T) {
+	nodes.ResetState()
+	defer nodes.ResetState()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(401)
+		_, _ = w.Write([]byte(`{"error":{"message":"Failed to verify action"}}`))
+	}))
+	defer server.Close()
+
+	origURL := batchGraphqlURL
+	batchGraphqlURL = server.URL + "/batchGraphql"
+	defer func() { batchGraphqlURL = origURL }()
+
+	cfg := config.DefaultConfig()
+	provider := config.StaticProvider(cfg)
+
+	netClient := transport.NewNetworkClient(nil)
+	vc := &VertexAIClient{
+		net: netClient,
+		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
+			return "test-token", nil
+		}),
+		cfg: provider,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var gotErr *VertexError
+	vc.StreamChat(ctx, "test-model", &transform.GeminiRequest{}, func(chunk StreamChunk) bool {
+		if chunk.Err != nil && gotErr == nil {
+			gotErr = chunk.Err
+		}
+		return true
+	}, &transform.TextStrategy{})
+
+	if gotErr == nil {
+		t.Fatal("expected auth error chunk, got nil")
+	}
+	if gotErr.Kind != "auth" {
+		t.Errorf("expected auth kind, got %q: %+v", gotErr.Kind, gotErr)
+	}
+	if !isAuthVerifyFail(gotErr) {
+		t.Errorf("expected verify-fail auth error, got %+v", gotErr)
+	}
+}
+
 // TestExecuteStreamingAttempt_MalformedFrame_NetworkError 补充方案：HTTP 流返回畸形完整帧时，
 // 必须报 network 类 VertexError（而非空响应错误），按 MaxRetries=0 立即失败。
 func TestExecuteStreamingAttempt_MalformedFrame_NetworkError(t *testing.T) {
@@ -67,7 +228,7 @@ func TestExecuteStreamingAttempt_MalformedFrame_NetworkError(t *testing.T) {
 
 	netClient := transport.NewNetworkClient(nil)
 	vc := &VertexAIClient{
-		net:  netClient,
+		net: netClient,
 		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
 			return "test-token", nil
 		}),
@@ -83,7 +244,7 @@ func TestExecuteStreamingAttempt_MalformedFrame_NetworkError(t *testing.T) {
 	}
 	defer sess.Close()
 
-	err = vc.executeStreamingAttempt(ctx, sess, "test-model", &transform.GeminiRequest{}, "test-token", true, func(ch *transform.GeminiChunk) bool {
+	err = vc.executeStreamingAttempt(ctx, sess, "test-model", &transform.GeminiRequest{}, "test-token", func(ch *transform.GeminiChunk) bool {
 		return true
 	}, &transform.TextStrategy{})
 
@@ -143,7 +304,7 @@ func TestExecuteStreamingAttempt_IdleTimeout(t *testing.T) {
 
 	netClient := transport.NewNetworkClient(nil)
 	vc := &VertexAIClient{
-		net:  netClient,
+		net: netClient,
 		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
 			return "test-token", nil
 		}),
@@ -160,7 +321,7 @@ func TestExecuteStreamingAttempt_IdleTimeout(t *testing.T) {
 	defer sess.Close()
 
 	var emitted []transform.GeminiChunk
-	err = vc.executeStreamingAttempt(ctx, sess, "test-model", &transform.GeminiRequest{}, "test-token", true, func(ch *transform.GeminiChunk) bool {
+	err = vc.executeStreamingAttempt(ctx, sess, "test-model", &transform.GeminiRequest{}, "test-token", func(ch *transform.GeminiChunk) bool {
 		if ch != nil {
 			emitted = append(emitted, *ch)
 		}
@@ -203,7 +364,7 @@ func TestExecuteStreamingAttempt_IdleTimeout_InDoStream(t *testing.T) {
 
 	netClient := transport.NewNetworkClient(nil)
 	vc := &VertexAIClient{
-		net:  netClient,
+		net: netClient,
 		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
 			return "test-token", nil
 		}),
@@ -220,7 +381,7 @@ func TestExecuteStreamingAttempt_IdleTimeout_InDoStream(t *testing.T) {
 	defer sess.Close()
 
 	var emitted []transform.GeminiChunk
-	err = vc.executeStreamingAttempt(ctx, sess, "test-model", &transform.GeminiRequest{}, "test-token", true, func(ch *transform.GeminiChunk) bool {
+	err = vc.executeStreamingAttempt(ctx, sess, "test-model", &transform.GeminiRequest{}, "test-token", func(ch *transform.GeminiChunk) bool {
 		if ch != nil {
 			emitted = append(emitted, *ch)
 		}
@@ -238,188 +399,114 @@ func TestExecuteStreamingAttempt_IdleTimeout_InDoStream(t *testing.T) {
 	}
 }
 
-// TestExecuteStreamingWithRetries_ClientCancel 验证传入已取消的 ctx 时干净退出。
-func TestExecuteStreamingWithRetries_ClientCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // 立即取消
+// TestStreamChatOp_TokenFailure_RecaptchaUnavailable 验证 op 闭包在 GetTokenShared 失败时
+// 返回 NewRecaptchaUnavailableError（Kind=infra → FailFast，不重试、不误塞 auth）。
+func TestStreamChatOp_TokenFailure_RecaptchaUnavailable(t *testing.T) {
+	nodes.ResetState()
+	defer nodes.ResetState()
 
 	cfg := config.DefaultConfig()
 	provider := config.StaticProvider(cfg)
 
 	netClient := transport.NewNetworkClient(nil)
 	vc := &VertexAIClient{
-		net:  netClient,
+		net: netClient,
 		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
-			return "test-token", nil
+			return "", fmt.Errorf("rT exhausted")
 		}),
 		cfg: provider,
 	}
 
-	var gotErr *VertexError
-	yield := func(chunk StreamChunk) bool {
-		if chunk.Err != nil {
-			gotErr = chunk.Err
-		}
-		return false
-	}
-
-	// 不应 panic
-	vc.executeStreamingWithRetries(ctx, "test-model", &transform.GeminiRequest{}, "test-proxy", yield, &transform.TextStrategy{})
-
-	if gotErr == nil {
-		t.Fatal("expected context error, got nil")
-	}
-	if !errors.Is(gotErr, context.Canceled) {
-		t.Errorf("expected context.Canceled, got %v", gotErr)
-	}
-}
-
-// TestExecuteStreamingWithRetries_NetworkError_RecreatesSession 验证网络/空响应重试时，
-// executeStreamingWithRetries 会关闭并重建 Session（干净会话），使重试成功拿到有效内容。
-// 修复前：空响应 / 网络错误重试沿用旧 Session，复用脏连接池导致连续失败。
-func TestExecuteStreamingWithRetries_NetworkError_RecreatesSession(t *testing.T) {
-	var mu sync.Mutex
-	requestCount := 0
-	// 第 1 次请求返回「无有效内容」触发空响应错误，第 2 次请求返回有效内容。
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		requestCount++
-		count := requestCount
-		mu.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(200)
-		if count == 1 {
-			// 首帧无有效内容（仅 UNSPECIFIED finishReason）→ 空响应分支。
-			_, _ = w.Write([]byte(`{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}}}]}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"content":{"parts":[{"text":"recovered"}],"role":"model"},"finishReason":"STOP"}]}}}}]}`))
-	}))
-	defer server.Close()
-
-	origURL := batchGraphqlURL
-	batchGraphqlURL = server.URL + "/batchGraphql"
-	defer func() { batchGraphqlURL = origURL }()
-
-	cfg := config.DefaultConfig()
-	cfg.ParallelPoolEnabled = false // 池重试开关关闭时 MaxRetries 生效
-	cfg.MaxRetries = 2
-	cfg.StreamIdleTimeoutSeconds = 360
-	provider := config.StaticProvider(cfg)
-
-	netClient := transport.NewNetworkClient(nil)
-	vc := &VertexAIClient{
-		net:  netClient,
-		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
-			return "test-token", nil
-		}),
-		cfg: provider,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var gotText string
-	yield := func(chunk StreamChunk) bool {
-		if chunk.Err != nil {
-			t.Errorf("unexpected error chunk: %v", chunk.Err)
-			return false
-		}
-		if chunk.Data != nil {
-			gotText = firstPartText(chunk.Data)
-		}
-		return true
-	}
-
-	vc.executeStreamingWithRetries(ctx, "test-model", &transform.GeminiRequest{}, "", yield, &transform.TextStrategy{})
-
-	if gotText != "recovered" {
-		t.Errorf("expected retries to recover valid content, got %q", gotText)
-	}
-	if requestCount < 2 {
-		t.Errorf("预期发生重试（>=2 次请求），实际 %d 次", requestCount)
-	}
-}
-
-// TestExecuteStreamingAttempt_PendingChunksCap 验证 pendingChunks 封顶丢弃：
-// 首内容帧前上游持续推送远超 maxPendingMetadataChunks 的纯元数据帧时，
-// 仅缓存前 128 帧（其余静默丢弃），首内容帧正常 flush 与 yield，不崩溃不 OOM。
-func TestExecuteStreamingAttempt_PendingChunksCap(t *testing.T) {
-	start := time.Now()
-	defer func() {
-		if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-			t.Errorf("测试超过 500ms 规范, 实际 %v", elapsed)
-		}
-	}()
-
-	metaFrame := `{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}}}]}`
-	contentFrame := `{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"STOP"}]}}}}]}`
-
-	// 200 个无有效内容的元数据帧 + 1 个内容帧（远超 128 封顶）。
-	var payload strings.Builder
-	for i := 0; i < 200; i++ {
-		payload.WriteString(metaFrame)
-	}
-	payload.WriteString(contentFrame)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(200)
-		_, _ = w.Write([]byte(payload.String()))
-	}))
-	defer server.Close()
-
-	origURL := batchGraphqlURL
-	batchGraphqlURL = server.URL + "/batchGraphql"
-	defer func() { batchGraphqlURL = origURL }()
-
-	cfg := config.DefaultConfig()
-	cfg.ParallelPoolEnabled = false
-	cfg.MaxRetries = 0
-	cfg.StreamIdleTimeoutSeconds = 360
-	provider := config.StaticProvider(cfg)
-
-	netClient := transport.NewNetworkClient(nil)
-	vc := &VertexAIClient{
-		net:  netClient,
-		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
-			return "test-token", nil
-		}),
-		cfg: provider,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	var emitted []*transform.GeminiChunk
 	var gotErr *VertexError
-	vc.executeStreamingWithRetries(ctx, "test-model", &transform.GeminiRequest{}, "", func(chunk StreamChunk) bool {
-		if chunk.Err != nil {
+	vc.StreamChat(ctx, "test-model", &transform.GeminiRequest{}, func(chunk StreamChunk) bool {
+		if chunk.Err != nil && gotErr == nil {
 			gotErr = chunk.Err
-			return true
-		}
-		if chunk.Data != nil {
-			emitted = append(emitted, chunk.Data)
 		}
 		return true
 	}, &transform.TextStrategy{})
 
-	if gotErr != nil {
-		t.Fatalf("unexpected error chunk: %v", gotErr)
+	if gotErr == nil {
+		t.Fatal("expected error chunk, got nil")
 	}
-	if len(emitted) != maxPendingMetadataChunks+1 {
-		t.Errorf("期望 yield %d 帧（128 元数据 + 1 内容），实际 %d", maxPendingMetadataChunks+1, len(emitted))
+	if gotErr.Kind != "infra" || gotErr.Code != 502 {
+		t.Errorf("expected infra/502, got Kind=%s Code=%d", gotErr.Kind, gotErr.Code)
 	}
-	found := false
-	for _, ch := range emitted {
-		if firstPartText(ch) == "hello" {
-			found = true
-			break
+	if gotErr.ClassifyBatch() != FailFast {
+		t.Errorf("expected FailFast disposition, got %v", gotErr.ClassifyBatch())
+	}
+}
+
+// TestStreamChatOp_TruncatedAfterContent 验证 op 闭包在首帧已交付后断流时，
+// 对错误标注 Truncated（Committed 语义：绝不重试），并如实透传真实原因。
+func TestStreamChatOp_TruncatedAfterContent(t *testing.T) {
+	nodes.ResetState()
+	defer nodes.ResetState()
+
+	// mock 上游：先发有效内容帧，随后发畸形数据触发网络扫描错误（首帧后断流）。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
 		}
+		contentFrame := `{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}}}]}`
+		_, _ = w.Write([]byte(contentFrame))
+		flusher.Flush()
+		_, _ = w.Write([]byte(`{"a":}`))
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	origURL := batchGraphqlURL
+	batchGraphqlURL = server.URL + "/batchGraphql"
+	defer func() { batchGraphqlURL = origURL }()
+
+	cfg := config.DefaultConfig()
+	provider := config.StaticProvider(cfg)
+
+	netClient := transport.NewNetworkClient(nil)
+	vc := &VertexAIClient{
+		net: netClient,
+		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
+			return "test-token", nil
+		}),
+		cfg: provider,
 	}
-	if !found {
-		t.Error("内容帧 text=hello 应被正常 yield")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var gotData bool
+	var gotErr *VertexError
+	vc.StreamChat(ctx, "test-model", &transform.GeminiRequest{}, func(chunk StreamChunk) bool {
+		if chunk.Err != nil && gotErr == nil {
+			gotErr = chunk.Err
+			return false
+		}
+		if chunk.Data != nil {
+			gotData = true
+		}
+		return true
+	}, &transform.TextStrategy{})
+
+	if !gotData {
+		t.Fatal("expected content chunk before truncation")
+	}
+	if gotErr == nil {
+		t.Fatal("expected truncated error chunk, got nil")
+	}
+	if !gotErr.Truncated {
+		t.Errorf("expected Truncated flag set, got %+v", gotErr)
+	}
+	if gotErr.ClassifyBatch() != Committed {
+		t.Errorf("expected Committed disposition, got %v", gotErr.ClassifyBatch())
+	}
+	if gotErr.Kind != "network" {
+		t.Errorf("expected network kind (真实原因), got %q", gotErr.Kind)
 	}
 }
 

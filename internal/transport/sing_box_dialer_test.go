@@ -48,46 +48,45 @@ func newFakeCfg() *fakeCfg {
 	return &fakeCfg{}
 }
 
-func (c *fakeCfg) DefaultImageSize() string                    { return "1K" }
-func (c *fakeCfg) DefaultThinkingLevel() string                { return "自动" }
-func (c *fakeCfg) PortAPI() int                                { panic("unexpected") }
-func (c *fakeCfg) MaxRetries() int                             { panic("unexpected") }
-func (c *fakeCfg) AdminPassword() string                       { panic("unexpected") }
-func (c *fakeCfg) DebugPprof() bool                            { panic("unexpected") }
-func (c *fakeCfg) DebugMode() bool                             { panic("unexpected") }
-func (c *fakeCfg) TrailingModelFixEnabled() bool               { panic("unexpected") }
-func (c *fakeCfg) TrailingFixModels() []string                 { panic("unexpected") }
-func (c *fakeCfg) DropMaxTokens() bool                         { panic("unexpected") }
-func (c *fakeCfg) AggregateStream() bool                       { panic("unexpected") }
-func (c *fakeCfg) MaxN() int                                   { panic("unexpected") }
-func (c *fakeCfg) MaxRequestMB() int                           { panic("unexpected") }
-func (c *fakeCfg) RequestTimeoutSeconds() int                  { panic("unexpected") }
-func (c *fakeCfg) MaxSpillMB() int                             { panic("unexpected") }
-func (c *fakeCfg) VertexAPIKey() string                        { panic("unexpected") }
-func (c *fakeCfg) CountTokensQuerySignature() string           { panic("unexpected") }
-func (c *fakeCfg) SafetySettings() map[string]string           { panic("unexpected") }
-func (c *fakeCfg) ParallelPoolEnabled() bool                   { panic("unexpected") }
-func (c *fakeCfg) ParallelPoolRetryEnabled() bool              { panic("unexpected") }
-func (c *fakeCfg) ParallelPoolSize() int                       { panic("unexpected") }
-func (c *fakeCfg) ParallelPoolDelayDynamic() bool              { panic("unexpected") }
-func (c *fakeCfg) ActiveNodeURI() string                       { panic("unexpected") }
-func (c *fakeCfg) BackgroundImage() string                     { panic("unexpected") }
-func (c *fakeCfg) FontSize() string                            { panic("unexpected") }
-func (c *fakeCfg) FontColorType() string                       { panic("unexpected") }
-func (c *fakeCfg) FontColor() string                           { panic("unexpected") }
-func (c *fakeCfg) CustomBgPresets() []string                   { panic("unexpected") }
-func (c *fakeCfg) AutoRefreshLogs() bool                       { panic("unexpected") }
-func (c *fakeCfg) TelemetryEnabled() *bool                     { panic("unexpected") }
-func (c *fakeCfg) BaseModels() []string                        { panic("unexpected") }
-func (c *fakeCfg) AliasMap() map[string]string                 { panic("unexpected") }
-func (c *fakeCfg) ModelsWithFakeVariants() []string            { panic("unexpected") }
-func (c *fakeCfg) FakePrefixes() []string                      { panic("unexpected") }
-func (c *fakeCfg) ResolveModelName(string) string              { panic("unexpected") }
-func (c *fakeCfg) ConfigDir() string                           { panic("unexpected") }
-func (c *fakeCfg) ConfigPath() string                          { panic("unexpected") }
-func (c *fakeCfg) DefaultResponseModalities() string           { return "图文" }
-func (c *fakeCfg) StreamIdleTimeoutSeconds() int               { return 30 }
-func (c *fakeCfg) RecaptchaTryEntryOrDirect() bool             { return true }
+func (c *fakeCfg) DefaultImageSize() string          { return "1K" }
+func (c *fakeCfg) DefaultThinkingLevel() string      { return "自动" }
+func (c *fakeCfg) PortAPI() int                      { panic("unexpected") }
+func (c *fakeCfg) MaxRetries() int                   { panic("unexpected") }
+func (c *fakeCfg) AdminPassword() string             { panic("unexpected") }
+func (c *fakeCfg) DebugPprof() bool                  { panic("unexpected") }
+func (c *fakeCfg) DebugMode() bool                   { panic("unexpected") }
+func (c *fakeCfg) TrailingModelFixEnabled() bool     { panic("unexpected") }
+func (c *fakeCfg) TrailingFixModels() []string       { panic("unexpected") }
+func (c *fakeCfg) DropMaxTokens() bool               { panic("unexpected") }
+func (c *fakeCfg) AggregateStream() bool             { panic("unexpected") }
+func (c *fakeCfg) MaxN() int                         { panic("unexpected") }
+func (c *fakeCfg) MaxRequestMB() int                 { panic("unexpected") }
+func (c *fakeCfg) RequestTimeoutSeconds() int        { panic("unexpected") }
+func (c *fakeCfg) MaxSpillMB() int                   { panic("unexpected") }
+func (c *fakeCfg) VertexAPIKey() string              { panic("unexpected") }
+func (c *fakeCfg) CountTokensQuerySignature() string { panic("unexpected") }
+func (c *fakeCfg) SafetySettings() map[string]string { panic("unexpected") }
+func (c *fakeCfg) ParallelPoolEnabled() bool         { panic("unexpected") }
+func (c *fakeCfg) ParallelPoolSize() int             { panic("unexpected") }
+func (c *fakeCfg) ParallelPoolDelayDynamic() bool    { panic("unexpected") }
+func (c *fakeCfg) ActiveNodeURI() string             { panic("unexpected") }
+func (c *fakeCfg) BackgroundImage() string           { panic("unexpected") }
+func (c *fakeCfg) FontSize() string                  { panic("unexpected") }
+func (c *fakeCfg) FontColorType() string             { panic("unexpected") }
+func (c *fakeCfg) FontColor() string                 { panic("unexpected") }
+func (c *fakeCfg) CustomBgPresets() []string         { panic("unexpected") }
+func (c *fakeCfg) AutoRefreshLogs() bool             { panic("unexpected") }
+func (c *fakeCfg) TelemetryEnabled() *bool           { panic("unexpected") }
+func (c *fakeCfg) BaseModels() []string              { panic("unexpected") }
+func (c *fakeCfg) AliasMap() map[string]string       { panic("unexpected") }
+func (c *fakeCfg) ModelsWithFakeVariants() []string  { panic("unexpected") }
+func (c *fakeCfg) FakePrefixes() []string            { panic("unexpected") }
+func (c *fakeCfg) ResolveModelName(string) string    { panic("unexpected") }
+func (c *fakeCfg) ConfigDir() string                 { panic("unexpected") }
+func (c *fakeCfg) ConfigPath() string                { panic("unexpected") }
+func (c *fakeCfg) DefaultResponseModalities() string { return "图文" }
+func (c *fakeCfg) StreamIdleTimeoutSeconds() int     { return 30 }
+func (c *fakeCfg) RecaptchaTryEntryOrDirect() bool   { return true }
 
 type fakeBuilder struct {
 	count    atomic.Int64
@@ -267,8 +266,8 @@ func TestStopAll_ClearsEntryProxy(t *testing.T) {
 func TestConcurrentCreateDialer(t *testing.T) {
 	cfg := newFakeCfg()
 	d := &singDialer{
-		cfg:        cfg,
-		entry:      newEntryBoxPoolManager(),
+		cfg:   cfg,
+		entry: newEntryBoxPoolManager(),
 		boxBuilder: func(uri string) (*nodeBox, error) {
 			return &nodeBox{box: &fakeCloser{}, outbound: fakeOutbound{}}, nil
 		},
@@ -294,8 +293,8 @@ func TestConcurrentCreateDialer(t *testing.T) {
 func TestTestEntryProxy_Basic(t *testing.T) {
 	cfg := newFakeCfg()
 	d := &singDialer{
-		cfg:        cfg,
-		entry:      newEntryBoxPoolManager(),
+		cfg:   cfg,
+		entry: newEntryBoxPoolManager(),
 		boxBuilder: func(uri string) (*nodeBox, error) {
 			return &nodeBox{box: &fakeCloser{}, outbound: fakeOutbound{}}, nil
 		},
@@ -541,10 +540,9 @@ func (d *countingDialer) CreateDialer(uri string, reqID string) (func(ctx contex
 	return dialer.DialContext, func() {}, nil
 }
 
-
-func (d *countingDialer) StopAll()                  {}
+func (d *countingDialer) StopAll()                      {}
 func (d *countingDialer) GetNextEntrySocksAddr() string { return "" }
-func (d *countingDialer) SyncEntryPool() error      { return nil }
+func (d *countingDialer) SyncEntryPool() error          { return nil }
 func (d *countingDialer) TestEntryProxy(uri string) (func(ctx context.Context, network, addr string) (net.Conn, error), func(), error) {
 	var dialer net.Dialer
 	return dialer.DialContext, func() {}, nil
@@ -791,8 +789,8 @@ func newStubConn() *stubConn {
 	return &stubConn{closed: make(chan struct{})}
 }
 
-func (c *stubConn) Read([]byte) (int, error)        { return 0, errors.New("closed") }
-func (c *stubConn) Write(p []byte) (int, error)     { return len(p), nil }
+func (c *stubConn) Read([]byte) (int, error)    { return 0, errors.New("closed") }
+func (c *stubConn) Write(p []byte) (int, error) { return len(p), nil }
 func (c *stubConn) Close() error {
 	c.once.Do(func() { close(c.closed) })
 	return nil

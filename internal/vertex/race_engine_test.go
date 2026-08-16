@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -210,8 +211,7 @@ func TestRunRace_NoHedgeOnWrappedContextError(t *testing.T) {
 		atomic.AddInt32(&launchCount, 1)
 		// Simulate the real streaming error chain:
 		// executeStreamingAttempt wraps with %w,
-		// executeStreamingWithRetries catches it via change B,
-		// wraps in NewContextError.
+		// 上层预算循环通过 cause 链识别 context 错误而不发起对冲。
 		return "", NewContextError(fmt.Errorf("upstream request: %w", context.DeadlineExceeded))
 	}
 
@@ -707,4 +707,299 @@ func TestRunRace_PickBestError_Priority(t *testing.T) {
 			t.Errorf("expected ratelimit error as highest priority retryable, got Kind=%s Code=%d", ve.Kind, ve.Code)
 		}
 	})
+}
+
+// TestStreamParallel_SingleCandidate_RetryLoop 验证预算循环：
+// 池关闭时走单候选直连分支；第 1 轮返回 Transient 网络错误（预算内退避重试），
+// 第 2 轮成功交付内容 → 客户端看到内容且无错误帧。
+// 注：MaxRetries=1（总退避 ~1.5s），避免多轮真实退避拉长单用例耗时。
+func TestStreamParallel_SingleCandidate_RetryLoop(t *testing.T) {
+	start := time.Now()
+	defer func() {
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("预算循环退避应短促，实际 %v", elapsed)
+		}
+	}()
+
+	nodes.ResetState()
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(config.AppConfig{
+		ParallelPoolEnabled: false,
+		MaxRetries:          1,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var attempts int32
+	op := func(ctx context.Context, uri string) <-chan StreamChunk {
+		ch := make(chan StreamChunk, 1)
+		go func() {
+			defer close(ch)
+			n := atomic.AddInt32(&attempts, 1)
+			if n < 2 {
+				ch <- StreamChunk{Err: NewNetworkError(fmt.Errorf("tcp reset"))}
+				return
+			}
+			ch <- StreamChunk{Data: &transform.GeminiChunk{Candidates: []*transform.Candidate{{Content: &transform.Content{Parts: []transform.Part{{Text: "recovered"}}}}}}}
+		}()
+		return ch
+	}
+
+	var gotData string
+	yield := func(chunk StreamChunk) bool {
+		if chunk.Err != nil {
+			t.Errorf("unexpected error chunk: %v", chunk.Err)
+			return false
+		}
+		gotData = firstPartText(chunk.Data)
+		return true
+	}
+
+	StreamParallel(ctx, cfg, "test-model", op, yield, nil)
+
+	if gotData != "recovered" {
+		t.Errorf("expected retry loop to recover content, got %q", gotData)
+	}
+	if n := atomic.LoadInt32(&attempts); n != 2 {
+		t.Errorf("expected exactly 2 attempts (1 retry), got %d", n)
+	}
+}
+
+// TestStreamParallel_MultiCandidate_RetryWholeBatch 验证多候选场景下竞速失败后整批重试：
+// 两个节点首轮均瞬态失败 → 预算内第 2 轮 uri1 成功交付。
+func TestStreamParallel_MultiCandidate_RetryWholeBatch(t *testing.T) {
+	setupRaceNodes(t, "uri1", "uri2")
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(config.AppConfig{
+		ParallelPoolEnabled: true,
+		ParallelPoolSize:    2,
+		MaxRetries:          1,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var attempts int32
+	op := func(ctx context.Context, uri string) <-chan StreamChunk {
+		ch := make(chan StreamChunk, 1)
+		go func() {
+			defer close(ch)
+			n := atomic.AddInt32(&attempts, 1)
+			if n <= 2 {
+				ch <- StreamChunk{Err: NewNetworkError(fmt.Errorf("dial failed"))}
+				return
+			}
+			ch <- StreamChunk{Data: &transform.GeminiChunk{Candidates: []*transform.Candidate{{Content: &transform.Content{Parts: []transform.Part{{Text: "ok-" + uri}}}}}}}
+		}()
+		return ch
+	}
+
+	var gotText string
+	yield := func(chunk StreamChunk) bool {
+		if chunk.Err != nil {
+			t.Errorf("unexpected error chunk: %v", chunk.Err)
+			return false
+		}
+		if chunk.Data != nil {
+			gotText = firstPartText(chunk.Data)
+		}
+		return true
+	}
+
+	StreamParallel(ctx, cfg, "test-model", op, yield, nil)
+
+	if !strings.HasPrefix(gotText, "ok-") {
+		t.Errorf("expected whole-batch retry to deliver content, got %q", gotText)
+	}
+	if n := atomic.LoadInt32(&attempts); n < 3 {
+		t.Errorf("expected >= 3 attempts (whole batch retried), got %d", n)
+	}
+}
+
+// TestStreamParallel_Truncated_Committed_NoRetry 验证截断（Committed）错误不触发重试：
+// 首帧后断流 → 单轮即止，Truncated 错误如实透传。
+func TestStreamParallel_Truncated_Committed_NoRetry(t *testing.T) {
+	nodes.ResetState()
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(config.AppConfig{
+		ParallelPoolEnabled: false,
+		MaxRetries:          3,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var attempts int32
+	op := func(ctx context.Context, uri string) <-chan StreamChunk {
+		ch := make(chan StreamChunk, 1)
+		go func() {
+			defer close(ch)
+			atomic.AddInt32(&attempts, 1)
+			ch <- StreamChunk{Err: NewNetworkError(ErrStreamIdleTimeout).WithTruncated()}
+		}()
+		return ch
+	}
+
+	var gotErr *VertexError
+	StreamParallel(ctx, cfg, "test-model", op, func(chunk StreamChunk) bool {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+		}
+		return true
+	}, nil)
+
+	if gotErr == nil {
+		t.Fatal("expected truncated error chunk, got nil")
+	}
+	if !gotErr.Truncated {
+		t.Errorf("expected Truncated flag set, got %+v", gotErr)
+	}
+	if gotErr.ClassifyBatch() != Committed {
+		t.Errorf("expected Committed disposition, got %v", gotErr.ClassifyBatch())
+	}
+	if n := atomic.LoadInt32(&attempts); n != 1 {
+		t.Errorf("expected no retry for Committed error, got %d attempts", n)
+	}
+}
+
+// TestStreamParallel_ClientCancel_Silent 验证客户端取消后 StreamParallel 静默返回：
+// 不产错误帧、不产数据帧。
+func TestStreamParallel_ClientCancel_Silent(t *testing.T) {
+	nodes.ResetState()
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(config.AppConfig{
+		ParallelPoolEnabled: false,
+		MaxRetries:          0,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 立即取消
+
+	op := func(ctx context.Context, uri string) <-chan StreamChunk {
+		ch := make(chan StreamChunk, 1)
+		go func() {
+			defer close(ch)
+			<-ctx.Done()
+			ch <- StreamChunk{Err: NormalizeError(ctx.Err())}
+		}()
+		return ch
+	}
+
+	var got []StreamChunk
+	StreamParallel(ctx, cfg, "test-model", op, func(chunk StreamChunk) bool {
+		got = append(got, chunk)
+		return true
+	}, nil)
+
+	if len(got) != 0 {
+		t.Errorf("expected silent return on client cancel, got %d chunks", len(got))
+	}
+}
+
+// TestStreamParallel_FailFast_NoRetry 验证 FailFast（invalid 等全局硬错误）在预算循环
+// 首轮即终止：attempts==1，错误帧如实透传，不启动重试轮。
+func TestStreamParallel_FailFast_NoRetry(t *testing.T) {
+	nodes.ResetState()
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(config.AppConfig{
+		ParallelPoolEnabled: false,
+		MaxRetries:          3,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var attempts int32
+	op := func(ctx context.Context, uri string) <-chan StreamChunk {
+		ch := make(chan StreamChunk, 1)
+		go func() {
+			defer close(ch)
+			atomic.AddInt32(&attempts, 1)
+			ch <- StreamChunk{Err: NewInvalidArgumentError("invalid model name", nil)}
+		}()
+		return ch
+	}
+
+	var gotErr *VertexError
+	StreamParallel(ctx, cfg, "test-model", op, func(chunk StreamChunk) bool {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+		}
+		return true
+	}, nil)
+
+	if gotErr == nil {
+		t.Fatal("expected error chunk, got nil")
+	}
+	if gotErr.ClassifyBatch() != FailFast {
+		t.Errorf("expected FailFast disposition, got %v", gotErr.ClassifyBatch())
+	}
+	if n := atomic.LoadInt32(&attempts); n != 1 {
+		t.Errorf("expected no retry for FailFast error, got %d attempts", n)
+	}
+}
+
+// TestStreamParallel_Terminal_Converges 验证 Terminal（permission 等）错误不触发重试
+// 且不触发 fail-fast 旁路：单候选下 attempts==1，错误帧透传为 Terminal。
+func TestStreamParallel_Terminal_Converges(t *testing.T) {
+	nodes.ResetState()
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(config.AppConfig{
+		ParallelPoolEnabled: false,
+		MaxRetries:          3,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var attempts int32
+	op := func(ctx context.Context, uri string) <-chan StreamChunk {
+		ch := make(chan StreamChunk, 1)
+		go func() {
+			defer close(ch)
+			atomic.AddInt32(&attempts, 1)
+			ch <- StreamChunk{Err: NewPermissionDeniedError("forbidden", nil)}
+		}()
+		return ch
+	}
+
+	var gotErr *VertexError
+	StreamParallel(ctx, cfg, "test-model", op, func(chunk StreamChunk) bool {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+		}
+		return true
+	}, nil)
+
+	if gotErr == nil {
+		t.Fatal("expected error chunk, got nil")
+	}
+	if gotErr.ClassifyBatch() != Terminal {
+		t.Errorf("expected Terminal disposition, got %v", gotErr.ClassifyBatch())
+	}
+	if n := atomic.LoadInt32(&attempts); n != 1 {
+		t.Errorf("expected no retry for Terminal error, got %d attempts", n)
+	}
+}
+
+// TestApplyNodeFailure_EmptyURI_NoOp 验证空 URI（直连分支）的 ApplyNodeFailure 无副作用：
+// 不产生健康记录、不 panic、不误塞 auth 判定。
+func TestApplyNodeFailure_EmptyURI_NoOp(t *testing.T) {
+	nodes.ResetState()
+	defer nodes.ResetState()
+
+	ApplyNodeFailure("", NewAuthenticationError("boom", nil))
+	ApplyNodeFailure("", NewNetworkError(ErrStreamIdleTimeout))
+	ApplyNodeFailure("", NewRateLimitError("too many", 429, nil))
+
+	if len(nodes.LoadHealth()) != 0 {
+		t.Errorf("空 URI 不应产生任何健康记录，实际 %d 条", len(nodes.LoadHealth()))
+	}
 }

@@ -1,11 +1,142 @@
 package vertex
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
+
+// TestCompleteChat_AuthVerifyFail_RetrySucceeds 验证非流式路径同样具备 rT 第一发补偿：
+// 首轮 "Failed to verify action" → 同 token 500ms 后第二发成功，GetTokenShared 仅 1 次。
+func TestCompleteChat_AuthVerifyFail_RetrySucceeds(t *testing.T) {
+	nodes.ResetState()
+	defer nodes.ResetState()
+
+	var requestCount int
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestCount++
+		cur := requestCount
+		mu.Unlock()
+		if cur == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(401)
+			_, _ = w.Write([]byte(`{"error":{"message":"Failed to verify action"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		contentFrame := `{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"FINISH_REASON_STOP"}]}}}}]}`
+		_, _ = w.Write([]byte(contentFrame))
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	origURL := batchGraphqlURL
+	batchGraphqlURL = server.URL + "/batchGraphql"
+	defer func() { batchGraphqlURL = origURL }()
+
+	cfg := config.DefaultConfig()
+	provider := config.StaticProvider(cfg)
+
+	tokenFetchCount := 0
+	var tokenMu sync.Mutex
+	netClient := transport.NewNetworkClient(nil)
+	vc := &VertexAIClient{
+		net: netClient,
+		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
+			tokenMu.Lock()
+			tokenFetchCount++
+			tokenMu.Unlock()
+			return "test-token", nil
+		}),
+		cfg: provider,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := vc.CompleteChat(ctx, "test-model", &transform.GeminiRequest{}, &transform.TextStrategy{})
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+	if resp == nil || len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil ||
+		len(resp.Candidates[0].Content.Parts) == 0 || resp.Candidates[0].Content.Parts[0].Text != "hello" {
+		t.Fatalf("expected content 'hello', got %+v", resp)
+	}
+	if requestCount != 2 {
+		t.Errorf("expected 2 upstream requests (1 fail + 1 retry), got %d", requestCount)
+	}
+	tokenMu.Lock()
+	fetches := tokenFetchCount
+	tokenMu.Unlock()
+	if fetches != 1 {
+		t.Errorf("expected single token fetch (same-token retry), got %d", fetches)
+	}
+}
+
+// TestCompleteChat_AuthVerifyFail_RetryExhausted 验证非流式补偿耗尽路径：
+// 首轮与同 token 重试均被拒时，如实透传 auth 错误。
+func TestCompleteChat_AuthVerifyFail_RetryExhausted(t *testing.T) {
+	nodes.ResetState()
+	defer nodes.ResetState()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(401)
+		_, _ = w.Write([]byte(`{"error":{"message":"Failed to verify action"}}`))
+	}))
+	defer server.Close()
+
+	origURL := batchGraphqlURL
+	batchGraphqlURL = server.URL + "/batchGraphql"
+	defer func() { batchGraphqlURL = origURL }()
+
+	cfg := config.DefaultConfig()
+	provider := config.StaticProvider(cfg)
+
+	netClient := transport.NewNetworkClient(nil)
+	vc := &VertexAIClient{
+		net: netClient,
+		pool: recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
+			return "test-token", nil
+		}),
+		cfg: provider,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, err := vc.CompleteChat(ctx, "test-model", &transform.GeminiRequest{}, &transform.TextStrategy{})
+	if err == nil {
+		t.Fatal("expected auth error, got nil")
+	}
+	var ve *VertexError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *VertexError, got %T", err)
+	}
+	if ve.Kind != "auth" {
+		t.Errorf("expected auth kind, got %q: %v", ve.Kind, err)
+	}
+	if !isAuthVerifyFail(ve) {
+		t.Errorf("expected verify-fail auth error, got %v", err)
+	}
+}
 
 // TestCompleteChat_AllCandidatesSafetyBlocked_ReturnsSafetyError 验证所有候选都被安全审查拦截
 func TestCompleteChat_AllCandidatesSafetyBlocked_ReturnsSafetyError(t *testing.T) {

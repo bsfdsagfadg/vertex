@@ -35,6 +35,7 @@ type VertexError struct { //nolint:govet
 	Details          map[string]any
 	UpstreamResponse string
 	RetryAfter       int   // 仅 ratelimit 用，0 表示未设
+	Truncated        bool  // 流式首帧已交付后断流标记：已向客户端输出内容，绝不重试
 	cause            error // 供 errors.Is 穿透底层 cause；所有构造器通过参数或 WithCause 设置
 }
 
@@ -50,22 +51,63 @@ func (e *VertexError) WithCause(cause error) *VertexError {
 	return e
 }
 
-// IsRetryable 判定是否可重试：408/429/5xx 可重试；网络抖动（Kind=="network"）可重试；
-// 认证错误（按 Kind 判，不看 code）也可重试。
-// context 错误（cause 链含 Canceled/DeadlineExceeded）不可重试——这是防御性兜底；
-// 正常路径中这些错误在 stream.go 的 retry 循环和 RunRace 的 Fix 3 中被提前拦截。
+// WithTruncated 标记流式首帧已交付后断流的错误（Committed 语义：绝不重试）。
+func (e *VertexError) WithTruncated() *VertexError {
+	e.Truncated = true
+	return e
+}
+
+// IsRetryable 判定是否可重试：薄别名，语义收敛为 ClassifyBatch() == Transient。
+// context 错误（cause 链含 Canceled/DeadlineExceeded）由 ClassifyBatch 首步判为
+// Terminal（不可重试），与旧实现的防御性兜底语义一致。
 func (e *VertexError) IsRetryable() bool {
+	return e.ClassifyBatch() == Transient
+}
+
+// BatchDisposition 是批次级重试裁决的四态分类。
+type BatchDisposition int
+
+const (
+	// Committed 批次已向客户端输出内容，最高优先级透传真实原因，绝不重试。
+	Committed BatchDisposition = iota
+	// Transient 该候选瞬时失败，整批可退避重试。
+	Transient
+	// FailFast 请求级硬错误，所有候选必败，首个即终止整批。
+	FailFast
+	// Terminal 不可重试，但不禁杀其他候选（其他候选独立尝试可能成功）。
+	Terminal
+)
+
+// ClassifyBatch 按批次级口径分类错误（顺序敏感）：
+//  1. context 错误（cause 链含 Canceled/DeadlineExceeded）→ Terminal（防御性，防止 NewContextError 被误判可重试）；
+//  2. Truncated 标记 → Committed（最高优先级短路，绝不重试）；
+//  3. IsGlobalHardError（invalid/notfound/safety/infra）→ FailFast；
+//  4. Kind == "permission" → Terminal；
+//  5. 瞬态条件（network/ratelimit/auth/408/429/5xx/empty）→ Transient；
+//  6. 其余 → Terminal。
+func (e *VertexError) ClassifyBatch() BatchDisposition {
 	if errors.Is(e.cause, context.Canceled) || errors.Is(e.cause, context.DeadlineExceeded) {
-		return false
+		return Terminal
 	}
-	if e.Kind == "network" {
-		return true
+	if e.Truncated {
+		return Committed
+	}
+	if e.IsGlobalHardError() {
+		return FailFast
+	}
+	if e.Kind == "permission" {
+		return Terminal
+	}
+	switch {
+	case e.Kind == "network", e.Kind == "ratelimit", e.Kind == "auth",
+		e.Kind == "empty", isEmptyResponseError(e):
+		return Transient
 	}
 	switch e.Code {
 	case 408, 429, 500, 502, 503, 504:
-		return true
+		return Transient
 	}
-	return e.Kind == "auth"
+	return Terminal
 }
 
 // IsGlobalHardError 判定是否为请求级别的全局硬错误（所有节点去发都会必定失败，如参数错误/模型不存在/安全审查）。
@@ -73,7 +115,7 @@ func (e *VertexError) IsRetryable() bool {
 // 节点级异常（permission 403、auth 502、network、ratelimit 429）返回 false。
 func (e *VertexError) IsGlobalHardError() bool {
 	switch e.Kind {
-	case "invalid", "notfound", "safety":
+	case "invalid", "notfound", "safety", "infra":
 		return true
 	}
 	return false
@@ -84,6 +126,13 @@ func (e *VertexError) IsGlobalHardError() bool {
 // NewAuthenticationError 认证错误（recaptcha/token 过期）。code=502（见类型注释）。
 func NewAuthenticationError(msg string, cause error) *VertexError {
 	return &VertexError{Message: msg, Code: 502, Status: StatusUnauthenticated, Kind: "auth", cause: cause} //nolint:exhaustruct
+}
+
+// NewRecaptchaUnavailableError reCAPTCHA token 子系统不可用（GetTokenShared 穷尽重试后仍失败）。
+// Kind="infra" 归 FailFast：子系统整体挂了，所有候选都会在 rT 上失败，不浪费预算重试。
+// 替代旧实现把 rT 耗尽错塞进 auth 触发节点禁用的现状（infra 不归因节点）。
+func NewRecaptchaUnavailableError(msg string, cause error) *VertexError {
+	return &VertexError{Message: msg, Code: 502, Status: StatusUnavailable, Kind: "infra", cause: cause} //nolint:exhaustruct
 }
 
 // NewPermissionDeniedError 权限拒绝（403）。
@@ -207,9 +256,9 @@ func parseErrorResponse(data any) *VertexError {
 		if errObj, ok := v["error"].(map[string]any); ok {
 			// 安全审查拦截：error.message == "SAFETY" 或 finishReason 为 SAFETY
 			if msg, _ := errObj["message"].(string); strings.ToUpper(msg) == "SAFETY" {
-			return NewSafetyError(msg, "SAFETY", nil)
-		}
-		return raiseForStatus(
+				return NewSafetyError(msg, "SAFETY", nil)
+			}
+			return raiseForStatus(
 				toInt(errObj["code"], 500), toStr(errObj["status"]),
 				toStrOr(errObj["message"], "Unknown error"), toMap(errObj["details"]), marshalStr(v),
 			)
@@ -263,6 +312,14 @@ func parseErrorResponse(data any) *VertexError {
 
 // FriendlyErrorMessage 将 VertexError 转为用户友好的中英混合提示。
 func FriendlyErrorMessage(e *VertexError) string {
+	msg := friendlyErrorMessageBase(e)
+	if e.Truncated {
+		msg += "（内容已截断）"
+	}
+	return msg
+}
+
+func friendlyErrorMessageBase(e *VertexError) string {
 	switch {
 	case e.Kind == "ratelimit" || e.Code == 429:
 		return "服务器繁忙，请求过于频繁，请稍后重试 (rate limited)"

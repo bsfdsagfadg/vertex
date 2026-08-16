@@ -6,12 +6,12 @@ type staticConfig struct {
 
 func StaticProvider(c AppConfig) ConfigProvider { return staticConfig{c} }
 
-func (s staticConfig) PortAPI() int                      { return s.c.PortAPI }
-func (s staticConfig) MaxRetries() int                   { return s.c.MaxRetries }
-func (s staticConfig) AdminPassword() string             { return s.c.AdminPassword }
-func (s staticConfig) DebugPprof() bool                  { return s.c.DebugPprof }
-func (s staticConfig) DebugMode() bool                   { return s.c.DebugMode }
-func (s staticConfig) TrailingModelFixEnabled() bool     { return s.c.TrailingModelFixEnabled }
+func (s staticConfig) PortAPI() int                  { return s.c.PortAPI }
+func (s staticConfig) MaxRetries() int               { return s.c.MaxRetries }
+func (s staticConfig) AdminPassword() string         { return s.c.AdminPassword }
+func (s staticConfig) DebugPprof() bool              { return s.c.DebugPprof }
+func (s staticConfig) DebugMode() bool               { return s.c.DebugMode }
+func (s staticConfig) TrailingModelFixEnabled() bool { return s.c.TrailingModelFixEnabled }
 func (s staticConfig) TrailingFixModels() []string {
 	out := make([]string, len(s.c.TrailingFixModels))
 	copy(out, s.c.TrailingFixModels)
@@ -27,7 +27,6 @@ func (s staticConfig) VertexAPIKey() string              { return s.c.VertexAPIK
 func (s staticConfig) CountTokensQuerySignature() string { return s.c.CountTokensQuerySignature }
 func (s staticConfig) SafetySettings() map[string]string { return s.c.SafetySettings }
 func (s staticConfig) ParallelPoolEnabled() bool         { return s.c.ParallelPoolEnabled }
-func (s staticConfig) ParallelPoolRetryEnabled() bool    { return s.c.ParallelPoolRetryEnabled }
 func (s staticConfig) ParallelPoolSize() int             { return s.c.ParallelPoolSize }
 func (s staticConfig) ParallelPoolDelayDynamic() bool    { return s.c.ParallelPoolDelayDynamic }
 func (s staticConfig) RecaptchaTryEntryOrDirect() bool   { return s.c.RecaptchaTryEntryOrDirect }
@@ -44,9 +43,9 @@ func (s staticConfig) AliasMap() map[string]string       { return s.c.AliasMap()
 func (s staticConfig) ModelsWithFakeVariants() []string  { return s.c.ModelsWithFakeVariants() }
 func (s staticConfig) FakePrefixes() []string            { return s.c.FakePrefixes() }
 func (s staticConfig) ResolveModelName(s_ string) string { return s.c.ResolveModelName(s_) }
-func (s staticConfig) DefaultImageSize() string            { return s.c.DefaultImageSize }
-func (s staticConfig) DefaultThinkingLevel() string        { return s.c.DefaultThinkingLevel }
-func (s staticConfig) DefaultResponseModalities() string   { return s.c.DefaultResponseModalities }
-func (s staticConfig) StreamIdleTimeoutSeconds() int       { return s.c.StreamIdleTimeoutSeconds }
-func (s staticConfig) ConfigDir() string                   { return s.c.ConfigDir() }
+func (s staticConfig) DefaultImageSize() string          { return s.c.DefaultImageSize }
+func (s staticConfig) DefaultThinkingLevel() string      { return s.c.DefaultThinkingLevel }
+func (s staticConfig) DefaultResponseModalities() string { return s.c.DefaultResponseModalities }
+func (s staticConfig) StreamIdleTimeoutSeconds() int     { return s.c.StreamIdleTimeoutSeconds }
+func (s staticConfig) ConfigDir() string                 { return s.c.ConfigDir() }
 func (s staticConfig) ConfigPath() string                { return s.c.ConfigPath() }

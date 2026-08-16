@@ -17,42 +17,69 @@ func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, req *tr
 	if strategy == nil {
 		strategy = transform.NewModelFamilyRouter().For(model)
 	}
+	// L3 预算循环：整批重试 max_retries 次（总轮数 max_retries+1），仅 Transient 退避重试。
+	// 非流式无部分交付（不标 Truncated），中途断流只是候选失败，交预算循环处置。
+	totalRounds := c.cfg.MaxRetries() + 1
+	var bestErr error
 	run := func(ctx context.Context, proxyURI string) (*transform.GeminiResponse, error) {
 		return c.runSingleCandidate(ctx, model, req, proxyURI, strategy)
 	}
-	return RunRace(ctx, c.cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
-		return candidateFinishTyped(resp) == "STOP" && strategy.IsValidResponse(resp)
-	}), WithCollectedFinalizer(func(results []raceResult[*transform.GeminiResponse]) (*transform.GeminiResponse, error) {
-		cr := make([]candidateResult, len(results))
-		for i, r := range results {
-			cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
+	for round := 1; round <= totalRounds; round++ {
+		resp, err := RunRace(ctx, c.cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
+			return candidateFinishTyped(resp) == "STOP" && strategy.IsValidResponse(resp)
+		}), WithCollectedFinalizer(func(results []raceResult[*transform.GeminiResponse]) (*transform.GeminiResponse, error) {
+			cr := make([]candidateResult, len(results))
+			for i, r := range results {
+				cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
+			}
+			return pickBestResult(cr, strategy)
+		}))
+		if err == nil {
+			return resp, nil // 提交
 		}
-		return pickBestResult(cr, strategy)
-	}))
+		bestErr = pickBestError([]error{bestErr, err})
+		retry, backoff := retryableAndBudgetLeft(err, round, totalRounds, ctx)
+		if !retry {
+			break
+		}
+		if sleepErr := sleepCtx(ctx, backoff); sleepErr != nil {
+			break
+		}
+	}
+	return nil, NormalizeError(bestErr)
 }
 
+// runSingleCandidate 执行单候选单次尝试（L1 透传层非流式版）：
+// 单次建连 + 取 token + 单次 attempt，原样上报真实错误。
 func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, req *transform.GeminiRequest, proxyURI string, strategy transform.ModelStrategy) (*transform.GeminiResponse, error) {
 	var chunks []*transform.GeminiChunk
-	var firstErr *VertexError
-
-	c.executeStreamingWithRetries(ctx, model, req, proxyURI, func(chunk StreamChunk) bool {
-		if chunk.Err != nil {
-			if firstErr == nil {
-				firstErr = chunk.Err
-			}
-			return false
-		}
-		if chunk.Data != nil {
-			chunks = append(chunks, chunk.Data)
-		}
-		return true
-	}, strategy)
-
-	if firstErr != nil {
-		return nil, firstErr
+	var validChunkCount int
+	sess, err := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, RequestIDFromContext(ctx))
+	if err != nil {
+		return nil, NewInternalError("create session: "+err.Error(), nil)
 	}
-	if len(chunks) == 0 {
-		return nil, NewEmptyResponseError("Upstream returned no data", nil)
+	defer sess.Close()
+	tok, err := c.pool.GetTokenShared(ctx)
+	if err != nil || tok == "" {
+		return nil, NewRecaptchaUnavailableError("Could not fetch recaptcha token", err)
+	}
+	err = withRTFirstTryCompensation(ctx, func() error {
+		return c.executeStreamingAttempt(ctx, sess, model, req, tok, func(chunk *transform.GeminiChunk) bool {
+			if chunk == nil {
+				return true
+			}
+			chunks = append(chunks, chunk)
+			if strategy.IsValidChunk(chunk) {
+				validChunkCount++
+			}
+			return true
+		}, strategy)
+	})
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	if validChunkCount == 0 {
+		return nil, NewEmptyResponseError("Upstream returned no valid content", nil)
 	}
 
 	result := collectChunksToParseResultTyped(chunks)

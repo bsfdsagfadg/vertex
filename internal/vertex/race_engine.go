@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -87,19 +86,24 @@ type raceResult[T any] struct {
 // 而不是被不可重试错误直接中断。
 func errorPriority(err error) int {
 	var ve *VertexError
-	if errors.As(err, &ve) {
-		if ve.IsRetryable() {
-			if ve.Kind == "ratelimit" || ve.Code == 429 {
-				return 1
-			}
-			return 2
-		}
-		if ve.IsGlobalHardError() {
-			return 3
-		}
-		return 4
+	if !errors.As(err, &ve) {
+		return 5
 	}
-	return 5
+	switch ve.ClassifyBatch() {
+	case Committed:
+		return 0
+	case Transient:
+		if ve.Kind == "ratelimit" || ve.Code == 429 {
+			return 1
+		}
+		return 2
+	case FailFast:
+		return 3
+	case Terminal:
+		return 4
+	default:
+		return 5
+	}
 }
 
 // pickBestError 从多个错误中挑选优先级最高（数值最小）的一个返回。
@@ -174,6 +178,11 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		log.Printf("[Vertex] [RunParallel] 降级为单节点运行: %s", nodes.GetNodeName(proxy))
 		val, err := run(ctx, proxy)
 		if err != nil {
+			// 锁定模式/直连模式失败也旁路记录健康态；proxy==""（直连/前置）时内部无操作。
+			// context 取消/超时错误不记账（与 hedge 分支一致，非节点故障）。
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				ApplyNodeFailure(proxy, err)
+			}
 			return zero, NormalizeError(err)
 		}
 		return val, nil
@@ -344,35 +353,11 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 
 					failedErrors = append(failedErrors, res.err)
 
-					ve := asVertexError(res.err)
-					if ve != nil {
-						// 流式包间空闲超时：节点僵死/极慢，进入 15 秒短时避让，
-						// 避免下一轮竞速反复选中同一节点。
-						if errors.Is(res.err, ErrStreamIdleTimeout) ||
-							(ve.Kind == "network" && strings.Contains(ve.Message, "idle timeout")) {
-							if cfg.DebugMode() {
-								log.Printf("[Racing] 节点 %s 触发流式包间空闲超时，进入 15 秒短时避让", name)
-							}
-							nodes.RecordRateLimit(res.uri, 15)
-						}
-						switch ve.Kind {
-						case "ratelimit":
-							if cfg.DebugMode() {
-								log.Printf("[Racing] 节点 %s 触发 429 API 限制，进入 30 秒短时歇息", name)
-							}
-							nodes.RecordRateLimit(res.uri, 30)
-						case "auth":
-							log.Printf("[Racing] 节点 %s 触发认证失败 (502)，即将禁用", name)
-							nodes.RecordTest(res.uri, false, 0, res.err.Error())
-							nodes.BatchUpdateNodesDisabled([]string{res.uri}, true)
-						default:
-							nodes.RecordTest(res.uri, false, 0, res.err.Error())
-						}
-					} else {
-						nodes.RecordTest(res.uri, false, 0, res.err.Error())
-					}
+					// 节点池健康态旁路（不触碰错误内容、不影响裁决）。
+					ApplyNodeFailure(res.uri, res.err)
 
-					if rc.failFastOnHardError && ve != nil && ve.IsGlobalHardError() {
+					ve := asVertexError(res.err)
+					if rc.failFastOnHardError && ve != nil && ve.ClassifyBatch() == FailFast {
 						if cfg.DebugMode() {
 							log.Printf("[Racing] 节点 %s 触发请求级全局硬错误(%s)，终止竞速: %s", name, ve.Kind, ve.Message)
 						}

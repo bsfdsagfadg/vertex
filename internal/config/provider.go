@@ -23,7 +23,6 @@ type ConfigProvider interface {
 	SafetySettings() map[string]string
 
 	ParallelPoolEnabled() bool
-	ParallelPoolRetryEnabled() bool
 	ParallelPoolSize() int
 	ParallelPoolDelayDynamic() bool
 	RecaptchaTryEntryOrDirect() bool
@@ -62,12 +61,12 @@ type dynamicConfig struct{}
 
 func GetProvider() ConfigProvider { return dynamicConfig{} }
 
-func (d dynamicConfig) PortAPI() int                      { return Load().PortAPI }
-func (d dynamicConfig) MaxRetries() int                   { return Load().MaxRetries }
-func (d dynamicConfig) AdminPassword() string             { return Load().AdminPassword }
-func (d dynamicConfig) DebugPprof() bool                  { return Load().DebugPprof }
-func (d dynamicConfig) DebugMode() bool                   { return Load().DebugMode }
-func (d dynamicConfig) TrailingModelFixEnabled() bool     { return Load().TrailingModelFixEnabled }
+func (d dynamicConfig) PortAPI() int                  { return Load().PortAPI }
+func (d dynamicConfig) MaxRetries() int               { return Load().MaxRetries }
+func (d dynamicConfig) AdminPassword() string         { return Load().AdminPassword }
+func (d dynamicConfig) DebugPprof() bool              { return Load().DebugPprof }
+func (d dynamicConfig) DebugMode() bool               { return Load().DebugMode }
+func (d dynamicConfig) TrailingModelFixEnabled() bool { return Load().TrailingModelFixEnabled }
 func (d dynamicConfig) TrailingFixModels() []string {
 	c := Load()
 	out := make([]string, len(c.TrailingFixModels))
@@ -90,16 +89,15 @@ func (d dynamicConfig) SafetySettings() map[string]string {
 	}
 	return out
 }
-func (d dynamicConfig) ParallelPoolEnabled() bool      { return Load().ParallelPoolEnabled }
-func (d dynamicConfig) ParallelPoolRetryEnabled() bool { return Load().ParallelPoolRetryEnabled }
-func (d dynamicConfig) ParallelPoolSize() int          { return Load().ParallelPoolSize }
-func (d dynamicConfig) ParallelPoolDelayDynamic() bool { return Load().ParallelPoolDelayDynamic }
+func (d dynamicConfig) ParallelPoolEnabled() bool       { return Load().ParallelPoolEnabled }
+func (d dynamicConfig) ParallelPoolSize() int           { return Load().ParallelPoolSize }
+func (d dynamicConfig) ParallelPoolDelayDynamic() bool  { return Load().ParallelPoolDelayDynamic }
 func (d dynamicConfig) RecaptchaTryEntryOrDirect() bool { return Load().RecaptchaTryEntryOrDirect }
-func (d dynamicConfig) ActiveNodeURI() string          { return Load().ActiveNodeURI }
-func (d dynamicConfig) BackgroundImage() string        { return Load().BackgroundImage }
-func (d dynamicConfig) FontSize() string               { return Load().FontSize }
-func (d dynamicConfig) FontColorType() string          { return Load().FontColorType }
-func (d dynamicConfig) FontColor() string              { return Load().FontColor }
+func (d dynamicConfig) ActiveNodeURI() string           { return Load().ActiveNodeURI }
+func (d dynamicConfig) BackgroundImage() string         { return Load().BackgroundImage }
+func (d dynamicConfig) FontSize() string                { return Load().FontSize }
+func (d dynamicConfig) FontColorType() string           { return Load().FontColorType }
+func (d dynamicConfig) FontColor() string               { return Load().FontColor }
 func (d dynamicConfig) CustomBgPresets() []string {
 	c := Load()
 	out := make([]string, len(c.CustomBgPresets))
@@ -114,15 +112,15 @@ func (d dynamicConfig) TelemetryEnabled() *bool {
 	v := *c.TelemetryEnabled
 	return &v
 }
-func (d dynamicConfig) BaseModels() []string             { return Load().BaseModels() }
-func (d dynamicConfig) AliasMap() map[string]string      { return Load().AliasMap() }
-func (d dynamicConfig) ModelsWithFakeVariants() []string { return Load().ModelsWithFakeVariants() }
-func (d dynamicConfig) FakePrefixes() []string           { return Load().FakePrefixes() }
-func (d dynamicConfig) ResolveModelName(s string) string { return Load().ResolveModelName(s) }
-func (d dynamicConfig) AutoRefreshLogs() bool            { return Load().GetAutoRefreshLogs() }
-func (d dynamicConfig) DefaultImageSize() string            { return Load().DefaultImageSize }
-func (d dynamicConfig) DefaultThinkingLevel() string        { return Load().DefaultThinkingLevel }
-func (d dynamicConfig) DefaultResponseModalities() string   { return Load().DefaultResponseModalities }
-func (d dynamicConfig) StreamIdleTimeoutSeconds() int       { return Load().StreamIdleTimeoutSeconds }
-func (d dynamicConfig) ConfigDir() string                   { return Load().ConfigDir() }
-func (d dynamicConfig) ConfigPath() string               { return Load().ConfigPath() }
+func (d dynamicConfig) BaseModels() []string              { return Load().BaseModels() }
+func (d dynamicConfig) AliasMap() map[string]string       { return Load().AliasMap() }
+func (d dynamicConfig) ModelsWithFakeVariants() []string  { return Load().ModelsWithFakeVariants() }
+func (d dynamicConfig) FakePrefixes() []string            { return Load().FakePrefixes() }
+func (d dynamicConfig) ResolveModelName(s string) string  { return Load().ResolveModelName(s) }
+func (d dynamicConfig) AutoRefreshLogs() bool             { return Load().GetAutoRefreshLogs() }
+func (d dynamicConfig) DefaultImageSize() string          { return Load().DefaultImageSize }
+func (d dynamicConfig) DefaultThinkingLevel() string      { return Load().DefaultThinkingLevel }
+func (d dynamicConfig) DefaultResponseModalities() string { return Load().DefaultResponseModalities }
+func (d dynamicConfig) StreamIdleTimeoutSeconds() int     { return Load().StreamIdleTimeoutSeconds }
+func (d dynamicConfig) ConfigDir() string                 { return Load().ConfigDir() }
+func (d dynamicConfig) ConfigPath() string                { return Load().ConfigPath() }
