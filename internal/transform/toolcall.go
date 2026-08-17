@@ -86,16 +86,6 @@ func coerceFunctionArgs(args any) any {
 	return args
 }
 
-// firstTruthyString 返回参数里第一个非空字符串。
-func firstTruthyString(vals ...any) string {
-	for _, v := range vals {
-		if s, ok := v.(string); ok && s != "" {
-			return s
-		}
-	}
-	return ""
-}
-
 // firstPresent 在两个 map 里依次查 keys，返回第一个存在的值。
 func firstPresent(m1 map[string]any, k1 string, m2 map[string]any, k2, k3 string) any {
 	if v, ok := m1[k1]; ok {

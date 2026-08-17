@@ -38,22 +38,23 @@ func InitDB(dbPath string) error {
 		isNewDB = true
 	}
 
-	// Use WAL mode for better concurrency
-	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
+	// Use WAL mode and busy_timeout for better concurrency and resilience
+	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("error: %w", err)
-
 	}
+
+	// SQLite handles concurrent writes safely when connections are serialized
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	// Ensure DB is reachable
 	if errPing := db.Ping(); errPing != nil { //nolint:govet
 		return fmt.Errorf("error: %w", errPing)
-
 	}
 
 	GlobalDB = db
-
 	// Create tables
 	err = createTables(db)
 	if err != nil {

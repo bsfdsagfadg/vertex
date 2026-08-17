@@ -12,98 +12,11 @@ func truthyStr(v any) bool {
 
 // CleanPart 清洗单个 part，去除空字段、修复边界情况。
 func CleanPart(part map[string]any, functionCallNames []string, fc *FcNameTracker) (map[string]any, bool) {
-	hasValid := false
-	cleaned := map[string]any{}
-
-	if v, ok := part["text"]; ok {
-		if v != nil && toString(v) != "" {
-			cleaned["text"] = v
-			hasValid = true
-		}
+	names := functionCallNames
+	if fc != nil {
+		names = fc.names
 	}
-
-	if v, ok := part["thought"]; ok {
-		cleaned["thought"] = v
-	}
-
-	if fcRaw, ok := part["functionCall"]; ok {
-		if fcMap, ok := fcRaw.(map[string]any); ok {
-			if truthyStr(fcMap["name"]) {
-				cleaned["functionCall"] = fixFunctionCallArgs(fcMap)
-				hasValid = true
-			}
-		}
-	}
-
-	if frRaw, ok := part["functionResponse"]; ok {
-		if frMap, ok := frRaw.(map[string]any); ok {
-			currentName, _ := frMap["name"].(string)
-			if strings.TrimSpace(currentName) == "" {
-				inferred := ""
-				if fc != nil {
-					if n, ok := fc.NextName(); ok {
-						inferred = n
-					}
-				} else if len(functionCallNames) > 0 {
-					inferred = functionCallNames[len(functionCallNames)-1]
-				}
-				if inferred != "" {
-					fixed := copyMap(frMap)
-					fixed["name"] = inferred
-					normalizeFunctionResponseBody(fixed)
-					cleaned["functionResponse"] = fixed
-					hasValid = true
-				}
-			} else {
-				fixed := copyMap(frMap)
-				normalizeFunctionResponseBody(fixed)
-				cleaned["functionResponse"] = fixed
-				hasValid = true
-			}
-		}
-	}
-
-	if idRaw, ok := part["inlineData"]; ok {
-		if id, ok := idRaw.(map[string]any); ok {
-			if truthyStr(id["data"]) && truthyStr(id["mimeType"]) {
-				cleaned["inlineData"] = idRaw
-				hasValid = true
-			}
-		}
-	}
-
-	if fdRaw, ok := part["fileData"]; ok {
-		if fd, ok := fdRaw.(map[string]any); ok {
-			if truthyStr(fd["fileUri"]) && truthyStr(fd["mimeType"]) {
-				cleaned["fileData"] = fdRaw
-				hasValid = true
-			}
-		}
-	}
-
-	for _, key := range []string{"executableCode", "codeExecutionResult"} {
-		if v, ok := part[key]; ok && isTruthy(v) {
-			cleaned[key] = v
-			hasValid = true
-		}
-	}
-
-	if v, ok := part["thoughtSignature"]; ok {
-		cleaned["thoughtSignature"] = v
-	}
-
-	for _, key := range []string{"videoMetadata", "mediaResolution"} {
-		if v, ok := part[key]; ok && isTruthy(v) {
-			cleaned[key] = v
-		}
-	}
-
-	finalizeCleanedPart(cleaned)
-
-	if hasValid {
-		return cleaned, true
-	}
-	return nil, false
+	return cleanPartWithID(part, names, 0, nil)
 }
 
 // normalizeFunctionResponseBody 把 functionResponse.response 的非对象值包成 {"result": ...}。

@@ -362,13 +362,3 @@ func extractImageFromPart(part map[string]any) (string, string, bool) {
 	}
 	return "", "", false
 }
-
-// firstMap 返回第一个非空 map（用于 inlineData/inline_data 兼容）。
-func firstMap(vals ...any) (map[string]any, bool) {
-	for _, v := range vals {
-		if m, ok := v.(map[string]any); ok && len(m) > 0 {
-			return m, true
-		}
-	}
-	return nil, false
-}

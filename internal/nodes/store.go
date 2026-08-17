@@ -42,13 +42,33 @@ type NodeHealth struct { //nolint:govet
 }
 
 var (
-	mu                 sync.Mutex                                 //nolint:gochecknoglobals
-	nodeList           []Node                                     //nolint:gochecknoglobals
-	healthMap          = make(map[string]*NodeHealth)             //nolint:gochecknoglobals
-	nodeSources        = make(map[string]map[NodeSource]struct{}) //nolint:gochecknoglobals
-	loaded             bool                                       //nolint:gochecknoglobals
-	DeleteNodeCallback func(uri string)                           //nolint:gochecknoglobals
+	mu                     sync.Mutex                                 //nolint:gochecknoglobals
+	nodeList               []Node                                     //nolint:gochecknoglobals
+	healthMap              = make(map[string]*NodeHealth)             //nolint:gochecknoglobals
+	nodeSources            = make(map[string]map[NodeSource]struct{}) //nolint:gochecknoglobals
+	loaded                 bool                                       //nolint:gochecknoglobals
+	deleteNodeCallbackMu   sync.RWMutex                               //nolint:gochecknoglobals
+	deleteNodeCallbackFunc func(uri string)                           //nolint:gochecknoglobals
+	DeleteNodeCallback     func(uri string)                           //nolint:gochecknoglobals
 )
+
+// SetDeleteNodeCallback 设置节点删除时的回调函数。
+func SetDeleteNodeCallback(cb func(uri string)) {
+	deleteNodeCallbackMu.Lock()
+	deleteNodeCallbackFunc = cb
+	DeleteNodeCallback = cb
+	deleteNodeCallbackMu.Unlock()
+}
+
+func getDeleteNodeCallback() func(uri string) {
+	deleteNodeCallbackMu.RLock()
+	cb := deleteNodeCallbackFunc
+	if cb == nil {
+		cb = DeleteNodeCallback
+	}
+	deleteNodeCallbackMu.RUnlock()
+	return cb
+}
 
 func ensureLoaded() {
 	if loaded {
@@ -213,6 +233,21 @@ func initHealthQueue() {
 	}()
 }
 
+func queueHealthUpdate(update healthUpdate) {
+	select {
+	case healthUpdateChan <- update:
+	default:
+		select {
+		case <-healthUpdateChan:
+		default:
+		}
+		select {
+		case healthUpdateChan <- update:
+		default:
+		}
+	}
+}
+
 func saveHealthUnsafe() {
 	if db.GlobalDB == nil {
 		return
@@ -220,13 +255,7 @@ func saveHealthUnsafe() {
 	healthOnce.Do(initHealthQueue)
 	for uri, h := range healthMap {
 		if h != nil {
-			select {
-			case healthUpdateChan <- healthUpdate{uri: uri, h: *h}:
-			default:
-				go func(update healthUpdate) {
-					healthUpdateChan <- update
-				}(healthUpdate{uri: uri, h: *h})
-			}
+			queueHealthUpdate(healthUpdate{uri: uri, h: *h})
 		}
 	}
 }
@@ -236,13 +265,7 @@ func updateSingleNodeHealthUnsafe(uri string, h *NodeHealth) {
 		return
 	}
 	healthOnce.Do(initHealthQueue)
-	select {
-	case healthUpdateChan <- healthUpdate{uri: uri, h: *h}:
-	default:
-		go func(update healthUpdate) {
-			healthUpdateChan <- update
-		}(healthUpdate{uri: uri, h: *h})
-	}
+	queueHealthUpdate(healthUpdate{uri: uri, h: *h})
 }
 
 func updateSingleNodeDisabledUnsafe(uri string, disabled bool) {
@@ -400,7 +423,7 @@ func DeleteNode(uri string) {
 	globalStickyPool.Evict(uri)
 	saveNodesUnsafe()
 	saveHealthUnsafe()
-	cb := DeleteNodeCallback
+	cb := getDeleteNodeCallback()
 	mu.Unlock() // 必须先解锁，避免底层的销毁回调查找节点名称时发生死锁
 	if cb != nil {
 		cb(uri)
@@ -427,7 +450,7 @@ func DeleteDisabled() int {
 	nodeList = kept
 	saveNodesUnsafe()
 	saveHealthUnsafe()
-	cb := DeleteNodeCallback
+	cb := getDeleteNodeCallback()
 	mu.Unlock()
 
 	if cb != nil {
@@ -485,7 +508,7 @@ func BatchDeleteNodes(uris []string) {
 	nodeList = kept
 	saveNodesUnsafe()
 	saveHealthUnsafe()
-	cb := DeleteNodeCallback
+	cb := getDeleteNodeCallback()
 	mu.Unlock() // 防止在批量删除时引发卡死死锁
 
 	if cb != nil {

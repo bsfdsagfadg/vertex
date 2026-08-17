@@ -15,6 +15,8 @@ type DailyLogger struct {
 	mu       sync.Mutex
 	logDir   string
 	latestFd *os.File
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // NewDailyLogger creates a new DailyLogger that writes logs to the specified directory.
@@ -33,6 +35,7 @@ func NewDailyLogger(dir string) *DailyLogger {
 	dl := &DailyLogger{
 		logDir:   dir,
 		latestFd: f,
+		stopCh:   make(chan struct{}),
 	}
 	go dl.cleanupRoutine()
 	return dl
@@ -48,6 +51,10 @@ func (l *DailyLogger) Write(p []byte) (n int, err error) {
 }
 
 func (l *DailyLogger) Close() error {
+	l.stopOnce.Do(func() {
+		close(l.stopCh)
+	})
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -78,9 +85,16 @@ func (l *DailyLogger) Close() error {
 }
 
 func (l *DailyLogger) cleanupRoutine() {
+	l.cleanup()
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
 	for {
-		l.cleanup()
-		time.Sleep(1 * time.Hour)
+		select {
+		case <-l.stopCh:
+			return
+		case <-ticker.C:
+			l.cleanup()
+		}
 	}
 }
 

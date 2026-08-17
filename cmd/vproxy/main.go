@@ -177,7 +177,7 @@ func main() {
 
 	spool.SetMaxSpillBytes(int64(cfg.MaxSpillMB()) << 20)
 
-	nodes.DeleteNodeCallback = transport.RemoveProxy
+	nodes.SetDeleteNodeCallback(transport.RemoveProxy)
 	transport.StartProxyGC(5*time.Minute, 30*time.Minute)
 
 	keys := api.NewAPIKeyManager()

@@ -269,37 +269,6 @@ func coerceFunctionResponse(raw any) map[string]any {
 	}
 	return map[string]any{"result": obj}
 }
-
-// firstPresentRaw 在 map 里依次查 keys，返回第一个存在的原始值（不存在返回 nil）。
-func firstPresentRaw(m map[string]any, keys ...string) any {
-	for _, k := range keys {
-		if v, ok := m[k]; ok {
-			return v
-		}
-	}
-	return nil
-}
-
-// deepCopyAny 深拷贝 map/slice 结构。
-func deepCopyAny(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, val := range x {
-			out[k] = deepCopyAny(val)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, item := range x {
-			out[i] = deepCopyAny(item)
-		}
-		return out
-	default:
-		return v
-	}
-}
-
 // parseModelName 解析模型名：经 models.json 的 alias_map 重映射。
 func parseModelName(model string) string {
 	return config.ResolveModelName(model)

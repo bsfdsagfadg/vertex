@@ -90,6 +90,7 @@ func toNativeSchema(schema any) any {
 		out[k] = v
 	}
 
+	var typeStr string
 	switch t := out["type"].(type) {
 	case []any:
 		picked := "string"
@@ -99,20 +100,20 @@ func toNativeSchema(schema any) any {
 				break
 			}
 		}
-		out["type"] = strings.ToUpper(picked)
+		typeStr = strings.ToUpper(picked)
 	case string:
-		out["type"] = strings.ToUpper(t)
+		typeStr = strings.ToUpper(t)
 	default:
-		out["type"] = "OBJECT"
+		typeStr = "OBJECT"
 	}
 	validTypes := map[string]bool{
 		"STRING": true, "INTEGER": true, "NUMBER": true,
 		"BOOLEAN": true, "ARRAY": true, "OBJECT": true,
 	}
-	if !validTypes[out["type"].(string)] {
-		out["type"] = "STRING"
+	if !validTypes[typeStr] {
+		typeStr = "STRING"
 	}
-
+	out["type"] = typeStr
 	if props, ok := out["properties"].(map[string]any); ok {
 		nativeProps := make([]any, 0, len(props))
 		for key, value := range props {

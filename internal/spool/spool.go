@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 )
 
 var (
@@ -21,12 +22,13 @@ var (
 
 // SetMaxSpillBytes 设置磁盘溢出阈值（字节数）；0 或负数表示永不落盘。
 func SetMaxSpillBytes(limit int64) {
-	maxMemSize = limit
+	atomic.StoreInt64(&maxMemSize, limit)
 }
 
 // SpilledBytes 返回进程启动以来写入临时文件的累计字节数。
-func SpilledBytes() int64 { return spilledBytes }
-
+func SpilledBytes() int64 {
+	return atomic.LoadInt64(&spilledBytes)
+}
 // Buffer 是"先写后读"字节缓冲，支持自动磁盘溢出。
 //
 // 非并发安全——约定单个逻辑请求内串行 Write→Reader→Close 使用。
@@ -52,11 +54,11 @@ func (b *Buffer) Write(p []byte) (int, error) {
 
 	}
 
-	if maxMemSize > 0 && int64(len(b.mem)+len(p)) > maxMemSize {
+	memLimit := atomic.LoadInt64(&maxMemSize)
+	if memLimit > 0 && int64(len(b.mem)+len(p)) > memLimit {
 		tmp, err := os.CreateTemp("", "spool-*")
 		if err != nil {
 			return 0, fmt.Errorf("error: %w", err)
-
 		}
 		b.file = tmp
 		b.filePath = tmp.Name()
@@ -64,8 +66,12 @@ func (b *Buffer) Write(p []byte) (int, error) {
 
 		if len(b.mem) > 0 {
 			if _, err := b.file.Write(b.mem); err != nil {
+				_ = tmp.Close()
+				_ = os.Remove(tmp.Name())
+				b.file = nil
+				b.filePath = ""
+				b.spilled = false
 				return 0, fmt.Errorf("error: %w", err)
-
 			}
 		}
 		n, err := b.file.Write(p)
@@ -73,9 +79,8 @@ func (b *Buffer) Write(p []byte) (int, error) {
 			b.totalWritten = int64(len(b.mem)) + int64(n)
 		}
 		b.mem = nil
-		spilledBytes += b.totalWritten
+		atomic.AddInt64(&spilledBytes, b.totalWritten)
 		return n, err
-
 	}
 
 	b.mem = append(b.mem, p...)

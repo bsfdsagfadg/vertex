@@ -27,7 +27,21 @@ type ProxyCandidate struct {
 }
 
 //nolint:gochecknoglobals // Serializes candidate read-modify-write operations.
-var proxyCandidatesMu sync.Mutex
+var (
+	proxyCandidatesMu  sync.Mutex
+	candidateCacheMu   sync.RWMutex
+	cachedCandidates   []ProxyCandidate
+	candidateCacheTime time.Time
+)
+
+const candidateCacheTTL = 2 * time.Second
+
+// InvalidateCandidateCache 清除候选代理列表缓存。
+func InvalidateCandidateCache() {
+	candidateCacheMu.Lock()
+	cachedCandidates = nil
+	candidateCacheMu.Unlock()
+}
 
 func candidateStore() (*sql.DB, error) {
 	if db.GlobalDB == nil {
@@ -37,6 +51,15 @@ func candidateStore() (*sql.DB, error) {
 }
 
 func ListProxyCandidates() []ProxyCandidate {
+	candidateCacheMu.RLock()
+	if cachedCandidates != nil && time.Since(candidateCacheTime) < candidateCacheTTL {
+		res := make([]ProxyCandidate, len(cachedCandidates))
+		copy(res, cachedCandidates)
+		candidateCacheMu.RUnlock()
+		return res
+	}
+	candidateCacheMu.RUnlock()
+
 	store, err := candidateStore()
 	if err != nil {
 		return nil
@@ -56,6 +79,13 @@ func ListProxyCandidates() []ProxyCandidate {
 			result = append(result, candidate)
 		}
 	}
+
+	candidateCacheMu.Lock()
+	cachedCandidates = make([]ProxyCandidate, len(result))
+	copy(cachedCandidates, result)
+	candidateCacheTime = time.Now()
+	candidateCacheMu.Unlock()
+
 	return result
 }
 
@@ -101,6 +131,7 @@ func AddProxyCandidate(rawURI string) (ProxyCandidate, error) {
 	if err != nil {
 		return ProxyCandidate{}, fmt.Errorf("保存候选代理: %w", err)
 	}
+	InvalidateCandidateCache()
 	return candidate, nil
 }
 
@@ -132,6 +163,7 @@ func RemoveProxyCandidate(rawURI string) (wasActive bool, err error) {
 			return false, fmt.Errorf("清理旧入口代理配置: %w", err)
 		}
 	}
+	InvalidateCandidateCache()
 	return wasActive, nil
 }
 
@@ -147,7 +179,9 @@ func RemoveDisabledProxyCandidates() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("开始清理禁用入口代理: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
 	rows, err := tx.Query("SELECT raw_uri FROM entry_proxy_candidates WHERE disabled = 1 ORDER BY rowid")
 	if err != nil {
@@ -171,6 +205,7 @@ func RemoveDisabledProxyCandidates() ([]string, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("提交禁用入口代理清理: %w", err)
 	}
+	InvalidateCandidateCache()
 	return removed, nil
 }
 
@@ -254,6 +289,7 @@ func updateProxyCandidateResult(
 	if count == 0 {
 		return false, fmt.Errorf("未找到该候选 URI")
 	}
+	InvalidateCandidateCache()
 	return autoDisabled, nil
 }
 
@@ -301,6 +337,7 @@ func MigrateLegacyProxy(rawURI string) error {
 	if err := WriteSettings(map[string]any{"proxy_url": ""}); err != nil {
 		return fmt.Errorf("迁移成功但清理 proxy_url 失败: %w", err)
 	}
+	InvalidateCandidateCache()
 	return nil
 }
 

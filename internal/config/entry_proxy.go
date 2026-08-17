@@ -111,5 +111,6 @@ func SetProxyCandidateEnabled(rawURI string, enabled bool) error {
 	if count == 0 {
 		return fmt.Errorf("未找到该候选 URI")
 	}
+	InvalidateCandidateCache()
 	return nil
 }

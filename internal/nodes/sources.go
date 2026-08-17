@@ -327,7 +327,7 @@ func ReplaceSubscriptionNodes(subscriptionID string, newNodes []Node, adoptManua
 		return err
 	}
 	finishRemovedNodesUnsafe(removed)
-	callback := DeleteNodeCallback
+	callback := getDeleteNodeCallback()
 	mu.Unlock()
 	notifyRemovedNodes(removed, callback)
 	return nil
@@ -359,7 +359,7 @@ func RemoveSubscriptionSource(subscriptionID string, deleteNodes bool) error {
 		return err
 	}
 	finishRemovedNodesUnsafe(removed)
-	callback := DeleteNodeCallback
+	callback := getDeleteNodeCallback()
 	mu.Unlock()
 	notifyRemovedNodes(removed, callback)
 	return nil
@@ -390,7 +390,7 @@ func ImportManualNodes(newNodes []Node, replace bool) error {
 		return err
 	}
 	finishRemovedNodesUnsafe(removed)
-	callback := DeleteNodeCallback
+	callback := getDeleteNodeCallback()
 	mu.Unlock()
 	notifyRemovedNodes(removed, callback)
 	return nil
@@ -532,7 +532,7 @@ func DedupNodes() int {
 		return 0
 	}
 	saveHealthUnsafe()
-	callback := DeleteNodeCallback
+	callback := getDeleteNodeCallback()
 	mu.Unlock()
 	notifyRemovedNodes(removedURIs, callback)
 	return len(removedURIs)

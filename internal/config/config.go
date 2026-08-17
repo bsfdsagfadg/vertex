@@ -193,14 +193,42 @@ func writeJSONFile(path string, v any) error {
 	return os.Rename(tmp, path) //nolint:wrapcheck
 }
 
+func cloneConfig(c *AppConfig) AppConfig {
+	if c == nil {
+		return DefaultConfig()
+	}
+	cp := *c
+	if c.SafetySettings != nil {
+		cp.SafetySettings = make(map[string]string, len(c.SafetySettings))
+		for k, v := range c.SafetySettings {
+			cp.SafetySettings[k] = v
+		}
+	}
+	if c.CustomBgPresets != nil {
+		cp.CustomBgPresets = make([]string, len(c.CustomBgPresets))
+		copy(cp.CustomBgPresets, c.CustomBgPresets)
+	}
+	if c.TelemetryEnabled != nil {
+		v := *c.TelemetryEnabled
+		cp.TelemetryEnabled = &v
+	}
+	if c.AutoRefreshLogs != nil {
+		v := *c.AutoRefreshLogs
+		cp.AutoRefreshLogs = &v
+	}
+	return cp
+}
+
 func Load() AppConfig {
 	mu.Lock()
-	defer mu.Unlock()
 	if cached != nil && time.Since(cacheTime) < cacheTTL {
-		return *cached
+		res := cloneConfig(cached)
+		mu.Unlock()
+		return res
 	}
 	cfg := DefaultConfig()
 	initializeConfigFromExample()
+	var saveUpdates map[string]any
 	if data, err := os.ReadFile(configPath()); err == nil {
 		if errUnm := json.Unmarshal(data, &cfg); errUnm != nil { //nolint:govet
 			log.Printf("[Config] 解析 config.json 失败: %v", err)
@@ -274,8 +302,7 @@ func Load() AppConfig {
 				needsSave = true
 			}
 			if needsSave {
-				// 在返回配置前完成回写，避免调用方读到已修正值但文件仍保留非法值。
-				if errSave := writeSettings(map[string]any{
+				saveUpdates = map[string]any{
 					"request_timeout":                         cfg.RequestTimeout,
 					"race_timeout":                            cfg.RaceTimeout,
 					"stream_idle_timeout_seconds":             cfg.StreamIdleTimeoutSeconds,
@@ -285,8 +312,6 @@ func Load() AppConfig {
 					"entry_proxy_probe_auto_disable_failures": cfg.EntryProxyProbeAutoDisableFailures,
 					"default_image_size":                      cfg.DefaultImageSize,
 					"default_response_modalities":             cfg.DefaultResponseModalities,
-				}); errSave != nil {
-					log.Printf("[Config] 自动回写规范化配置失败: %v", errSave)
 				}
 			}
 			if shouldLogSuccessfulLoad(cfg) {
@@ -296,11 +321,20 @@ func Load() AppConfig {
 	} else if !os.IsNotExist(err) {
 		log.Printf("[Config] 读取 config.json 失败: %v", err)
 	}
-	cached = &cfg
+	cloned := cloneConfig(&cfg)
+	cached = &cloned
 	cacheTime = time.Now()
-	return cfg
-}
+	result := cloneConfig(cached)
+	mu.Unlock()
 
+	if saveUpdates != nil {
+		// 在释放 mu 锁后回写，避免持 mu 锁期间调用写锁导致的锁反转
+		if errSave := writeSettings(saveUpdates); errSave != nil {
+			log.Printf("[Config] 自动回写规范化配置失败: %v", errSave)
+		}
+	}
+	return result
+}
 // shouldLogSuccessfulLoad suppresses the periodic success message when the
 // cache TTL expires but the effective configuration has not changed.
 // Load holds mu while calling this function.

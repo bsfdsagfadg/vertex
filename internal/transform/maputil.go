@@ -77,3 +77,53 @@ func trimLowerSuffix(s string) string {
 	}
 	return strings.ToLower(s)
 }
+
+// deepCopyAny 深拷贝 map/slice/any 结构。
+func deepCopyAny(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			out[k] = deepCopyAny(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, val := range x {
+			out[i] = deepCopyAny(val)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// firstTruthyString 返回参数里第一个非空字符串。
+func firstTruthyString(vals ...any) string {
+	for _, v := range vals {
+		if s, ok := v.(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// firstMap 返回第一个非空 map（用于 inlineData/inline_data 兼容）。
+func firstMap(vals ...any) (map[string]any, bool) {
+	for _, v := range vals {
+		if m, ok := v.(map[string]any); ok && len(m) > 0 {
+			return m, true
+		}
+	}
+	return nil, false
+}
+
+// firstPresentRaw 在 map 里依次查 keys，返回第一个存在的原始值（不存在返回 nil）。
+func firstPresentRaw(m map[string]any, keys ...string) any {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			return v
+		}
+	}
+	return nil
+}

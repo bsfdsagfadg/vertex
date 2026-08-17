@@ -5,65 +5,12 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
-
-	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
-// CountTokens 统计给定 contents 在指定模型下的 token 数（Vertex CountTokens）。
-//
-// 走匿名 batchGraphql 的 CountTokens operation（独立 querySignature/operationName），
-// 单 session + 实时 recaptcha。失败/解析不到时返回 0（吞错），语义为"尽力计数"——
-// CountTokens 在上游不返数时不报错，给客户端一个 0。
-//
-// querySignature 从 config（count_tokens_query_signature）读，缺省值=内置硬编码值。
+// CountTokens 统计给定 contents 在指定模型下的 token 数。
 func (c *VertexAIClient) CountTokens(ctx context.Context, model string, contents []any) int {
 	return estimateTokens(contents)
 }
-
-// buildCountTokensPayload 构建 CountTokens 的 batchGraphql 请求体。
-func buildCountTokensPayload(model string, contents []any, recaptchaToken string, cfg config.ConfigProvider) map[string]any {
-	if contents == nil {
-		contents = []any{}
-	}
-	querySig := cfg.CountTokensQuerySignature()
-	if querySig == "" {
-		querySig = "2/mENOSldfC+HZM+tGhVuJLrl8M6gEyK3HRjUKuA5AM58="
-	}
-	return map[string]any{
-		"requestContext": map[string]any{
-			"clientVersion": "boq_cloud-boq-clientweb-vertexaistudio_20260402.09_p0",
-			"pagePath":      "/vertex-ai/studio/multimodal",
-			"jurisdiction":  "global",
-			"localizationData": map[string]any{
-				"locale":   "zh_CN",
-				"timezone": "Asia/Shanghai",
-			},
-		},
-		"querySignature": querySig,
-		"operationName":  "CountTokens",
-		"variables": map[string]any{
-			"contents":       contents,
-			"endpoint":       "",
-			"model":          model,
-			"region":         "global",
-			"recaptchaToken": recaptchaToken,
-		},
-	}
-}
-
-// countTokensHeaders 构造 CountTokens 上游请求头（逐字节保持既定 headers）。
-func countTokensHeaders() transport.Header {
-	h := transport.XHRHeaders(
-		"application/json", "*/*",
-		"https://console.cloud.google.com",
-		"https://console.cloud.google.com/vertex-ai/studio/multimodal",
-		"cross-site",
-	)
-	h["x-goog-authuser"] = []string{"0"}
-	return h
-}
-
 // parseCountTokensResponse 从 CountTokens 响应里抠 totalTokens。
 //
 // 上游可能是单对象或数组；逐层 results → data.ui.countTokensV2 / data.countTokensV2 / data.countTokens，
