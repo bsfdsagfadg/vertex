@@ -27,7 +27,7 @@ func ResolveThinkingConfig(defaultLevel, model string) *ThinkingConfig {
 		return nil
 	case "最低", "低", "中", "高":
 		// 如果设定的档位不在 capability.levels 白名单中，执行平滑降级到最近的有效最低档位
-		if capability.levels != nil && len(capability.levels) > 0 && !capability.levels[defaultLevel] {
+		if len(capability.levels) > 0 && !capability.levels[defaultLevel] {
 			fallbackLevel := ""
 			order := []string{"最低", "低", "中", "高"}
 			for _, lvl := range order {
@@ -211,42 +211,6 @@ func ResolveResponseModalities(defaultModalities, model string) []string {
 		return []string{"IMAGE"}
 	}
 	return []string{"TEXT", "IMAGE"}
-}
-
-// ResolveMediaResolution 归一 media_resolution 枚举（无法识别返回 ""）。
-func ResolveMediaResolution(value any) string {
-	s, ok := value.(string)
-	if !ok {
-		return ""
-	}
-	s = strings.ToUpper(strings.TrimSpace(s))
-	switch s {
-	case "MEDIA_RESOLUTION_LOW", "LOW":
-		return "MEDIA_RESOLUTION_LOW"
-	case "MEDIA_RESOLUTION_MEDIUM", "MEDIUM", "MED":
-		return "MEDIA_RESOLUTION_MEDIUM"
-	case "MEDIA_RESOLUTION_HIGH", "HIGH":
-		return "MEDIA_RESOLUTION_HIGH"
-	case "MEDIA_RESOLUTION_UNSPECIFIED", "AUTO", "UNSPECIFIED":
-		return "MEDIA_RESOLUTION_UNSPECIFIED"
-	default:
-		return ""
-	}
-}
-
-// audioFormatMIME 定义常见的音频输入格式对应的 MIME 类型。
-var audioFormatMIME = map[string]string{
-	"wav":  "audio/wav",
-	"mp3":  "audio/mp3",
-	"aiff": "audio/aiff",
-	"aac":  "audio/aac",
-	"ogg":  "audio/ogg",
-	"flac": "audio/flac",
-}
-
-// AudioInputMIME 把音频格式后缀映射到 Gemini inlineData mimeType。
-func AudioInputMIME(format string) string {
-	return audioFormatMIME[strings.ToLower(strings.TrimSpace(format))]
 }
 
 // ThinkingCapInfo 返回模型族的思考机制与合法思考等级白名单（Gemini 枚举值）。

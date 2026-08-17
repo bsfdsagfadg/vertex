@@ -71,7 +71,7 @@ func applyTransportExtras(proxy map[string]any, obj map[string]any, transport ma
 			httpOpts["path"] = []string{path}
 		}
 		if host := strings.TrimSpace(ValueToString(transport["Host"])); host != "" {
-			httpOpts["headers"] = map[string][]string{"Host": []string{host}}
+			httpOpts["headers"] = map[string][]string{"Host": {host}}
 		}
 		if len(httpOpts) > 0 {
 			httpOpts["method"] = "GET"

@@ -197,14 +197,6 @@ type InlineImage struct {
 	Data     string
 }
 
-// ResolveImageModel 解析图片模型名：空 → DefaultImageModel，其余原样。
-func ResolveImageModel(model string) string {
-	if model == "" {
-		return DefaultImageModel
-	}
-	return model
-}
-
 // BuildTypedImageRequest 构建图片生成/编辑/变体的 Gemini 强类型请求。
 //
 //   - prompt 经 buildImagePrompt 拼接尺寸/质量/风格/背景等自然语言约束。
@@ -253,15 +245,6 @@ func BuildTypedImageRequest(model, prompt string, images []InlineImage, mask *In
 	}
 
 	return req
-}
-
-// AppendNegativePrompt 把 negative_prompt 追加成 "Avoid: ..." 行。
-func AppendNegativePrompt(prompt string, negative any) string {
-	neg := toString(negative)
-	if strings.TrimSpace(neg) == "" {
-		return prompt
-	}
-	return strings.TrimSpace(strings.TrimSpace(prompt) + "\nAvoid: " + neg)
 }
 
 // buildImagePrompt 把尺寸/质量/风格/背景/模式约束拼进 prompt。

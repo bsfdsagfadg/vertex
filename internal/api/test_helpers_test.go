@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -213,14 +212,6 @@ func newTestServerCustomMock(t *testing.T, mockHandler http.HandlerFunc, cfgMod 
 	}
 }
 
-// mockAlways429 所有请求返回 429。
-func mockAlways429(t *testing.T) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write([]byte(`[{"results":[{"data":{"error":"rate limit"}}]}]`))
-	}
-}
-
 // doPost 发送 POST 请求，body 自动 JSON 序列化。apiKey 为空时省略 Authorization 头。
 func doPost(t *testing.T, url, apiKey string, body any) *http.Response {
 	t.Helper()
@@ -247,41 +238,7 @@ func doPost(t *testing.T, url, apiKey string, body any) *http.Response {
 	return resp
 }
 
-// directDialer 实现 transport.ProxyDialer，对所有 URI 返回直连 DialContext。
-// 用于并行池测试中避免 nil dialer panic。
-type directDialer struct{}
-
-func (d *directDialer) CreateDialer(uri string, reqID string) (func(ctx context.Context, network, addr string) (net.Conn, error), func(), error) {
-	var dialer net.Dialer
-	return dialer.DialContext, func() {}, nil
-}
-
-func (d *directDialer) StopAll()                      {}
-func (d *directDialer) GetNextEntrySocksAddr() string { return "" }
-func (d *directDialer) SyncEntryPool() error          { return nil }
-func (d *directDialer) TestEntryProxy(uri string) (func(ctx context.Context, network, addr string) (net.Conn, error), func(), error) {
-	return d.CreateDialer(uri, "test")
-}
-
 // geminiNonStreamingResponse 返回标准 Gemini 非流式响应的 JSON（data.ui.streamGenerateContentAnonymous 值部分）。
 func geminiNonStreamingResponse() string {
 	return `{"candidates":[{"content":{"parts":[{"text":"Hello! How can I help you today?"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":20,"totalTokenCount":30}}`
-}
-
-// geminiRichResponse 返回包含多类型 parts（文本、thought、functionCall、inlineData）、
-// 真实 finishReason 和完整 usageMetadata 的 Gemini 响应。
-func geminiRichResponse() string {
-	return `{"candidates":[{"content":{"parts":[{"text":"Hello! "},{"text":"I'm thinking deeply","thought":true},{"functionCall":{"name":"get_weather","args":{"location":"Shanghai"}}},{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":15,"candidatesTokenCount":42,"totalTokenCount":57,"thoughtsTokenCount":10}}`
-}
-
-// goroutineLeakCheck 在 cleanup 中检查 goroutine 是否回到基线。
-func goroutineLeakCheck(t *testing.T) {
-	t.Helper()
-	baseline := runtime.NumGoroutine()
-	t.Cleanup(func() {
-		if leaked := runtime.NumGoroutine() - baseline; leaked > 30 {
-			t.Errorf("possible goroutine leak: +%d goroutines (baseline=%d, current=%d)",
-				leaked, baseline, runtime.NumGoroutine())
-		}
-	})
 }

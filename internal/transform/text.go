@@ -29,11 +29,6 @@ type TextModelSpec struct {
 // f64ptr 返回 float64 字面量的指针（供规格矩阵默认注入值使用）。
 func f64ptr(v float64) *float64 { return &v }
 
-// MaxOutputTokensFor 返回文本模型的最大输出 token 上限。
-func MaxOutputTokensFor(model string) int {
-	return TextSpecFor(model).MaxOutputTokens
-}
-
 var textModelSpecs = map[string]TextModelSpec{
 	"gemini-3.7-flash": {
 		MaxOutputTokens: 65535,

@@ -12,7 +12,6 @@ import "encoding/base64"
 
 // SkipThoughtSentinel 是伪签名哨兵明文（encode 后为 base64）。
 const SkipThoughtSentinel = "skip_thought_signature_validator"
-const skipThoughtSentinel = SkipThoughtSentinel
 
 // SignatureResolver 是 typed part 的 thoughtSignature 决策器（无状态）。
 type SignatureResolver struct{}

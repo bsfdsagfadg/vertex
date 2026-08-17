@@ -133,27 +133,6 @@ func MergeEntryNodes(newNodes []Node) {
 	saveEntryNodesUnsafe()
 }
 
-// DeleteEntryNode 删除单个前置节点及其健康度记录。
-func DeleteEntryNode(uri string) {
-	mu.Lock()
-	ensureEntryLoaded()
-	var kept []Node
-	for _, n := range entryList {
-		if n.RawURI != uri {
-			kept = append(kept, n)
-		}
-	}
-	entryList = kept
-	delete(entryHealthMap, uri)
-	saveEntryNodesUnsafe()
-	saveEntryHealthUnsafe()
-	cb := EntryDeleteCallback
-	mu.Unlock() // 先解锁再通知外部清理（如关闭 sing-box 实例），避免死锁
-	if cb != nil {
-		cb(uri)
-	}
-}
-
 // DedupEntryNodes 按身份键（EntryIdentityFunc）去重，返回移除数量。
 func DedupEntryNodes() int {
 	mu.Lock()

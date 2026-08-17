@@ -214,19 +214,41 @@ func (m TuiModel) buildContent(bw int) string {
 		if d < 0 {
 			d = 0
 		}
-		sb.WriteString(yellowStyle.Render(prefix+dashBar(d)+"╮") + "\n")
+		sb.WriteString(yellowStyle.Render(prefix + dashBar(d) + "╮"))
+		sb.WriteByte('\n')
 
 		line1 := fmt.Sprintf("Version: %s | %s", m.appVersion, m.platformInfo)
-		sb.WriteString(yellowStyle.Render("│") + " " + padOrTrunc(line1, biw) + " " + yellowStyle.Render("│") + "\n")
-		sb.WriteString(yellowStyle.Render("│") + " " + padOrTrunc(m.buildInfo, biw) + " " + yellowStyle.Render("│") + "\n")
+		sb.WriteString(yellowStyle.Render("│"))
+		sb.WriteByte(' ')
+		sb.WriteString(padOrTrunc(line1, biw))
+		sb.WriteByte(' ')
+		sb.WriteString(yellowStyle.Render("│"))
+		sb.WriteByte('\n')
+		sb.WriteString(yellowStyle.Render("│"))
+		sb.WriteByte(' ')
+		sb.WriteString(padOrTrunc(m.buildInfo, biw))
+		sb.WriteByte(' ')
+		sb.WriteString(yellowStyle.Render("│"))
+		sb.WriteByte('\n')
 		if m.initialAdminPassword != "" {
 			pwLine := fmt.Sprintf("🔑 初始管理员密码: %s (登录后可在面板修改)", m.initialAdminPassword)
-			sb.WriteString(yellowStyle.Render("│") + " " + cyanStyle.Render(padOrTrunc(pwLine, biw)) + " " + yellowStyle.Render("│") + "\n")
+			sb.WriteString(yellowStyle.Render("│"))
+			sb.WriteByte(' ')
+			sb.WriteString(cyanStyle.Render(padOrTrunc(pwLine, biw)))
+			sb.WriteByte(' ')
+			sb.WriteString(yellowStyle.Render("│"))
+			sb.WriteByte('\n')
 		}
 
 		warn := "⚠️  本软件完全免费！付费即被骗，请退款。"
-		sb.WriteString(yellowStyle.Render("│") + " " + redStyle.Render(padOrTrunc(warn, biw)) + " " + yellowStyle.Render("│") + "\n")
-		sb.WriteString(yellowStyle.Render(bottomBorder()) + "\n")
+		sb.WriteString(yellowStyle.Render("│"))
+		sb.WriteByte(' ')
+		sb.WriteString(redStyle.Render(padOrTrunc(warn, biw)))
+		sb.WriteByte(' ')
+		sb.WriteString(yellowStyle.Render("│"))
+		sb.WriteByte('\n')
+		sb.WriteString(yellowStyle.Render(bottomBorder()))
+		sb.WriteByte('\n')
 	}
 
 	// ── 最近系统日志 ──
@@ -237,7 +259,8 @@ func (m TuiModel) buildContent(bw int) string {
 		if d < 0 {
 			d = 0
 		}
-		sb.WriteString(cyanStyle.Render(prefix+dashBar(d)+"╮") + "\n")
+		sb.WriteString(cyanStyle.Render(prefix + dashBar(d) + "╮"))
+		sb.WriteByte('\n')
 
 		var visualLines []string
 		for i := len(m.logBuffer) - 1; i >= 0 && len(visualLines) < maxLogs*5; i-- {
@@ -249,12 +272,23 @@ func (m TuiModel) buildContent(bw int) string {
 		}
 		for i := 0; i < maxLogs; i++ {
 			if i < len(visualLines) {
-				sb.WriteString(cyanStyle.Render("│") + " " + visualLines[i] + " " + cyanStyle.Render("│") + "\n")
+				sb.WriteString(cyanStyle.Render("│"))
+				sb.WriteByte(' ')
+				sb.WriteString(visualLines[i])
+				sb.WriteByte(' ')
+				sb.WriteString(cyanStyle.Render("│"))
+				sb.WriteByte('\n')
 			} else {
-				sb.WriteString(cyanStyle.Render("│") + " " + strings.Repeat(" ", biw) + " " + cyanStyle.Render("│") + "\n")
+				sb.WriteString(cyanStyle.Render("│"))
+				sb.WriteByte(' ')
+				sb.WriteString(strings.Repeat(" ", biw))
+				sb.WriteByte(' ')
+				sb.WriteString(cyanStyle.Render("│"))
+				sb.WriteByte('\n')
 			}
 		}
-		sb.WriteString(cyanStyle.Render(bottomBorder()) + "\n")
+		sb.WriteString(cyanStyle.Render(bottomBorder()))
+		sb.WriteByte('\n')
 	}
 
 	// ── 请求追踪器 ──
@@ -273,7 +307,8 @@ func (m TuiModel) buildContent(bw int) string {
 		if d < 0 {
 			d = 0
 		}
-		sb.WriteString(cyanStyle.Render(prefix+dashBar(d)+"╮") + "\n")
+		sb.WriteString(cyanStyle.Render(prefix + dashBar(d) + "╮"))
+		sb.WriteByte('\n')
 
 		const separatorOverhead = 16
 		totalColsWidth := bw - separatorOverhead
@@ -346,7 +381,8 @@ func (m TuiModel) buildContent(bw int) string {
 				timeCol, cyanStyle.Render("│"),
 				grayStyle.Render(detailCol), cyanStyle.Render("│")))
 		}
-		sb.WriteString(cyanStyle.Render(bottomBorder()) + "\n")
+		sb.WriteString(cyanStyle.Render(bottomBorder()))
+		sb.WriteByte('\n')
 	}
 
 	return sb.String()

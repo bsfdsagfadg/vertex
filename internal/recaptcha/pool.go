@@ -26,16 +26,6 @@ func NewTokenPoolCustom(fetch func(proxyURI string) (string, error)) *TokenPool 
 	return &TokenPool{fetch: fetch}
 }
 
-func (p *TokenPool) GetToken(ctx context.Context) (string, error) {
-	return p.GetTokenShared(ctx)
-}
-
-// Deprecated: GetTokenWithProxy delegates to GetTokenShared and ignores proxyURI.
-// Use GetTokenShared instead.
-func (p *TokenPool) GetTokenWithProxy(ctx context.Context, proxyURI string) (string, error) {
-	return p.GetTokenShared(ctx)
-}
-
 // Invalidate 为兼容保留的空操作：30 秒全局缓存已移除，
 // 每次 GetTokenShared 都会实时抓取最新 token，无需主动失效。
 func (p *TokenPool) Invalidate() {}
@@ -46,7 +36,7 @@ func (p *TokenPool) Invalidate() {}
 // （single-use），并发请求必须各自持有独立 token，否则复用同一份会触发
 // Google 侧验证失败（Failed to verify action / 429）。每个请求独立抓取，
 // 由 15s 超时与前置池/出口节点降级路径兜底。
-func (p *TokenPool) GetTokenShared(ctx context.Context) (string, error) {
+func (p *TokenPool) GetTokenShared(_ context.Context) (string, error) {
 	if p.fetch != nil {
 		return p.fetch("")
 	}

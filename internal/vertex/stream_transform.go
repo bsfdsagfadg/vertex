@@ -445,11 +445,6 @@ func isValidContentChunkTyped(chunk *transform.GeminiChunk, model ...string) boo
 	return transform.NewModelFamilyRouter().For(m).IsValidChunk(chunk)
 }
 
-// blockReasonUnspecified 是 protobuf 枚举 BlockReason 的默认值。
-// 上游对未发生拦截的响应会携带该值（非空字符串），它不代表真实安全拦截，
-// 不得据此判为有效内容，否则空 STOP 帧会被当成正常响应。
-const blockReasonUnspecified = "BLOCKED_REASON_UNSPECIFIED"
-
 // extractTextRecursive 从嵌套结构中递归提取纯文本，防止无限递归（depth>20 截断）。
 func extractTextRecursive(val any, depth int) string {
 	if depth > 20 {

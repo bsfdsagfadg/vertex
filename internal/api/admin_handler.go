@@ -308,7 +308,7 @@ func (adm *AdminHandler) adminDeleteBg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (adm *AdminHandler) adminListBgs(w http.ResponseWriter, r *http.Request) {
+func (adm *AdminHandler) adminListBgs(w http.ResponseWriter, _ *http.Request) {
 	assetsDir := filepath.Join(filepath.Dir(adm.cfg.ConfigDir()), "assets")
 	files, err := os.ReadDir(assetsDir)
 	if err != nil {
@@ -325,7 +325,7 @@ func (adm *AdminHandler) adminListBgs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "files": bgs})
 }
 
-func (adm *AdminHandler) adminGetLog(w http.ResponseWriter, r *http.Request) {
+func (adm *AdminHandler) adminGetLog(w http.ResponseWriter, _ *http.Request) {
 	logPath := filepath.Join(filepath.Dir(adm.cfg.ConfigDir()), "logs", "logs_latest.log")
 
 	if _, err := os.Stat(logPath); os.IsNotExist(err) {

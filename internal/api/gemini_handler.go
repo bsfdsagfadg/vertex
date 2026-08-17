@@ -406,16 +406,3 @@ func firstCandidateFinishReason(chunk *transform.GeminiResponse) string {
 	}
 	return ""
 }
-
-// toRawMap 便利序列化：map[string]map typed -> raw map（供 JsonxUnmarshal 使用）。
-func toRawMap(v any) map[string]any {
-	b, err := jsonx.Marshal(v)
-	if err != nil {
-		return nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil
-	}
-	return m
-}

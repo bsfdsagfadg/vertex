@@ -253,7 +253,7 @@ func BenchmarkScanStream(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for range b.N {
+	for b.Loop() {
 		_ = scanStream(context.Background(), strings.NewReader(input), func(raw []byte) (bool, error) {
 			return true, nil
 		}, nil)

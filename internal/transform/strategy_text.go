@@ -54,7 +54,7 @@ func (s *TextStrategy) Validate(req *GeminiRequest) error {
 		}
 		if spec.Mechanism == ThinkingLevel && tc.ThinkingLevel != "" {
 			level := strings.ToUpper(strings.TrimSpace(tc.ThinkingLevel))
-			if spec.AllowedLevels != nil && len(spec.AllowedLevels) > 0 && !spec.AllowedLevels[level] {
+			if len(spec.AllowedLevels) > 0 && !spec.AllowedLevels[level] {
 				return fmt.Errorf("invalid thinking level %s for model %s", level, s.model)
 			}
 		}

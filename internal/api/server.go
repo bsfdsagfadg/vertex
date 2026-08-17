@@ -59,7 +59,7 @@ func (s *Server) Handler() http.Handler {
 	return s.mw.withRecover(s.mw.withCORS(s.mw.withMetrics(s.mw.withAPIKey(s.mw.withBodyLimit(mux)))))
 }
 
-func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleFavicon(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -77,7 +77,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"message": "Vertex AI Proxy", "version": "2.0-go"})
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	log.Printf("[Server] [Health] 收到健康检查请求")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":          "healthy",
@@ -86,7 +86,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleModelsGemini(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleModelsGemini(w http.ResponseWriter, _ *http.Request) {
 	models := s.mw.cfg.ModelsWithFakeVariants()
 	data := make([]any, 0, len(models))
 	for _, m := range models {

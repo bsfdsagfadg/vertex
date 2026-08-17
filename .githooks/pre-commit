@@ -1,0 +1,13 @@
+#!/bin/sh
+# pre-commit — Git 钩子入口（Windows 引导器）。
+# Git for Windows 要求无扩展名脚本由 sh 引导，实际检查逻辑在 pre-commit.ps1
+# （pwsh -File 硬性要求 .ps1 扩展名，无法直接执行无扩展名文件）。
+# 启用：git config core.hooksPath .githooks
+
+ROOT=$(git rev-parse --show-toplevel)
+if [ -z "$ROOT" ]; then
+    echo "[pre-commit] FAIL: cannot locate repo root" >&2
+    exit 1
+fi
+
+exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$ROOT/.githooks/pre-commit.ps1"

@@ -16,7 +16,7 @@ import (
 //   - 媒体/图片 Part（inlineData / fileData）：固定 1024 token
 //
 // 返回估算值，0 表示空 contents。
-func (c *VertexAIClient) CountTokens(ctx context.Context, model string, contents []transform.Content) int {
+func (c *VertexAIClient) CountTokens(_ context.Context, model string, contents []transform.Content) int {
 	result := estimateTokensTyped(contents)
 	if c.cfg.DebugMode() {
 		log.Printf("[Vertex] [CountTokens] 离线估算: 模型=%s, tokens=%d", model, result)

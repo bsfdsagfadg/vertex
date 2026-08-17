@@ -36,12 +36,6 @@ func (h *handler) dialer() transport.ProxyDialer {
 	return nil
 }
 
-// newRequestCtx 从客户端请求 context 派生服务端请求时限 context，供各 LLM 生成入口统一复用，
-// 避免各端点各自重复 WithTimeout/RequestTimeoutSeconds 组合导致未来取消语义调整时端点漂移。
-func (h *handler) newRequestCtx(r *http.Request) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(r.Context(), time.Duration(h.cfg.RequestTimeoutSeconds())*time.Second)
-}
-
 func (h *handler) decodeAdminBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	if r.Body == nil {
 		writeJSON(w, http.StatusBadRequest, adminErr("请求体为空 (empty body)"))
@@ -115,20 +109,6 @@ func reqID24() string {
 		reqIDFallback.Store(true)
 	}
 	return fmt.Sprintf("%016x%08x", uint64(time.Now().UnixNano()), reqIDCounter.Add(1))
-}
-
-func withUpstreamDetail(friendly string, e *vertex.VertexError) string {
-	detail := strings.TrimSpace(e.Message)
-	if detail == "" {
-		detail = strings.TrimSpace(e.UpstreamResponse)
-	}
-	if detail == "" || strings.Contains(friendly, detail) {
-		return friendly
-	}
-	if r := []rune(detail); len(r) > 400 {
-		detail = string(r[:400]) + "…"
-	}
-	return friendly + "（上游原因：" + detail + "）"
 }
 
 func toVertexError(err error) *vertex.VertexError {

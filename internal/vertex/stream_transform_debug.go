@@ -64,7 +64,10 @@ func describeUsage(u map[string]any) string {
 	var sb strings.Builder
 	for _, k := range []string{"promptTokenCount", "candidatesTokenCount", "totalTokenCount"} {
 		if v, ok := u[k]; ok {
-			sb.WriteString(" " + k + "=" + toStr(v))
+			sb.WriteByte(' ')
+			sb.WriteString(k)
+			sb.WriteByte('=')
+			sb.WriteString(toStr(v))
 		}
 	}
 	return sb.String()
@@ -79,16 +82,21 @@ func summarizeChunk(chunk map[string]any) string {
 			if c == nil {
 				continue
 			}
-			sb.WriteString(" c[" + strconv.Itoa(i) + "]")
+			sb.WriteString(" c[")
+			sb.WriteString(strconv.Itoa(i))
+			sb.WriteByte(']')
 			if fr, _ := c["finishReason"].(string); fr != "" {
-				sb.WriteString(" fr=" + fr)
+				sb.WriteString(" fr=")
+				sb.WriteString(fr)
 			}
 			content, _ := c["content"].(map[string]any)
 			if content == nil {
 				continue
 			}
 			role, _ := content["role"].(string)
-			sb.WriteString(" :" + role + "{")
+			sb.WriteString(" :")
+			sb.WriteString(role)
+			sb.WriteByte('{')
 			if ps, ok := content["parts"].([]any); ok {
 				descs := make([]string, 0, len(ps))
 				for _, pRaw := range ps {
@@ -110,7 +118,8 @@ func summarizeChunk(chunk map[string]any) string {
 	}
 	if br, ok := chunk["promptFeedback"].(map[string]any); ok {
 		if b, _ := br["blockReason"].(string); b != "" {
-			sb.WriteString(" blockReason=" + b)
+			sb.WriteString(" blockReason=")
+			sb.WriteString(b)
 		}
 	}
 	return strings.TrimSpace(sb.String())

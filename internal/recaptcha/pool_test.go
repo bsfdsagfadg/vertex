@@ -18,7 +18,7 @@ func TestTokenPoolNoCache(t *testing.T) {
 	}}
 
 	// 第一次调用 -> fetch 1
-	tok1, err := p.GetToken(context.Background())
+	tok1, err := p.GetTokenShared(context.Background())
 	if err != nil || tok1 != "tok-1" {
 		t.Fatalf("Expected tok-1, got tok=%q err=%v", tok1, err)
 	}
@@ -27,7 +27,7 @@ func TestTokenPoolNoCache(t *testing.T) {
 	}
 
 	// 第二次调用必须重新抓取（无缓存），返回 tok-2
-	tok2, err := p.GetToken(context.Background())
+	tok2, err := p.GetTokenShared(context.Background())
 	if err != nil || tok2 != "tok-2" {
 		t.Fatalf("Expected fresh tok-2, got tok=%q err=%v", tok2, err)
 	}
@@ -37,7 +37,7 @@ func TestTokenPoolNoCache(t *testing.T) {
 
 	// Invalidate 为空操作，不影响后续抓取
 	p.Invalidate()
-	tok3, err := p.GetToken(context.Background())
+	tok3, err := p.GetTokenShared(context.Background())
 	if err != nil || tok3 != "tok-3" {
 		t.Fatalf("Expected tok-3, got tok=%q err=%v", tok3, err)
 	}

@@ -34,7 +34,11 @@ func SplitResponseParts(parts []Part) (text string, thinking string, toolCalls [
 			}
 			if strings.HasPrefix(mime, "image/") {
 				images = append(images, p.InlineData.Data)
-				textBuf.WriteString("\n![image](data:" + mime + ";base64," + p.InlineData.Data + ")")
+				textBuf.WriteString("\n![image](data:")
+				textBuf.WriteString(mime)
+				textBuf.WriteString(";base64,")
+				textBuf.WriteString(p.InlineData.Data)
+				textBuf.WriteByte(')')
 			}
 		}
 	}

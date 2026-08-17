@@ -2,10 +2,10 @@
 package telemetry
 
 // MigrateStateFile has been disabled.
-func MigrateStateFile(oldPath, newPath string) {}
+func MigrateStateFile(_, _ string) {}
 
 // Start has been disabled.
-func Start(version, platform string, enabled bool) {}
+func Start(_, _ string, _ bool) {}
 
 // Stop has been disabled.
 func Stop() {}

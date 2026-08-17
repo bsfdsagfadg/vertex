@@ -285,10 +285,10 @@ func applyV2RayStreamSettings(proxy map[string]any, stream map[string]any) {
 		if hosts := sliceValue(hostValue); len(hosts) > 0 {
 			host := strings.TrimSpace(ValueToString(hosts[0]))
 			if host != "" {
-				httpOpts["headers"] = map[string][]string{"Host": []string{host}}
+				httpOpts["headers"] = map[string][]string{"Host": {host}}
 			}
 		} else if host := strings.TrimSpace(ValueToString(hostValue)); host != "" {
-			httpOpts["headers"] = map[string][]string{"Host": []string{host}}
+			httpOpts["headers"] = map[string][]string{"Host": {host}}
 		}
 		proxy["http-opts"] = httpOpts
 	}

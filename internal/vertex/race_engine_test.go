@@ -59,7 +59,7 @@ func TestRunRace_NoLaunchAfterCtxCancel(t *testing.T) {
 		return "", fmt.Errorf("node failed")
 	}
 
-	_, err := RunRace[string](ctx, cfg, run)
+	_, err := RunRace(ctx, cfg, run)
 	if err == nil {
 		t.Error("expected error from RunRace, got nil")
 	}
@@ -136,7 +136,7 @@ func TestRunRace_HangWithTimeout_NoResend(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := RunRace[string](ctx, cfg, run)
+	_, err := RunRace(ctx, cfg, run)
 	elapsed := time.Since(start)
 
 	if elapsed > 3*time.Second {
@@ -181,7 +181,7 @@ func TestRunRace_SuccessAfterHedge(t *testing.T) {
 		return "fast-success", nil
 	}
 
-	result, err := RunRace[string](ctx, cfg, run)
+	result, err := RunRace(ctx, cfg, run)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestRunRace_NoHedgeOnWrappedContextError(t *testing.T) {
 		return "", NewContextError(fmt.Errorf("upstream request: %w", context.DeadlineExceeded))
 	}
 
-	_, err := RunRace[string](ctx, cfg, run)
+	_, err := RunRace(ctx, cfg, run)
 
 	// 1. In hedge mode, the node returns context error so no hedge should launch.
 	if count := atomic.LoadInt32(&launchCount); count > 1 {
@@ -497,7 +497,7 @@ func TestRunRace_Streaming_FailFastOnHardError(t *testing.T) {
 		return nil, NewNotFoundError("model not found", nil)
 	}
 
-	_, err := RunRace[<-chan StreamChunk](ctx, cfg, run, WithFailFastOnHardError[<-chan StreamChunk]())
+	_, err := RunRace(ctx, cfg, run, WithFailFastOnHardError[<-chan StreamChunk]())
 
 	if err == nil {
 		t.Error("expected error, got nil")
@@ -522,7 +522,7 @@ func TestRunRace_AuthErrorDisablesNode(t *testing.T) {
 		return "", NewAuthenticationError("test auth failure", nil)
 	}
 
-	_, err := RunRace[string](ctx, cfg, run)
+	_, err := RunRace(ctx, cfg, run)
 	if err == nil {
 		t.Error("expected error from RunRace, got nil")
 	}
@@ -553,7 +553,7 @@ func TestRunRace_CandidatePanic_HandledGracefully(t *testing.T) {
 		return "result-uri2", nil
 	}
 
-	result, err := RunRace[string](ctx, cfg, run)
+	result, err := RunRace(ctx, cfg, run)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -603,7 +603,7 @@ func TestRunRace_StreamIdleTimeout_TriggersRateLimitCooldown(t *testing.T) {
 		return "", NewNetworkError(ErrStreamIdleTimeout)
 	}
 
-	if _, err := RunRace[string](ctx, cfg, run); err == nil {
+	if _, err := RunRace(ctx, cfg, run); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 
@@ -640,7 +640,7 @@ func TestRunRace_PickBestError_Priority(t *testing.T) {
 			return nil, NewInvalidArgumentError("bad request", nil)
 		}
 
-		_, err := RunRace[map[string]any](ctx, cfg, run)
+		_, err := RunRace(ctx, cfg, run)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -667,7 +667,7 @@ func TestRunRace_PickBestError_Priority(t *testing.T) {
 			return nil, NewPermissionDeniedError("forbidden", nil)
 		}
 
-		_, err := RunRace[map[string]any](ctx, cfg, run)
+		_, err := RunRace(ctx, cfg, run)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -694,7 +694,7 @@ func TestRunRace_PickBestError_Priority(t *testing.T) {
 			return nil, NewEmptyResponseError("empty", nil)
 		}
 
-		_, err := RunRace[map[string]any](ctx, cfg, run)
+		_, err := RunRace(ctx, cfg, run)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}

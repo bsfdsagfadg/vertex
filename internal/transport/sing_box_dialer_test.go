@@ -93,7 +93,7 @@ type fakeBuilder struct {
 	preBuild func()
 }
 
-func (b *fakeBuilder) build(uri string) (*nodeBox, error) {
+func (b *fakeBuilder) build(_ string) (*nodeBox, error) {
 	b.count.Add(1)
 	if b.preBuild != nil {
 		b.preBuild()

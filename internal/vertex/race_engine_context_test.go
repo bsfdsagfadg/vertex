@@ -33,7 +33,7 @@ func TestRunRace_DeadlineExceeded_ReturnsBestErrorWhenFailedErrorsExist(t *testi
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := RunRace[string](ctx, cfg, run)
+		_, err := RunRace(ctx, cfg, run)
 		errCh <- err
 	}()
 
@@ -89,7 +89,7 @@ func TestRunRace_ParentContextCanceled_ReturnsContextErrorOverFailedErrors(t *te
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := RunRace[string](ctx, cfg, run)
+		_, err := RunRace(ctx, cfg, run)
 		errCh <- err
 	}()
 
@@ -185,7 +185,7 @@ func TestRunRace_ContextCanceled_PreservesCollectedResultsAndFailedErrors(t *tes
 			return nil, NewContextError(context.Canceled)
 		}
 
-		_, err := RunRace[map[string]any](ctx, cfg, run)
+		_, err := RunRace(ctx, cfg, run)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -207,7 +207,7 @@ func TestRunRace_FailuresAlwaysNormalizedToVertexError(t *testing.T) {
 		cfg := config.StaticProvider(config.AppConfig{ParallelPoolEnabled: false})
 		rawErr := errors.New("raw socket broken")
 
-		_, err := RunRace[string](context.Background(), cfg, func(ctx context.Context, proxyURI string) (string, error) {
+		_, err := RunRace(context.Background(), cfg, func(ctx context.Context, proxyURI string) (string, error) {
 			return "", rawErr
 		})
 
@@ -225,7 +225,7 @@ func TestRunRace_FailuresAlwaysNormalizedToVertexError(t *testing.T) {
 		defer nodes.ResetState()
 		cfg := config.StaticProvider(raceTestConfigAllAtOnce())
 
-		_, err := RunRace[string](context.Background(), cfg, func(ctx context.Context, proxyURI string) (string, error) {
+		_, err := RunRace(context.Background(), cfg, func(ctx context.Context, proxyURI string) (string, error) {
 			return "some-val", nil
 		}, WithWinningCheck(func(val string) bool {
 			return false // Collect
@@ -245,7 +245,7 @@ func TestRunRace_FailuresAlwaysNormalizedToVertexError(t *testing.T) {
 		cfg := config.StaticProvider(raceTestConfigAllAtOnce())
 
 		hardErr := NewInvalidArgumentError("invalid model argument", nil)
-		_, err := RunRace[string](context.Background(), cfg, func(ctx context.Context, proxyURI string) (string, error) {
+		_, err := RunRace(context.Background(), cfg, func(ctx context.Context, proxyURI string) (string, error) {
 			return "", hardErr
 		}, WithFailFastOnHardError[string]())
 
