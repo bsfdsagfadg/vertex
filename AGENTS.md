@@ -103,7 +103,7 @@ graph TD
 
 ### 静态分析门禁约定（防回潮）
 
-1. **提交门禁**：仓库启用 `.githooks/pre-commit` 钩子（`git config core.hooksPath .githooks`），提交前自动执行 `go vet` + `staticcheck` + `gochecks`，告警非零即阻止提交。**任何人（含 Agent）提交前必须保证三者输出为空**。
+1. **提交门禁**：仓库启用 `.githooks/pre-commit` 钩子（`git config core.hooksPath .githooks`），提交前自动执行 `go vet` + `staticcheck` + `gochecks`，告警非零即阻止提交。**任何人（含 Agent）提交前必须保证三者输出为空**。钩子为**纯 sh 实现，跨平台**（Windows Git Bash / Linux / macOS），依赖 `go` 与 `staticcheck`（`go install honnef.co/go/tools/cmd/staticcheck@latest`）在 PATH 中；`core.hooksPath` 为本地配置不入库，换环境克隆后需重新执行启用命令。
 2. **新增/修改代码要求**：新增导出函数不得留下"仅测试引用"的死代码；删除代码时同步清理随之失效的 import（`go build` / `go test` 会兜底抓出）。新增参数必须被使用或命名为 `_`（`gochecks` 的 `unusedparams` 会拦截）；字符串拼接严禁用 `sb.WriteString(a + b)` 形式（`gochecks` 的 `writestring` 会拦截）；嵌套复合字面量省略可推断类型（`gofmt -s` / `gochecks` 的 `simplifycompositelit`）；基准测试循环使用 `b.Loop()`（`gochecks` 的 `modernize` 会拦截）。
 3. **gochecks 工具说明**：`scripts/gochecks/` 为挂在根模块下的聚合检查器（无独立 go.mod，直接 `go run ./scripts/gochecks`），豁免规则对齐 gopls 行为（接口实现方法参数、方法接收者不报）。`infertypeargs` 检查器依赖完整类型推断、仅存在于 gopls 内部，无命令行等价物，依靠编辑器提示人工处理（无行为风险）。若需新增检查项，在 `scripts/gochecks/main.go` 注册进 `checkers` map（同类型 AST 检查器聚合于单文件，行数 >400 时再按检查项拆分），同步更新本文件与 `.githooks/pre-commit` 注释。
 4. **导出死代码巡检（staticcheck 盲区）**：staticcheck 的 U1000 不检查导出符号，需季度性运行 `scripts/deadcode-check.ps1` 全程序死代码甄别：

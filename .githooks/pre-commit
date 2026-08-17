@@ -1,13 +1,50 @@
 #!/bin/sh
-# pre-commit — Git 钩子入口（Windows 引导器）。
-# Git for Windows 要求无扩展名脚本由 sh 引导，实际检查逻辑在 pre-commit.ps1
-# （pwsh -File 硬性要求 .ps1 扩展名，无法直接执行无扩展名文件）。
+# pre-commit — 提交门禁：go vet + staticcheck + gochecks 告警非零即阻止提交。
+# 纯 sh 实现，跨平台：Windows（Git Bash 自带 sh）/ Linux / macOS 均可用。
 # 启用：git config core.hooksPath .githooks
+#
+# 前置依赖（各平台通用，需在 PATH 中）：
+#   go / staticcheck（go install honnef.co/go/tools/cmd/staticcheck@latest 安装）
+#
+# gochecks 为仓库内聚合检查器（scripts/gochecks），覆盖 gopls 编辑器分析器：
+#   writestring / unusedparams / simplifycompositelit / modernize (b.Loop)
 
 ROOT=$(git rev-parse --show-toplevel)
 if [ -z "$ROOT" ]; then
     echo "[pre-commit] FAIL: cannot locate repo root" >&2
     exit 1
 fi
+cd "$ROOT" || exit 1
 
-exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$ROOT/.githooks/pre-commit.ps1"
+pass=1
+
+echo "[pre-commit] running go vet ./... ..."
+if ! go vet ./...; then
+    echo "[pre-commit] FAIL: go vet reported issues" >&2
+    pass=0
+fi
+
+if ! command -v staticcheck >/dev/null 2>&1; then
+    echo "[pre-commit] FAIL: staticcheck 未安装，请先执行 go install honnef.co/go/tools/cmd/staticcheck@latest" >&2
+    pass=0
+else
+    echo "[pre-commit] running staticcheck ./... ..."
+    if ! staticcheck ./...; then
+        echo "[pre-commit] FAIL: staticcheck reported issues" >&2
+        pass=0
+    fi
+fi
+
+echo "[pre-commit] running gochecks (writestring/unusedparams/simplifycompositelit/modernize) ..."
+if ! go run ./scripts/gochecks; then
+    echo "[pre-commit] FAIL: gochecks reported issues" >&2
+    pass=0
+fi
+
+if [ "$pass" -ne 1 ]; then
+    echo "[pre-commit] COMMIT BLOCKED: fix the issues above before committing." >&2
+    exit 1
+fi
+
+echo "[pre-commit] OK: vet + staticcheck + gochecks clean."
+exit 0
