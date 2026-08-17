@@ -88,12 +88,14 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, r
 		return nil, err
 	}
 
+	// 防御性回退：直接调用方（未经 transform.BuildVariables 装配）若未带 SafetySettings
+	// 且上游返回 SAFETY，则以统一固定 4×OFF 基座重试一次。生产管线请求恒带 4×OFF，此分支不触发。
 	if req.SafetySettings == nil && candidateFinishTyped(resp) == "SAFETY" {
 		if ctx.Err() != nil {
 			return nil, NormalizeError(ctx.Err())
 		}
 		retryReq := *req
-		retryReq.SafetySettings = defaultSafetySettingsTyped
+		retryReq.SafetySettings = transform.BuildSafetySettingsTyped(nil)
 		return c.runSingleCandidate(ctx, model, &retryReq, proxyURI, strategy)
 	}
 

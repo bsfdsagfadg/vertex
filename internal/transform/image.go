@@ -12,64 +12,99 @@ const DefaultImageModel = "gemini-3.1-flash-image"
 
 // ImageModelSpec 描述单个生图模型的静态白名单能力规格。
 type ImageModelSpec struct {
-	SupportedSizes   map[string]bool
-	SupportedRatios  map[string]bool
-	SupportedMimes   map[string]bool
-	DefaultSize      string
-	DefaultRatio     string
-	AllowAutoRatio   bool
-	AllowSearch      bool
-	ThinkingLevels   map[string]bool
-	SupportsThinking bool
+	MaxOutputTokens    int               // 输出 token 上限（全模型 32768）
+	AllowTemperature   bool              // 是否支持 temperature（全模型 true）
+	MaxTemperature     float64           // 温度上限（lite-image=1.0，其余 2.0）
+	DefaultTemperature float64           // 温度缺省注入值（全模型 1.0）
+	AllowTopP          bool              // 是否支持 topP（全模型 true）
+	MaxTopP            float64           // topP 上限（全模型 1.0）
+	DefaultTopP        float64           // topP 缺省注入值（全模型 0.95）
+	SupportedSizes     map[string]bool
+	SupportedRatios    map[string]bool
+	SupportedMimes     map[string]bool
+	DefaultSize        string
+	DefaultRatio       string
+	AllowAutoRatio     bool
+	AllowSearch        bool
+	ThinkingLevels     map[string]bool
+	SupportsThinking   bool
 }
 
-// imageModelSpecs 是 4 大生图模型权威能力规格白名单矩阵（源自 logs/模型参数清单.txt）。
+// imageModelSpecs 是 4 大生图模型权威能力规格白名单矩阵（源自 logs/image模型参数清单.txt）。
 //
 //nolint:gochecknoglobals // Read-only capability specs
 var imageModelSpecs = map[string]ImageModelSpec{
 	"gemini-3.1-flash-lite-image": {
-		SupportedSizes:   map[string]bool{"1K": true},
-		SupportedRatios:  map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true},
-		SupportedMimes:   map[string]bool{"image/png": true, "image/jpeg": true},
-		DefaultSize:      "1K",
-		DefaultRatio:     "auto",
-		AllowAutoRatio:   true,
-		AllowSearch:      false,
-		ThinkingLevels:   map[string]bool{"MINIMAL": true, "HIGH": true},
-		SupportsThinking: true,
+		MaxOutputTokens:    32768,
+		AllowTemperature:   true,
+		MaxTemperature:     1.0,
+		DefaultTemperature: 1.0,
+		AllowTopP:          true,
+		MaxTopP:            1.0,
+		DefaultTopP:        0.95,
+		SupportedSizes:     map[string]bool{"1K": true},
+		SupportedRatios:    map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true},
+		SupportedMimes:     map[string]bool{"image/png": true, "image/jpeg": true},
+		DefaultSize:        "1K",
+		DefaultRatio:       "auto",
+		AllowAutoRatio:     true,
+		AllowSearch:        false,
+		ThinkingLevels:     map[string]bool{"MINIMAL": true, "HIGH": true},
+		SupportsThinking:   true,
 	},
 	"gemini-3.1-flash-image": {
-		SupportedSizes:   map[string]bool{"512": true, "1K": true, "2K": true, "4K": true},
-		SupportedRatios:  map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true},
-		SupportedMimes:   map[string]bool{"image/png": true, "image/jpeg": true},
-		DefaultSize:      "1K",
-		DefaultRatio:     "auto",
-		AllowAutoRatio:   true,
-		AllowSearch:      true,
-		ThinkingLevels:   map[string]bool{"MINIMAL": true, "HIGH": true},
-		SupportsThinking: true,
+		MaxOutputTokens:    32768,
+		AllowTemperature:   true,
+		MaxTemperature:     2.0,
+		DefaultTemperature: 1.0,
+		AllowTopP:          true,
+		MaxTopP:            1.0,
+		DefaultTopP:        0.95,
+		SupportedSizes:     map[string]bool{"512": true, "1K": true, "2K": true, "4K": true},
+		SupportedRatios:    map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true},
+		SupportedMimes:     map[string]bool{"image/png": true, "image/jpeg": true},
+		DefaultSize:        "1K",
+		DefaultRatio:       "auto",
+		AllowAutoRatio:     true,
+		AllowSearch:        true,
+		ThinkingLevels:     map[string]bool{"MINIMAL": true, "HIGH": true},
+		SupportsThinking:   true,
 	},
 	"gemini-3-pro-image": {
-		SupportedSizes:   map[string]bool{"1K": true, "2K": true, "4K": true},
-		SupportedRatios:  map[string]bool{"1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "21:9": true},
-		SupportedMimes:   map[string]bool{"image/png": true, "image/jpeg": true},
-		DefaultSize:      "1K",
-		DefaultRatio:     "1:1",
-		AllowAutoRatio:   false,
-		AllowSearch:      true,
-		ThinkingLevels:   nil,
-		SupportsThinking: false,
+		MaxOutputTokens:    32768,
+		AllowTemperature:   true,
+		MaxTemperature:     2.0,
+		DefaultTemperature: 1.0,
+		AllowTopP:          true,
+		MaxTopP:            1.0,
+		DefaultTopP:        0.95,
+		SupportedSizes:     map[string]bool{"1K": true, "2K": true, "4K": true},
+		SupportedRatios:    map[string]bool{"1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "21:9": true},
+		SupportedMimes:     map[string]bool{"image/png": true, "image/jpeg": true},
+		DefaultSize:        "1K",
+		DefaultRatio:       "1:1",
+		AllowAutoRatio:     false,
+		AllowSearch:        true,
+		ThinkingLevels:     nil,
+		SupportsThinking:   false,
 	},
 	"gemini-2.5-flash-image": {
-		SupportedSizes:   map[string]bool{"1K": true, "2K": true, "4K": true},
-		SupportedRatios:  map[string]bool{"1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "21:9": true},
-		SupportedMimes:   map[string]bool{"image/png": true, "image/jpeg": true},
-		DefaultSize:      "1K",
-		DefaultRatio:     "1:1",
-		AllowAutoRatio:   false,
-		AllowSearch:      false,
-		ThinkingLevels:   nil,
-		SupportsThinking: false,
+		MaxOutputTokens:    32768,
+		AllowTemperature:   true,
+		MaxTemperature:     2.0,
+		DefaultTemperature: 1.0,
+		AllowTopP:          true,
+		MaxTopP:            1.0,
+		DefaultTopP:        0.95,
+		SupportedSizes:     map[string]bool{"1K": true, "2K": true, "4K": true},
+		SupportedRatios:    map[string]bool{"1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true, "4:5": true, "5:4": true, "9:16": true, "16:9": true, "21:9": true},
+		SupportedMimes:     map[string]bool{"image/png": true, "image/jpeg": true},
+		DefaultSize:        "1K",
+		DefaultRatio:       "1:1",
+		AllowAutoRatio:     false,
+		AllowSearch:        false,
+		ThinkingLevels:     nil,
+		SupportsThinking:   false,
 	},
 }
 
@@ -87,15 +122,22 @@ func ImageSpecFor(model string) ImageModelSpec {
 		log.Printf("[Image] 未知图模型 %q，按保守默认（sizes={1K}, ratios=全允许, 不支持搜索与思考）处理", model)
 	}
 	return ImageModelSpec{
-		SupportedSizes:   map[string]bool{"1K": true},
-		SupportedRatios:  imageAspectRatioSupported,
-		SupportedMimes:   map[string]bool{"image/png": true, "image/jpeg": true},
-		DefaultSize:      "1K",
-		DefaultRatio:     "1:1",
-		AllowAutoRatio:   false,
-		AllowSearch:      false,
-		ThinkingLevels:   nil,
-		SupportsThinking: false,
+		MaxOutputTokens:    32768,
+		AllowTemperature:   true,
+		MaxTemperature:     2.0,
+		DefaultTemperature: 1.0,
+		AllowTopP:          true,
+		MaxTopP:            1.0,
+		DefaultTopP:        0.95,
+		SupportedSizes:     map[string]bool{"1K": true},
+		SupportedRatios:    imageAspectRatioSupported,
+		SupportedMimes:     map[string]bool{"image/png": true, "image/jpeg": true},
+		DefaultSize:        "1K",
+		DefaultRatio:       "1:1",
+		AllowAutoRatio:     false,
+		AllowSearch:        false,
+		ThinkingLevels:     nil,
+		SupportsThinking:   false,
 	}
 }
 

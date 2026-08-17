@@ -11,6 +11,18 @@ func TestResolveThinkingConfig_UnknownModel(t *testing.T) {
 	}
 }
 
+func TestResolveThinkingConfig_GenericUnknownTextModel(t *testing.T) {
+	// 未知文本兜底机制由 Budget 变更为 Level（对齐 gemini-3.7-flash）：
+	// "高" 档应注入 thinking_level=HIGH（原为 thinking_budget=24576）。
+	tc := ResolveThinkingConfig("高", "gemini-9.9-flash")
+	if tc == nil || tc.ThinkingLevel != "HIGH" {
+		t.Fatalf("expected thinkingLevel=HIGH for unknown text model, got %v", tc)
+	}
+	if tc.ThinkingBudget != nil {
+		t.Fatalf("expected nil thinkingBudget for unknown text model, got %v", tc.ThinkingBudget)
+	}
+}
+
 func TestResolveThinkingConfig_AutoLevel(t *testing.T) {
 	tests := []struct {
 		name    string

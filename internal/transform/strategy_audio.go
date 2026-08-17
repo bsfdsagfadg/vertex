@@ -66,11 +66,6 @@ func (s *AudioStrategy) BuildVariables(model string, req *GeminiRequest, cfg con
 	contents := sanitizeContentRolesTyped(req.Contents)
 	contents = filterEmptyContentsTyped(contents)
 
-	safetySettings := req.SafetySettings
-	if len(safetySettings) == 0 && cfg != nil {
-		safetySettings = BuildSafetySettingsTyped(cfg)
-	}
-
 	gc := prepareNativeGenerationConfig(req.GenerationConfig)
 	if gc != nil {
 		gc.ThinkingConfig = nil // 语音模型强行置空 thinkingConfig
@@ -84,7 +79,7 @@ func (s *AudioStrategy) BuildVariables(model string, req *GeminiRequest, cfg con
 		SystemInstruction: req.SystemInstruction,
 		Tools:             nil, // 语音硬性过滤 Tools
 		ToolConfig:        nil, // 语音硬性过滤 ToolConfig
-		SafetySettings:    prepareNativeSafetySettings(safetySettings),
+		SafetySettings:    BuildSafetySettingsTyped(cfg),
 		GenerationConfig:  gc,
 		CachedContent:     req.CachedContent,
 		ServiceTier:       req.ServiceTier,

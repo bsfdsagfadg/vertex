@@ -59,26 +59,21 @@ func (s *ImageStrategy) Enhance(req *GeminiRequest, cfg config.ConfigProvider) {
 		req.Tools = nil
 		req.ToolConfig = nil
 	} else if len(req.Tools) > 0 {
-		req.Tools = filterAllowedGoogleSearch(req.Tools)
+		req.Tools = filterAllowedSearchTools(req.Tools)
 		if len(req.Tools) == 0 {
 			req.ToolConfig = nil
 		}
 	}
-
-	if len(req.SafetySettings) == 0 && cfg != nil {
-		req.SafetySettings = BuildSafetySettingsTyped(cfg)
-	}
 }
 
-// filterAllowedGoogleSearch 过滤出合法的 GoogleSearch 工具定义。
-func filterAllowedGoogleSearch(tools []Tool) []Tool {
+// filterAllowedSearchTools 过滤出合法的 GoogleSearch 工具定义（生图仅支持纯搜索）：
+// 仅保留 googleSearch 字段非 nil 的 Tool，硬剥离 googleMaps / googleSearchRetrieval /
+// functionDeclarations 等一切其它字段；返回全新数组。
+func filterAllowedSearchTools(tools []Tool) []Tool {
 	var filtered []Tool
 	for _, t := range tools {
-		if t.GoogleSearch != nil || t.GoogleSearchRetrieval != nil {
-			filtered = append(filtered, Tool{
-				GoogleSearch:          t.GoogleSearch,
-				GoogleSearchRetrieval: t.GoogleSearchRetrieval,
-			})
+		if t.GoogleSearch != nil {
+			filtered = append(filtered, Tool{GoogleSearch: t.GoogleSearch})
 		}
 	}
 	return filtered
@@ -105,23 +100,9 @@ func (s *ImageStrategy) Validate(req *GeminiRequest) error {
 	return nil
 }
 
-// Prepare 图像家族特化数据清洗：对 SafetySettings 进行 Trim+Upper 规范化，并独占剥离 JAILBREAK 与 CIVIC_INTEGRITY。
-func (s *ImageStrategy) Prepare(req *GeminiRequest) {
-	if req.SafetySettings == nil {
-		return
-	}
-	cleaned := make([]SafetySetting, 0, len(req.SafetySettings))
-	for _, ss := range req.SafetySettings {
-		cat := strings.ToUpper(strings.TrimSpace(ss.Category))
-		if cat != "HARM_CATEGORY_JAILBREAK" && cat != "HARM_CATEGORY_CIVIC_INTEGRITY" {
-			cleaned = append(cleaned, SafetySetting{
-				Category:  cat,
-				Threshold: strings.ToUpper(strings.TrimSpace(ss.Threshold)),
-			})
-		}
-	}
-	req.SafetySettings = cleaned
-}
+// Prepare 图像家族特化数据清洗：SafetySettings 已由 BuildVariables 统一覆盖为固定 4×OFF，
+// 旧有的剥离 JAILBREAK / CIVIC_INTEGRITY 逻辑已被取代，本方法保留为空实现（兼容调用点）。
+func (s *ImageStrategy) Prepare(req *GeminiRequest) {}
 
 // BuildVariables 实现生图家族独占的上行 variables 构建：
 // 从零正向构建 GeminiRequest，严格按照生图模型白名单抽取参数，彻底屏蔽语言模型的思维链签名注入与无关字段。
@@ -132,49 +113,51 @@ func (s *ImageStrategy) BuildVariables(model string, req *GeminiRequest, cfg con
 
 	spec := GetImageModelSpec(model)
 
-	// 1. 内容部分：清理角色并过滤空内容
+	// 2. 内容部分：清理角色并过滤空内容
 	contents := sanitizeContentRolesTyped(req.Contents)
 	contents = filterEmptyContentsTyped(contents)
 
-	// 2. 安全设置：正向输出 4 项
-	safetySettings := req.SafetySettings
-	if len(safetySettings) == 0 && cfg != nil {
-		safetySettings = BuildSafetySettingsTyped(cfg)
+	// 3. GenerationConfig：正向构建（客户端未传 GC 也构造并注入默认采样参数，对齐官方示例）
+	gc := &GenerationConfig{}
+	orig := req.GenerationConfig
+
+	// 3.1 基础超参限制：缺省注入 + 逐模型 clamp
+	//     temperature (lite-image 上限 1.0，其余 2.0), topP (0~1.0), maxOutputTokens (固定上限 32768)
+	if orig != nil && orig.Temperature != nil {
+		t := *orig.Temperature
+		if t < 0 {
+			t = 0
+		} else if t > spec.MaxTemperature {
+			t = spec.MaxTemperature
+		}
+		gc.Temperature = &t
+	} else {
+		gc.Temperature = &spec.DefaultTemperature
+	}
+	if orig != nil && orig.TopP != nil {
+		p := *orig.TopP
+		if p < 0 {
+			p = 0
+		} else if p > spec.MaxTopP {
+			p = spec.MaxTopP
+		}
+		gc.TopP = &p
+	} else {
+		gc.TopP = &spec.DefaultTopP
+	}
+	if cfg != nil && cfg.DropMaxTokens() {
+		gc.MaxOutputTokens = nil
+	} else if orig != nil && orig.MaxOutputTokens != nil {
+		tokens := *orig.MaxOutputTokens
+		if tokens > spec.MaxOutputTokens {
+			tokens = spec.MaxOutputTokens
+		}
+		gc.MaxOutputTokens = &tokens
+	} else {
+		gc.MaxOutputTokens = &spec.MaxOutputTokens
 	}
 
-	// 3. GenerationConfig：正向构建
-	var gc *GenerationConfig
-	if req.GenerationConfig != nil {
-		orig := req.GenerationConfig
-		gc = &GenerationConfig{}
-
-		// 3.1 基础超参限制：temperature (0~2.0), topP (0~1.0), maxOutputTokens (固定上限 32768)
-		if orig.Temperature != nil {
-			t := *orig.Temperature
-			if t < 0 {
-				t = 0
-			} else if t > 2.0 {
-				t = 2.0
-			}
-			gc.Temperature = &t
-		}
-		if orig.TopP != nil {
-			p := *orig.TopP
-			if p < 0 {
-				p = 0
-			} else if p > 1.0 {
-				p = 1.0
-			}
-			gc.TopP = &p
-		}
-		if orig.MaxOutputTokens != nil {
-			tokens := *orig.MaxOutputTokens
-			if tokens > 32768 {
-				tokens = 32768
-			}
-			gc.MaxOutputTokens = &tokens
-		}
-
+	if orig != nil {
 		// 3.2 响应模态 (ResponseModalities)
 		if len(orig.ResponseModalities) > 0 {
 			modalities := make([]string, 0, len(orig.ResponseModalities))
@@ -241,7 +224,7 @@ func (s *ImageStrategy) BuildVariables(model string, req *GeminiRequest, cfg con
 	// 4. 工具配置 (Tools / ToolConfig)：仅 AllowSearch 模型正向保留 GoogleSearch
 	var tools []Tool
 	if spec.AllowSearch && len(req.Tools) > 0 {
-		tools = filterAllowedGoogleSearch(req.Tools)
+		tools = filterAllowedSearchTools(req.Tools)
 	}
 
 	out := &GeminiRequest{
@@ -249,7 +232,7 @@ func (s *ImageStrategy) BuildVariables(model string, req *GeminiRequest, cfg con
 		SystemInstruction: req.SystemInstruction,
 		Tools:             tools,
 		ToolConfig:        nil, // 生图不保留 FunctionCalling ToolConfig
-		SafetySettings:    prepareNativeSafetySettings(safetySettings),
+		SafetySettings:    BuildSafetySettingsTyped(cfg),
 		GenerationConfig:  gc,
 		CachedContent:     req.CachedContent,
 		ServiceTier:       req.ServiceTier,

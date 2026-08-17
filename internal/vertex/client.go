@@ -25,13 +25,6 @@ const (
 
 var batchGraphqlURL = anonBaseURL + batchGraphqlPath + "?key=" + anonAPIKey + "&prettyPrint=false" //nolint:gochecknoglobals
 
-var defaultSafetySettingsTyped = []transform.SafetySetting{ //nolint:gochecknoglobals
-	{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"},
-	{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_NONE"},
-	{Category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", Threshold: "BLOCK_NONE"},
-	{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold: "BLOCK_NONE"},
-}
-
 // RequestIDKey 是 context 中存储 reqID 的键类型。
 type RequestIDKey struct{}
 

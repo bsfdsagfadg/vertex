@@ -180,34 +180,25 @@ func parseBudgetToLevelEnum(budget int) string {
 	return ""
 }
 
-// BuildSafetySettingsTyped 根据系统配置中的安全屏蔽等级生成默认的 SafetySettings 列表。
+// fixedSafetySettings4OFF 返回固定 4 类别 × OFF 的安全设置基座（单一事实源）。
+// 类别与顺序严格对齐官方清单（logs/LLM模型参数清单.txt / logs/image模型参数清单.txt）：
+// HATE_SPEECH → DANGEROUS_CONTENT → SEXUALLY_EXPLICIT → HARASSMENT。
+// 固定列表已为大写规范枚举，无需再经 prepareNativeSafetySettings 规范化。
+func fixedSafetySettings4OFF() []SafetySetting {
+	return []SafetySetting{
+		{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "OFF"},
+		{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold: "OFF"},
+		{Category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", Threshold: "OFF"},
+		{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "OFF"},
+	}
+}
+
+// BuildSafetySettingsTyped 返回固定 4×OFF 安全设置列表。
+// 忽略 cfg 参数（config.json 的 safety_settings 为死代码，无控制台入口）与客户端传入，
+// 三家族 BuildVariables 统一经此取固定列表。
 func BuildSafetySettingsTyped(cfg config.ConfigProvider) []SafetySetting {
-	categories := []string{
-		"HARM_CATEGORY_HATE_SPEECH",
-		"HARM_CATEGORY_HARASSMENT",
-		"HARM_CATEGORY_SEXUALLY_EXPLICIT",
-		"HARM_CATEGORY_DANGEROUS_CONTENT",
-		"HARM_CATEGORY_CIVIC_INTEGRITY",
-		"HARM_CATEGORY_JAILBREAK",
-	}
-
-	cfgMap := map[string]string{}
-	if cfg != nil {
-		cfgMap = cfg.SafetySettings()
-	}
-
-	settings := make([]SafetySetting, 0, len(categories))
-	for _, c := range categories {
-		threshold := "BLOCK_NONE"
-		if v, ok := cfgMap[c]; ok && v != "" {
-			threshold = v
-		}
-		settings = append(settings, SafetySetting{
-			Category:  c,
-			Threshold: threshold,
-		})
-	}
-	return settings
+	_ = cfg
+	return fixedSafetySettings4OFF()
 }
 
 // ResolveResponseModalities 按默认配置解析图模型的 responseModalities；

@@ -16,6 +16,8 @@ func (d *dummyConfig) SafetySettings() map[string]string {
 	return map[string]string{}
 }
 
+func (d *dummyConfig) DropMaxTokens() bool { return false }
+
 func (d *dummyConfig) TrailingModelFixEnabled() bool {
 	return d.trailingFixEnabled
 }
@@ -433,39 +435,55 @@ func TestBuildGeminiVariablesTyped_DefaultSafetySettings(t *testing.T) {
 	}
 	cfg := &dummyConfig{}
 
-	t.Run("BuildGeminiVariablesTyped preserves default safety settings with normalization without strategy filtering", func(t *testing.T) {
+	t.Run("image family outputs fixed 4xOFF safety settings", func(t *testing.T) {
 		vars := BuildGeminiVariablesTyped("gemini-3.1-flash-image", req, cfg)
 		if vars == nil || vars.GeminiRequest == nil {
 			t.Fatal("vars or GeminiRequest is nil")
 		}
 		settings := vars.SafetySettings
-		if len(settings) != 6 {
-			t.Fatalf("expected 6 default safety settings for model at raw transform layer, got %d", len(settings))
+		if len(settings) != 4 {
+			t.Fatalf("expected 4 fixed safety settings, got %d: %v", len(settings), settings)
 		}
 		for _, s := range settings {
-			if s.Threshold != "BLOCK_NONE" {
-				t.Errorf("expected BLOCK_NONE threshold, got %s", s.Threshold)
+			if s.Threshold != "OFF" {
+				t.Errorf("expected OFF threshold, got %s", s.Threshold)
 			}
 		}
 	})
 
-	t.Run("Non-image model retains HARM_CATEGORY_JAILBREAK", func(t *testing.T) {
+	t.Run("text family outputs fixed 4xOFF without JAILBREAK / CIVIC_INTEGRITY", func(t *testing.T) {
 		vars := BuildGeminiVariablesTyped("gemini-2.5-flash", req, cfg)
 		if vars == nil || vars.GeminiRequest == nil {
 			t.Fatal("vars or GeminiRequest is nil")
 		}
 		settings := vars.SafetySettings
-		if len(settings) != 6 {
-			t.Fatalf("expected 6 default safety settings for text model, got %d", len(settings))
+		if len(settings) != 4 {
+			t.Fatalf("expected 4 fixed safety settings, got %d: %v", len(settings), settings)
 		}
-		hasJailbreak := false
 		for _, s := range settings {
-			if s.Category == "HARM_CATEGORY_JAILBREAK" {
-				hasJailbreak = true
+			if s.Category == "HARM_CATEGORY_JAILBREAK" || s.Category == "HARM_CATEGORY_CIVIC_INTEGRITY" {
+				t.Errorf("unexpected purged category %s in fixed list", s.Category)
+			}
+			if s.Threshold != "OFF" {
+				t.Errorf("expected OFF threshold, got %s", s.Threshold)
 			}
 		}
-		if !hasJailbreak {
-			t.Errorf("text model should retain HARM_CATEGORY_JAILBREAK")
+	})
+
+	t.Run("client-provided safety settings are ignored", func(t *testing.T) {
+		clientReq := &GeminiRequest{
+			Contents: []Content{
+				{Role: "user", Parts: []Part{{Text: "Draw a picture"}}},
+			},
+			SafetySettings: []SafetySetting{
+				{Category: "HARM_CATEGORY_JAILBREAK", Threshold: "BLOCK_NONE"},
+				{Category: "CUSTOM", Threshold: "BLOCK_LOW_AND_ABOVE"},
+			},
+		}
+		vars := BuildGeminiVariablesTyped("gemini-2.5-flash", clientReq, cfg)
+		settings := vars.SafetySettings
+		if len(settings) != 4 {
+			t.Fatalf("expected 4 fixed safety settings ignoring client input, got %d: %v", len(settings), settings)
 		}
 	})
 }

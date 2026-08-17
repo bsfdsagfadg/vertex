@@ -67,14 +67,117 @@ func (s *TextStrategy) Validate(req *GeminiRequest) error {
 	return nil
 }
 
-// Prepare 执行特化清洗：对 SafetySettings 进行 Trim + Upper 规范化处理。
-func (s *TextStrategy) Prepare(req *GeminiRequest) {
-	if req == nil {
-		return
+// Prepare 特化清洗：SafetySettings 已由 BuildVariables 统一覆盖为固定 4×OFF，
+// 本方法保留为空实现（签名兼容既有调用点，零破坏）。
+func (s *TextStrategy) Prepare(req *GeminiRequest) {}
+
+// applyTextSamplingParams 文本家族单点采样参数处理（模型感知，纯函数）：
+//   - maxOutputTokens：drop_max_tokens → nil；未传 → 注入 spec.MaxOutputTokens；超上限 → clamp；
+//   - temperature：不支持模型 → nil；未传 → 注入 spec.DefaultTemperature；越界 → clamp [0, MaxTemperature]；
+//   - topP：不支持模型 → nil；未传 → 注入 spec.DefaultTopP；越界 → clamp [0, 1.0]。
+//
+// 只允许在 TextStrategy.BuildVariables 中调用（Enhance 存在 thinkingConfig early-return 陷阱，
+// 放在 Enhance 会跳过注入）。不触碰 ThinkingConfig / MediaResolution / ResponseModalities（归一仍归 prepareNativeGenerationConfig）。
+func applyTextSamplingParams(gc *GenerationConfig, spec TextModelSpec, cfg config.ConfigProvider) *GenerationConfig {
+	if gc == nil {
+		gc = &GenerationConfig{}
 	}
-	if len(req.SafetySettings) > 0 {
-		req.SafetySettings = prepareNativeSafetySettings(req.SafetySettings)
+
+	if cfg != nil && cfg.DropMaxTokens() {
+		gc.MaxOutputTokens = nil
+	} else if gc.MaxOutputTokens == nil {
+		gc.MaxOutputTokens = &spec.MaxOutputTokens
+	} else if *gc.MaxOutputTokens > spec.MaxOutputTokens {
+		clamped := spec.MaxOutputTokens
+		gc.MaxOutputTokens = &clamped
 	}
+
+	if !spec.AllowTemperature {
+		gc.Temperature = nil
+	} else if gc.Temperature == nil && spec.DefaultTemperature != nil {
+		gc.Temperature = spec.DefaultTemperature
+	} else if gc.Temperature != nil {
+		t := *gc.Temperature
+		if t < 0 {
+			t = 0
+		} else if t > spec.MaxTemperature {
+			t = spec.MaxTemperature
+		}
+		gc.Temperature = &t
+	}
+
+	if !spec.AllowTopP {
+		gc.TopP = nil
+	} else if gc.TopP == nil && spec.DefaultTopP != nil {
+		gc.TopP = spec.DefaultTopP
+	} else if gc.TopP != nil {
+		p := *gc.TopP
+		if p < 0 {
+			p = 0
+		} else if p > 1.0 {
+			p = 1.0
+		}
+		gc.TopP = &p
+	}
+
+	return gc
+}
+
+// bindSearchAndMapsTools 文本家族搜索/地图工具追加绑定（纯函数）：
+// 客户端传任意 googleSearch / googleMaps 工具 → 在原工具数组（含 functionDeclarations 等）基础上
+// 追加去重后的 [googleSearch, googleMaps]（追加共存，非替换）；未触发则原样返回。
+// 客户端重复的 googleSearch / googleMaps 标记会被折叠（仅保留首个，其它字段如 functionDeclarations 不受影响）。
+// googleSearchRetrieval 不计入触发条件，也不参与追加/删除（透传保留）。
+// 约束：不修改原数组元素（range 拷贝上折叠标记），追加项仅空结构标记，不复制客户端字段。
+func bindSearchAndMapsTools(tools []Tool) []Tool {
+	if len(tools) == 0 {
+		return tools
+	}
+	triggered := false
+	for _, t := range tools {
+		if t.GoogleSearch != nil || t.GoogleMaps != nil {
+			triggered = true
+			break
+		}
+	}
+	if !triggered {
+		return tools
+	}
+
+	out := make([]Tool, 0, len(tools)+2)
+	hasGS, hasGM := false, false
+	for _, t := range tools {
+		if t.GoogleSearch != nil {
+			if hasGS {
+				t.GoogleSearch = nil
+			} else {
+				hasGS = true
+			}
+		}
+		if t.GoogleMaps != nil {
+			if hasGM {
+				t.GoogleMaps = nil
+			} else {
+				hasGM = true
+			}
+		}
+		// 折叠后为空壳（纯重复标记）直接跳过，避免输出空工具
+		if t.GoogleSearch == nil && t.GoogleMaps == nil &&
+			t.FunctionDeclarations == nil && t.GoogleSearchRetrieval == nil &&
+			t.CodeExecution == nil && t.Retrieval == nil &&
+			t.URLContext == nil && t.ComputerUse == nil &&
+			t.MCPTool == nil && t.FileSearch == nil {
+			continue
+		}
+		out = append(out, t)
+	}
+	if !hasGS {
+		out = append(out, Tool{GoogleSearch: GoogleSearch{}})
+	}
+	if !hasGM {
+		out = append(out, Tool{GoogleMaps: GoogleMaps{}})
+	}
+	return out
 }
 
 // BuildVariables 实现文本家族独占的上行 variables 构建：
@@ -83,6 +186,8 @@ func (s *TextStrategy) BuildVariables(model string, req *GeminiRequest, cfg conf
 	if req == nil {
 		req = &GeminiRequest{}
 	}
+
+	spec := TextSpecFor(model)
 
 	contents := sanitizeContentRolesTyped(req.Contents)
 	contents = mergeContiguousRolesTyped(contents)
@@ -106,18 +211,13 @@ func (s *TextStrategy) BuildVariables(model string, req *GeminiRequest, cfg conf
 		}
 	}
 
-	safetySettings := req.SafetySettings
-	if len(safetySettings) == 0 && cfg != nil {
-		safetySettings = BuildSafetySettingsTyped(cfg)
-	}
-
 	out := &GeminiRequest{
 		Contents:          contents,
 		SystemInstruction: sysInstruction,
-		Tools:             prepareNativeTools(req.Tools),
+		Tools:             prepareNativeTools(bindSearchAndMapsTools(req.Tools)),
 		ToolConfig:        prepareNativeToolConfig(req.ToolConfig),
-		SafetySettings:    prepareNativeSafetySettings(safetySettings),
-		GenerationConfig:  prepareNativeGenerationConfig(req.GenerationConfig),
+		SafetySettings:    BuildSafetySettingsTyped(cfg),
+		GenerationConfig:  prepareNativeGenerationConfig(applyTextSamplingParams(req.GenerationConfig, spec, cfg)),
 		CachedContent:     req.CachedContent,
 		ServiceTier:       req.ServiceTier,
 		Store:             req.Store,

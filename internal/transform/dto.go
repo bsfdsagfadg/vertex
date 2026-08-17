@@ -1,5 +1,10 @@
 package transform
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // ModelFamily 表示模型家族分类（文本/思考、生图/混模、TTS 语音）。
 type ModelFamily int
 
@@ -158,6 +163,9 @@ type SafetySetting struct {
 // GoogleSearch 是内置 Google 搜索工具标记。
 type GoogleSearch struct{}
 
+// GoogleMaps 是内置 Google 地图工具标记。
+type GoogleMaps struct{}
+
 // Tool 是函数/内置工具声明容器。functionDeclarations 与内置工具可共存。
 type Tool struct {
 	FunctionDeclarations []FunctionDeclaration `json:"functionDeclarations,omitempty"`
@@ -182,6 +190,55 @@ type FunctionDeclaration struct {
 // ToolConfig 控制函数调用模式。
 type ToolConfig struct {
 	FunctionCallingConfig *FunctionCallingConfig `json:"functionCallingConfig,omitempty"`
+	RetrievalConfig       any                    `json:"retrievalConfig,omitempty"`
+}
+
+// UnmarshalJSON 兼容 retrievalConfig / retrieval_config 双键名反序列化：
+// camelCase 标准键优先，snake_case 仅在 camelCase 键缺失时作为回退；其余字段行为不变。
+// 对齐 encoding/json 原语义：精确键缺失时按大小写不敏感（EqualFold）回退匹配。
+func (tc *ToolConfig) UnmarshalJSON(data []byte) error {
+	type alias ToolConfig
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var out alias
+	if msg, ok := raw["functionCallingConfig"]; ok {
+		if err := json.Unmarshal(msg, &out.FunctionCallingConfig); err != nil {
+			return err
+		}
+	} else if msg := findFoldKey(raw, "functionCallingConfig"); msg != nil {
+		if err := json.Unmarshal(msg, &out.FunctionCallingConfig); err != nil {
+			return err
+		}
+	}
+	if msg, ok := raw["retrievalConfig"]; ok {
+		if err := json.Unmarshal(msg, &out.RetrievalConfig); err != nil {
+			return err
+		}
+	} else if msg, ok := raw["retrieval_config"]; ok {
+		if err := json.Unmarshal(msg, &out.RetrievalConfig); err != nil {
+			return err
+		}
+	} else if msg := findFoldKey(raw, "retrievalConfig", "retrieval_config"); msg != nil {
+		if err := json.Unmarshal(msg, &out.RetrievalConfig); err != nil {
+			return err
+		}
+	}
+	*tc = ToolConfig(out)
+	return nil
+}
+
+// findFoldKey 在 raw map 中按大小写不敏感匹配任意候选键，返回首个命中的值（无则 nil）。
+func findFoldKey(raw map[string]json.RawMessage, keys ...string) json.RawMessage {
+	for k, v := range raw {
+		for _, key := range keys {
+			if strings.EqualFold(k, key) {
+				return v
+			}
+		}
+	}
+	return nil
 }
 
 // FunctionCallingConfig 的函数调用模式。
