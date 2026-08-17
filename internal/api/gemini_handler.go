@@ -1,12 +1,10 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
@@ -109,8 +107,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.RequestTimeoutSeconds())*time.Second)
-	defer cancel()
+	requestCtx := r.Context()
 
 	resolved := transform.ResolveModel(rawModel, g.cfg)
 	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s, 家族=%v", rawModel, resolved.ActualModel, resolved.Family)
@@ -148,8 +145,7 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
-	requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.RequestTimeoutSeconds())*time.Second)
-	defer cancel()
+	requestCtx := r.Context()
 
 	resolved := transform.ResolveModel(rawModel, g.cfg)
 	streamMode := resolved.Strategy.FamilyStreamMode()

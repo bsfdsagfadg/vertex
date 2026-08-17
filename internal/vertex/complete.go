@@ -2,7 +2,9 @@ package vertex
 
 import (
 	"context"
+	"errors"
 	"sort"
+	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
@@ -25,7 +27,14 @@ func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, req *tr
 		return c.runSingleCandidate(ctx, model, req, proxyURI, strategy)
 	}
 	for round := 1; round <= totalRounds; round++ {
-		resp, err := RunRace(ctx, c.cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
+		timeoutSec := c.cfg.RequestTimeoutSeconds()
+		if timeoutSec <= 0 {
+			timeoutSec = 180
+		}
+		roundTimeout := time.Duration(timeoutSec) * time.Second
+		roundCtx, roundCancel := context.WithTimeout(ctx, roundTimeout)
+
+		resp, err := RunRace(roundCtx, c.cfg, run, WithWinningCheck(func(resp *transform.GeminiResponse) bool {
 			return candidateFinishTyped(resp) == "STOP" && strategy.IsValidResponse(resp)
 		}), WithCollectedFinalizer(func(results []raceResult[*transform.GeminiResponse]) (*transform.GeminiResponse, error) {
 			cr := make([]candidateResult, len(results))
@@ -35,7 +44,15 @@ func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, req *tr
 			return pickBestResult(cr, strategy)
 		}))
 		if err == nil {
-			return resp, nil // 提交
+			roundCancel()
+			return resp, nil
+		}
+		roundCancel()
+		if ctx.Err() != nil {
+			return nil, NormalizeError(ctx.Err())
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			err = NewNetworkError(err)
 		}
 		bestErr = pickBestError([]error{bestErr, err})
 		retry, backoff := retryableAndBudgetLeft(err, round, totalRounds, ctx)

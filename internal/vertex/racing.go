@@ -92,20 +92,34 @@ func StreamParallel(ctx context.Context, cfg config.ConfigProvider, model string
 	var bestErr error
 	for round := 1; round <= totalRounds; round++ {
 		log.Printf("[Vertex] [Dispatch] 发起请求 (Round %d/%d), 模型=%s, 请求ID=%s", round, totalRounds, model, RequestIDFromContext(ctx))
-		winnerCh, err := RunRace(streamCtx, cfg, wrappedOp, WithPreserveRaceCtxOnWin[<-chan StreamChunk](), WithFailFastOnHardError[<-chan StreamChunk]())
+		timeoutSec := cfg.RequestTimeoutSeconds()
+		if timeoutSec <= 0 {
+			timeoutSec = 180
+		}
+		roundTimeout := time.Duration(timeoutSec) * time.Second
+		roundCtx, roundCancel := context.WithTimeout(streamCtx, roundTimeout)
+
+		winnerCh, err := RunRace(roundCtx, cfg, wrappedOp, WithPreserveRaceCtxOnWin[<-chan StreamChunk](), WithFailFastOnHardError[<-chan StreamChunk]())
 		if err == nil {
 			// 胜出（winnerCh 非 nil）：提交，不再重试
 			for chunk := range winnerCh {
 				if !yield(chunk) {
+					roundCancel()
 					streamCancel()
 					return
 				}
 			}
+			roundCancel()
 			return
 		}
+		roundCancel()
 		// 客户端取消/上下文超时静默早退，不产错误帧
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if streamCtx.Err() != nil {
 			return
+		}
+		// 本轮 roundCtx 超时或取消（但客户端未断）：归一化为 NetworkError (Transient)，以便下轮重试
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			err = NewNetworkError(err)
 		}
 		// RunRace 返回错误（无胜出者）
 		bestErr = pickBestError([]error{bestErr, err})
