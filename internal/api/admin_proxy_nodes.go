@@ -385,7 +385,6 @@ func (adm *AdminHandler) runProxyBatchTest(
 	sem := make(chan struct{}, entryProxyTestConcurrency)
 	var wg sync.WaitGroup
 	for _, candidate := range candidates {
-		candidate := candidate
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

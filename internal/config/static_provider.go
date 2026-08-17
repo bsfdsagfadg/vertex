@@ -54,7 +54,6 @@ func (s staticConfig) CustomBgPresets() []string                { return s.c.Cus
 func (s staticConfig) AutoRefreshLogs() bool                    { return s.c.GetAutoRefreshLogs() }
 func (s staticConfig) DefaultImageSize() string                 { return s.c.DefaultImageSize }
 func (s staticConfig) DefaultResponseModalities() string        { return s.c.DefaultResponseModalities }
-func (s staticConfig) TelemetryEnabled() *bool                  { return s.c.TelemetryEnabled }
 func (s staticConfig) BaseModels() []string                     { return s.c.BaseModels() }
 func (s staticConfig) ModelRegistry() []ModelEntry              { return s.c.ModelRegistry() }
 func (s staticConfig) AliasMap() map[string]string              { return s.c.AliasMap() }

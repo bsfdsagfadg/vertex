@@ -18,6 +18,5 @@
   "entry_proxy_probe_auto_disable_enabled": false,
   "entry_proxy_probe_auto_disable_failures": 10,
   "sticky_node_priority": false,
-  "parallel_pool_size": 15,
-  "telemetry_enabled": false
+  "parallel_pool_size": 15
 }

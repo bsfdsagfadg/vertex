@@ -173,10 +173,6 @@ async function saveSettings() {
     else if (f.type === 'number') out[f.k] = parseInt(el.value || '0', 10);
     else out[f.k] = el.value;
   }
-  // Keep sending whatever telemetry_enabled is in curSettings to prevent config loss/errors
-  if (curSettings.telemetry_enabled !== undefined) {
-    out['telemetry_enabled'] = curSettings.telemetry_enabled;
-  }
   if (!out['parallel_pool_enabled']) {
     out['sticky_node_priority'] = false;
     out['parallel_pool_retry_enabled'] = false;

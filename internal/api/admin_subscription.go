@@ -16,6 +16,7 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
+//nolint:gochecknoglobals // Fallback UA list
 var fallbackUAs = []string{
 	"clash-verge/v2.5.2",
 	"Clash.Meta",

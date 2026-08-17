@@ -86,16 +86,17 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 	if u.User != nil {
 		username = u.User.Username()
 	}
-	if typ == "tuic" {
+	switch typ {
+	case "tuic":
 		out["uuid"] = username
 		if u.User != nil {
 			if password, ok := u.User.Password(); ok {
 				out["password"] = password
 			}
 		}
-	} else if typ == "trojan" || typ == "hysteria2" {
+	case "trojan", "hysteria2":
 		out["password"] = username
-	} else {
+	default:
 		out["uuid"] = username
 	}
 

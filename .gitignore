@@ -29,9 +29,6 @@ dist/
 test-generated-*.png
 *.code-workspace
 
-# Build output
-telemetry-server
-cmd/telemetry-server/
 
 # Runtime state (auto-generated, never commit)
 config/state/

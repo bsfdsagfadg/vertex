@@ -27,7 +27,6 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/logger"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/spool"
-	"github.com/bsfdsagfadg/vertex/internal/telemetry"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
@@ -103,10 +102,9 @@ func main() {
 	dailyLogger := logger.NewDailyLogger(logDir)
 
 	// ---- 状态文件迁移（提前执行，无输出） ----
-	telemetry.MigrateStateFile("config/.instance_id", "config/state/.instance_id")
-	telemetry.MigrateStateFile("config/.telemetry_state", "config/state/.telemetry_state")
-	telemetry.MigrateStateFile("config/.rules_agreed", "config/state/.rules_agreed")
-	telemetry.MigrateStateFile("config/agreed-rules-docker.txt", "config/state/agreed-rules-docker.txt")
+	migrateStateFile("config/.rules_agreed", "config/state/.rules_agreed")
+	migrateStateFile("config/agreed-rules-docker.txt", "config/state/agreed-rules-docker.txt")
+	cleanLegacyStateFiles()
 
 	// ---- 规则同意检查 ----
 	curHash := rulesHash()
@@ -139,7 +137,7 @@ func main() {
 			fmt.Println(rulesText)
 			fmt.Println()
 			if hasOldAgreement() {
-				fmt.Println("  ⚠️  规则已更新（含遥测披露等内容），需要您重新确认。")
+				fmt.Println("  ⚠️  规则已更新，需要您重新确认。")
 				fmt.Println()
 			}
 			fmt.Print("  请输入 yes 同意以上规则（输入其他内容退出）：")
@@ -190,11 +188,6 @@ func main() {
 	stopEntryProxyProbe := api.StartEntryProxyProbeLoop(vc.Net())
 	defer stopEntryProxyProbe()
 
-	telemetryEnabled := true
-	if cfg.TelemetryEnabled() != nil {
-		telemetryEnabled = *cfg.TelemetryEnabled()
-	}
-	telemetry.Start(version, runtime.GOOS+"/"+runtime.GOARCH, telemetryEnabled)
 
 	srv := api.NewServer(vc, keys, cfg)
 	//nolint:exhaustruct
@@ -232,7 +225,6 @@ func main() {
 			cancel()
 			srv.Close()
 			transport.StopAllProxies()
-			telemetry.Stop()
 			_ = dailyLogger.Close()
 			close(shutdownDone)
 			return
@@ -280,4 +272,31 @@ func checkRulesAgreedDocker(curHash string) bool {
 		return false
 	}
 	return strings.Contains(string(data), curHash)
+}
+
+func migrateStateFile(oldPath, newPath string) {
+	if _, err := os.Stat(oldPath); err != nil {
+		return
+	}
+	if _, err := os.Stat(newPath); err == nil {
+		_ = os.Remove(oldPath)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil {
+		return
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		if data, err := os.ReadFile(oldPath); err == nil {
+			if err := os.WriteFile(newPath, data, 0o600); err == nil {
+				_ = os.Remove(oldPath)
+			}
+		}
+	}
+}
+
+func cleanLegacyStateFiles() {
+	_ = os.Remove("config/.instance_id")
+	_ = os.Remove("config/.telemetry_state")
+	_ = os.Remove("config/state/.instance_id")
+	_ = os.Remove("config/state/.telemetry_state")
 }

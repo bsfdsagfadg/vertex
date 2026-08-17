@@ -98,7 +98,6 @@ func (p *TokenPool) GetTokenSharedContext(ctx context.Context) (string, error) {
 	}
 	results := make(chan result, len(routes))
 	for _, route := range routes {
-		route := route
 		go func() {
 			token, err := p.fetch(raceCtx, route)
 			if err == nil && token == "" {

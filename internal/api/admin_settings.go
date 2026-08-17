@@ -16,7 +16,6 @@ var adminAllowedSettings = map[string]bool{
 	"race_timeout":             true,
 	"model_turn_guard_enabled": true,
 	"parallel_pool_enabled":    true, "parallel_pool_size": true,
-	"telemetry_enabled":                       true,
 	"parallel_pool_delay_dynamic":             true,
 	"entry_proxy_probe_enabled":               true,
 	"entry_proxy_probe_interval_seconds":      true,
@@ -39,10 +38,6 @@ var adminAllowedSettings = map[string]bool{
 }
 
 func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request) {
-	telEnabled := true
-	if adm.cfg.TelemetryEnabled() != nil {
-		telEnabled = *adm.cfg.TelemetryEnabled()
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"settings": map[string]any{
 		"max_retries":              adm.cfg.MaxRetries(),
 		"max_spill_mb":             adm.cfg.MaxSpillMB(),
@@ -51,7 +46,6 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"aggregate_stream":         adm.cfg.AggregateStream(),
 		"fake_stream_enabled":      adm.cfg.FakeStreamEnabled(),
 		"drop_max_tokens":          adm.cfg.DropMaxTokens(),
-		"telemetry_enabled":        telEnabled,
 		"request_timeout":          adm.cfg.RequestTimeout(),
 		"race_timeout":             adm.cfg.RaceTimeout(),
 		"model_turn_guard_enabled": adm.cfg.ModelTurnGuardEnabled(),

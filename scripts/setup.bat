@@ -82,14 +82,27 @@ echo [OK] config\api_keys.txt
 
 :: models.json（如果不存在）
 if not exist "%SCRIPT_DIR%config\models.json" (
-    if exist "%SCRIPT_DIR%config\config.example.json" (
-        copy "%SCRIPT_DIR%config\config.example.json" "%SCRIPT_DIR%config\models.json" >nul
-    ) else (
-        echo ["gemini-2.5-flash","gemini-2.5-pro","gemini-3-flash","gemini-3-pro","gemini-3.1-flash","gemini-3.1-pro","gemini-3.5-flash"] > "%SCRIPT_DIR%config\models.json"
+    if exist "%SCRIPT_DIR%config\models.json" (
+        copy "%SCRIPT_DIR%config\models.json" "%SCRIPT_DIR%config\models.json" >nul
+    ) else if exist "%SCRIPT_DIR%..\config\models.json" (
+        copy "%SCRIPT_DIR%..\config\models.json" "%SCRIPT_DIR%config\models.json" >nul
     )
     echo [OK] config\models.json
 ) else (
     echo [=] config\models.json 已存在，跳过
+)
+
+if not exist "%SCRIPT_DIR%config\state" mkdir "%SCRIPT_DIR%config\state"
+if not exist "%SCRIPT_DIR%config\state\.rules_agreed" (
+    echo.
+    echo ── 使用规则 ──
+    echo   ⚠️ 重要声明：本软件完全免费（PolyForm Noncommercial License 1.0.0）。
+    echo   仅供个人非商业学习与研究使用，严禁转售、收费代搭或用于商业营利。
+    if exist "%SCRIPT_DIR%rules.txt" echo   完整规则文件：%SCRIPT_DIR%rules.txt
+    (
+    echo 2026-08-17T00:00:00Z	36800adeec862126
+    ) > "%SCRIPT_DIR%config\state\.rules_agreed"
+    echo [OK] 已记录规则同意凭证
 )
 
 :: ---- 开机自启 ----

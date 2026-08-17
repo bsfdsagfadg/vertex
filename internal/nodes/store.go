@@ -143,8 +143,6 @@ func LoadHealth() map[string]*NodeHealth {
 	return healthMap
 }
 
-// writeAtomicJSON has been removed because it is unused
-
 func saveNodesUnsafe() {
 	if err := saveNodeStateUnsafe(); err != nil {
 		log.Printf("[ERROR] Failed to save nodes: %v", err)

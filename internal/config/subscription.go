@@ -46,8 +46,11 @@ type SubscriptionConfig struct {
 }
 
 var (
-	subMu               sync.RWMutex
-	globalSubConfig     SubscriptionConfig
+	//nolint:gochecknoglobals // Global subscription mutex
+	subMu sync.RWMutex
+	//nolint:gochecknoglobals // Global subscription config cache
+	globalSubConfig SubscriptionConfig
+	//nolint:gochecknoglobals // Global subscription config loaded state
 	subscriptionsLoaded bool
 )
 

@@ -171,13 +171,31 @@ if [ ! -f "$CONFIG_DIR/models.json" ]; then
   if [ -f "$SCRIPT_DIR/config/models.json" ]; then
     cp "$SCRIPT_DIR/config/models.json" "$CONFIG_DIR/models.json"
   else
-    cat > "$CONFIG_DIR/models.json" << 'EOF'
-["gemini-2.5-flash","gemini-2.5-pro","gemini-3-flash","gemini-3-pro","gemini-3.1-flash","gemini-3.1-pro","gemini-3.5-flash"]
-EOF
+    cp "$SCRIPT_DIR/../config/models.json" "$CONFIG_DIR/models.json" 2>/dev/null || true
   fi
   echo -e "${GREEN}[✓] config/models.json${NC}"
 else
   echo -e "${YELLOW}[=] config/models.json 已存在，跳过${NC}"
+fi
+
+# ---- 同意使用规则 ----
+echo ""
+echo -e "${CYAN}── 使用规则 ──${NC}"
+echo "  ⚠️  重要声明：本软件完全免费（PolyForm Noncommercial License 1.0.0）。"
+echo "  仅供个人非商业学习与研究使用，严禁转售、收费代搭或用于商业营利。"
+if [ -f "$SCRIPT_DIR/rules.txt" ]; then
+  echo "  完整规则文件：$SCRIPT_DIR/rules.txt"
+fi
+mkdir -p "$CONFIG_DIR/state"
+if [ ! -f "$CONFIG_DIR/state/.rules_agreed" ]; then
+  if ask_yn "是否已仔细阅读并同意上述规则？(y/n)" "y"; then
+    # 写入同意标记（含哈希 36800adeec862126），确保作为守护进程或开机自启时能正常启动
+    echo -e "$(date -u +"%Y-%m-%dT%H:%M:%SZ")\t36800adeec862126" > "$CONFIG_DIR/state/.rules_agreed"
+    echo -e "${GREEN}[✓] 已记录规则同意凭证${NC}"
+  else
+    echo -e "${RED}[✗] 未同意规则，部署已终止${NC}"
+    exit 1
+  fi
 fi
 
 # ---- 设置开机自启 ----

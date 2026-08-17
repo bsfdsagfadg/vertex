@@ -48,7 +48,6 @@ type ConfigProvider interface {
 	DefaultImageSize() string
 	DefaultResponseModalities() string
 
-	TelemetryEnabled() *bool
 
 	BaseModels() []string
 	ModelRegistry() []ModelEntry
@@ -127,14 +126,6 @@ func (d dynamicConfig) CustomBgPresets() []string {
 	out := make([]string, len(c.CustomBgPresets))
 	copy(out, c.CustomBgPresets)
 	return out
-}
-func (d dynamicConfig) TelemetryEnabled() *bool {
-	c := Load()
-	if c.TelemetryEnabled == nil {
-		return nil
-	}
-	v := *c.TelemetryEnabled
-	return &v
 }
 func (d dynamicConfig) BaseModels() []string                    { return Load().BaseModels() }
 func (d dynamicConfig) ModelRegistry() []ModelEntry             { return Load().ModelRegistry() }
