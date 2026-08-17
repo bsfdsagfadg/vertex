@@ -3,13 +3,21 @@ package transform
 import (
 	"encoding/base64"
 	"strings"
+	"unicode"
 )
 
-// NormalizeBase64 规范化 base64：剥离 data URI 前缀、URL-safe 字符还原、补 padding。
+// NormalizeBase64 规范化 base64（幂等）：
+// 1) 全空白剥离（含中间换行/空格）；2) data URI 前缀剥离（大小写不敏感）；
+// 3) URL-safe 字符还原；4) padding 自动补齐。
 func NormalizeBase64(data string) string {
-	value := strings.TrimSpace(data)
-	if strings.Contains(value, ",") && strings.HasPrefix(value, "data:") {
-		if idx := strings.Index(value, ","); idx >= 0 {
+	value := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, data)
+	if strings.HasPrefix(strings.ToLower(value), "data:") {
+		if idx := strings.IndexByte(value, ','); idx >= 0 {
 			value = value[idx+1:]
 		}
 	}

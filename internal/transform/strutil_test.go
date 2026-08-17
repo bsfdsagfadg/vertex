@@ -40,6 +40,34 @@ func TestDecodeBase64Loose(t *testing.T) {
 	}
 }
 
+func TestNormalizeBase64(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"data uri prefix stripped", "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==", "iVBORw0KGgoAAAANSUhEUg=="},
+		{"data uri prefix case insensitive", "DATA:image/png;base64,YWJj", "YWJj"},
+		{"url-safe chars restored", "-_-_", "+/+/"},
+		{"missing padding restored", "aGVsbG8", "aGVsbG8="},
+		{"interior newline stripped", "YWJj\nY2Rl\n", "YWJjY2Rl"},
+		{"interior spaces stripped", "YW Jj", "YWJj"},
+		{"whitespace only", "  \t ", ""},
+		{"already normalized unchanged", "aGVsbG8=", "aGVsbG8="},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := NormalizeBase64(c.in)
+			if got != c.want {
+				t.Errorf("NormalizeBase64(%q)=%q，期望 %q", c.in, got, c.want)
+			}
+			if again := NormalizeBase64(got); again != got {
+				t.Errorf("NormalizeBase64 非幂等: NormalizeBase64(%q)=%q", got, again)
+			}
+		})
+	}
+}
+
 func mustStdDecode(s string) []byte {
 	b, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {

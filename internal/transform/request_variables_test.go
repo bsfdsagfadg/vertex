@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
@@ -614,5 +615,45 @@ func TestBuildGeminiVariables_Defaults(t *testing.T) {
 	modelVal, _ := vars["model"].(string)
 	if modelVal != "gemini-3.6-flash" {
 		t.Errorf("Model=%q, want 'gemini-3.6-flash'", modelVal)
+	}
+}
+
+func TestBuildGeminiVariablesTyped_NormalizesInlineData(t *testing.T) {
+	// 模拟客户端传入 snake_case 键 + Data URI 前缀 + 夹杂换行的多模态请求，
+	// 经 DTO 反序列化归一与文本家族 BuildVariables 透传后，上行 payload 必须纯净。
+	raw := `{
+		"contents": [{
+			"role": "user",
+			"parts": [{
+				"inline_data": {
+					"mime_type": "image/png",
+					"data": "data:image/png;base64,YWJj\n"
+				}
+			}]
+		}]
+	}`
+	var req GeminiRequest
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	cfg := &dummyConfig{trailingFixEnabled: false}
+
+	vars := BuildGeminiVariablesTyped("gemini-1.5-flash", &req, cfg)
+	if vars == nil || vars.GeminiRequest == nil {
+		t.Fatal("vars should not be nil")
+	}
+	if len(vars.Contents) != 1 {
+		t.Fatalf("expected 1 content, got %d", len(vars.Contents))
+	}
+	parts := vars.Contents[0].Parts
+	if len(parts) != 1 || parts[0].InlineData == nil {
+		t.Fatalf("expected 1 inlineData part, got %+v", parts)
+	}
+	got := parts[0].InlineData.Data
+	if got != "YWJj" {
+		t.Errorf("inlineData.data 未规范化: %q，期望 YWJj（无 URI 前缀、无空白、padding 完整）", got)
+	}
+	if parts[0].InlineData.MimeType != "image/png" {
+		t.Errorf("inlineData.mimeType=%q，期望 image/png", parts[0].InlineData.MimeType)
 	}
 }

@@ -211,7 +211,8 @@ func BuildTypedImageRequest(model, prompt string, images []InlineImage, mask *In
 			parts = append(parts, Part{
 				InlineData: &InlineData{
 					MimeType: img.MimeType,
-					Data:     NormalizeBase64(img.Data),
+					// DTO 层已归一（InlineData.UnmarshalJSON），此处为幂等防御
+					Data: NormalizeBase64(img.Data),
 				},
 			})
 		}
@@ -221,7 +222,8 @@ func BuildTypedImageRequest(model, prompt string, images []InlineImage, mask *In
 		parts = append(parts, Part{
 			InlineData: &InlineData{
 				MimeType: mask.MimeType,
-				Data:     NormalizeBase64(mask.Data),
+				// DTO 层已归一（InlineData.UnmarshalJSON），此处为幂等防御
+				Data: NormalizeBase64(mask.Data),
 			},
 		})
 	}
