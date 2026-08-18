@@ -471,6 +471,80 @@ func TestParseURIUnsupportedProtocol(t *testing.T) {
 	}
 }
 
+func TestParseVless_ECH(t *testing.T) {
+	const base = "vless://12345678-1234-1234-1234-123456789012@example.com:443?"
+	cases := []struct {
+		name      string
+		query     string
+		pubName   string
+		configURL string
+	}{
+		{
+			name:      "完整格式",
+			query:     "security=tls&sni=real.example.com&ech=cloudflare-ech.com%2Bhttps%3A%2F%2Fdns.alidns.com%2Fdns-query",
+			pubName:   "cloudflare-ech.com",
+			configURL: "https://dns.alidns.com/dns-query",
+		},
+		{
+			name:    "仅公钥名",
+			query:   "security=tls&sni=real.example.com&ech=cloudflare-ech.com",
+			pubName: "cloudflare-ech.com",
+		},
+		{
+			name:  "无ech",
+			query: "security=tls&sni=real.example.com",
+		},
+		{
+			name:  "reality互斥",
+			query: "security=reality&sni=real.example.com&pbk=pubkey&ech=cloudflare-ech.com",
+		},
+		{
+			name:  "含空白非法",
+			query: "security=tls&sni=real.example.com&ech=a%20b",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n, err := ParseURI(base + tc.query)
+			if err != nil {
+				t.Fatalf("ParseURI returned error: %v", err)
+			}
+			if tc.pubName == "" {
+				if n.TLS != nil && n.TLS.ECH != nil {
+					t.Fatalf("expected TLS.ECH == nil, got %#v", n.TLS.ECH)
+				}
+				return
+			}
+			if n.TLS == nil || n.TLS.ECH == nil {
+				t.Fatalf("expected TLS.ECH set, got TLS=%#v", n.TLS)
+			}
+			if n.TLS.ECH.PublicName != tc.pubName {
+				t.Fatalf("PublicName = %q, want %q", n.TLS.ECH.PublicName, tc.pubName)
+			}
+			if n.TLS.ECH.ConfigURL != tc.configURL {
+				t.Fatalf("ConfigURL = %q, want %q", n.TLS.ECH.ConfigURL, tc.configURL)
+			}
+		})
+	}
+}
+
+func TestParseTrojan_ECH(t *testing.T) {
+	raw := "trojan://password@example.com:443?ech=cloudflare-ech.com%2Bhttps%3A%2F%2Fdns.alidns.com%2Fdns-query"
+	n, err := ParseURI(raw)
+	if err != nil {
+		t.Fatalf("ParseURI returned error: %v", err)
+	}
+	if n.TLS == nil || n.TLS.ECH == nil {
+		t.Fatalf("expected TLS.ECH set, got TLS=%#v", n.TLS)
+	}
+	if n.TLS.ECH.PublicName != "cloudflare-ech.com" {
+		t.Fatalf("PublicName = %q, want cloudflare-ech.com", n.TLS.ECH.PublicName)
+	}
+	if n.TLS.ECH.ConfigURL != "https://dns.alidns.com/dns-query" {
+		t.Fatalf("ConfigURL = %q, want https://dns.alidns.com/dns-query", n.TLS.ECH.ConfigURL)
+	}
+}
+
 func stringsContains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || indexOf(s, substr) >= 0)
 }

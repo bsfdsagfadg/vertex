@@ -224,7 +224,14 @@ const (
 )
 
 func startEntryBox(uri string) (*box.Box, string, error) {
-	entryOb, err := buildOutbound(uri)
+	n, err := GetOrParse(uri)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse entry node: %w", err)
+	}
+	if !n.Supported {
+		return nil, "", fmt.Errorf("unsupported: %s", n.UnsupportedReason)
+	}
+	entryOb, err := buildOutboundFromNode(n)
 	if err != nil {
 		return nil, "", fmt.Errorf("build entry outbound: %w", err)
 	}
@@ -238,6 +245,7 @@ func startEntryBox(uri string) (*box.Box, string, error) {
 			Inbounds:  nil,
 			Outbounds: []option.Outbound{entryOb},
 			Route:     &option.RouteOptions{Final: "entry-out"},
+			DNS:       dnsOptionsForNode(n),
 		},
 	}
 
@@ -331,7 +339,14 @@ func (d *singDialer) CreateDialer(uri string, reqID string) (func(ctx context.Co
 }
 
 func (d *singDialer) newSecondHopBox(uri string) (*nodeBox, error) {
-	node, err := buildOutbound(uri)
+	n, err := GetOrParse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("parse outbound node: %w", err)
+	}
+	if !n.Supported {
+		return nil, fmt.Errorf("unsupported: %s", n.UnsupportedReason)
+	}
+	node, err := buildOutboundFromNode(n)
 	if err != nil {
 		return nil, fmt.Errorf("build outbound: %w", err)
 	}
@@ -363,6 +378,7 @@ func (d *singDialer) newSecondHopBox(uri string) (*nodeBox, error) {
 		Options: option.Options{
 			Log:       &option.LogOptions{Disabled: true},
 			Outbounds: outbounds,
+			DNS:       dnsOptionsForNode(n),
 		},
 	})
 	if err != nil {
@@ -386,7 +402,14 @@ func (d *singDialer) newSecondHopBox(uri string) (*nodeBox, error) {
 }
 
 func (d *singDialer) TestEntryProxy(uri string) (func(ctx context.Context, network, addr string) (net.Conn, error), func(), error) {
-	entryOb, err := buildOutbound(uri)
+	n, err := GetOrParse(uri)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse candidate node: %w", err)
+	}
+	if !n.Supported {
+		return nil, nil, fmt.Errorf("unsupported: %s", n.UnsupportedReason)
+	}
+	entryOb, err := buildOutboundFromNode(n)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build candidate outbound: %w", err)
 	}
@@ -397,6 +420,7 @@ func (d *singDialer) TestEntryProxy(uri string) (func(ctx context.Context, netwo
 		Options: option.Options{
 			Log:       &option.LogOptions{Disabled: true},
 			Outbounds: []option.Outbound{entryOb},
+			DNS:       dnsOptionsForNode(n),
 		},
 	})
 	if err != nil {

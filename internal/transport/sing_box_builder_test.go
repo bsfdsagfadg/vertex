@@ -286,6 +286,45 @@ func TestBuildOutboundFromNode_RealityDefaultFingerprint(t *testing.T) {
 	}
 }
 
+func TestBuildOutboundFromNode_ECH(t *testing.T) {
+	n, err := ParseURI("vless://12345678-1234-1234-1234-123456789012@example.com:443?security=tls&ech=cloudflare-ech.com%2Bhttps%3A%2F%2Fdns.alidns.com%2Fdns-query")
+	if err != nil {
+		t.Fatalf("ParseURI unexpected error: %v", err)
+	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.VLESSOutboundOptions)
+	if opts.TLS == nil || opts.TLS.ECH == nil {
+		t.Fatalf("expected ECH enabled, got %+v", opts.TLS)
+	}
+	if !opts.TLS.ECH.Enabled {
+		t.Fatalf("ECH.Enabled = false, want true")
+	}
+	if opts.TLS.ECH.QueryServerName != "cloudflare-ech.com" {
+		t.Fatalf("ECH.QueryServerName = %q, want cloudflare-ech.com", opts.TLS.ECH.QueryServerName)
+	}
+	if opts.TLS.ECH.Config != nil || opts.TLS.ECH.ConfigPath != "" {
+		t.Fatalf("ECH.Config = %v, ConfigPath = %q, want both empty", opts.TLS.ECH.Config, opts.TLS.ECH.ConfigPath)
+	}
+}
+
+func TestBuildOutboundFromNode_NoECH(t *testing.T) {
+	n, err := ParseURI("vless://12345678-1234-1234-1234-123456789012@example.com:443?security=tls")
+	if err != nil {
+		t.Fatalf("ParseURI unexpected error: %v", err)
+	}
+	ob, err := buildOutboundFromNode(n)
+	if err != nil {
+		t.Fatalf("buildOutboundFromNode unexpected error: %v", err)
+	}
+	opts := ob.Options.(*option.VLESSOutboundOptions)
+	if opts.TLS.ECH != nil {
+		t.Fatalf("expected ECH == nil, got %+v", opts.TLS.ECH)
+	}
+}
+
 func TestBuildOutboundFromNode_SSPlugin(t *testing.T) {
 	n, err := ParseURI("ss://YWVzLTEyOC1nY206cGFzc3dvcmQ@example.com:443?plugin=simple-obfs%3Bobfs%3Dhttp%3Bobfs-host%3Dcdn.example.com")
 	if err != nil {

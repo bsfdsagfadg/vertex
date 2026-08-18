@@ -104,6 +104,15 @@ func parseVless(uri string) (*ParsedNode, error) {
 		if alpn := q.Get("alpn"); alpn != "" {
 			tls.ALPN = strings.Split(alpn, ",")
 		}
+		if ech := q.Get("ech"); ech != "" && !strings.ContainsAny(ech, " \t\r\n") {
+			pub, cfgURL, found := strings.Cut(ech, "+")
+			if !found {
+				pub, cfgURL = ech, ""
+			}
+			if pub != "" {
+				tls.ECH = &ECHOptions{PublicName: pub, ConfigURL: cfgURL}
+			}
+		}
 		n.TLS = tls
 	}
 
@@ -148,6 +157,15 @@ func parseTrojan(uri string) (*ParsedNode, error) {
 	}
 	if alpn := q.Get("alpn"); alpn != "" {
 		tls.ALPN = strings.Split(alpn, ",")
+	}
+	if ech := q.Get("ech"); ech != "" && !strings.ContainsAny(ech, " \t\r\n") {
+		pub, cfgURL, found := strings.Cut(ech, "+")
+		if !found {
+			pub, cfgURL = ech, ""
+		}
+		if pub != "" {
+			tls.ECH = &ECHOptions{PublicName: pub, ConfigURL: cfgURL}
+		}
 	}
 	n.TLS = tls
 

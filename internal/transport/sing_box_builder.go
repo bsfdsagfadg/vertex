@@ -247,6 +247,12 @@ func tlsFromIR(t *TLSOptions) *option.OutboundTLSOptions {
 			ShortID:   t.Reality.ShortID,
 		}
 	}
+	if t.ECH != nil {
+		o.ECH = &option.OutboundECHOptions{
+			Enabled:         true,
+			QueryServerName: t.ECH.PublicName,
+		}
+	}
 	return o
 }
 

@@ -58,6 +58,15 @@ type TLSOptions struct {
 	ALPN        []string
 	Fingerprint string // UTLS 指纹；Reality 无显式 fp 时补 "chrome"
 	Reality     *RealityOptions
+	ECH         *ECHOptions // v2rayN 风格 ech 参数（Encrypted Client Hello）
+}
+
+// ECHOptions 记录 v2rayN 风格 ech 参数（Encrypted Client Hello）。
+// PublicName 为 ECH 公钥名（TLS 外层 SNI）；ConfigURL 为 ECH 配置拉取用的
+// DoH 地址（"" 表示 URI 未提供，注入 DNS 段时使用默认 DoH）。
+type ECHOptions struct {
+	PublicName string
+	ConfigURL  string
 }
 
 type RealityOptions struct {
@@ -76,7 +85,7 @@ type TransportOptions struct {
 	EarlyDataHeaderName string // ws early data header
 }
 
-// sing-box v1.13.14（go.mod 锁定）实际支持的 V2Ray 传输类型。
+// sing-box v1.13.19（go.mod 锁定）实际支持的 V2Ray 传输类型。
 // 升级 sing-box 需复核该清单。
 var supportedTransports = map[string]bool{
 	"ws": true, "grpc": true, "http": true, "httpupgrade": true, "quic": true,
@@ -88,7 +97,7 @@ var tcpAliases = map[string]bool{
 }
 
 // applyCapability 是全局唯一 capability 判定点（各解析器尾部调用）。
-// capability 只判 transport 层：协议层 sing-box v1.13.14 全支持。
+// capability 只判 transport 层：协议层 sing-box v1.13.19 全支持。
 func applyCapability(n *ParsedNode) {
 	if n.Transport == nil {
 		n.Supported = true
