@@ -2,6 +2,7 @@ package nodestore
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -265,5 +266,137 @@ func TestPruneHealthKeys(t *testing.T) {
 	PruneHealthKeys(health2, map[string]bool{})
 	if len(health2) != 0 {
 		t.Errorf("空节点集应清空全部健康键: %v", health2)
+	}
+}
+
+func TestDeleteDisabledNodesSemantics(t *testing.T) {
+	setupDB(t)
+
+	if err := SaveNodes(db.GlobalDB, "nodes", []NodeRow{
+		{RawURI: "uri1", Type: "vless", Name: "n1", Disabled: false},
+		{RawURI: "uri2", Type: "vmess", Name: "n2", Disabled: true},
+		{RawURI: "uri3", Type: "ss", Name: "n3", Disabled: true},
+	}); err != nil {
+		t.Fatalf("SaveNodes: %v", err)
+	}
+	if err := SaveHealth(db.GlobalDB, "node_health", []HealthRow{
+		{RawURI: "uri1", SuccessCount: 1},
+		{RawURI: "uri2", SuccessCount: 2},
+		{RawURI: "orphan", SuccessCount: 9}, // 陈旧健康行（节点已不存在）应被清理
+	}); err != nil {
+		t.Fatalf("SaveHealth: %v", err)
+	}
+
+	removed, uris, err := DeleteDisabledNodes(db.GlobalDB, "nodes", "node_health")
+	if err != nil {
+		t.Fatalf("DeleteDisabledNodes: %v", err)
+	}
+	if removed != 2 {
+		t.Errorf("removed=%d, want 2", removed)
+	}
+	if len(uris) != 2 || uris[0] != "uri2" || uris[1] != "uri3" {
+		t.Errorf("removed uris=%v, want [uri2 uri3]", uris)
+	}
+	// 节点表：仅剩启用节点
+	var nodeCount int
+	if err := db.GlobalDB.QueryRow("SELECT COUNT(*) FROM nodes").Scan(&nodeCount); err != nil {
+		t.Fatalf("count nodes: %v", err)
+	}
+	if nodeCount != 1 {
+		t.Errorf("节点表剩余=%d, want 1", nodeCount)
+	}
+	// 健康表：uri1 保留，uri2 与被删节点及陈旧行全部清理
+	var healthCount int
+	if err := db.GlobalDB.QueryRow("SELECT COUNT(*) FROM node_health").Scan(&healthCount); err != nil {
+		t.Fatalf("count health: %v", err)
+	}
+	if healthCount != 1 {
+		t.Errorf("健康表剩余=%d, want 1", healthCount)
+	}
+	var sc int
+	if err := db.GlobalDB.QueryRow("SELECT success_count FROM node_health WHERE raw_uri = 'uri1'").Scan(&sc); err != nil {
+		t.Fatalf("uri1 健康行丢失: %v", err)
+	}
+	if sc != 1 {
+		t.Errorf("uri1 success_count=%d, want 1", sc)
+	}
+}
+
+func TestDeleteNodesBatchSemantics(t *testing.T) {
+	setupDB(t)
+
+	// 1200 行覆盖分批（每批 500）路径
+	var rows []NodeRow
+	var hs []HealthRow
+	for i := 0; i < 1200; i++ {
+		u := fmt.Sprintf("uri%d", i)
+		rows = append(rows, NodeRow{RawURI: u, Type: "vless", Name: "n"})
+		hs = append(hs, HealthRow{RawURI: u, SuccessCount: i})
+	}
+	if err := SaveNodes(db.GlobalDB, "nodes", rows); err != nil {
+		t.Fatalf("SaveNodes: %v", err)
+	}
+	if err := SaveHealth(db.GlobalDB, "node_health", hs); err != nil {
+		t.Fatalf("SaveHealth: %v", err)
+	}
+
+	// 删除 700 个（跨 2 批）
+	del := make([]string, 0, 700)
+	for i := 0; i < 700; i++ {
+		del = append(del, fmt.Sprintf("uri%d", i))
+	}
+	if err := DeleteNodesBatch(db.GlobalDB, "nodes", "node_health", del); err != nil {
+		t.Fatalf("DeleteNodesBatch: %v", err)
+	}
+	var nodeCount int
+	if err := db.GlobalDB.QueryRow("SELECT COUNT(*) FROM nodes").Scan(&nodeCount); err != nil {
+		t.Fatalf("count nodes: %v", err)
+	}
+	if nodeCount != 500 {
+		t.Errorf("节点表剩余=%d, want 500", nodeCount)
+	}
+	var healthCount int
+	if err := db.GlobalDB.QueryRow("SELECT COUNT(*) FROM node_health").Scan(&healthCount); err != nil {
+		t.Fatalf("count health: %v", err)
+	}
+	if healthCount != 500 {
+		t.Errorf("健康表剩余=%d, want 500", healthCount)
+	}
+	// 保留行未被误删
+	var sc int
+	if err := db.GlobalDB.QueryRow("SELECT success_count FROM node_health WHERE raw_uri = 'uri700'").Scan(&sc); err != nil {
+		t.Fatalf("uri700 健康行丢失: %v", err)
+	}
+	if sc != 700 {
+		t.Errorf("uri700 success_count=%d, want 700", sc)
+	}
+}
+
+func TestDeleteNodesBatchNilAndEmpty(t *testing.T) {
+	setupDB(t)
+	if err := DeleteNodesBatch(nil, "nodes", "node_health", []string{"uri1"}); err != nil {
+		t.Errorf("DeleteNodesBatch(nil) = %v, want nil", err)
+	}
+	if err := DeleteNodesBatch(db.GlobalDB, "nodes", "node_health", nil); err != nil {
+		t.Errorf("DeleteNodesBatch(empty) = %v, want nil", err)
+	}
+	if n, uris, err := DeleteDisabledNodes(nil, "nodes", "node_health"); err != nil || n != 0 || uris != nil {
+		t.Errorf("DeleteDisabledNodes(nil) = %d, %v, %v; want 0, nil, nil", n, uris, err)
+	}
+}
+
+func TestDeleteNodesBatchDBFailure(t *testing.T) {
+	d, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "broken.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, _, err := DeleteDisabledNodes(d, "nodes", "node_health"); err == nil {
+		t.Error("关闭的数据库 DeleteDisabledNodes 应返回错误")
+	}
+	if err := DeleteNodesBatch(d, "nodes", "node_health", []string{"uri1"}); err == nil {
+		t.Error("关闭的数据库 DeleteNodesBatch 应返回错误")
 	}
 }

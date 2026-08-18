@@ -48,11 +48,23 @@ func ensureEntryLoaded() {
 }
 
 // LoadEntryNodes 返回全量前置节点列表（含禁用）。
+// 返回浅拷贝切片，切断与内部全局切片底层的引用共享（对齐 LoadEntryHealth 安全设计）。
 func LoadEntryNodes() []Node {
+	mu.RLock()
+	if entryLoaded {
+		cp := make([]Node, len(entryList))
+		copy(cp, entryList)
+		mu.RUnlock()
+		return cp
+	}
+	mu.RUnlock()
+
 	mu.Lock()
 	defer mu.Unlock()
 	ensureEntryLoaded()
-	return entryList
+	cp := make([]Node, len(entryList))
+	copy(cp, entryList)
+	return cp
 }
 
 // LoadEntryHealth 返回前置节点健康度快照（浅拷贝，避免外部并发遍历崩溃）。

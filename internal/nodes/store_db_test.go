@@ -9,6 +9,7 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/db"
+	"github.com/bsfdsagfadg/vertex/internal/nodestore"
 )
 
 func resetState() {
@@ -338,5 +339,273 @@ func TestBatchUpdateNodesDisabledDBFailure(t *testing.T) {
 	BatchUpdateNodesDisabled([]string{"uri1"}, true)
 	if got := LoadNodes(); len(got) != 1 || got[0].Disabled {
 		t.Errorf("DB 失败时内存不得被修改: %+v", got)
+	}
+}
+
+func TestLoadNodesReturnsIsolatedCopy(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	MergeNodes([]Node{{RawURI: "uri1", Name: "node1"}, {RawURI: "uri2", Name: "node2"}}) //nolint:exhaustruct
+	got := LoadNodes()
+	got[0].Disabled = true
+	got[0].RawURI = "mutated"
+	// 外部修改拷贝不得影响内部状态
+	internal := LoadNodes()
+	if len(internal) != 2 || internal[0].Disabled || internal[0].RawURI != "uri1" {
+		t.Errorf("LoadNodes 返回拷贝被外部修改污染内部状态: %+v", internal)
+	}
+}
+
+func TestGetAllRawURIs(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	MergeNodes([]Node{{RawURI: "uri1", Name: "node1"}, {RawURI: "uri2", Name: "node2"}}) //nolint:exhaustruct
+	uris := GetAllRawURIs()
+	if len(uris) != 2 || uris[0] != "uri1" || uris[1] != "uri2" {
+		t.Errorf("GetAllRawURIs = %v, want [uri1 uri2]", uris)
+	}
+}
+
+func TestDeleteDisabledDBPersistence(t *testing.T) {
+	setupTestDB(t)
+	resetState()
+	defer resetState()
+
+	MergeNodes([]Node{
+		{RawURI: "uri1", Name: "node1"},
+		{RawURI: "uri2", Name: "node2", Disabled: true},
+		{RawURI: "uri3", Name: "node3", Disabled: true},
+	})
+	RecordTest("uri2", true, 10, "")
+	RecordTest("uri3", true, 20, "")
+	// 健康异步 worker 未启动，直接向 DB 注入健康行模拟已持久化状态
+	for _, u := range []string{"uri2", "uri3"} {
+		if err := nodestore.UpsertHealth(db.GlobalDB, "node_health", nodestore.HealthRow{RawURI: u, SuccessCount: 1}); err != nil {
+			t.Fatalf("UpsertHealth: %v", err)
+		}
+	}
+
+	var gotCb []string
+	DeleteNodesBatchCallback = func(uris []string) { gotCb = append(gotCb, uris...) }
+	defer func() { DeleteNodesBatchCallback = nil }()
+
+	removed := DeleteDisabled()
+	if removed != 2 {
+		t.Fatalf("removed=%d, want 2", removed)
+	}
+	// 内存一致性
+	got := LoadNodes()
+	if len(got) != 1 || got[0].RawURI != "uri1" {
+		t.Errorf("内存剩余节点=%v, want [uri1]", got)
+	}
+	if len(LoadHealth()) != 0 {
+		t.Errorf("健康度应全部清理, got %v", LoadHealth())
+	}
+	// DB 一致性
+	var count int
+	if err := db.GlobalDB.QueryRow("SELECT COUNT(*) FROM nodes").Scan(&count); err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("DB 节点剩余=%d, want 1", count)
+	}
+	var healthCount int
+	if err := db.GlobalDB.QueryRow("SELECT COUNT(*) FROM node_health").Scan(&healthCount); err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if healthCount != 0 {
+		t.Errorf("DB 健康行剩余=%d, want 0", healthCount)
+	}
+	// 批量回调一次性收到全部 URI
+	if len(gotCb) != 2 || gotCb[0] != "uri2" || gotCb[1] != "uri3" {
+		t.Errorf("批量回调 = %v, want [uri2 uri3]", gotCb)
+	}
+}
+
+func TestBatchDeleteNodesDBPersistence(t *testing.T) {
+	setupTestDB(t)
+	resetState()
+	defer resetState()
+
+	MergeNodes([]Node{
+		{RawURI: "uri1", Name: "node1"},
+		{RawURI: "uri2", Name: "node2"},
+		{RawURI: "uri3", Name: "node3"},
+	})
+	RecordTest("uri2", true, 10, "")
+	// 健康异步 worker 未启动，直接向 DB 注入健康行模拟已持久化状态
+	if err := nodestore.UpsertHealth(db.GlobalDB, "node_health", nodestore.HealthRow{RawURI: "uri2", SuccessCount: 1}); err != nil {
+		t.Fatalf("UpsertHealth: %v", err)
+	}
+
+	var gotCb []string
+	DeleteNodesBatchCallback = func(uris []string) { gotCb = append(gotCb, uris...) }
+	defer func() { DeleteNodesBatchCallback = nil }()
+
+	BatchDeleteNodes([]string{"uri1", "uri3"})
+	got := LoadNodes()
+	if len(got) != 1 || got[0].RawURI != "uri2" {
+		t.Errorf("内存剩余节点=%v, want [uri2]", got)
+	}
+	var count int
+	if err := db.GlobalDB.QueryRow("SELECT COUNT(*) FROM nodes").Scan(&count); err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("DB 节点剩余=%d, want 1", count)
+	}
+	var healthCount int
+	if err := db.GlobalDB.QueryRow("SELECT COUNT(*) FROM node_health").Scan(&healthCount); err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if healthCount != 1 {
+		t.Errorf("DB 健康行剩余=%d, want 1（uri2 保留）", healthCount)
+	}
+	if len(gotCb) != 2 {
+		t.Errorf("批量回调收到 %d 个 URI, want 2: %v", len(gotCb), gotCb)
+	}
+	// 空列表幂等
+	BatchDeleteNodes(nil)
+}
+
+func TestDedupNodesDBPersistence(t *testing.T) {
+	setupTestDB(t)
+	resetState()
+	defer resetState()
+	defer func() { NodeIdentityFunc = nil }()
+
+	NodeIdentityFunc = func(rawURI string) (string, bool) {
+		if idx := strings.Index(rawURI, "#"); idx != -1 {
+			return rawURI[:idx], true
+		}
+		return rawURI, true
+	}
+	MergeNodes([]Node{
+		{RawURI: "vless://u@x.com:443#name1", Name: "node1"},
+		{RawURI: "vless://u@x.com:443#name2", Name: "node2"},
+	})
+	RecordTest("vless://u@x.com:443#name1", true, 10, "")
+
+	var gotCb []string
+	DeleteNodesBatchCallback = func(uris []string) { gotCb = append(gotCb, uris...) }
+	defer func() { DeleteNodesBatchCallback = nil }()
+
+	removed := DedupNodes()
+	if removed != 1 {
+		t.Fatalf("removed=%d, want 1", removed)
+	}
+	got := LoadNodes()
+	if len(got) != 1 || got[0].RawURI != "vless://u@x.com:443#name1" {
+		t.Errorf("内存剩余节点=%v", got)
+	}
+	var count int
+	if err := db.GlobalDB.QueryRow("SELECT COUNT(*) FROM nodes").Scan(&count); err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("DB 节点剩余=%d, want 1", count)
+	}
+	if len(gotCb) != 1 || gotCb[0] != "vless://u@x.com:443#name2" {
+		t.Errorf("批量回调 = %v, want [name2 URI]", gotCb)
+	}
+}
+
+func TestDeleteDisabledNoDBFallback(t *testing.T) {
+	resetState()
+	defer resetState()
+	defer func() { DeleteNodesBatchCallback = nil }()
+
+	// 无库模式：纯内存过滤，不依赖 db.GlobalDB
+	var gotCb []string
+	DeleteNodesBatchCallback = func(uris []string) { gotCb = append(gotCb, uris...) }
+	MergeNodes([]Node{
+		{RawURI: "uri1", Name: "node1"},
+		{RawURI: "uri2", Name: "node2", Disabled: true},
+	})
+	removed := DeleteDisabled()
+	if removed != 1 {
+		t.Fatalf("removed=%d, want 1", removed)
+	}
+	got := LoadNodes()
+	if len(got) != 1 || got[0].RawURI != "uri1" {
+		t.Errorf("无库模式删除后剩余节点=%v, want [uri1]", got)
+	}
+	if len(gotCb) != 1 || gotCb[0] != "uri2" {
+		t.Errorf("无库模式批量回调 = %v, want [uri2]", gotCb)
+	}
+}
+
+func TestDeleteDisabledDBFailure(t *testing.T) {
+	resetState()
+	defer resetState()
+
+	d, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "broken.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	db.GlobalDB = d
+	t.Cleanup(func() { db.GlobalDB = nil })
+
+	mu.Lock()
+	nodeList = []Node{{RawURI: "uri1", Name: "node1", Disabled: true}} //nolint:exhaustruct
+	loaded = true
+	mu.Unlock()
+
+	if removed := DeleteDisabled(); removed != 0 {
+		t.Errorf("DB 失败时 DeleteDisabled 应返回 0, got %d", removed)
+	}
+	if got := LoadNodes(); len(got) != 1 || !got[0].Disabled {
+		t.Errorf("DB 失败时内存不得被修改: %+v", got)
+	}
+}
+
+func TestDedupNodesDBFailureKeepsHealth(t *testing.T) {
+	resetState()
+	defer resetState()
+	defer func() { NodeIdentityFunc = nil }()
+
+	d, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "broken.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	db.GlobalDB = d
+	t.Cleanup(func() { db.GlobalDB = nil })
+
+	NodeIdentityFunc = func(rawURI string) (string, bool) {
+		if idx := strings.Index(rawURI, "#"); idx != -1 {
+			return rawURI[:idx], true
+		}
+		return rawURI, true
+	}
+	mu.Lock()
+	nodeList = []Node{ //nolint:exhaustruct
+		{RawURI: "vless://u@x.com:443#name1", Name: "node1"},
+		{RawURI: "vless://u@x.com:443#name2", Name: "node2"},
+	}
+	healthMap = map[string]*NodeHealth{
+		"vless://u@x.com:443#name2": {SuccessCount: 7}, //nolint:exhaustruct
+	}
+	loaded = true
+	mu.Unlock()
+
+	if removed := DedupNodes(); removed != 0 {
+		t.Errorf("DB 失败时 DedupNodes 应返回 0, got %d", removed)
+	}
+	// 节点与健康度必须零变更（去重未发生）
+	got := LoadNodes()
+	if len(got) != 2 {
+		t.Errorf("DB 失败时节点列表不得被修改, got %d 个", len(got))
+	}
+	health := LoadHealth()
+	if h := health["vless://u@x.com:443#name2"]; h == nil || h.SuccessCount != 7 {
+		t.Errorf("DB 失败时健康度不得被清理: %v", health)
 	}
 }

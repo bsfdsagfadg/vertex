@@ -169,6 +169,14 @@ func main() {
 	defer db.CloseDB()
 	nodes.StartHealthAsyncWorker()
 
+	// 出口节点池与 IR 解析缓存异步预热：首屏 /api/admin/nodes 免冷加载。
+	// 不依赖 api.InitRegistry（直接调用 transport 包函数），ensureLoaded 先置位语义防重复装载。
+	go func() {
+		nodes.EnsureLoaded()
+		uris := nodes.GetAllRawURIs()
+		transport.PrewarmURIs(uris)
+	}()
+
 	api.InitRegistry() // 显式注册节点回调（替代隐式 init），必须早于 SyncEntryPool 之前
 
 	spool.SetMaxSpillProvider(func() int64 { return int64(config.Load().MaxSpillMB) << 20 })

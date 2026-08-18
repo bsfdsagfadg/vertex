@@ -9,13 +9,14 @@ import (
 )
 
 // InitRegistry 注册节点与前置代理节点的删除缓存失效、能力校验与去重身份注入：
-// - DeleteNodeCallback / EntryDeleteCallback 覆盖节点删除路径，联动失效 transport 解析缓存；
+// - DeleteNodeCallback / DeleteNodesBatchCallback 覆盖节点删除路径，联动失效 transport 解析缓存；
 // - ResetStateCallback / ResetEntryState 联动清空 transport 解析缓存，规避循环依赖；
 // - NodeIdentityFunc / EntryIdentityFunc 让节点经 IR 计算去重键（type://cred@server:port）；
 // - IsSupportedFunc / EntryIsSupportedFunc 查询能力标注，过滤不支持的节点。
 // 须在任何节点/前置节点池操作之前调用（幂等，可重复调用）。
 func InitRegistry() {
 	nodes.DeleteNodeCallback = transport.InvalidateParsedNode
+	nodes.DeleteNodesBatchCallback = transport.InvalidateParsedNodesBatch
 	nodes.ResetStateCallback = transport.ClearParsedNodeCache
 	nodes.NodeIdentityFunc = nodeIdentityFromIR
 	nodes.IsSupportedFunc = func(rawURI string) bool {

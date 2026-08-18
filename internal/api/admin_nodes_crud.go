@@ -17,18 +17,19 @@ type nodeView struct {
 func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, _ *http.Request) {
 	list := nodes.LoadNodes()
 	var enabledCount, disabledCount int
-	views := make([]nodeView, 0, len(list))
+	uris := make([]string, 0, len(list))
 	for _, n := range list {
 		if n.Disabled {
 			disabledCount++
 		} else {
 			enabledCount++
 		}
-		supported := false
-		if pn, err := transport.GetOrParse(n.RawURI); err == nil && pn != nil && pn.Supported {
-			supported = true
-		}
-		views = append(views, nodeView{Node: n, Supported: supported})
+		uris = append(uris, n.RawURI)
+	}
+	supportedMap := transport.CheckSupportedBatch(uris)
+	views := make([]nodeView, 0, len(list))
+	for _, n := range list {
+		views = append(views, nodeView{Node: n, Supported: supportedMap[n.RawURI]})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"nodes":          views,

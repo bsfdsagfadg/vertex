@@ -48,12 +48,30 @@ func ensureLoaded() {
 	pruneHealthUnsafe()
 }
 
+// EnsureLoaded 强制完成节点池装载（幂等），供启动预热与测试使用。
+func EnsureLoaded() {
+	mu.Lock()
+	defer mu.Unlock()
+	ensureLoaded()
+}
+
 func LoadNodes() []Node {
+	mu.RLock()
+	if loaded {
+		cp := make([]Node, len(nodeList))
+		copy(cp, nodeList)
+		mu.RUnlock()
+		return cp
+	}
+	mu.RUnlock()
+
 	mu.Lock()
 	defer mu.Unlock()
 	ensureLoaded()
 	log.Printf("[Nodes] 获取所有节点 (数量: %d)", len(nodeList))
-	return nodeList
+	cp := make([]Node, len(nodeList))
+	copy(cp, nodeList)
+	return cp
 }
 
 func LoadHealth() map[string]*NodeHealth {
@@ -155,6 +173,23 @@ func DeleteNode(uri string) {
 	}
 }
 
+// filterNodesUnsafe 按 keep 谓词过滤节点池并清理被移除节点的健康度，返回被移除 URI 列表。
+func filterNodesUnsafe(keep func(Node) bool) []string {
+	var kept []Node
+	var removed []string
+	for _, n := range nodeList {
+		if keep(n) {
+			kept = append(kept, n)
+		} else {
+			removed = append(removed, n.RawURI)
+			delete(healthMap, n.RawURI)
+		}
+	}
+	nodeList = kept
+	rebuildNodeNameMapUnsafe()
+	return removed
+}
+
 func DedupNodes() int {
 	mu.Lock()
 	ensureLoaded()
@@ -175,20 +210,31 @@ func DedupNodes() int {
 		} else {
 			removed++
 			removedURIs = append(removedURIs, n.RawURI)
-			delete(healthMap, n.RawURI)
 		}
+	}
+	if removed == 0 {
+		mu.Unlock()
+		return 0
+	}
+	// 有数据库：定向删除先行，事务成功后才应用内存结果（失败则内存保持原状）。
+	if db.GlobalDB != nil {
+		if err := nodestore.DeleteNodesBatch(db.GlobalDB, "nodes", "node_health", removedURIs); err != nil {
+			log.Printf("[Nodes] DedupNodes 删除失败: %v", err)
+			mu.Unlock()
+			return 0
+		}
+	}
+	// 事务成功后统一清理健康度与节点列表，保证失败路径内存零变更。
+	for _, u := range removedURIs {
+		delete(healthMap, u)
 	}
 	nodeList = kept
 	rebuildNodeNameMapUnsafe()
-	saveNodesUnsafe()
-	saveHealthUnsafe()
-	cb := DeleteNodeCallback
+	cb := DeleteNodesBatchCallback
 	mu.Unlock() // 先解锁再通知销毁连接池
 
 	if cb != nil {
-		for _, u := range removedURIs {
-			cb(u)
-		}
+		cb(removedURIs)
 	}
 	return removed
 }
@@ -196,31 +242,34 @@ func DedupNodes() int {
 func DeleteDisabled() int {
 	mu.Lock()
 	ensureLoaded()
-	var kept []Node
-	removed := 0
 	var removedURIs []string
-	for _, n := range nodeList {
-		if !n.Disabled {
-			kept = append(kept, n)
-		} else {
-			removed++
-			removedURIs = append(removedURIs, n.RawURI)
-			delete(healthMap, n.RawURI)
+	if db.GlobalDB == nil {
+		// 无库模式：纯内存过滤（保持现状语义）
+		removedURIs = filterNodesUnsafe(func(n Node) bool { return !n.Disabled })
+	} else {
+		// 有数据库：定向删除先行，事务成功后才同步内存（失败则内存保持原状）。
+		removed, uris, err := nodestore.DeleteDisabledNodes(db.GlobalDB, "nodes", "node_health")
+		if err != nil {
+			log.Printf("[Nodes] DeleteDisabled 删除失败: %v", err)
+			mu.Unlock()
+			return 0
 		}
+		if removed > 0 {
+			targets := make(map[string]bool, len(uris))
+			for _, u := range uris {
+				targets[u] = true
+			}
+			filterNodesUnsafe(func(n Node) bool { return !targets[n.RawURI] })
+		}
+		removedURIs = uris
 	}
-	nodeList = kept
-	rebuildNodeNameMapUnsafe()
-	saveNodesUnsafe()
-	saveHealthUnsafe()
-	cb := DeleteNodeCallback
+	cb := DeleteNodesBatchCallback
 	mu.Unlock()
 
 	if cb != nil {
-		for _, u := range removedURIs {
-			cb(u)
-		}
+		cb(removedURIs)
 	}
-	return removed
+	return len(removedURIs)
 }
 
 func BatchUpdateNodesDisabled(uris []string, disabled bool) {
@@ -254,29 +303,32 @@ func BatchUpdateNodesDisabled(uris []string, disabled bool) {
 }
 
 func BatchDeleteNodes(uris []string) {
+	if len(uris) == 0 {
+		return
+	}
 	mu.Lock()
 	ensureLoaded()
-	targets := make(map[string]bool)
+	var removedURIs []string
+	targets := make(map[string]bool, len(uris))
 	for _, u := range uris {
 		targets[u] = true
-		delete(healthMap, u)
 	}
-	var kept []Node
-	for _, n := range nodeList {
-		if !targets[n.RawURI] {
-			kept = append(kept, n)
+	if db.GlobalDB == nil {
+		// 无库模式：纯内存过滤（保持现状语义）
+		removedURIs = filterNodesUnsafe(func(n Node) bool { return !targets[n.RawURI] })
+	} else {
+		// 有数据库：定向删除先行，事务成功后才同步内存（失败则内存保持原状）。
+		if err := nodestore.DeleteNodesBatch(db.GlobalDB, "nodes", "node_health", uris); err != nil {
+			log.Printf("[Nodes] BatchDeleteNodes 删除失败: %v", err)
+			mu.Unlock()
+			return
 		}
+		removedURIs = filterNodesUnsafe(func(n Node) bool { return !targets[n.RawURI] })
 	}
-	nodeList = kept
-	rebuildNodeNameMapUnsafe()
-	saveNodesUnsafe()
-	saveHealthUnsafe()
-	cb := DeleteNodeCallback
+	cb := DeleteNodesBatchCallback
 	mu.Unlock() // 防止在批量删除时引发卡死死锁
 
 	if cb != nil {
-		for _, u := range uris {
-			cb(u)
-		}
+		cb(removedURIs)
 	}
 }

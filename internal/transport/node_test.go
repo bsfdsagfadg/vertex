@@ -97,3 +97,76 @@ func TestIRCacheMaxRebuild(t *testing.T) {
 		t.Fatalf("ClearParsedNodeCache left %d entries", size)
 	}
 }
+
+func TestInvalidateParsedNodesBatch(t *testing.T) {
+	ClearParsedNodeCache()
+	uris := []string{"socks5://a:1080", "socks5://b:1080", "socks5://c:1080"}
+	for _, u := range uris {
+		CacheParsedNode(&ParsedNode{RawURI: u, Type: "socks5", Supported: true})
+	}
+	InvalidateParsedNodesBatch([]string{uris[0], uris[1]})
+	if got := peekCache(uris[0]); got != nil {
+		t.Fatalf("batch invalidate left %s in cache", uris[0])
+	}
+	if got := peekCache(uris[1]); got != nil {
+		t.Fatalf("batch invalidate left %s in cache", uris[1])
+	}
+	if got := peekCache(uris[2]); got == nil {
+		t.Fatalf("batch invalidate must not touch %s", uris[2])
+	}
+	// 空列表与不存在 URI 均幂等
+	InvalidateParsedNodesBatch(nil)
+	InvalidateParsedNodesBatch([]string{"socks5://ghost:1080"})
+	ClearParsedNodeCache()
+}
+
+func TestCheckSupportedBatch(t *testing.T) {
+	ClearParsedNodeCache()
+	supportedURI := "vless://uuid@example.com:443"
+	unsupportedURI := "vless://uuid@example.com:443?type=xhttp"
+	CacheParsedNode(&ParsedNode{RawURI: supportedURI, Type: "vless", Supported: true})
+
+	got := CheckSupportedBatch([]string{supportedURI, unsupportedURI, "unknown://bad"})
+	if !got[supportedURI] {
+		t.Errorf("supportedURI 应判定支持, got %v", got)
+	}
+	if got[unsupportedURI] {
+		t.Errorf("unsupportedURI 应判定不支持, got %v", got)
+	}
+	if got["unknown://bad"] {
+		t.Errorf("解析失败 URI 应判定不支持, got %v", got)
+	}
+	// 空列表不 panic
+	if got := CheckSupportedBatch(nil); len(got) != 0 {
+		t.Errorf("空列表应返回空 map, got %v", got)
+	}
+	// 补算结果应已写入缓存
+	if got := peekCache(unsupportedURI); got == nil {
+		t.Error("补算的 unsupportedURI 应已缓存")
+	}
+	ClearParsedNodeCache()
+}
+
+func TestPrewarmURIs(t *testing.T) {
+	ClearParsedNodeCache()
+	uris := []string{
+		"vless://uuid@example.com:443",
+		"socks5://user:pass@example.com:1080",
+		"vless://uuid2@example.com:443",
+		"unknown://bad-scheme",
+	}
+	PrewarmURIs(uris)
+	for _, u := range uris[:3] {
+		if got := peekCache(u); got == nil {
+			t.Errorf("PrewarmURIs 后 %s 应已缓存", u)
+		}
+	}
+	if got := peekCache(uris[3]); got != nil {
+		t.Errorf("解析失败的 URI 不应缓存: %s", uris[3])
+	}
+	// 二次预热：全部命中应无新增解析（幂等）
+	PrewarmURIs(uris)
+	ClearParsedNodeCache()
+	// 空列表幂等
+	PrewarmURIs(nil)
+}

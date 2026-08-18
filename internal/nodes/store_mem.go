@@ -32,16 +32,17 @@ type NodeHealth struct { //nolint:govet
 // ---- 内存节点池状态（与持久化/健康度解耦，见 store_db.go / store_health.go）----
 
 var (
-	mu                    sync.RWMutex                              //nolint:gochecknoglobals
-	nodeList              []Node                                    //nolint:gochecknoglobals
-	healthMap             = make(map[string]*NodeHealth)            //nolint:gochecknoglobals
-	loaded                bool                                      //nolint:gochecknoglobals
-	DeleteNodeCallback    func(uri string)                          //nolint:gochecknoglobals
-	NodeIdentityFunc      func(rawURI string) (key string, ok bool) //nolint:gochecknoglobals
-	ResetStateCallback    func()                                    //nolint:gochecknoglobals
-	IsSupportedFunc       func(rawURI string) bool                  //nolint:gochecknoglobals
-	atomicRoundRobinIndex uint64                                    //nolint:gochecknoglobals
-	nodeNameMap           = make(map[string]string)                 //nolint:gochecknoglobals
+	mu                       sync.RWMutex                              //nolint:gochecknoglobals
+	nodeList                 []Node                                    //nolint:gochecknoglobals
+	healthMap                = make(map[string]*NodeHealth)            //nolint:gochecknoglobals
+	loaded                   bool                                      //nolint:gochecknoglobals
+	DeleteNodeCallback       func(uri string)                          //nolint:gochecknoglobals
+	DeleteNodesBatchCallback func(uris []string)                       //nolint:gochecknoglobals
+	NodeIdentityFunc         func(rawURI string) (key string, ok bool) //nolint:gochecknoglobals
+	ResetStateCallback       func()                                    //nolint:gochecknoglobals
+	IsSupportedFunc          func(rawURI string) bool                  //nolint:gochecknoglobals
+	atomicRoundRobinIndex    uint64                                    //nolint:gochecknoglobals
+	nodeNameMap              = make(map[string]string)                 //nolint:gochecknoglobals
 )
 
 func IncInFlight(uri string) {
@@ -77,6 +78,29 @@ func ResetState() {
 	if cb != nil {
 		cb()
 	}
+}
+
+// GetAllRawURIs 返回全部节点 URI（含禁用），供启动预热 IR 解析缓存使用。
+func GetAllRawURIs() []string {
+	mu.RLock()
+	if loaded {
+		uris := make([]string, 0, len(nodeList))
+		for _, n := range nodeList {
+			uris = append(uris, n.RawURI)
+		}
+		mu.RUnlock()
+		return uris
+	}
+	mu.RUnlock()
+
+	mu.Lock()
+	ensureLoaded()
+	uris := make([]string, 0, len(nodeList))
+	for _, n := range nodeList {
+		uris = append(uris, n.RawURI)
+	}
+	mu.Unlock()
+	return uris
 }
 
 // ---- 批量测速进度与流程控制 ----

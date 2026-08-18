@@ -44,6 +44,21 @@ func TestEntryNodesPersistenceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLoadEntryNodesReturnsIsolatedCopy(t *testing.T) {
+	ResetEntryState()
+	defer ResetEntryState()
+
+	MergeEntryNodes([]Node{{RawURI: "uri1", Name: "node1"}, {RawURI: "uri2", Name: "node2"}})
+	got := LoadEntryNodes()
+	got[0].Disabled = true
+	got[0].RawURI = "mutated"
+	// 外部修改拷贝不得影响内部状态
+	internal := LoadEntryNodes()
+	if len(internal) != 2 || internal[0].Disabled || internal[0].RawURI != "uri1" {
+		t.Errorf("LoadEntryNodes 返回拷贝被外部修改污染内部状态: %+v", internal)
+	}
+}
+
 func TestBatchUpdateEntryNodesDisabledPersistence(t *testing.T) {
 	setupEntryTestDB(t)
 	ResetEntryState()

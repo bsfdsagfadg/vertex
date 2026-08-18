@@ -24,9 +24,12 @@ func (adm *AdminHandler) adminImportNodes(w http.ResponseWriter, r *http.Request
 	newNodes := importer.ParseImportedNodes(strings.TrimSpace(body.Text))
 	if body.Replace {
 		log.Printf("[Admin] [ImportNodes] 替换模式，正在清除全部已有候选节点")
-		for _, cn := range nodes.LoadNodes() {
-			nodes.DeleteNode(cn.RawURI)
+		existing := nodes.LoadNodes()
+		uris := make([]string, 0, len(existing))
+		for _, cn := range existing {
+			uris = append(uris, cn.RawURI)
 		}
+		nodes.BatchDeleteNodes(uris)
 	}
 
 	log.Printf("[Admin] [ImportNodes] 正在合并导入的新节点数量: %d", len(newNodes))

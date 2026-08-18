@@ -68,35 +68,41 @@ function selectAllNodesAcrossPages() {
 }
 
 async function loadNodes() {
-  try {
-    const sd = await API.settings.get();
-    if (typeof curSettings !== 'undefined') {
-      curSettings = sd.settings || sd;
-    }
-  } catch (e) { }
+  const results = await Promise.allSettled([
+    API.settings.get(),
+    API.proxyNodes.list(),
+    API.nodes.list(),
+    API.nodes.testProgress()
+  ]);
 
-  try {
-    const pd = await API.proxyNodes.list();
-    renderProxyNodes(pd.nodes || [], pd.health || {});
-  } catch (e) { }
+  const sd = results[0].status === 'fulfilled' ? results[0].value : null;
+  if (sd && typeof curSettings !== 'undefined') {
+    curSettings = sd.settings || sd;
+  }
+
+  const pd = results[1].status === 'fulfilled' ? results[1].value : null;
+  if (pd) renderProxyNodes(pd.nodes || [], pd.health || {});
 
   updateSortBtnLabel();
 
-  const d = await API.nodes.list();
-  const nodes = d.nodes || [];
+  const d = results[2].status === 'fulfilled' ? results[2].value : null;
+  const nodes = d && d.nodes ? d.nodes : [];
+  const health = d && d.health ? d.health : {};
   cachedNodesList = nodes;
 
-  try {
-    const prog = await API.nodes.testProgress();
-    if (prog && prog.running) {
-      showTestProgressUI(prog);
-      startTestProgressPolling();
-    } else if (!testProgressTimer) {
-      const progressEl = document.getElementById('testProgress');
-      if (progressEl) progressEl.style.display = 'none';
-    }
-  } catch (e) { }
+  const prog = results[3].status === 'fulfilled' ? results[3].value : null;
+  if (prog && prog.running) {
+    showTestProgressUI(prog);
+    startTestProgressPolling();
+  } else if (!testProgressTimer) {
+    const progressEl = document.getElementById('testProgress');
+    if (progressEl) progressEl.style.display = 'none';
+  }
 
+  renderNodesTable(nodes, health);
+}
+
+function renderNodesTable(nodes, health) {
   const enabledCount = nodes.filter(n => !n.disabled).length;
   const disabledCount = nodes.filter(n => n.disabled).length;
   document.getElementById('nodesSummary').textContent = '\u5F53\u524D\u5171 ' + nodes.length + ' \u4E2A\u8282\u70B9\uFF08\u542F\u7528 ' + enabledCount + ' / \u7981\u7528 ' + disabledCount + '\uFF09';
@@ -198,15 +204,15 @@ async function loadNodes() {
       tr.appendChild(typeTd);
 
       var statusTd = document.createElement('td');
-      var health = d.health[n.raw_uri];
-      if (!health || (!health.last_success_at && !health.last_fail_at)) {
+      var healthEntry = health[n.raw_uri];
+      if (!healthEntry || (!healthEntry.last_success_at && !healthEntry.last_fail_at)) {
         var pill = document.createElement('span');
         pill.className = 'pill off';
         pill.style.cssText = 'background:rgba(195,182,164,0.15);color:var(--text-dim);';
         pill.textContent = '\u672A\u6D4B\u8BD5';
         statusTd.appendChild(pill);
-      } else if (health.consecutive_failures === 0) {
-        var ms = health.last_test_ms ? Math.round(health.last_test_ms) + 'ms' : '';
+      } else if (healthEntry.consecutive_failures === 0) {
+        var ms = healthEntry.last_test_ms ? Math.round(healthEntry.last_test_ms) + 'ms' : '';
         var pill = document.createElement('span');
         pill.className = 'pill on';
         pill.style.cssText = 'background:rgba(132,214,160,0.16);color:var(--green);margin-right:5px;';
@@ -223,10 +229,10 @@ async function loadNodes() {
         pill.textContent = '\u6D4B\u8BD5\u5931\u8D25';
         statusTd.appendChild(pill);
 
-        if (health.last_test_error) {
+        if (healthEntry.last_test_error) {
           var errSpan = document.createElement('div');
           errSpan.className = 'node-err-msg';
-          errSpan.textContent = health.last_test_error;
+          errSpan.textContent = healthEntry.last_test_error;
           statusTd.appendChild(errSpan);
         }
       }

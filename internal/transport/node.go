@@ -1,6 +1,9 @@
 package transport
 
-import "sync"
+import (
+	"runtime"
+	"sync"
+)
 
 // ParsedNode 是代理节点的中间表示（IR）：URI 解析的唯一产物。
 // 导入期解析一次并缓存，展示/去重/拨号全部读 IR。
@@ -133,6 +136,111 @@ func InvalidateParsedNode(uri string) {
 	irCacheMu.Lock()
 	delete(irCache, uri)
 	irCacheMu.Unlock()
+}
+
+// InvalidateParsedNodesBatch 批量失效解析缓存（单次写锁内完成全部删除）。
+func InvalidateParsedNodesBatch(uris []string) {
+	if len(uris) == 0 {
+		return
+	}
+	irCacheMu.Lock()
+	for _, u := range uris {
+		delete(irCache, u)
+	}
+	irCacheMu.Unlock()
+}
+
+// PrewarmURIs 并发预热解析缓存：两阶段查漏（单次读锁）→ Worker Pool 无锁并发
+// ParseURI → 单次写锁批量提交，避免持有锁时执行 CPU 密集解析。
+func PrewarmURIs(uris []string) {
+	if len(uris) == 0 {
+		return
+	}
+	irCacheMu.RLock()
+	missing := make([]string, 0, len(uris))
+	for _, u := range uris {
+		if irCache[u] == nil {
+			missing = append(missing, u)
+		}
+	}
+	irCacheMu.RUnlock()
+	if len(missing) == 0 {
+		return
+	}
+
+	workers := runtime.GOMAXPROCS(0)
+	if workers > len(missing) {
+		workers = len(missing)
+	}
+	results := make(chan *ParsedNode)
+	var collected []*ParsedNode
+	collectDone := make(chan struct{})
+	go func() {
+		for n := range results {
+			collected = append(collected, n)
+		}
+		close(collectDone)
+	}()
+
+	var wg sync.WaitGroup
+	jobs := make(chan string)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for u := range jobs {
+				parsed, err := ParseURI(u)
+				if err == nil && parsed != nil {
+					results <- parsed
+				}
+			}
+		}()
+	}
+	for _, u := range missing {
+		jobs <- u
+	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+	<-collectDone
+
+	// 单次写锁批量提交，保持 irCacheMax 上限防御语义（与 CacheParsedNode 一致）。
+	irCacheMu.Lock()
+	if len(irCache) >= irCacheMax || len(collected) >= irCacheMax {
+		irCache = make(map[string]*ParsedNode)
+	}
+	for i, n := range collected {
+		if i >= irCacheMax {
+			break
+		}
+		irCache[n.RawURI] = n
+	}
+	irCacheMu.Unlock()
+}
+
+// CheckSupportedBatch 单次读锁批量查询 URI 的 Supported 状态（未命中者经
+// GetOrParse 逐条补算并缓存，解析失败视为不支持）。语义对齐 adminGetNodes
+// 原逐条 GetOrParse 判断，但将 N 次锁抢占收敛为单次读锁。
+func CheckSupportedBatch(uris []string) map[string]bool {
+	out := make(map[string]bool, len(uris))
+	if len(uris) == 0 {
+		return out
+	}
+	irCacheMu.RLock()
+	var missing []string
+	for _, u := range uris {
+		if n := irCache[u]; n != nil {
+			out[u] = n.Supported
+		} else {
+			missing = append(missing, u)
+		}
+	}
+	irCacheMu.RUnlock()
+	for _, u := range missing {
+		n, err := GetOrParse(u)
+		out[u] = err == nil && n != nil && n.Supported
+	}
+	return out
 }
 
 // GetOrParse 优先读缓存，未命中则解析并缓存。只缓存成功结果（C16），失败每次重试。

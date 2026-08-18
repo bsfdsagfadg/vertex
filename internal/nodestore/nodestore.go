@@ -7,6 +7,7 @@ package nodestore
 
 import (
 	"database/sql"
+	"strings"
 )
 
 // NodeRow 是节点表行的最小持久化视图。
@@ -216,4 +217,112 @@ func PruneHealthKeys(healthKeys map[string]bool, nodeKeys map[string]bool) {
 			delete(healthKeys, k)
 		}
 	}
+}
+
+// deleteNodesBatchTx 在同一事务内分批执行节点与健康表定向删除，
+// 避免全表清空重写（SaveNodes 语义）在删除少量节点时的写放大。
+func deleteNodesBatchTx(tx *sql.Tx, nodeTable, healthTable string, uris []string) error {
+	stmtNode, err := tx.Prepare("DELETE FROM " + nodeTable + " WHERE raw_uri IN (" + placeholders(len(uris)) + ")")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmtNode.Close() }()
+	stmtHealth, err := tx.Prepare("DELETE FROM " + healthTable + " WHERE raw_uri IN (" + placeholders(len(uris)) + ")")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmtHealth.Close() }()
+	args := make([]any, len(uris))
+	for i, u := range uris {
+		args[i] = u
+	}
+	if _, err := stmtNode.Exec(args...); err != nil {
+		return err
+	}
+	if _, err := stmtHealth.Exec(args...); err != nil {
+		return err
+	}
+	return nil
+}
+
+// deleteBatchSize 单条 IN 子句占位符上限（SQLite 变量数限制安全值）。
+const deleteBatchSize = 500
+
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.Repeat("?, ", n-1) + "?"
+}
+
+// DeleteDisabledNodes 定向删除全部 disabled=1 的节点行及其陈旧健康行（同一事务），
+// 返回被删节点 URI 列表；db 为 nil 时返回 (0, nil, nil)，由调用方走纯内存分支。
+// 健康表清理采用 NOT IN 语义对齐内存 pruneHealthUnsafe（foreign_keys 未启用，须显式清理）。
+func DeleteDisabledNodes(db *sql.DB, nodeTable, healthTable string) (int, []string, error) {
+	if db == nil {
+		return 0, nil, nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, nil, err
+	}
+	rows, err := tx.Query("SELECT raw_uri FROM " + nodeTable + " WHERE disabled = 1")
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, nil, err
+	}
+	var uris []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			_ = rows.Close()
+			_ = tx.Rollback()
+			return 0, nil, err
+		}
+		uris = append(uris, u)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		_ = tx.Rollback()
+		return 0, nil, err
+	}
+	_ = rows.Close()
+	if _, err := tx.Exec("DELETE FROM " + nodeTable + " WHERE disabled = 1"); err != nil {
+		_ = tx.Rollback()
+		return 0, nil, err
+	}
+	if _, err := tx.Exec("DELETE FROM " + healthTable + " WHERE raw_uri NOT IN (SELECT raw_uri FROM " + nodeTable + ")"); err != nil {
+		_ = tx.Rollback()
+		return 0, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, nil, err
+	}
+	return len(uris), uris, nil
+}
+
+// DeleteNodesBatch 定向删除指定 URI 的节点行及其健康行（同一事务内分批执行）；
+// 空 URI 列表与 db 为 nil 时静默跳过。仅删除不重写，替换全表清空语义仅适用于删除场景。
+func DeleteNodesBatch(db *sql.DB, nodeTable, healthTable string, uris []string) error {
+	if db == nil || len(uris) == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	for start := 0; start < len(uris); start += deleteBatchSize {
+		end := start + deleteBatchSize
+		if end > len(uris) {
+			end = len(uris)
+		}
+		if err := deleteNodesBatchTx(tx, nodeTable, healthTable, uris[start:end]); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
