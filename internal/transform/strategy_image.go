@@ -268,7 +268,7 @@ func (s *ImageStrategy) IsValidChunk(chunk *GeminiChunk) bool {
 		return false
 	}
 	// 优先判定 Safety 拦截（真实拦截需放行，防发陷入无限对冲）
-	if chunk.PromptFeedback != nil && chunk.PromptFeedback.BlockReason != "" && chunk.PromptFeedback.BlockReason != blockReasonUnspecified {
+	if chunk.PromptFeedback != nil && IsBlockReason(chunk.PromptFeedback.BlockReason) {
 		return true
 	}
 	if len(chunk.Candidates) > 0 {
@@ -276,7 +276,7 @@ func (s *ImageStrategy) IsValidChunk(chunk *GeminiChunk) bool {
 			if cand == nil {
 				continue
 			}
-			if cand.FinishReason == "SAFETY" {
+			if IsSafetyFinishReason(cand.FinishReason) {
 				return true
 			}
 			if cand.Content != nil {
@@ -312,12 +312,12 @@ func (s *ImageStrategy) IsValidResponse(resp *GeminiResponse) bool {
 	if resp == nil {
 		return false
 	}
-	if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" && resp.PromptFeedback.BlockReason != blockReasonUnspecified {
+	if resp.PromptFeedback != nil && IsBlockReason(resp.PromptFeedback.BlockReason) {
 		return true
 	}
 	if len(resp.Candidates) > 0 {
 		for _, cand := range resp.Candidates {
-			if cand != nil && cand.FinishReason == "SAFETY" {
+			if cand != nil && IsSafetyFinishReason(cand.FinishReason) {
 				return true
 			}
 		}

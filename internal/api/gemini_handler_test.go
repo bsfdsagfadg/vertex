@@ -218,3 +218,248 @@ func TestStreamGenerate_TruncatedAfterContent_RealErrorFrame(t *testing.T) {
 		t.Errorf("错误消息应体现截断语义，实际 %q", msg)
 	}
 }
+
+// sseEvent 解析单个 SSE data 事件的轻量结构（覆盖本文件断言所需字段）。
+type sseEvent struct {
+	Candidates []struct {
+		Content struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"content"`
+		FinishReason string `json:"finishReason"`
+	} `json:"candidates"`
+	PromptFeedback struct {
+		BlockReason string `json:"blockReason"`
+	} `json:"promptFeedback"`
+	Error map[string]any `json:"error"`
+}
+
+func parseSSEEvents(t *testing.T, raw string) []sseEvent {
+	t.Helper()
+	var events []sseEvent
+	for _, ev := range strings.Split(string(raw), "data: ") {
+		ev = strings.TrimSpace(ev)
+		if ev == "" {
+			continue
+		}
+		var obj sseEvent
+		if err := json.Unmarshal([]byte(ev), &obj); err != nil {
+			t.Fatalf("unmarshal SSE event: %v", err)
+		}
+		events = append(events, obj)
+	}
+	return events
+}
+
+func hasStopFinishEvent(events []sseEvent) bool {
+	for _, e := range events {
+		for _, c := range e.Candidates {
+			if c.FinishReason == "STOP" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestStreamGenerate_FirstFrameSafety_TrueStream 验证问题 6 修复：真流式首帧安全拦截
+// 以 HTTP 200 + SSE 安全帧放行（携带真实拦截原因），而非 4xx JSON。
+func TestStreamGenerate_FirstFrameSafety_TrueStream(t *testing.T) {
+	mock := func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"RECITATION"}}`))
+	}
+	fx := newTestServerCustomMock(t, mock, nil)
+
+	body := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
+	req, _ := http.NewRequest(http.MethodPost, fx.server.URL+"/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=sk-test-key", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusBadRequest {
+		t.Fatalf("安全拦截不得回退为 400（问题 6 回归），实际 400")
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", resp.StatusCode, resp.Body)
+	}
+
+	raw, _ := io.ReadAll(resp.Body)
+	events := parseSSEEvents(t, string(raw))
+	if len(events) == 0 {
+		t.Fatalf("无 SSE 事件: %s", raw)
+	}
+	first := events[0]
+	if first.PromptFeedback.BlockReason != "RECITATION" {
+		t.Errorf("blockReason=%q, want RECITATION", first.PromptFeedback.BlockReason)
+	}
+	if len(first.Candidates) == 0 {
+		t.Fatal("安全帧应含 candidates 骨架")
+	}
+	if first.Candidates[0].FinishReason != "RECITATION" {
+		t.Errorf("finishReason=%q, want RECITATION", first.Candidates[0].FinishReason)
+	}
+	if len(first.Candidates[0].Content.Parts) != 0 {
+		t.Errorf("安全帧 candidates 应无内容 parts")
+	}
+}
+
+// TestStreamGenerate_FirstFrameSafety_Aggregate 验证聚合流首帧安全拦截同样 200 放行（4.4(a)）。
+func TestStreamGenerate_FirstFrameSafety_Aggregate(t *testing.T) {
+	mock := func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"PROHIBITED_CONTENT"}}`))
+	}
+	fx := newTestServerCustomMock(t, mock, func(cfg *config.AppConfig) {
+		cfg.AggregateStream = true
+	})
+
+	body := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
+	req, _ := http.NewRequest(http.MethodPost, fx.server.URL+"/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=sk-test-key", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", resp.StatusCode, resp.Body)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	events := parseSSEEvents(t, string(raw))
+	if len(events) == 0 {
+		t.Fatalf("无 SSE 事件: %s", raw)
+	}
+	if events[0].PromptFeedback.BlockReason != "PROHIBITED_CONTENT" {
+		t.Errorf("blockReason=%q, want PROHIBITED_CONTENT", events[0].PromptFeedback.BlockReason)
+	}
+}
+
+// TestStreamGenerate_FirstFrameNonSafetyError 回归：首帧非安全错误仍走 4xx JSON，不得被改写成 200。
+func TestStreamGenerate_FirstFrameNonSafetyError(t *testing.T) {
+	mock := func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":400,"message":"bad request"}}`))
+	}
+	fx := newTestServerCustomMock(t, mock, nil)
+
+	body := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
+	req, _ := http.NewRequest(http.MethodPost, fx.server.URL+"/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=sk-test-key", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非安全错误应保持 400 JSON，实际 %d: %s", resp.StatusCode, resp.Body)
+	}
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if out["error"] == nil {
+		t.Errorf("响应缺少 error 对象: %v", out)
+	}
+}
+
+// TestStreamGenerate_CleanEOF_NoFakeStop 验证假 STOP 修复（5.3）：流以干净 EOF 结束
+// 但从未出现真实 finishReason → 客户端收到截断错误帧，绝无 FinishReason=STOP 帧。
+func TestStreamGenerate_CleanEOF_NoFakeStop(t *testing.T) {
+	contentFrame := `{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}}}]}`
+
+	mock := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(contentFrame))
+	}
+
+	fx := newTestServerCustomMock(t, mock, nil)
+
+	body := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
+	req, _ := http.NewRequest(http.MethodPost, fx.server.URL+"/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=sk-test-key", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", resp.StatusCode, resp.Body)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	events := parseSSEEvents(t, string(raw))
+	if hasStopFinishEvent(events) {
+		t.Fatalf("禁止补发 FinishReason=STOP 假结束帧（假 STOP 修复回归），实际事件: %s", raw)
+	}
+	var gotError map[string]any
+	for _, e := range events {
+		if e.Error != nil {
+			gotError = e.Error
+		}
+	}
+	if gotError == nil {
+		t.Fatalf("应收到截断错误帧，实际事件: %s", raw)
+	}
+	if msg, _ := gotError["message"].(string); !strings.Contains(msg, "已截断") && !strings.Contains(msg, "truncat") && !strings.Contains(msg, "中断") {
+		t.Errorf("错误消息应体现截断语义，实际 %q", msg)
+	}
+}
+
+// TestStreamGenerate_AbruptClose_ErrorFrameNoStop 端到端（5.1 + 5.3）：内容帧后连接被
+// 强行切断 → 客户端收到真实网络错误帧且无 STOP 帧。
+func TestStreamGenerate_AbruptClose_ErrorFrameNoStop(t *testing.T) {
+	contentFrame := `{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}}}]}`
+
+	mock := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		_, _ = w.Write([]byte(contentFrame))
+		flusher.Flush()
+		panic("simulated abrupt upstream disconnect")
+	}
+
+	fx := newTestServerCustomMock(t, mock, nil)
+
+	body := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
+	req, _ := http.NewRequest(http.MethodPost, fx.server.URL+"/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=sk-test-key", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", resp.StatusCode, resp.Body)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	events := parseSSEEvents(t, string(raw))
+	if hasStopFinishEvent(events) {
+		t.Fatalf("断流场景禁止补发 STOP 帧，实际事件: %s", raw)
+	}
+	var gotError map[string]any
+	for _, e := range events {
+		if e.Error != nil {
+			gotError = e.Error
+		}
+	}
+	if gotError == nil {
+		t.Fatalf("断流场景应收到网络错误帧，实际事件: %s", raw)
+	}
+}

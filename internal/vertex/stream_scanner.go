@@ -162,10 +162,15 @@ func scanStream(ctx context.Context, body io.Reader, onObject func(raw []byte) (
 			}
 			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
 				return fmt.Errorf("error: %w", readErr)
-
 			}
-			// EOF 或读错误：流结束（正常 EOF 直接返回 nil，上层会按 got_content 判定空响应）。
-			return nil
+			// 仅干净 EOF 视为流正常结束（上层按 got_content 判定空响应）。
+			if errors.Is(readErr, io.EOF) {
+				return nil
+			}
+			// 其余读错误（TCP 断连/RST/ErrUnexpectedEOF/ErrClosedPipe 等）：真实中断，
+			// 不得伪装成干净 EOF，否则上层会把半路断流当作正常收尾并在客户端补发假 STOP。
+			// 归为 network 类（可重试）：与下方畸形完整帧协议错误的既有处理保持一致。
+			return NewNetworkError(fmt.Errorf("stream read: %w", readErr))
 		}
 	}
 }

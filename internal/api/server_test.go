@@ -76,6 +76,41 @@ func TestIsSafetyBlock_StatusBlockedReasonSafety(t *testing.T) {
 	}
 }
 
+func TestIsSafetyBlock_StatusBlockedReasonProhibitedContent(t *testing.T) {
+	e := vertex.NewInvalidArgumentError("Blocked", nil)
+	e.Status = "BLOCKED_REASON_PROHIBITED_CONTENT"
+	if !isSafetyBlock(e) {
+		t.Error("Status==BLOCKED_REASON_PROHIBITED_CONTENT 应被判定为 safety block")
+	}
+}
+
+func TestIsSafetyBlock_StatusImageSafety(t *testing.T) {
+	e := vertex.NewInvalidArgumentError("Blocked", nil)
+	e.Status = "IMAGE_SAFETY"
+	if !isSafetyBlock(e) {
+		t.Error("Status==IMAGE_SAFETY 应被判定为 safety block")
+	}
+}
+
+func TestIsSafetyBlock_StatusOther(t *testing.T) {
+	e := vertex.NewInvalidArgumentError("Blocked", nil)
+	e.Status = "OTHER"
+	if !isSafetyBlock(e) {
+		t.Error("Status==OTHER（blockReason 枚举）应被判定为 safety block")
+	}
+}
+
+func TestIsSafetyBlock_StatusGRPCStatus_NotBlock(t *testing.T) {
+	// 回归：gRPC status（UNAVAILABLE/INVALID_ARGUMENT 等）不得被排除法误判为 blockReason。
+	for _, status := range []string{"UNAVAILABLE", "INVALID_ARGUMENT", "NOT_FOUND", "INTERNAL", ""} {
+		e := vertex.NewNetworkError(vertex.ErrStreamIncomplete)
+		e.Status = status
+		if isSafetyBlock(e) {
+			t.Errorf("Status=%q 是普通 gRPC status，不应被判定为 safety block", status)
+		}
+	}
+}
+
 func TestIsSafetyBlock_Nil(t *testing.T) {
 	if isSafetyBlock(nil) {
 		t.Error("nil 不应被判定为 safety block")

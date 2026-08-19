@@ -155,3 +155,126 @@ func TestIsRetryable_Alias(t *testing.T) {
 		t.Error("invalid 不应可重试")
 	}
 }
+
+// ── parseErrorResponse 安全拦截识别（任务三/问题 7 回归）──
+
+func TestParseErrorResponse_SafetyDetection(t *testing.T) {
+	cases := []struct {
+		name       string
+		payload    string
+		wantSafety bool
+		wantStatus string
+	}{
+		{
+			name:       "gRPC error.message = RECITATION",
+			payload:    `{"error":{"message":"RECITATION","code":400}}`,
+			wantSafety: true,
+			wantStatus: "RECITATION",
+		},
+		{
+			name:       "GraphQL finishReason = PROHIBITED_CONTENT",
+			payload:    `{"errors":[{"extensions":{"status":{"code":400,"status":"INVALID_ARGUMENT","finishReason":"PROHIBITED_CONTENT","message":"blocked"}}}]}`,
+			wantSafety: true,
+			wantStatus: "PROHIBITED_CONTENT",
+		},
+		{
+			name:       "扁平 finishReason = IMAGE_SAFETY",
+			payload:    `{"finishReason":"IMAGE_SAFETY","message":"blocked"}`,
+			wantSafety: true,
+			wantStatus: "IMAGE_SAFETY",
+		},
+		{
+			name:       "扁平 blockReason = BLOCKED_REASON_IMAGE_SAFETY",
+			payload:    `{"blockReason":"BLOCKED_REASON_IMAGE_SAFETY","message":"blocked"}`,
+			wantSafety: true,
+			wantStatus: "BLOCKED_REASON_IMAGE_SAFETY",
+		},
+		{
+			name:       "扁平 blockReason = OTHER",
+			payload:    `{"blockReason":"OTHER","message":"blocked"}`,
+			wantSafety: true,
+			wantStatus: "OTHER",
+		},
+		{
+			name:       "blockReason = BLOCKED_REASON_UNSPECIFIED 非拦截（问题 7 回归）",
+			payload:    `{"blockReason":"BLOCKED_REASON_UNSPECIFIED","message":"whatever","code":400}`,
+			wantSafety: false,
+		},
+		{
+			name:       "promptFeedback.blockReason = SAFETY",
+			payload:    `{"promptFeedback":{"blockReason":"SAFETY","blockReasonMessage":"blocked"}}`,
+			wantSafety: true,
+			wantStatus: "SAFETY",
+		},
+		{
+			name:       "error.message = PROHIBITED_CONTENT（分支 f）",
+			payload:    `{"message":"PROHIBITED_CONTENT"}`,
+			wantSafety: true,
+			wantStatus: "PROHIBITED_CONTENT",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := parseErrorResponse(c.payload)
+			if c.wantSafety {
+				if e == nil {
+					t.Fatalf("payload %s 应解析出错误，实际 nil", c.payload)
+				}
+				if e.Kind != "safety" {
+					t.Errorf("Kind=%q, want safety", e.Kind)
+				}
+				if e.Status != c.wantStatus {
+					t.Errorf("Status=%q, want %q", e.Status, c.wantStatus)
+				}
+			} else if e != nil && e.Kind == "safety" {
+				t.Errorf("payload %s 不应判为 safety，实际 Kind=%q Status=%q", c.payload, e.Kind, e.Status)
+			}
+		})
+	}
+}
+
+// TestParseErrorResponse_DetailsExtraction 验证 Details 结构化透传提取：google.rpc.Status
+// 规范为 Any 数组（单元素为原始对象），同时兼容裸 map 形态。
+func TestParseErrorResponse_DetailsExtraction(t *testing.T) {
+	cases := []struct {
+		name       string
+		payload    string
+		wantDetail string
+	}{
+		{
+			name:       "details 数组形态（google.rpc.Status 规范）",
+			payload:    `{"error":{"code":400,"message":"blocked","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RECITATION","domain":"model"}]}}`,
+			wantDetail: "RECITATION",
+		},
+		{
+			name:       "details 裸 map 形态",
+			payload:    `{"error":{"code":400,"message":"blocked","status":"INVALID_ARGUMENT","details":{"reason":"API_KEY_INVALID"}}}`,
+			wantDetail: "API_KEY_INVALID",
+		},
+		{
+			name:       "details 空数组不提取",
+			payload:    `{"error":{"code":400,"message":"blocked","status":"INVALID_ARGUMENT","details":[]}}`,
+			wantDetail: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := parseErrorResponse(c.payload)
+			if e == nil {
+				t.Fatalf("payload %s 应解析出错误", c.payload)
+			}
+			if c.wantDetail == "" {
+				if len(e.Details) != 0 {
+					t.Errorf("不应提取 details，实际 %v", e.Details)
+				}
+				return
+			}
+			if len(e.Details) == 0 {
+				t.Fatalf("应提取 details 数组单元素，实际为空")
+			}
+			if got, _ := e.Details["reason"].(string); got != c.wantDetail {
+				t.Errorf("details.reason=%q, want %q", got, c.wantDetail)
+			}
+		})
+	}
+}

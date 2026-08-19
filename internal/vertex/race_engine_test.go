@@ -627,7 +627,7 @@ func TestRunRace_PickBestError_Priority(t *testing.T) {
 
 	cfg := config.StaticProvider(raceTestConfig())
 
-	t.Run("retryable_wins_over_nonretryable", func(t *testing.T) {
+	t.Run("nonretryable_wins_over_retryable", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -649,8 +649,8 @@ func TestRunRace_PickBestError_Priority(t *testing.T) {
 		if !errors.As(err, &ve) {
 			t.Fatalf("expected *VertexError, got %T", err)
 		}
-		if !ve.IsRetryable() {
-			t.Errorf("expected retryable error when one exists, got Kind=%s Code=%d", ve.Kind, ve.Code)
+		if !ve.IsGlobalHardError() {
+			t.Errorf("expected deterministic hard error (invalid) to win over transient, got Kind=%s Code=%d", ve.Kind, ve.Code)
 		}
 	})
 
@@ -705,6 +705,90 @@ func TestRunRace_PickBestError_Priority(t *testing.T) {
 		}
 		if ve.Kind != "ratelimit" && ve.Code != 429 {
 			t.Errorf("expected ratelimit error as highest priority retryable, got Kind=%s Code=%d", ve.Kind, ve.Code)
+		}
+	})
+}
+
+// TestRunRace_Convergence_PriorityLadder 验证收敛路径（pickBestError）的优先级梯队：
+// 确定性业务真相（FailFast）> ratelimit > 其他瞬态；Committed（Truncated）压顶一切；
+// 优先级与节点多数无关（防把方案误解为多数决）。不注入 failFast 选项（CompleteChat 语义）。
+func TestRunRace_Convergence_PriorityLadder(t *testing.T) {
+	uris := make([]string, 20)
+	for i := range uris {
+		uris[i] = fmt.Sprintf("uri%d", i+1)
+	}
+	setupRaceNodes(t, uris...)
+	defer nodes.ResetState()
+
+	cfg := config.StaticProvider(config.AppConfig{
+		ParallelPoolEnabled: true,
+		ParallelPoolSize:    20,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	newNetwork := func() *VertexError { return NewNetworkError(fmt.Errorf("boom")) }
+
+	runRaceWith := func(one func(uri string) error) error {
+		_, err := RunRace(ctx, cfg, func(ctx context.Context, uri string) (map[string]any, error) {
+			return nil, one(uri)
+		})
+		return err
+	}
+
+	t.Run("safety_wins_over_transient", func(t *testing.T) {
+		one := func(uri string) error {
+			if uri == "uri20" {
+				return NewSafetyError("Blocked", "RECITATION", nil)
+			}
+			return newNetwork()
+		}
+		err := runRaceWith(one)
+		ve := asVertexError(err)
+		if ve == nil || ve.Kind != "safety" || ve.Status != "RECITATION" {
+			t.Fatalf("期望收敛为 safety(RECITATION)，实际 %v", err)
+		}
+	})
+
+	t.Run("invalid_wins_over_transient", func(t *testing.T) {
+		one := func(uri string) error {
+			if uri == "uri20" {
+				return NewInvalidArgumentError("bad request", nil)
+			}
+			return newNetwork()
+		}
+		err := runRaceWith(one)
+		ve := asVertexError(err)
+		if ve == nil || ve.Kind != "invalid" {
+			t.Fatalf("期望收敛为 invalid，实际 %v", err)
+		}
+	})
+
+	t.Run("safety_not_majority_vote", func(t *testing.T) {
+		one := func(uri string) error {
+			if uri == "uri20" {
+				return newNetwork()
+			}
+			return NewSafetyError("Blocked", "RECITATION", nil)
+		}
+		err := runRaceWith(one)
+		ve := asVertexError(err)
+		if ve == nil || ve.Kind != "safety" {
+			t.Fatalf("优先级与多数无关：19×safety+1×502 仍应收敛为 safety，实际 %v", err)
+		}
+	})
+
+	t.Run("committed_truncated_wins_over_all", func(t *testing.T) {
+		one := func(uri string) error {
+			if uri == "uri20" {
+				return NewSafetyError("Blocked", "RECITATION", nil)
+			}
+			return newNetwork().WithTruncated()
+		}
+		err := runRaceWith(one)
+		ve := asVertexError(err)
+		if ve == nil || !ve.Truncated || ve.ClassifyBatch() != Committed {
+			t.Fatalf("期望收敛为 Committed(Truncated) 错误，实际 %v", err)
 		}
 	})
 }

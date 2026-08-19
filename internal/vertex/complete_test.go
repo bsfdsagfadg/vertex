@@ -217,6 +217,30 @@ func TestPickBestResult_AllNoViableNonSafety(t *testing.T) {
 	}
 }
 
+// TestPickBestResult_SafetyFinishReasonNormalized 验证安全 finishReason 兜底原因经大小写
+// 归一（与 blockReason 分支及 errors.go 各构造路径一致），非规范小写输入不退回默认 SAFETY。
+func TestPickBestResult_SafetyFinishReasonNormalized(t *testing.T) {
+	results := []candidateResult{
+		{resp: &transform.GeminiResponse{
+			Candidates: []*transform.Candidate{{FinishReason: "recitation"}},
+		}},
+	}
+	_, err := pickBestResult(results, &transform.TextStrategy{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var ve *VertexError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *VertexError, got %T", err)
+	}
+	if ve.Kind != "safety" {
+		t.Errorf("expected Kind=safety, got %q", ve.Kind)
+	}
+	if ve.Status != "RECITATION" {
+		t.Errorf("Status=%q, want 归一化后的 RECITATION", ve.Status)
+	}
+}
+
 // TestPickBestResult_StopWithoutContent_TreatedAsInvalid 验证虽有 STOP 但无 content/parts 的空包不被选为有效结果。
 func TestPickBestResult_StopWithoutContent_TreatedAsInvalid(t *testing.T) {
 	emptyStop := &transform.GeminiResponse{

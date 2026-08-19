@@ -20,6 +20,11 @@ import (
 // 首包前触发会自动重试/故障转移；首包后触发向客户端推送超时 error chunk。
 var ErrStreamIdleTimeout = errors.New("stream idle timeout")
 
+// ErrStreamIncomplete 是流在未收到任何真实 finishReason 前即结束的哨兵错误
+// （上游干净 EOF 但未按匿名端点契约给出终帧，或元数据后直接收尾）。
+// 交付层遇此错误必须向客户端透传"截断"语义，严禁补发 FinishReason=STOP 冒充完整生成。
+var ErrStreamIncomplete = errors.New("stream ended without finish reason")
+
 // sessionTimeoutFromContext 从 context 的 deadline 推导 Session 的超时秒数。
 // 至少返回 1 秒（tls-client.WithTimeoutSeconds 只接受正秒），但 context 的 deadline
 // 仍由 Session.Do 优先检查；该值仅用于构造传输层超时。

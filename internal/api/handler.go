@@ -15,6 +15,7 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
@@ -122,8 +123,14 @@ func isSafetyBlock(e *vertex.VertexError) bool {
 	if e.Kind == "safety" {
 		return true
 	}
-	status := strings.ToUpper(e.Status)
-	return status == "SAFETY" || status == "BLOCKED_REASON_SAFETY"
+	// Status 可能承载两类内容：真实拦截原因（finishReason 枚举 / blockReason 枚举）
+	// 或普通 gRPC status（如 INVALID_ARGUMENT/UNAVAILABLE）。排除法 IsBlockReason 不能
+	// 直接用于 Status（"UNAVAILABLE" 等任意非空值都会被误判为拦截），此处限定为
+	// blockReason 取值域：BLOCKED_REASON_* 前缀（非 UNSPECIFIED）、裸枚举 OTHER，
+	// 以及由 SafetyFinishReasons 覆盖的裸枚举（SAFETY/PROHIBITED_CONTENT/IMAGE_SAFETY 等）。
+	return transform.IsSafetyFinishReason(e.Status) ||
+		(strings.HasPrefix(e.Status, "BLOCKED_REASON_") && e.Status != "BLOCKED_REASON_UNSPECIFIED") ||
+		e.Status == "OTHER"
 }
 
 func resolveN(raw any, maxN int) (int, string) {

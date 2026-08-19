@@ -3,6 +3,7 @@ package vertex
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -342,8 +343,12 @@ func TestIdleWatcher_TriggersOnTimeout(t *testing.T) {
 	case err := <-errCh:
 		pw.Close()
 		close(done)
-		if err != nil {
-			t.Errorf("scanStream 应从 body close 返回 nil, 得到 %v", err)
+		// 5.1 后 pr.Close()（io.Pipe 读端关闭）返回 io.ErrClosedPipe，属真实读错误：
+		// scanStream 必须包装为 network 错误上抛（"stream read" 前缀），而非伪装成干净 EOF。
+		if err == nil {
+			t.Error("scanStream 对非 EOF 读错误应返回包装错误, 得到 nil")
+		} else if !strings.Contains(err.Error(), "stream read") {
+			t.Errorf("scanStream 错误应含 'stream read' 前缀, 得到: %v", err)
 		}
 		if !idleTriggered.Load() {
 			t.Error("idle watcher 应触发 idleTriggered")
@@ -409,4 +414,58 @@ func (r *splitReader) Read(p []byte) (int, error) {
 	n := copy(p, r.data[r.pos:end])
 	r.pos += n
 	return n, nil
+}
+
+// unexpectedEOFReader 先投喂一帧有效数据，随后以 io.ErrUnexpectedEOF 中断（模拟半路断流）。
+type unexpectedEOFReader struct {
+	data []byte
+	pos  int
+	done bool
+}
+
+func (r *unexpectedEOFReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.ErrUnexpectedEOF
+	}
+	if r.pos >= len(r.data) {
+		r.done = true
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+// TestScanStream_NonEOFReadError_ReturnsNetworkError 验证 5.1：非 EOF 读错误必须
+// 以 network 错误上抛（"stream read" 前缀），且 cause 链穿透 errors.Is。
+func TestScanStream_NonEOFReadError_ReturnsNetworkError(t *testing.T) {
+	emitted := 0
+	reader := &unexpectedEOFReader{data: []byte(wrap(`{"candidates":[{"content":{"parts":[{"text":"partial"}],"role":"model"},"finishReason":"FINISH_REASON_UNSPECIFIED"}]}`))}
+	err := scanStream(context.Background(), reader, func(raw []byte) (bool, error) {
+		emitted++
+		return false, nil
+	}, nil)
+
+	if err == nil {
+		t.Fatal("非 EOF 读错误应返回错误，实际 nil")
+	}
+	if !strings.Contains(err.Error(), "stream read") {
+		t.Errorf("错误应含 'stream read' 前缀，实际: %v", err)
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("errors.Is 应穿透到 io.ErrUnexpectedEOF，实际: %v", err)
+	}
+	if emitted != 1 {
+		t.Errorf("有效帧应回调 1 次，实际 %d", emitted)
+	}
+}
+
+// TestScanStream_CleanEOF_ReturnsNil 显式对照：干净 EOF 仍返回 nil（5.1 不改动）。
+func TestScanStream_CleanEOF_ReturnsNil(t *testing.T) {
+	err := scanStream(context.Background(), strings.NewReader(wrap(`{"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"},"finishReason":"STOP"}]}`)), func(raw []byte) (bool, error) {
+		return true, nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("干净 EOF 应返回 nil，实际 %v", err)
+	}
 }

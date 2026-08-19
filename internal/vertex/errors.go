@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
 // gRPC 错误状态字符串。
@@ -254,9 +256,9 @@ func parseErrorResponse(data any) *VertexError {
 	case map[string]any:
 		// 1. 嵌套 error 字段（标准 Google API）
 		if errObj, ok := v["error"].(map[string]any); ok {
-			// 安全审查拦截：error.message == "SAFETY" 或 finishReason 为 SAFETY
-			if msg, _ := errObj["message"].(string); strings.ToUpper(msg) == "SAFETY" {
-				return NewSafetyError(msg, "SAFETY", nil)
+			// 安全审查拦截：error.message 为拦截类 finishReason（SAFETY/RECITATION/PROHIBITED_CONTENT 等）
+			if msg, _ := errObj["message"].(string); transform.IsSafetyFinishReason(msg) {
+				return NewSafetyError(msg, strings.ToUpper(strings.TrimSpace(msg)), nil)
 			}
 			return raiseForStatus(
 				toInt(errObj["code"], 500), toStr(errObj["status"]),
@@ -271,23 +273,25 @@ func parseErrorResponse(data any) *VertexError {
 				code := toInt(firstNonNil(extStatus["code"], first["code"]), 500)
 				status := toStr(firstNonNil(extStatus["status"], first["status"]))
 				message := toStrOr(firstNonNil(extStatus["message"], first["message"]), "Unknown error")
-				// 安全审查拦截：finishReason 为 SAFETY
-				if fr := toStr(firstNonNil(extStatus["finishReason"], first["finishReason"])); strings.ToUpper(fr) == "SAFETY" {
-					return NewSafetyError(message, status, nil)
+				// 安全审查拦截：finishReason 为拦截类（SAFETY/RECITATION/PROHIBITED_CONTENT 等），
+				// Status 携带真实 finishReason（保证"Status 恒为拦截原因"约定一致）。
+				if fr := toStr(firstNonNil(extStatus["finishReason"], first["finishReason"])); transform.IsSafetyFinishReason(fr) {
+					return NewSafetyError(message, strings.ToUpper(strings.TrimSpace(fr)), nil)
 				}
 				return raiseForStatus(code, status, message, toMap(first["details"]), marshalStr(v))
 			}
 		}
 		// 3. 扁平格式
 		// 安全审查拦截：finishReason、blockReason、promptFeedback.blockReason
-		if fr := toStr(v["finishReason"]); strings.ToUpper(fr) == "SAFETY" {
+		if fr := toStr(v["finishReason"]); transform.IsSafetyFinishReason(fr) {
 			return NewSafetyError(toStrOr(v["message"], "Blocked by safety"), strings.ToUpper(fr), nil)
 		}
-		if br := toStr(v["blockReason"]); strings.ToUpper(br) != "" {
+		// blockReason 采用排除法：非空且非 BLOCKED_REASON_UNSPECIFIED 即拦截（IMAGE_SAFETY/OTHER 等均命中）。
+		if br := toStr(v["blockReason"]); transform.IsBlockReason(br) {
 			return NewSafetyError(toStrOr(v["message"], "Blocked by safety"), strings.ToUpper(br), nil)
 		}
 		if pf, ok := v["promptFeedback"].(map[string]any); ok {
-			if br := toStr(pf["blockReason"]); strings.ToUpper(br) != "" {
+			if br := toStr(pf["blockReason"]); transform.IsBlockReason(br) {
 				return NewSafetyError(toStrOr(pf["blockReasonMessage"], "Blocked by safety"), strings.ToUpper(br), nil)
 			}
 		}
@@ -299,8 +303,8 @@ func parseErrorResponse(data any) *VertexError {
 		}
 		if _, hasMsg := v["message"]; hasMsg {
 			msg := toStr(v["message"])
-			if strings.ToUpper(msg) == "SAFETY" {
-				return NewSafetyError(msg, "SAFETY", nil)
+			if transform.IsSafetyFinishReason(msg) {
+				return NewSafetyError(msg, strings.ToUpper(strings.TrimSpace(msg)), nil)
 			}
 			return raiseForStatus(toInt(v["code"], 500), toStr(v["status"]), msg, toMap(v["details"]), marshalStr(v))
 		}
@@ -377,9 +381,18 @@ func toStrOr(v any, def string) string {
 	return def
 }
 
+// toMap 提取上游 details：google.rpc.Status 规范中 details 为 Any 数组（单元素为原始
+// 对象），同时兼容裸 map 形态。
 func toMap(v any) map[string]any {
-	if m, ok := v.(map[string]any); ok {
-		return m
+	switch t := v.(type) {
+	case map[string]any:
+		return t
+	case []any:
+		if len(t) > 0 {
+			if m, ok := t[0].(map[string]any); ok {
+				return m
+			}
+		}
 	}
 	return nil
 }

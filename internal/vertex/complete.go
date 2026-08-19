@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/transform"
@@ -146,29 +147,25 @@ func pickBestResult(results []candidateResult, strategy transform.ModelStrategy)
 			return r.resp, nil
 		}
 	}
-	// 所有候选均无有效内容时：若任一候选被安全审查拦截（finishReason=SAFETY 或 BlockReason），
-	// 返回 safety 错误而非退化为 502/500 内部错误，避免网关误判为服务故障。
+	// 所有候选均无有效内容时：若任一候选被安全审查拦截（finishReason=SAFETY/RECITATION 等
+	// 或 BlockReason 拦截），返回 safety 错误（携带真实拦截原因）而非退化为 502/500 内部错误，
+	// 避免网关误判为服务故障。
 	for _, r := range results {
 		if isSafetyBlockedResponse(r.resp) {
-			return nil, NewSafetyError("Blocked by safety filter", "SAFETY", nil)
+			reason := "SAFETY"
+			if r.resp.PromptFeedback != nil && transform.IsBlockReason(r.resp.PromptFeedback.BlockReason) {
+				reason = strings.ToUpper(strings.TrimSpace(r.resp.PromptFeedback.BlockReason))
+			} else if fr := strings.ToUpper(strings.TrimSpace(candidateFinishTyped(r.resp))); transform.IsSafetyFinishReason(fr) {
+				reason = fr
+			}
+			return nil, NewSafetyError("Blocked by safety filter", reason, nil)
 		}
 	}
 	return nil, NewEmptyResponseError("no viable candidate results", nil)
 }
 
 func isSafetyBlockedResponse(resp *transform.GeminiResponse) bool {
-	if resp == nil {
-		return false
-	}
-	if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" && resp.PromptFeedback.BlockReason != "BLOCKED_REASON_UNSPECIFIED" {
-		return true
-	}
-	for _, cand := range resp.Candidates {
-		if cand != nil && cand.FinishReason == "SAFETY" {
-			return true
-		}
-	}
-	return false
+	return transform.IsSafetyResponse(resp)
 }
 
 func candidateFinishTyped(resp *transform.GeminiResponse) string {

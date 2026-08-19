@@ -81,9 +81,18 @@ type raceResult[T any] struct {
 }
 
 // errorPriority 返回错误的优先级数值（越小优先级越高）。
-// 核心原则：可重试错误优先级高于不可重试错误。
-// 当任意节点返回可重试错误时，客户端可据此判断应重试，
-// 而不是被不可重试错误直接中断。
+// 核心原则：确定性业务真相优先于节点瞬态噪声。
+//
+//	0 Committed：已向客户端输出内容后断流（Truncated），绝不重试，最高优先透传真实原因；
+//	1 FailFast：请求级硬错误/拦截（safety/invalid/notfound/infra）——请求载荷对所有节点
+//	  恒相同，任一节点的确定性判定即全局真相（依据见方案 2.1 节）；
+//	2 RateLimit：上游限流（429/RESOURCE_EXHAUSTED），客户端应退避；
+//	3 其他 Transient：节点级网络/服务抖动（502/503/504/network/empty/auth），可重试噪声；
+//	4 Terminal：节点级权限（403 permission）或单节点取消（context），不判全局；
+//	5 其他未知错误。
+//
+// 注意：本函数只决定"收敛路径"（pickBestError）的挑选结果；流式 failFast 的
+// 首达即终止语义（RunRace 内 ClassifyBatch()==FailFast 直接 return）不受本函数影响。
 func errorPriority(err error) int {
 	var ve *VertexError
 	if !errors.As(err, &ve) {
@@ -92,12 +101,12 @@ func errorPriority(err error) int {
 	switch ve.ClassifyBatch() {
 	case Committed:
 		return 0
+	case FailFast:
+		return 1
 	case Transient:
 		if ve.Kind == "ratelimit" || ve.Code == 429 {
-			return 1
+			return 2
 		}
-		return 2
-	case FailFast:
 		return 3
 	case Terminal:
 		return 4

@@ -15,13 +15,13 @@ type mockConfigProvider struct {
 	dropMax                   bool
 }
 
-func (m *mockConfigProvider) DefaultThinkingLevel() string     { return m.defaultThinkingLevel }
-func (m *mockConfigProvider) DefaultImageSize() string         { return m.defaultImageSize }
+func (m *mockConfigProvider) DefaultThinkingLevel() string      { return m.defaultThinkingLevel }
+func (m *mockConfigProvider) DefaultImageSize() string          { return m.defaultImageSize }
 func (m *mockConfigProvider) DefaultResponseModalities() string { return m.defaultResponseModalities }
 func (m *mockConfigProvider) DropMaxTokens() bool               { return m.dropMax }
 func (m *mockConfigProvider) SafetySettings() map[string]string { return nil }
-func (m *mockConfigProvider) TrailingModelFixEnabled() bool    { return false }
-func (m *mockConfigProvider) TrailingFixModels() []string      { return nil }
+func (m *mockConfigProvider) TrailingModelFixEnabled() bool     { return false }
+func (m *mockConfigProvider) TrailingFixModels() []string       { return nil }
 
 func assertFixed4OFF(t *testing.T, settings []SafetySetting) {
 	t.Helper()
@@ -162,6 +162,62 @@ func TestStrategies_IsValidChunk(t *testing.T) {
 func TestBuildSafetySettingsTyped_NilCfg(t *testing.T) {
 	// 8.5：cfg 为 nil 亦安全，恒返回固定 4×OFF
 	assertFixed4OFF(t, BuildSafetySettingsTyped(nil))
+}
+
+// TestStrategies_IsValid_SafetyFinishReasons 验证任务三修复点：RECITATION/PROHIBITED_CONTENT
+// 等拦截类 finishReason 与任意非 UNSPECIFIED blockReason（含 IMAGE_SAFETY）在三个家族策略的
+// IsValidChunk/IsValidResponse 中均判为有效；STOP 无内容仍判为无效（防回归）。
+func TestStrategies_IsValid_SafetyFinishReasons(t *testing.T) {
+	strategies := map[string]ModelStrategy{
+		"text":  &TextStrategy{model: "gemini-2.5-flash"},
+		"image": &ImageStrategy{model: "gemini-3.1-flash-image"},
+		"audio": &AudioStrategy{model: "gemini-3.1-flash-tts-preview"},
+	}
+
+	// 表驱动为显式枚举，构造数据避免跨用例共享指针变异。
+	chunkCases := []struct {
+		name  string
+		chunk *GeminiChunk
+	}{
+		{"chunk finishReason RECITATION", &GeminiChunk{Candidates: []*Candidate{{FinishReason: "RECITATION"}}}},
+		{"chunk finishReason PROHIBITED_CONTENT", &GeminiChunk{Candidates: []*Candidate{{FinishReason: "PROHIBITED_CONTENT"}}}},
+		{"chunk blockReason IMAGE_SAFETY", &GeminiChunk{PromptFeedback: &PromptFeedback{BlockReason: "IMAGE_SAFETY"}}},
+		{"chunk blockReason BLOCKED_REASON_OTHER", &GeminiChunk{PromptFeedback: &PromptFeedback{BlockReason: "BLOCKED_REASON_OTHER"}}},
+		{"chunk STOP 无内容", &GeminiChunk{Candidates: []*Candidate{{FinishReason: "STOP"}}}},
+	}
+	for name, st := range strategies {
+		for _, c := range chunkCases {
+			got := st.IsValidChunk(c.chunk)
+			if c.name == "chunk STOP 无内容" && got {
+				t.Errorf("%s: %s 应为 false", name, c.name)
+			}
+			if c.name != "chunk STOP 无内容" && !got {
+				t.Errorf("%s: %s 应为 true", name, c.name)
+			}
+		}
+	}
+
+	respCases := []struct {
+		name string
+		resp *GeminiResponse
+	}{
+		{"resp finishReason RECITATION", &GeminiResponse{Candidates: []*Candidate{{FinishReason: "RECITATION"}}}},
+		{"resp finishReason PROHIBITED_CONTENT", &GeminiResponse{Candidates: []*Candidate{{FinishReason: "PROHIBITED_CONTENT"}}}},
+		{"resp blockReason IMAGE_SAFETY", &GeminiResponse{PromptFeedback: &PromptFeedback{BlockReason: "IMAGE_SAFETY"}}},
+		{"resp blockReason BLOCKED_REASON_OTHER", &GeminiResponse{PromptFeedback: &PromptFeedback{BlockReason: "BLOCKED_REASON_OTHER"}}},
+		{"resp STOP 无内容", &GeminiResponse{Candidates: []*Candidate{{FinishReason: "STOP"}}}},
+	}
+	for name, st := range strategies {
+		for _, c := range respCases {
+			got := st.IsValidResponse(c.resp)
+			if c.name == "resp STOP 无内容" && got {
+				t.Errorf("%s: %s 应为 false", name, c.name)
+			}
+			if c.name != "resp STOP 无内容" && !got {
+				t.Errorf("%s: %s 应为 true", name, c.name)
+			}
+		}
+	}
 }
 
 func TestStrategies_BuildVariables_FixedSafetySettings(t *testing.T) {

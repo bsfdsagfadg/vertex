@@ -171,12 +171,12 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 		}
 
 		if ve != nil {
-			if !sw.hasWritten() {
-				writeGeminiError(w, r.Context(), ve)
-				return
-			}
 			if isSafetyBlock(ve) {
 				_ = sw.write(g.geminiSSE(geminiSafetyChunk(ve)))
+				return
+			}
+			if !sw.hasWritten() {
+				writeGeminiError(w, r.Context(), ve)
 				return
 			}
 			_ = sw.write(g.geminiSSE(vertexErrorToGemini(ve)))
@@ -201,13 +201,10 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 
 	g.ExecuteTextStream(requestCtx, resolved, req, func(chunk *transform.GeminiChunk, err *vertex.VertexError) bool {
 		if err != nil {
-			if !sw.hasWritten() {
-				writeGeminiError(w, r.Context(), err)
-				streamErrWritten = true
-				return false
-			}
 			if isSafetyBlock(err) {
 				_ = sw.write(g.geminiSSE(geminiSafetyChunk(err)))
+			} else if !sw.hasWritten() {
+				writeGeminiError(w, r.Context(), err)
 			} else {
 				// 已向客户端输出内容后断流：透传真实错误（含 Truncated 标记的真实原因），
 				// 而非模糊 finishReason:OTHER；客户端可区分"网络中断"与"安全拦截"。
@@ -266,18 +263,15 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 		return
 	}
 	if !hasFinish {
-		_ = sw.write(g.geminiSSETyped(&transform.GeminiResponse{
-			Candidates: []*transform.Candidate{
-				{
-					Index: 0,
-					Content: &transform.Content{
-						Role:  "model",
-						Parts: []transform.Part{{Text: ""}},
-					},
-					FinishReason: "STOP",
-				},
-			},
-		}))
+		// 流结束但从未出现真实 finishReason：按匿名端点契约（每帧 FINISH_REASON_UNSPECIFIED
+		// 无意义，完整流必以真实 finishReason 终帧收尾）此为异常收尾，绝非完整生成。
+		// 已交付过任何帧则标记 Truncated（Committed 语义：绝不重试），否则按普通网络错误帧透传；
+		// 严禁补发 FinishReason=STOP 假结束帧。
+		e := vertex.NewNetworkError(vertex.ErrStreamIncomplete)
+		if sw.hasWritten() {
+			e = e.WithTruncated()
+		}
+		_ = sw.write(g.geminiSSE(vertexErrorToGemini(e)))
 	}
 }
 
@@ -343,9 +337,14 @@ func vertexErrorToGemini(e *vertex.VertexError) map[string]any {
 	if e.UpstreamResponse != "" {
 		msg += " | Upstream: " + e.UpstreamResponse
 	}
-	return map[string]any{"error": map[string]any{
+	errObj := map[string]any{
 		"code": e.Code, "message": msg, "status": geminiStatusOf(e),
-	}}
+	}
+	// 透传上游结构化 details（Gemini/google.rpc.Status 规范：details 为数组，单元素为原始对象）。
+	if len(e.Details) > 0 {
+		errObj["details"] = []any{e.Details}
+	}
+	return map[string]any{"error": errObj}
 }
 
 func geminiStatusOf(e *vertex.VertexError) string {
@@ -357,7 +356,7 @@ func geminiStatusOf(e *vertex.VertexError) string {
 
 func geminiSafetyResponse(e *vertex.VertexError) map[string]any {
 	blockReason := e.Status
-	if blockReason == "" {
+	if !transform.IsBlockReason(blockReason) {
 		blockReason = "SAFETY"
 	}
 	return map[string]any{
@@ -372,13 +371,17 @@ func geminiSafetyResponse(e *vertex.VertexError) map[string]any {
 
 func geminiSafetyChunk(e *vertex.VertexError) map[string]any {
 	blockReason := e.Status
-	if blockReason == "" {
+	if !transform.IsBlockReason(blockReason) {
 		blockReason = "SAFETY"
+	}
+	finishReason := e.Status
+	if !transform.IsSafetyFinishReason(finishReason) {
+		finishReason = "SAFETY"
 	}
 	return map[string]any{
 		"candidates": []any{map[string]any{
 			"content":       map[string]any{"parts": []any{}, "role": "model"},
-			"finishReason":  "SAFETY",
+			"finishReason":  finishReason,
 			"safetyRatings": []any{},
 			"index":         0,
 		}},
