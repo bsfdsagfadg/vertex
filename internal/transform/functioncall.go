@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+
+	"github.com/samber/lo"
 )
 
 const skipThoughtSentinel = "skip_thought_signature_validator"
@@ -31,12 +33,9 @@ type FcNameTracker struct {
 
 // NewFcNameTracker 过滤掉空名后构造追踪器。
 func NewFcNameTracker(names []string) *FcNameTracker {
-	filtered := make([]string, 0, len(names))
-	for _, n := range names {
-		if strings.TrimSpace(n) != "" {
-			filtered = append(filtered, n)
-		}
-	}
+	filtered := lo.Filter(names, func(n string, _ int) bool {
+		return strings.TrimSpace(n) != ""
+	})
 	return &FcNameTracker{names: filtered}
 }
 

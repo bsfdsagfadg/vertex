@@ -10,11 +10,13 @@ import (
 	"sync"
 
 	_ "github.com/glebarez/go-sqlite"
+	"github.com/jmoiron/sqlx"
 )
 
 var (
-	GlobalDB *sql.DB    //nolint:gochecknoglobals
-	mu       sync.Mutex //nolint:gochecknoglobals
+	GlobalDB  *sql.DB    //nolint:gochecknoglobals
+	GlobalDBX *sqlx.DB   //nolint:gochecknoglobals
+	mu        sync.Mutex //nolint:gochecknoglobals
 )
 
 // InitDB initializes the SQLite database at the given path.
@@ -55,6 +57,7 @@ func InitDB(dbPath string) error {
 	}
 
 	GlobalDB = db
+	GlobalDBX = sqlx.NewDb(db, "sqlite")
 	// Create tables
 	err = createTables(db)
 	if err != nil {
@@ -117,6 +120,26 @@ func createTables(db *sql.DB) error {
 		last_test_at INTEGER NOT NULL DEFAULT 0,
 		last_test_error TEXT NOT NULL DEFAULT '',
 		consecutive_failures INTEGER NOT NULL DEFAULT 0
+	);
+
+	CREATE TABLE IF NOT EXISTS custom_uas (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL UNIQUE,
+		user_agent TEXT NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS subscriptions (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		url TEXT NOT NULL,
+		user_agent TEXT NOT NULL DEFAULT '',
+		custom_ua_id TEXT NOT NULL DEFAULT '',
+		update_interval INTEGER NOT NULL DEFAULT 60,
+		adopt_manual BOOLEAN NOT NULL DEFAULT 0,
+		last_update_time INTEGER NOT NULL DEFAULT 0,
+		last_error TEXT NOT NULL DEFAULT '',
+		revision INTEGER NOT NULL DEFAULT 0,
+		generation TEXT NOT NULL DEFAULT ''
 	);
 	`
 	_, err := db.Exec(schema)
@@ -318,6 +341,58 @@ func migrateFromFiles(db *sql.DB, configDir string) {
 			_ = os.Rename(healthPath, filepath.Join(migratedFolder, "node_health.json.migrated"))
 		}
 	}
+
+	// Migrate subscriptions.json
+	subsPath := filepath.Join(configDir, "subscriptions.json")
+	if data, err := os.ReadFile(subsPath); err == nil {
+		var subConf struct {
+			Subscriptions []struct {
+				ID             string `json:"id"`
+				Name           string `json:"name"`
+				URL            string `json:"url"`
+				UserAgent      string `json:"user_agent"`
+				CustomUAID     string `json:"custom_ua_id"`
+				UpdateInterval int    `json:"update_interval"`
+				AdoptManual    bool   `json:"adopt_manual"`
+				LastUpdateTime int64  `json:"last_update_time"`
+				LastError      string `json:"last_error"`
+				Revision       uint64 `json:"revision"`
+				Generation     string `json:"generation"`
+			} `json:"subscriptions"`
+			CustomUAs []struct {
+				ID        string `json:"id"`
+				Name      string `json:"name"`
+				UserAgent string `json:"user_agent"`
+			} `json:"custom_uas"`
+		}
+		if errUnm := json.Unmarshal(data, &subConf); errUnm == nil {
+			tx, _ := db.Begin()
+			uaStmt, _ := tx.Prepare("INSERT OR REPLACE INTO custom_uas (id, name, user_agent) VALUES (?, ?, ?)")
+			for _, ua := range subConf.CustomUAs {
+				if uaStmt != nil && ua.ID != "" {
+					_, _ = uaStmt.Exec(ua.ID, ua.Name, ua.UserAgent)
+				}
+			}
+			if uaStmt != nil {
+				_ = uaStmt.Close()
+			}
+			subStmt, _ := tx.Prepare(`INSERT OR REPLACE INTO subscriptions
+				(id, name, url, user_agent, custom_ua_id, update_interval, adopt_manual, last_update_time, last_error, revision, generation)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			for _, s := range subConf.Subscriptions {
+				if subStmt != nil && s.ID != "" {
+					_, _ = subStmt.Exec(s.ID, s.Name, s.URL, s.UserAgent, s.CustomUAID, s.UpdateInterval, s.AdoptManual, s.LastUpdateTime, s.LastError, s.Revision, s.Generation)
+				}
+			}
+			if subStmt != nil {
+				_ = subStmt.Close()
+			}
+			_ = tx.Commit()
+			log.Printf("[DB] Migrated %d subscriptions and %d custom UAs from subscriptions.json", len(subConf.Subscriptions), len(subConf.CustomUAs))
+			_ = os.MkdirAll(migratedFolder, 0755)
+			_ = os.Rename(subsPath, filepath.Join(migratedFolder, "subscriptions.json.migrated"))
+		}
+	}
 }
 
 // CloseDB closes the global database connection.
@@ -327,5 +402,6 @@ func CloseDB() {
 	if GlobalDB != nil {
 		_ = GlobalDB.Close()
 		GlobalDB = nil
+		GlobalDBX = nil
 	}
 }

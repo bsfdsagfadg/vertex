@@ -207,9 +207,9 @@ func TestConvertRealtimeChunk_RealFinishWithUsage(t *testing.T) {
 		},
 	}
 	events := ConvertRealtimeChunk(chunk, "m", "r", false)
-	// content 事件 + finish 事件。
-	if len(events) != 2 {
-		t.Fatalf("events=%d, want 2\n%v", len(events), events)
+	// content 事件 + finish(with usage) 事件 + 独立 terminal usage 事件。
+	if len(events) != 3 {
+		t.Fatalf("events=%d, want 3 (content + finish_with_usage + terminal_usage)\n%v", len(events), events)
 	}
 	finishEvt := events[1]
 	if !strings.Contains(finishEvt, `"finish_reason":"stop"`) {
@@ -218,8 +218,11 @@ func TestConvertRealtimeChunk_RealFinishWithUsage(t *testing.T) {
 	if !strings.Contains(finishEvt, `"usage"`) || !strings.Contains(finishEvt, `"total_tokens":15`) {
 		t.Errorf("finish 事件应带 usage: %s", finishEvt)
 	}
+	terminalUsageEvt := events[2]
+	if !strings.Contains(terminalUsageEvt, `"choices":[]`) || !strings.Contains(terminalUsageEvt, `"total_tokens":15`) {
+		t.Errorf("末尾应发标准 choices:[] usage 帧: %s", terminalUsageEvt)
+	}
 }
-
 // MAX_TOKENS → length。
 func TestConvertRealtimeChunk_MaxTokensLength(t *testing.T) {
 	chunk := map[string]any{"candidates": []any{map[string]any{

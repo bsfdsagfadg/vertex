@@ -1,8 +1,10 @@
 package transform
 
 import (
-	"fmt"
 	"strings"
+
+	"github.com/bsfdsagfadg/vertex/internal/jsonx"
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 // 本文件是 transform 包内处理 map[string]any / any 动态结构的小工具，
@@ -19,37 +21,12 @@ func copyMap(m map[string]any) map[string]any {
 
 // toString 把任意值转成字符串：字符串原样，其它用 fmt.Sprint。
 func toString(v any) string {
-	if v == nil {
-		return ""
-	}
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return fmt.Sprint(v)
+	return strutil.ToString(v)
 }
 
 // isTruthy 做动态 truthy 判定：nil/""/false/0/空容器为假，其余为真。
 func isTruthy(v any) bool {
-	switch x := v.(type) {
-	case nil:
-		return false
-	case bool:
-		return x
-	case string:
-		return x != ""
-	case int:
-		return x != 0
-	case int64:
-		return x != 0
-	case float64:
-		return x != 0
-	case []any:
-		return len(x) > 0
-	case map[string]any:
-		return len(x) > 0
-	default:
-		return true
-	}
+	return jsonx.Truthy(v)
 }
 
 // asMapSlice 把 any 规整成 []map[string]any（非 map 元素丢弃）。

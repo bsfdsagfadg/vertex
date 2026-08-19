@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
@@ -314,10 +314,7 @@ func coerceOAIN(value string) int {
 }
 
 func firstNonEmptyStr(a, b string) string {
-	if strings.TrimSpace(a) != "" {
-		return a
-	}
-	return b
+	return strutil.FirstNonEmptyStr(a, b)
 }
 
 func getStr(body map[string]any, key, def string) string {

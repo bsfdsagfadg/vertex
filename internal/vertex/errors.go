@@ -5,8 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
+
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 // gRPC 错误状态字符串。
@@ -311,41 +312,19 @@ func FriendlyErrorMessage(e *VertexError) string {
 // ---- 小工具 ----
 
 func toInt(v any, def int) int {
-	switch n := v.(type) {
-	case float64:
-		return int(n)
-	case int:
-		return n
-	case int64:
-		return int(n)
-	case string:
-		// 偶有字符串码，尽力转
-		if x, err := strconv.Atoi(n); err == nil {
-			return x
-		}
-	}
-	return def
+	return strutil.ToInt(v, def)
 }
 
 func toStr(v any) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return ""
+	return strutil.ToStr(v)
 }
 
 func toStrOr(v any, def string) string {
-	if s, ok := v.(string); ok && s != "" {
-		return s
-	}
-	return def
+	return strutil.ToStrOr(v, def)
 }
 
 func toMap(v any) map[string]any {
-	if m, ok := v.(map[string]any); ok {
-		return m
-	}
-	return nil
+	return strutil.ToMap(v)
 }
 
 func firstNonNil(vals ...any) any {

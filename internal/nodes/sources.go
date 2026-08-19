@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/db"
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 const (
@@ -409,7 +410,7 @@ func canonicalNodeKey(rawURI string) string {
 			body = body[:idx]
 		}
 		encoded := strings.ReplaceAll(strings.ReplaceAll(body, "-", "+"), "_", "/")
-		if decoded, err := base64.StdEncoding.DecodeString(padB64(encoded)); err == nil {
+		if decoded, err := base64.StdEncoding.DecodeString(strutil.PadB64(encoded)); err == nil {
 			var payload map[string]any
 			if json.Unmarshal(decoded, &payload) == nil {
 				delete(payload, "ps")

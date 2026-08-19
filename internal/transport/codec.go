@@ -7,15 +7,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-)
 
-func padB64(s string) string {
-	s = strings.ReplaceAll(strings.ReplaceAll(s, "-", "+"), "_", "/")
-	if pad := len(s) % 4; pad != 0 {
-		s += strings.Repeat("=", 4-pad)
-	}
-	return s
-}
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
+)
 
 // ParseURI 解析各种协议的节点链接
 func ParseURI(uri string) (map[string]any, error) {
@@ -53,7 +47,7 @@ func ParseURI(uri string) (map[string]any, error) {
 		return parseAnyTLS(uri)
 	}
 	if strings.HasPrefix(uri, "clash://") {
-		b, _ := base64.StdEncoding.DecodeString(padB64(uri[8:]))
+		b, _ := base64.StdEncoding.DecodeString(strutil.PadB64(uri[8:]))
 		var d map[string]any
 		_ = json.Unmarshal(b, &d)
 		return d, nil
@@ -103,19 +97,19 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 	sec := strings.ToLower(q.Get("security"))
 	if sec == "reality" || sec == "tls" || typ == "trojan" || typ == "hysteria2" || typ == "tuic" {
 		out["tls"] = true
-		sni := firstNonEmpty(q.Get("sni"), u.Hostname())
+		sni := strutil.FirstNonEmpty(q.Get("sni"), u.Hostname())
 		out["sni"] = sni
-		out["servername"] = firstNonEmpty(q.Get("servername"), sni)
+		out["servername"] = strutil.FirstNonEmpty(q.Get("servername"), sni)
 		if sec != "reality" && queryFlag(q, "allowInsecure", "insecure") {
 			out["skip-cert-verify"] = true
 		}
 	}
 
 	if sec == "reality" {
-		if pubKey := firstNonEmpty(q.Get("pbk"), q.Get("public-key")); pubKey != "" {
-			out["reality-opts"] = map[string]any{"public-key": pubKey, "short-id": firstNonEmpty(q.Get("sid"), q.Get("short-id"))}
+		if pubKey := strutil.FirstNonEmpty(q.Get("pbk"), q.Get("public-key")); pubKey != "" {
+			out["reality-opts"] = map[string]any{"public-key": pubKey, "short-id": strutil.FirstNonEmpty(q.Get("sid"), q.Get("short-id"))}
 		}
-		if firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")) == "" {
+		if strutil.FirstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")) == "" {
 			out["client-fingerprint"] = "chrome"
 		}
 	}
@@ -124,7 +118,7 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 		if flow := q.Get("flow"); flow != "" {
 			out["flow"] = flow
 		}
-		if fp := firstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")); fp != "" {
+		if fp := strutil.FirstNonEmpty(q.Get("fp"), q.Get("client-fingerprint"), q.Get("fingerprint")); fp != "" {
 			out["client-fingerprint"] = fp
 		} else if out["tls"] == true {
 			out["client-fingerprint"] = "chrome"
@@ -181,20 +175,20 @@ func parseSimple(uri, typ string) (map[string]any, error) {
 		}
 	}
 	if typ == "hysteria2" {
-		if sni := firstNonEmpty(q.Get("sni"), q.Get("peer"), u.Hostname()); sni != "" {
+		if sni := strutil.FirstNonEmpty(q.Get("sni"), q.Get("peer"), u.Hostname()); sni != "" {
 			out["sni"] = sni
 			out["servername"] = sni
 		}
-		if ports := firstNonEmpty(q.Get("ports"), q.Get("mport")); ports != "" {
+		if ports := strutil.FirstNonEmpty(q.Get("ports"), q.Get("mport")); ports != "" {
 			out["ports"] = ports
 		}
 		if obfs := q.Get("obfs"); obfs != "" {
 			out["obfs"] = obfs
 		}
-		if obfsPassword := firstNonEmpty(q.Get("obfs-password"), q.Get("obfsPassword")); obfsPassword != "" {
+		if obfsPassword := strutil.FirstNonEmpty(q.Get("obfs-password"), q.Get("obfsPassword")); obfsPassword != "" {
 			out["obfs-password"] = obfsPassword
 		}
-		if fp := firstNonEmpty(q.Get("fp"), q.Get("fingerprint")); fp != "" {
+		if fp := strutil.FirstNonEmpty(q.Get("fp"), q.Get("fingerprint")); fp != "" {
 			if isCertPinningFingerprint(fp) {
 				out["fingerprint"] = fp
 			}
@@ -219,15 +213,6 @@ func isCertPinningFingerprint(fp string) bool {
 	return true
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if trimmed := strings.TrimSpace(v); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
 func queryFlag(q url.Values, keys ...string) bool {
 	for _, key := range keys {
 		switch strings.ToLower(strings.TrimSpace(q.Get(key))) {
@@ -246,7 +231,7 @@ func parseVmess(uri string) (map[string]any, error) {
 	if idx := strings.Index(b64Str, "#"); idx != -1 {
 		b64Str = b64Str[:idx]
 	}
-	b, err := base64.StdEncoding.DecodeString(padB64(b64Str))
+	b, err := base64.StdEncoding.DecodeString(strutil.PadB64(b64Str))
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
 
@@ -423,15 +408,15 @@ func decodeSSUserInfo(user *url.Userinfo) (string, string, error) {
 
 func decodeSSCredentials(userInfo string) (string, string, error) {
 	if colonIdx := strings.Index(userInfo, ":"); colonIdx != -1 {
-		mBytes, errM := base64.StdEncoding.DecodeString(padB64(userInfo[:colonIdx]))
-		pBytes, errP := base64.StdEncoding.DecodeString(padB64(userInfo[colonIdx+1:]))
+		mBytes, errM := base64.StdEncoding.DecodeString(strutil.PadB64(userInfo[:colonIdx]))
+		pBytes, errP := base64.StdEncoding.DecodeString(strutil.PadB64(userInfo[colonIdx+1:]))
 		if errM == nil && errP == nil {
 			return string(mBytes), string(pBytes), nil
 		}
 		return userInfo[:colonIdx], userInfo[colonIdx+1:], nil
 	}
 
-	b, err := base64.StdEncoding.DecodeString(padB64(userInfo))
+	b, err := base64.StdEncoding.DecodeString(strutil.PadB64(userInfo))
 	if err == nil {
 		parts := strings.SplitN(string(b), ":", 2)
 		if len(parts) == 2 {
@@ -467,10 +452,10 @@ func applySSPlugin(out map[string]any, pluginRaw string) {
 	case "simple-obfs", "obfs-local", "obfs":
 		out["plugin"] = "obfs"
 		opts := map[string]any{}
-		if mode := firstNonEmpty(rawOpts["obfs"], rawOpts["mode"]); mode != "" {
+		if mode := strutil.FirstNonEmpty(rawOpts["obfs"], rawOpts["mode"]); mode != "" {
 			opts["mode"] = mode
 		}
-		if host := firstNonEmpty(rawOpts["obfs-host"], rawOpts["host"]); host != "" {
+		if host := strutil.FirstNonEmpty(rawOpts["obfs-host"], rawOpts["host"]); host != "" {
 			opts["host"] = host
 		}
 		if len(opts) > 0 {
@@ -532,8 +517,8 @@ func parseSS(uri string) (map[string]any, error) {
 		// 适配两种形式的 Shadowsocks Base64 用户信息表达
 		if colonIdx := strings.Index(userInfo, ":"); colonIdx != -1 {
 			// 形式 A: base64(method) : base64(password)
-			mBytes, errM := base64.StdEncoding.DecodeString(padB64(userInfo[:colonIdx]))
-			pBytes, errP := base64.StdEncoding.DecodeString(padB64(userInfo[colonIdx+1:]))
+			mBytes, errM := base64.StdEncoding.DecodeString(strutil.PadB64(userInfo[:colonIdx]))
+			pBytes, errP := base64.StdEncoding.DecodeString(strutil.PadB64(userInfo[colonIdx+1:]))
 			if errM == nil && errP == nil {
 				method = string(mBytes)
 				password = string(pBytes)
@@ -542,7 +527,7 @@ func parseSS(uri string) (map[string]any, error) {
 
 		if method == "" || password == "" {
 			// 形式 B: 传统的整个 method:password 一起进行 base64 编码
-			b, err := base64.StdEncoding.DecodeString(padB64(userInfo))
+			b, err := base64.StdEncoding.DecodeString(strutil.PadB64(userInfo))
 			if err == nil {
 				parts := strings.SplitN(string(b), ":", 2)
 				if len(parts) == 2 {
@@ -622,7 +607,7 @@ func parseHTTP(uri string) (map[string]any, error) {
 	}
 	if strings.EqualFold(u.Scheme, "https") {
 		out["tls"] = true
-		out["sni"] = firstNonEmpty(u.Query().Get("sni"), u.Hostname())
+		out["sni"] = strutil.FirstNonEmpty(u.Query().Get("sni"), u.Hostname())
 		if queryFlag(u.Query(), "allowInsecure", "insecure") {
 			out["skip-cert-verify"] = true
 		}
@@ -639,7 +624,7 @@ func parseShadowsocksR(uri string) (map[string]any, error) {
 	if hash := strings.Index(body, "#"); hash >= 0 {
 		body = body[:hash]
 	}
-	decodedBytes, err := base64.StdEncoding.DecodeString(padB64(body))
+	decodedBytes, err := base64.StdEncoding.DecodeString(strutil.PadB64(body))
 	if err != nil {
 		return nil, fmt.Errorf("ssr parse failed: decode body: %w", err)
 	}
@@ -660,7 +645,7 @@ func parseShadowsocksR(uri string) (map[string]any, error) {
 	if err != nil || port <= 0 || port > 65535 || strings.TrimSpace(parts[0]) == "" {
 		return nil, fmt.Errorf("ssr parse failed: invalid server or port")
 	}
-	passwordBytes, err := base64.StdEncoding.DecodeString(padB64(strings.TrimRight(parts[5], "/")))
+	passwordBytes, err := base64.StdEncoding.DecodeString(strutil.PadB64(strings.TrimRight(parts[5], "/")))
 	if err != nil {
 		return nil, fmt.Errorf("ssr parse failed: decode password: %w", err)
 	}
@@ -687,7 +672,7 @@ func decodeSSRParam(value string) string {
 	if value == "" {
 		return ""
 	}
-	if decoded, err := base64.StdEncoding.DecodeString(padB64(value)); err == nil {
+	if decoded, err := base64.StdEncoding.DecodeString(strutil.PadB64(value)); err == nil {
 		return strings.TrimSpace(string(decoded))
 	}
 	if decoded, err := url.QueryUnescape(value); err == nil {
@@ -706,8 +691,8 @@ func parseHysteria(uri string) (map[string]any, error) {
 		return nil, err
 	}
 	query := u.Query()
-	up := normalizeHysteriaSpeed(firstNonEmpty(query.Get("up"), query.Get("upmbps"), query.Get("up-speed")))
-	down := normalizeHysteriaSpeed(firstNonEmpty(query.Get("down"), query.Get("downmbps"), query.Get("down-speed")))
+	up := normalizeHysteriaSpeed(strutil.FirstNonEmpty(query.Get("up"), query.Get("upmbps"), query.Get("up-speed")))
+	down := normalizeHysteriaSpeed(strutil.FirstNonEmpty(query.Get("down"), query.Get("downmbps"), query.Get("down-speed")))
 	if up == "" || down == "" {
 		return nil, fmt.Errorf("hysteria parse failed: up/down speed is required")
 	}
@@ -718,7 +703,7 @@ func parseHysteria(uri string) (map[string]any, error) {
 	out := map[string]any{
 		"name": nameFromURL(u), "type": "hysteria", "server": u.Hostname(), "port": port,
 		"up": up, "down": down, "auth-str": auth,
-		"sni": firstNonEmpty(query.Get("sni"), query.Get("peer"), u.Hostname()),
+		"sni": strutil.FirstNonEmpty(query.Get("sni"), query.Get("peer"), u.Hostname()),
 	}
 	if queryFlag(query, "allowInsecure", "insecure") {
 		out["skip-cert-verify"] = true
@@ -762,12 +747,12 @@ func parseAnyTLS(uri string) (map[string]any, error) {
 	query := u.Query()
 	out := map[string]any{
 		"name": nameFromURL(u), "type": "anytls", "server": u.Hostname(), "port": port,
-		"password": password, "sni": firstNonEmpty(query.Get("sni"), u.Hostname()), "udp": true,
+		"password": password, "sni": strutil.FirstNonEmpty(query.Get("sni"), u.Hostname()), "udp": true,
 	}
 	if queryFlag(query, "allowInsecure", "insecure") {
 		out["skip-cert-verify"] = true
 	}
-	if fp := firstNonEmpty(query.Get("fp"), query.Get("fingerprint")); fp != "" {
+	if fp := strutil.FirstNonEmpty(query.Get("fp"), query.Get("fingerprint")); fp != "" {
 		out["client-fingerprint"] = fp
 	}
 	if alpn := query.Get("alpn"); alpn != "" {

@@ -1,5 +1,4 @@
 package api
-
 import (
 	"encoding/base64"
 	"encoding/json"
@@ -8,6 +7,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 func errToStr(err error) string {
@@ -136,21 +137,11 @@ func parseInlineYamlAttrs(s string) map[string]string {
 }
 
 func isTruthy(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
+	return strutil.IsTruthyStr(v)
 }
 
 func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if trimmed := strings.TrimSpace(v); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
+	return strutil.FirstNonEmpty(values...)
 }
 
 func parseInlineYamlObject(s string) map[string]string {

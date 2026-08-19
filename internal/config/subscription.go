@@ -21,25 +21,24 @@ var (
 )
 
 type CustomUA struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	UserAgent string `json:"user_agent"`
+	ID        string `json:"id" db:"id"`
+	Name      string `json:"name" db:"name"`
+	UserAgent string `json:"user_agent" db:"user_agent"`
 }
 
 type Subscription struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	URL            string `json:"url"`
-	UserAgent      string `json:"user_agent,omitempty"`
-	CustomUAID     string `json:"custom_ua_id,omitempty"`
-	UpdateInterval int    `json:"update_interval"` // In minutes
-	AdoptManual    bool   `json:"adopt_manual,omitempty"`
-	LastUpdateTime int64  `json:"last_update_time"`
-	LastError      string `json:"last_error"`
-	Revision       uint64 `json:"revision"`
-	Generation     string `json:"generation"`
+	ID             string `json:"id" db:"id"`
+	Name           string `json:"name" db:"name"`
+	URL            string `json:"url" db:"url"`
+	UserAgent      string `json:"user_agent,omitempty" db:"user_agent"`
+	CustomUAID     string `json:"custom_ua_id,omitempty" db:"custom_ua_id"`
+	UpdateInterval int    `json:"update_interval" db:"update_interval"` // In minutes
+	AdoptManual    bool   `json:"adopt_manual,omitempty" db:"adopt_manual"`
+	LastUpdateTime int64  `json:"last_update_time" db:"last_update_time"`
+	LastError      string `json:"last_error" db:"last_error"`
+	Revision       uint64 `json:"revision" db:"revision"`
+	Generation     string `json:"generation" db:"generation"`
 }
-
 type SubscriptionConfig struct {
 	Subscriptions []Subscription `json:"subscriptions"`
 	CustomUAs     []CustomUA     `json:"custom_uas"`

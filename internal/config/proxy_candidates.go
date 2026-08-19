@@ -14,16 +14,16 @@ import (
 )
 
 type ProxyCandidate struct {
-	RawURI              string  `json:"raw_uri"`
-	Name                string  `json:"name"`
-	Type                string  `json:"type"`
-	Disabled            bool    `json:"disabled"`
-	CooldownUntil       int64   `json:"cooldown_until"`
-	LastTestOK          bool    `json:"last_test_ok"`
-	LastTestMs          float64 `json:"last_test_ms"`
-	LastTestAt          int64   `json:"last_test_at"`
-	LastTestError       string  `json:"last_test_error"`
-	ConsecutiveFailures int     `json:"consecutive_failures"`
+	RawURI              string  `json:"raw_uri" db:"raw_uri"`
+	Name                string  `json:"name" db:"name"`
+	Type                string  `json:"type" db:"type"`
+	Disabled            bool    `json:"disabled" db:"disabled"`
+	CooldownUntil       int64   `json:"cooldown_until" db:"cooldown_until"`
+	LastTestOK          bool    `json:"last_test_ok" db:"last_test_ok"`
+	LastTestMs          float64 `json:"last_test_ms" db:"last_test_ms"`
+	LastTestAt          int64   `json:"last_test_at" db:"last_test_at"`
+	LastTestError       string  `json:"last_test_error" db:"last_test_error"`
+	ConsecutiveFailures int     `json:"consecutive_failures" db:"consecutive_failures"`
 }
 
 //nolint:gochecknoglobals // Serializes candidate read-modify-write operations.
@@ -60,26 +60,13 @@ func ListProxyCandidates() []ProxyCandidate {
 	}
 	candidateCacheMu.RUnlock()
 
-	store, err := candidateStore()
-	if err != nil {
+	if db.GlobalDBX == nil {
 		return nil
 	}
-	rows, err := store.Query(`SELECT raw_uri, name, type, disabled, cooldown_until, last_test_ok, last_test_ms, last_test_at, last_test_error, consecutive_failures
-		FROM entry_proxy_candidates ORDER BY rowid`)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
 	var result []ProxyCandidate
-	for rows.Next() {
-		var candidate ProxyCandidate
-		if err := rows.Scan(&candidate.RawURI, &candidate.Name, &candidate.Type, &candidate.Disabled,
-			&candidate.CooldownUntil, &candidate.LastTestOK, &candidate.LastTestMs,
-			&candidate.LastTestAt, &candidate.LastTestError, &candidate.ConsecutiveFailures); err == nil {
-			result = append(result, candidate)
-		}
+	if err := db.GlobalDBX.Select(&result, `SELECT raw_uri, name, type, disabled, cooldown_until, last_test_ok, last_test_ms, last_test_at, last_test_error, consecutive_failures FROM entry_proxy_candidates ORDER BY rowid`); err != nil {
+		return nil
 	}
-
 	candidateCacheMu.Lock()
 	cachedCandidates = make([]ProxyCandidate, len(result))
 	copy(cachedCandidates, result)

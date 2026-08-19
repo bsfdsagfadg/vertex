@@ -1,21 +1,19 @@
 package transform
 
 import (
-	cryptorand "crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 // FinishReasonUnspecified 是匿名端点每帧携带的 protobuf 默认值。
 const FinishReasonUnspecified = "FINISH_REASON_UNSPECIFIED"
 
-var streamCounter uint64 //nolint:gochecknoglobals
+
 
 // FunctionCallIDAssigner supplies IDs in response order. Reuse one assigner
 // for all chunks in a stream so separate tool-call frames remain distinct.
@@ -105,26 +103,7 @@ func (t *StreamToolCallTracker) process(candidateIndex int, ordinal int, functio
 
 // reqID 生成唯一 ID。
 func reqID() string {
-	var buf [12]byte
-	if _, err := cryptorand.Read(buf[:]); err != nil {
-		now := time.Now().UnixNano()
-		count := atomic.AddUint64(&streamCounter, 1)
-		var fallback [12]byte
-		fallback[0] = byte(now >> 56)
-		fallback[1] = byte(now >> 48)
-		fallback[2] = byte(now >> 40)
-		fallback[3] = byte(now >> 32)
-		fallback[4] = byte(now >> 24)
-		fallback[5] = byte(now >> 16)
-		fallback[6] = byte(now >> 8)
-		fallback[7] = byte(now)
-		fallback[8] = byte(count >> 24)
-		fallback[9] = byte(count >> 16)
-		fallback[10] = byte(count >> 8)
-		fallback[11] = byte(count)
-		return hex.EncodeToString(fallback[:])
-	}
-	return hex.EncodeToString(buf[:])
+	return strutil.ReqID()
 }
 
 // sseLine 把对象序列化成一条 SSE 数据行。
@@ -197,15 +176,22 @@ func ConvertRealtimeChunk(chunk map[string]any, model, requestID string, isFirst
 	}
 
 	usageMeta, hasUsage := chunk["usageMetadata"].(map[string]any)
-	if len(finishChoices) > 0 || (hasUsage && len(usageMeta) > 0) {
+	if len(finishChoices) > 0 {
 		finishEvent := base()
 		finishEvent["choices"] = finishChoices
 		if hasUsage && len(usageMeta) > 0 {
+			// Track 1: Include usage directly in the finish frame for legacy aggregators
 			finishEvent["usage"] = ConvertUsage(usageMeta)
 		}
 		events = append(events, sseLine(finishEvent))
 	}
-
+	if hasUsage && len(usageMeta) > 0 {
+		// Track 2: Dedicated terminal usage chunk with empty choices for standard OpenAI SDKs / Cherry Studio
+		usageEvent := base()
+		usageEvent["choices"] = []any{}
+		usageEvent["usage"] = ConvertUsage(usageMeta)
+		events = append(events, sseLine(usageEvent))
+	}
 	return events
 }
 

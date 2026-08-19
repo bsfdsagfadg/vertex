@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/samber/lo"
 )
 
 const defaultTermuxPrefix = "/data/data/com.termux/files/usr"
@@ -185,20 +187,8 @@ func readAndroidSystemProperty(key string) string {
 }
 
 func appendUnique(dst []string, values ...string) []string {
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		exists := false
-		for _, item := range dst {
-			if item == value {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			dst = append(dst, value)
-		}
-	}
-	return dst
+	filtered := lo.Filter(values, func(v string, _ int) bool {
+		return v != ""
+	})
+	return lo.Uniq(append(dst, filtered...))
 }

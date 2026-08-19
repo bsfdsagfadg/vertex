@@ -15,32 +15,32 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/db"
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
-
 type Node struct {
-	Type     string `json:"type"`
-	Name     string `json:"name"`
-	RawURI   string `json:"raw_uri"`
-	Disabled bool   `json:"disabled"`
+	Type     string `json:"type" db:"type"`
+	Name     string `json:"name" db:"name"`
+	RawURI   string `json:"raw_uri" db:"raw_uri"`
+	Disabled bool   `json:"disabled" db:"disabled"`
 }
 
 type NodeHealth struct { //nolint:govet
-	SuccessCount        int     `json:"success_count"`
-	FailCount           int     `json:"fail_count"`
-	ConsecutiveFailures int     `json:"consecutive_failures"`
-	LastTestMs          float64 `json:"last_test_ms"`
-	LastTestError       string  `json:"last_test_error"`
-	LastSuccessAt       int64   `json:"last_success_at"`
-	LastFailAt          int64   `json:"last_fail_at"`
-	CooldownUntil       int64   `json:"cooldown_until"`
-	Last429At           int64   `json:"last_429_at"`
-	RateLimitCount      int     `json:"rate_limit_count"`
-	RecentUseCount      int     `json:"recent_use_count"`
-	LastSelectedAt      int64   `json:"last_selected_at"`
-	LastSubHealthyAt    int64   `json:"last_sub_healthy_at"` // 记录上一次处于亚健康状态的时间
-	InFlight            int32   `json:"-"`                   // 当前并发连接数，不持久化
+	RawURI              string  `json:"-" db:"raw_uri"`
+	SuccessCount        int     `json:"success_count" db:"success_count"`
+	FailCount           int     `json:"fail_count" db:"fail_count"`
+	ConsecutiveFailures int     `json:"consecutive_failures" db:"consecutive_failures"`
+	LastTestMs          float64 `json:"last_test_ms" db:"last_test_ms"`
+	LastTestError       string  `json:"last_test_error" db:"last_test_error"`
+	LastSuccessAt       int64   `json:"last_success_at" db:"last_success_at"`
+	LastFailAt          int64   `json:"last_fail_at" db:"last_fail_at"`
+	CooldownUntil       int64   `json:"cooldown_until" db:"cooldown_until"`
+	Last429At           int64   `json:"last_429_at" db:"last_429_at"`
+	RateLimitCount      int     `json:"rate_limit_count" db:"rate_limit_count"`
+	RecentUseCount      int     `json:"recent_use_count" db:"-"`
+	LastSelectedAt      int64   `json:"last_selected_at" db:"-"`
+	LastSubHealthyAt    int64   `json:"last_sub_healthy_at" db:"last_sub_healthy_at"` // 记录上一次处于亚健康状态的时间
+	InFlight            int32   `json:"-" db:"-"`                                     // 当前并发连接数，不持久化
 }
-
 var (
 	mu                     sync.Mutex                                 //nolint:gochecknoglobals
 	nodeList               []Node                                     //nolint:gochecknoglobals
@@ -76,24 +76,14 @@ func ensureLoaded() {
 	}
 	loaded = true
 
-	if db.GlobalDB == nil {
+	if db.GlobalDBX == nil {
 		return
 	}
 
 	// Load nodes
-	rows, err := db.GlobalDB.Query("SELECT raw_uri, type, name, disabled FROM nodes")
-	if err == nil {
-		defer func() {
-			_ = rows.Close()
-		}()
-		nodes := []Node{}
-		for rows.Next() {
-			var n Node
-			if err := rows.Scan(&n.RawURI, &n.Type, &n.Name, &n.Disabled); err == nil {
-				nodes = append(nodes, n)
-			}
-		}
-		nodeList = nodes
+	var loadedNodes []Node
+	if err := db.GlobalDBX.Select(&loadedNodes, "SELECT raw_uri, type, name, disabled FROM nodes"); err == nil {
+		nodeList = loadedNodes
 	}
 
 	sourceRows, err := db.GlobalDB.Query("SELECT raw_uri, source_type, source_id FROM node_sources")
@@ -111,20 +101,13 @@ func ensureLoaded() {
 	}
 
 	// Load health
-	hRows, err := db.GlobalDB.Query("SELECT raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until, last_429_at, rate_limit_count, last_sub_healthy_at FROM node_health")
-	if err == nil {
-		defer func() {
-			_ = hRows.Close()
-		}()
-		for hRows.Next() {
-			var uri string
-			h := &NodeHealth{} //nolint:exhaustruct
-			if err := hRows.Scan(&uri, &h.SuccessCount, &h.FailCount, &h.ConsecutiveFailures, &h.LastTestMs, &h.LastTestError, &h.LastSuccessAt, &h.LastFailAt, &h.CooldownUntil, &h.Last429At, &h.RateLimitCount, &h.LastSubHealthyAt); err == nil {
-				healthMap[uri] = h
-			}
+	var healthList []NodeHealth
+	if err := db.GlobalDBX.Select(&healthList, "SELECT raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until, last_429_at, rate_limit_count, last_sub_healthy_at FROM node_health"); err == nil {
+		for _, h := range healthList {
+			hc := h
+			healthMap[h.RawURI] = &hc
 		}
 	}
-
 	pruneHealthUnsafe()
 }
 
@@ -640,13 +623,6 @@ func EnableNode(uri string) bool {
 	return found
 }
 
-func padB64(s string) string {
-	s = strings.ReplaceAll(strings.ReplaceAll(s, "-", "+"), "_", "/")
-	if pad := len(s) % 4; pad != 0 {
-		s += strings.Repeat("=", 4-pad)
-	}
-	return s
-}
 
 func parseNodeIdentity(rawURI string) (scheme, userinfo, host string, port int, ok bool) {
 	if strings.HasPrefix(rawURI, "vmess://") {
@@ -657,7 +633,7 @@ func parseNodeIdentity(rawURI string) (scheme, userinfo, host string, port int, 
 		if idx := strings.Index(b64Str, "#"); idx != -1 {
 			b64Str = b64Str[:idx]
 		}
-		b64Str = padB64(b64Str)
+		b64Str = strutil.PadB64(b64Str)
 		if b, err := base64.StdEncoding.DecodeString(b64Str); err == nil {
 			var d map[string]any
 			if err := json.Unmarshal(b, &d); err == nil {
@@ -676,7 +652,7 @@ func parseNodeIdentity(rawURI string) (scheme, userinfo, host string, port int, 
 			body = body[:idx]
 		}
 		if idx := strings.Index(body, "@"); idx != -1 {
-			b, err := base64.StdEncoding.DecodeString(padB64(body[:idx]))
+			b, err := base64.StdEncoding.DecodeString(strutil.PadB64(body[:idx]))
 			if err == nil {
 				parts := strings.SplitN(string(b), ":", 2)
 				if len(parts) >= 2 {

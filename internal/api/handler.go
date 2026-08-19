@@ -2,19 +2,17 @@ package api
 
 import (
 	"context"
-	cryptorand "crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
@@ -95,29 +93,8 @@ func newSSEWriter(w http.ResponseWriter, contentType string) *sseWriter {
 	return sw
 }
 
-var reqCounter uint64 //nolint:gochecknoglobals
-
 func reqID24() string {
-	var buf [12]byte
-	if _, err := cryptorand.Read(buf[:]); err != nil {
-		now := time.Now().UnixNano()
-		count := atomic.AddUint64(&reqCounter, 1)
-		var fallback [12]byte
-		fallback[0] = byte(now >> 56)
-		fallback[1] = byte(now >> 48)
-		fallback[2] = byte(now >> 40)
-		fallback[3] = byte(now >> 32)
-		fallback[4] = byte(now >> 24)
-		fallback[5] = byte(now >> 16)
-		fallback[6] = byte(now >> 8)
-		fallback[7] = byte(now)
-		fallback[8] = byte(count >> 24)
-		fallback[9] = byte(count >> 16)
-		fallback[10] = byte(count >> 8)
-		fallback[11] = byte(count)
-		return hex.EncodeToString(fallback[:])
-	}
-	return hex.EncodeToString(buf[:])
+	return strutil.ReqID()
 }
 
 func vertexErrorToOAI(e *vertex.VertexError) map[string]any {
@@ -246,7 +223,5 @@ func maskKey(key string) string {
 }
 
 func generateAPIKey() string {
-	b := make([]byte, 24)
-	_, _ = cryptorand.Read(b)
-	return "sk-" + hex.EncodeToString(b)
+	return "sk-" + strutil.RandomHex(24)
 }
