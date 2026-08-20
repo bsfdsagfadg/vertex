@@ -75,14 +75,3 @@ func (r *SignatureResolver) ApplyContents(contents []Content) {
 		}
 	}
 }
-
-// ResolveSignatures 返回 ApplyContents 的纯函数等价（副本输入处理）。
-func (r *SignatureResolver) ResolveSignatures(parts []Part) []Part {
-	for j := range parts {
-		r.ApplyPart(&parts[j])
-		if parts[j].ThoughtSignature != "" {
-			parts[j].ThoughtSignature = r.EnsureBase64Sig(parts[j].ThoughtSignature)
-		}
-	}
-	return parts
-}

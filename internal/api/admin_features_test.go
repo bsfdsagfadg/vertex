@@ -69,7 +69,7 @@ func (d *trackingDialer) CreateDialer(uri string, reqID string) (func(ctx contex
 	var neter net.Dialer
 	return neter.DialContext, func() {}, nil
 }
-func (d *trackingDialer) StopAll()                  {}
+func (d *trackingDialer) StopAll() {}
 func (d *trackingDialer) GetNextEntrySocksAddr() string {
 	if v, ok := d.entryAddr.Load().(string); ok {
 		return v

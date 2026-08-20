@@ -187,6 +187,3 @@ func ParseJSONImportedNodes(text string) []nodes.Node {
 	}
 	return nil
 }
-
-
-

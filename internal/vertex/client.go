@@ -172,7 +172,6 @@ func mergeStreamPartsTyped(parts []transform.Part) []transform.Part {
 	return merged
 }
 
-
 func shallowCopy(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {

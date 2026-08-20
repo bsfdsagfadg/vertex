@@ -110,9 +110,9 @@ func TestBindSearchAndMapsTools(t *testing.T) {
 			wantLen: 2, wantGS: true, wantGM: true,
 		},
 		{
-			name:     "functionDeclarations only stays untouched",
-			tools:    []Tool{{FunctionDeclarations: []FunctionDeclaration{{Name: "f1"}}}},
-			wantLen:  1, wantGS: false, wantGM: false, wantFunc: true,
+			name:    "functionDeclarations only stays untouched",
+			tools:   []Tool{{FunctionDeclarations: []FunctionDeclaration{{Name: "f1"}}}},
+			wantLen: 1, wantGS: false, wantGM: false, wantFunc: true,
 		},
 		{
 			name:    "googleSearch and googleMaps already present appends nothing",
@@ -140,9 +140,9 @@ func TestBindSearchAndMapsTools(t *testing.T) {
 			wantLen: 1, wantGS: false, wantGM: false,
 		},
 		{
-			name:     "empty tools returns unchanged",
-			tools:    nil,
-			wantLen:  0, wantGS: false, wantGM: false,
+			name:    "empty tools returns unchanged",
+			tools:   nil,
+			wantLen: 0, wantGS: false, wantGM: false,
 		},
 	}
 	for _, c := range cases {

@@ -32,13 +32,13 @@ type NodeHealth struct { //nolint:govet
 // ---- 内存前置节点池状态（与持久化解耦，见 store_db.go）----
 
 var (
-	mu                     sync.RWMutex                              //nolint:gochecknoglobals
-	entryList              []Node                                    //nolint:gochecknoglobals
-	entryHealthMap         = make(map[string]*NodeHealth)            //nolint:gochecknoglobals
-	entryLoaded            bool                                      //nolint:gochecknoglobals
-	EntryDeleteCallback    func(uri string)                          //nolint:gochecknoglobals
-	EntryIdentityFunc      func(rawURI string) (key string, ok bool) //nolint:gochecknoglobals
-	EntryIsSupportedFunc   func(rawURI string) bool                  //nolint:gochecknoglobals
+	mu                   sync.RWMutex                              //nolint:gochecknoglobals
+	entryList            []Node                                    //nolint:gochecknoglobals
+	entryHealthMap       = make(map[string]*NodeHealth)            //nolint:gochecknoglobals
+	entryLoaded          bool                                      //nolint:gochecknoglobals
+	EntryDeleteCallback  func(uri string)                          //nolint:gochecknoglobals
+	EntryIdentityFunc    func(rawURI string) (key string, ok bool) //nolint:gochecknoglobals
+	EntryIsSupportedFunc func(rawURI string) bool                  //nolint:gochecknoglobals
 )
 
 // ResetEntryState 清空内存状态并标记未加载，供测试隔离/全量重置使用。

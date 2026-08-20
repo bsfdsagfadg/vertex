@@ -118,4 +118,3 @@ proxies:
 		t.Fatalf("hy2 should be supported: %s", hy2.UnsupportedReason)
 	}
 }
-

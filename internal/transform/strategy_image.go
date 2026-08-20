@@ -28,6 +28,7 @@ func (s *ImageStrategy) FamilyStreamMode() StreamMode { return StreamModeAggrega
 //   - thinkingConfig：客户端显式传入时归一化并按白名单平滑降级（越界档位降级、
 //     OFF/NONE 按不发送处理）；未传入时按 (DefaultThinkingLevel, model) 解析注入控制台默认
 //     （自动=不发送，对齐文本家族）。
+//
 // 本方法只做"默认值填充 + 归一/降级"，白名单清洗（Tools/SafetySettings）统一由 BuildVariables 唯一处理。
 func (s *ImageStrategy) Enhance(req *GeminiRequest, cfg config.ConfigProvider) {
 	spec := GetImageModelSpec(s.model)
@@ -66,6 +67,7 @@ func (s *ImageStrategy) Enhance(req *GeminiRequest, cfg config.ConfigProvider) {
 //     降级为第一个受支持的档位（图模型当前均为 MINIMAL）；
 //   - OFF/NONE（关闭思考）图模型不支持，按"不发送"处理返回 nil；
 //   - 白名单为空或无可降级档位时返回 nil。
+//
 // 前提：仅适用于 ThinkingLevel 机制模型（当前 4 个图模型均为 Level 机制），
 // 返回的 ThinkingConfig 仅携带 ThinkingLevel、丢弃 ThinkingBudget。
 // 纯函数、幂等，供 Enhance 与 BuildVariables 共用；仅图像家族策略调用，不影响文本/语音家族。

@@ -494,6 +494,3 @@ func ParseV2RayNNodeLine(line string) (nodes.Node, bool) {
 	}
 	return buildImportedNodeFromMap(normalized)
 }
-
-
-

@@ -553,4 +553,3 @@ func TestEmitAndCheckFinish(t *testing.T) {
 }
 
 // ── Task A：typed 直解链单元测试 ──
-

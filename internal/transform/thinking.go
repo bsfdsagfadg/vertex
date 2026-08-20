@@ -16,9 +16,9 @@ type thinkingCapability struct {
 
 var levelToThinkingLevel = map[string]string{
 	"最低": "MINIMAL",
-	"低":   "LOW",
-	"中":   "MEDIUM",
-	"高":   "HIGH",
+	"低":  "LOW",
+	"中":  "MEDIUM",
+	"高":  "HIGH",
 }
 
 var levelToBudgetRatio = map[string]int{

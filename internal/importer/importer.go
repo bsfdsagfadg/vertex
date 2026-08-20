@@ -91,7 +91,3 @@ func ParseFlexibleImportedNodeLine(line string) (nodes.Node, bool) {
 	}
 	return ParseV2RayNNodeLine(line)
 }
-
-
-
-

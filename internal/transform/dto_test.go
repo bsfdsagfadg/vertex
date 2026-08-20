@@ -7,11 +7,11 @@ import (
 
 func TestToolConfig_UnmarshalJSON_DualAlias(t *testing.T) {
 	cases := []struct {
-		name       string
-		raw        string
-		wantMode   string
-		wantRet    bool
-		wantSN     string
+		name     string
+		raw      string
+		wantMode string
+		wantRet  bool
+		wantSN   string
 	}{
 		{
 			name:     "camelCase retrievalConfig only",
@@ -26,23 +26,23 @@ func TestToolConfig_UnmarshalJSON_DualAlias(t *testing.T) {
 			wantRet:  true,
 		},
 		{
-			name:       "camelCase wins when both keys present",
-			raw:        `{"retrievalConfig": {"camel": 1}, "retrieval_config": {"snake": 1}}`,
-			wantMode:   "",
-			wantRet:    true,
-			wantSN:     "camel",
+			name:     "camelCase wins when both keys present",
+			raw:      `{"retrievalConfig": {"camel": 1}, "retrieval_config": {"snake": 1}}`,
+			wantMode: "",
+			wantRet:  true,
+			wantSN:   "camel",
 		},
 		{
-			name:       "functionCallingConfig preserved",
-			raw:        `{"functionCallingConfig": {"mode": "AUTO", "allowedFunctionNames": ["f1"]}}`,
-			wantMode:   "AUTO",
-			wantRet:    false,
+			name:     "functionCallingConfig preserved",
+			raw:      `{"functionCallingConfig": {"mode": "AUTO", "allowedFunctionNames": ["f1"]}}`,
+			wantMode: "AUTO",
+			wantRet:  false,
 		},
 		{
-			name:       "combined functionCallingConfig and retrievalConfig",
-			raw:        `{"functionCallingConfig": {"mode": "NONE"}, "retrievalConfig": {"disableAttribution": false}}`,
-			wantMode:   "NONE",
-			wantRet:    true,
+			name:     "combined functionCallingConfig and retrievalConfig",
+			raw:      `{"functionCallingConfig": {"mode": "NONE"}, "retrievalConfig": {"disableAttribution": false}}`,
+			wantMode: "NONE",
+			wantRet:  true,
 		},
 		{
 			name:     "empty object",
@@ -136,8 +136,8 @@ func TestToolConfig_UnmarshalJSON_CaseInsensitive(t *testing.T) {
 			wantRet: true,
 		},
 		{
-			name: "exact camelCase still wins over folded match",
-			raw:  `{"retrievalConfig": {"camel": 1}, "RETRIEVALCONFIG": {"upper": 1}}`,
+			name:    "exact camelCase still wins over folded match",
+			raw:     `{"retrievalConfig": {"camel": 1}, "RETRIEVALCONFIG": {"upper": 1}}`,
 			wantRet: true,
 		},
 	}

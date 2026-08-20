@@ -14,7 +14,6 @@ var adminAllowedSettings = map[string]bool{
 	"max_request_mb": true, "max_n": true, "aggregate_stream": true,
 	"drop_max_tokens":       true,
 	"parallel_pool_enabled": true, "parallel_pool_size": true,
-	"telemetry_enabled":             true,
 	"parallel_pool_delay_dynamic":   true,
 	"active_node_uri":               true,
 	"background_image":              true,
@@ -35,10 +34,6 @@ var adminAllowedSettings = map[string]bool{
 }
 
 func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request) {
-	telEnabled := true
-	if adm.cfg.TelemetryEnabled() != nil {
-		telEnabled = *adm.cfg.TelemetryEnabled()
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"settings": map[string]any{
 		"max_retries":           adm.cfg.MaxRetries(),
 		"max_spill_mb":          adm.cfg.MaxSpillMB(),
@@ -46,7 +41,6 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"max_n":                 adm.cfg.MaxN(),
 		"aggregate_stream":      adm.cfg.AggregateStream(),
 		"drop_max_tokens":       adm.cfg.DropMaxTokens(),
-		"telemetry_enabled":     telEnabled,
 		"parallel_pool_enabled": adm.cfg.ParallelPoolEnabled(), "parallel_pool_size": adm.cfg.ParallelPoolSize(), "active_node_uri": adm.cfg.ActiveNodeURI(),
 		"parallel_pool_delay_dynamic":   adm.cfg.ParallelPoolDelayDynamic(),
 		"background_image":              adm.cfg.BackgroundImage(),

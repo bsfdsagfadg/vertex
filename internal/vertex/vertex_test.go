@@ -63,7 +63,7 @@ func TestAuthError502(t *testing.T) {
 	if e.Code != 502 {
 		t.Errorf("auth code=%d, want 502（红线：避免网关误判禁用渠道）", e.Code)
 	}
-	if !e.IsRetryable() {
+	if e.ClassifyBatch() != Transient {
 		t.Error("auth 应可重试")
 	}
 }
@@ -118,18 +118,11 @@ func TestNewNetworkError(t *testing.T) {
 	if e.Kind != "network" {
 		t.Errorf("Kind=%s, want network", e.Kind)
 	}
-	if !e.IsRetryable() {
+	if e.ClassifyBatch() != Transient {
 		t.Error("network error should be retryable")
 	}
 	if !errors.Is(e, originalErr) {
 		t.Error("errors.Is should penetrate to original net.Error via cause")
-	}
-}
-
-func TestNewNetworkError_IsRetryable(t *testing.T) {
-	e := NewNetworkError(io.EOF)
-	if !e.IsRetryable() {
-		t.Error("network error IsRetryable should return true")
 	}
 }
 
@@ -154,15 +147,15 @@ func TestWithCause(t *testing.T) {
 	}
 }
 
-func TestIsRetryableNetwork(t *testing.T) {
+func TestNetworkErrorTransientClassification(t *testing.T) {
 	e := NewNetworkError(io.EOF)
-	if !e.IsRetryable() {
+	if e.ClassifyBatch() != Transient {
 		t.Error("Kind==network should be retryable")
 	}
 
 	// context cancellation overrides retryability
 	ctxErr := NewContextError(context.Canceled)
-	if ctxErr.IsRetryable() {
+	if ctxErr.ClassifyBatch() == Transient {
 		t.Error("context.Canceled should not be retryable")
 	}
 }

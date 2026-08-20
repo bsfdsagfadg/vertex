@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestInitDBAndMigrate(t *testing.T) {
+func TestInitDBCreatesTables(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "db_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -17,46 +17,24 @@ func TestInitDBAndMigrate(t *testing.T) {
 
 	dbPath := filepath.Join(tempDir, "data.db")
 
-	// Create dummy legacy files to test migration
-	nodesContent := []byte(`{
-		"nodes": [
-			{"raw_uri": "http://127.0.0.1:8080", "type": "socks5", "name": "Node A", "disabled": false}
-		]
-	}`)
-	_ = os.WriteFile(filepath.Join(tempDir, "nodes.json"), nodesContent, 0644)
-
-	healthContent := []byte(`{
-		"http://127.0.0.1:8080": {
-			"success_count": 10,
-			"fail_count": 0,
-			"consecutive_failures": 0,
-			"last_test_ms": 150.5,
-			"last_test_error": "",
-			"last_success_at": 1670000000,
-			"last_fail_at": 0,
-			"cooldown_until": 0
-		}
-	}`)
-	_ = os.WriteFile(filepath.Join(tempDir, "node_health.json"), healthContent, 0644)
-
 	// Init DB
 	if errInit := InitDB(dbPath); errInit != nil {
 		t.Fatalf("Failed to InitDB: %v", errInit)
 	}
 	defer CloseDB()
 
-	// Verify nodes table
+	// Verify nodes table exists and starts empty
 	var count int
 	err = GlobalDB.QueryRow("SELECT COUNT(*) FROM nodes").Scan(&count)
-	if err != nil || count != 1 {
-		t.Errorf("Expected 1 node, got %d, error: %v", count, err)
+	if err != nil || count != 0 {
+		t.Errorf("Expected 0 nodes in fresh database, got %d, error: %v", count, err)
 	}
 
-	// Verify node_health table
-	var successCount int
-	err = GlobalDB.QueryRow("SELECT success_count FROM node_health WHERE raw_uri = 'http://127.0.0.1:8080'").Scan(&successCount)
-	if err != nil || successCount != 10 {
-		t.Errorf("Expected success_count 10, got %d, error: %v", successCount, err)
+	// Verify node_health table exists and starts empty
+	var healthCount int
+	err = GlobalDB.QueryRow("SELECT COUNT(*) FROM node_health").Scan(&healthCount)
+	if err != nil || healthCount != 0 {
+		t.Errorf("Expected 0 health records in fresh database, got %d, error: %v", healthCount, err)
 	}
 }
 

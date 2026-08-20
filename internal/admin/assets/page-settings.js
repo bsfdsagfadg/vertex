@@ -232,10 +232,6 @@ async function saveSettings() {
     else if (f.type === 'number') out[f.k] = parseInt(el.value || '0', 10);
     else out[f.k] = el.value;
   }
-  // Keep sending whatever telemetry_enabled is in curSettings to prevent config loss/errors
-  if (curSettings.telemetry_enabled !== undefined) {
-    out['telemetry_enabled'] = curSettings.telemetry_enabled;
-  }
   await API.settings.put(out); toast('设置已保存');
   window.hasUnsavedSettings = false;
   await loadSettings();

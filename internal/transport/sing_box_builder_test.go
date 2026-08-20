@@ -479,13 +479,13 @@ func TestBuildOutboundFromNode_WebsocketEarlyData(t *testing.T) {
 
 func TestNormalizeSSMethod(t *testing.T) {
 	tests := map[string]string{
-		"chacha20-poly1305":       "chacha20-ietf-poly1305",
-		"chacha20poly1305":        "chacha20-ietf-poly1305",
-		"chacha20-ietf":           "chacha20-ietf-poly1305",
-		"aes-128-poly1305":        "aes-128-gcm",
-		"aes-256-poly1305":        "aes-256-gcm",
-		"aes-256-gcm":             "aes-256-gcm",
-		"CHACHA20-POLY1305":       "chacha20-ietf-poly1305",
+		"chacha20-poly1305": "chacha20-ietf-poly1305",
+		"chacha20poly1305":  "chacha20-ietf-poly1305",
+		"chacha20-ietf":     "chacha20-ietf-poly1305",
+		"aes-128-poly1305":  "aes-128-gcm",
+		"aes-256-poly1305":  "aes-256-gcm",
+		"aes-256-gcm":       "aes-256-gcm",
+		"CHACHA20-POLY1305": "chacha20-ietf-poly1305",
 	}
 	for in, want := range tests {
 		if got := normalizeSSMethod(in); got != want {

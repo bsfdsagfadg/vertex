@@ -373,5 +373,3 @@ func normalizeYAMLValue(value any) any {
 		return v
 	}
 }
-
-

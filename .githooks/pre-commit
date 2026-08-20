@@ -1,5 +1,5 @@
 #!/bin/sh
-# pre-commit — 提交门禁：go vet + staticcheck + gochecks 告警非零即阻止提交。
+# pre-commit — 提交门禁：gofmt + go vet + staticcheck + gochecks 告警非零即阻止提交。
 # 纯 sh 实现，跨平台：Windows（Git Bash 自带 sh）/ Linux / macOS 均可用。
 # 启用：git config core.hooksPath .githooks
 #
@@ -17,6 +17,14 @@ fi
 cd "$ROOT" || exit 1
 
 pass=1
+
+echo "[pre-commit] running gofmt -l internal cmd scripts ..."
+unformatted=$(gofmt -l internal cmd scripts)
+if [ -n "$unformatted" ]; then
+    echo "[pre-commit] FAIL: gofmt detected unformatted files:" >&2
+    echo "$unformatted" >&2
+    pass=0
+fi
 
 echo "[pre-commit] running go vet ./... ..."
 if ! go vet ./...; then
@@ -46,5 +54,5 @@ if [ "$pass" -ne 1 ]; then
     exit 1
 fi
 
-echo "[pre-commit] OK: vet + staticcheck + gochecks clean."
+echo "[pre-commit] OK: gofmt + vet + staticcheck + gochecks clean."
 exit 0

@@ -8,7 +8,8 @@
 //   - modernize (b.Loop)      benchmark 循环未使用 b.Loop()
 //
 // 用法：
-//   go run ./scripts/gochecks            # 全量检查（含测试文件）
+//
+//	go run ./scripts/gochecks            # 全量检查（含测试文件）
 package main
 
 import (

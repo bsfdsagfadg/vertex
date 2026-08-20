@@ -17,11 +17,11 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/entrynodes"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/sagernet/sing-box"
+	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/include"
 	"github.com/sagernet/sing-box/option"
-	C "github.com/sagernet/sing-box/constant"
-	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/json/badoption"
+	M "github.com/sagernet/sing/common/metadata"
 )
 
 type boxCloser interface {

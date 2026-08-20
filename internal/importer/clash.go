@@ -344,6 +344,3 @@ func buildClashNode(proxy map[string]any) (nodes.Node, bool) {
 	}
 	return ParseImportedNodeLine(rawURI)
 }
-
-
-

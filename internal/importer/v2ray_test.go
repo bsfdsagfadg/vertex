@@ -182,4 +182,3 @@ func TestParseImportedNodesTUICWithUsername(t *testing.T) {
 		t.Fatalf("unexpected tuic userinfo: %q:%q", out.UUID, out.Password)
 	}
 }
-

@@ -441,5 +441,3 @@ func buildProxyURIWithUser(scheme string, user *url.Userinfo, server, port, name
 	}
 	return u.String()
 }
-
-

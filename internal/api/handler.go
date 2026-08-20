@@ -26,10 +26,6 @@ type handler struct {
 	cfg  config.ConfigProvider
 }
 
-// StreamCallback 是真流式回调：data 非 nil 表示一个有效 chunk，err 非 nil 表示错误。
-// 返回 false 表示调用者要求停止流。
-type StreamCallback func(chunk map[string]any, err *vertex.VertexError) bool
-
 func (h *handler) dialer() transport.ProxyDialer {
 	if h.vc != nil && h.vc.Net() != nil {
 		return h.vc.Net().Dialer()

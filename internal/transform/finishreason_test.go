@@ -73,29 +73,6 @@ func TestCleanFinishReasonUnspecified(t *testing.T) {
 	}
 }
 
-func TestMapFinishReason(t *testing.T) {
-	cases := []struct {
-		finish       string
-		hasToolCalls bool
-		want         string
-	}{
-		{"STOP", false, "stop"},
-		{"stop", false, "stop"},
-		{"MAX_TOKENS", false, "length"},
-		{"SAFETY", false, "content_filter"},
-		{"TOOL_CALLS", false, "tool_calls"},
-		{"", false, "stop"},
-		{"", true, "tool_calls"},
-		{"STOP", true, "tool_calls"},
-		{"UNKNOWN_XYZ", false, "stop"},
-	}
-	for _, c := range cases {
-		if got := MapFinishReason(c.finish, c.hasToolCalls); got != c.want {
-			t.Errorf("MapFinishReason(%q, %v)=%q, want %q", c.finish, c.hasToolCalls, got, c.want)
-		}
-	}
-}
-
 func TestIsSafetyFinishReason(t *testing.T) {
 	for _, fr := range []string{"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "SPII", "BLOCKLIST", "IMAGE_SAFETY"} {
 		if !IsSafetyFinishReason(fr) {

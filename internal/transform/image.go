@@ -12,13 +12,13 @@ const DefaultImageModel = "gemini-3.1-flash-image"
 
 // ImageModelSpec 描述单个生图模型的静态白名单能力规格。
 type ImageModelSpec struct {
-	MaxOutputTokens    int               // 输出 token 上限（全模型 32768）
-	AllowTemperature   bool              // 是否支持 temperature（全模型 true）
-	MaxTemperature     float64           // 温度上限（lite-image=1.0，其余 2.0）
-	DefaultTemperature float64           // 温度缺省注入值（全模型 1.0）
-	AllowTopP          bool              // 是否支持 topP（全模型 true）
-	MaxTopP            float64           // topP 上限（全模型 1.0）
-	DefaultTopP        float64           // topP 缺省注入值（全模型 0.95）
+	MaxOutputTokens    int     // 输出 token 上限（全模型 32768）
+	AllowTemperature   bool    // 是否支持 temperature（全模型 true）
+	MaxTemperature     float64 // 温度上限（lite-image=1.0，其余 2.0）
+	DefaultTemperature float64 // 温度缺省注入值（全模型 1.0）
+	AllowTopP          bool    // 是否支持 topP（全模型 true）
+	MaxTopP            float64 // topP 上限（全模型 1.0）
+	DefaultTopP        float64 // topP 缺省注入值（全模型 0.95）
 	SupportedSizes     map[string]bool
 	SupportedRatios    map[string]bool
 	SupportedMimes     map[string]bool
@@ -182,12 +182,6 @@ var imageAspectRatioSupported = map[string]bool{
 	"auto": true, "1:1": true, "3:2": true, "2:3": true, "3:4": true, "4:3": true,
 	"4:5": true, "5:4": true, "9:16": true, "16:9": true,
 	"1:4": true, "4:1": true, "1:8": true, "8:1": true, "21:9": true,
-}
-
-// OutputMimeTypeAllowedFor 模型是否支持某输出图片格式。
-func OutputMimeTypeAllowedFor(model, mime string) bool {
-	spec := GetImageModelSpec(model)
-	return spec.SupportedMimes[strings.ToLower(strings.TrimSpace(mime))]
 }
 
 // InlineImage 是一张上传图片的 inlineData 结构（mimeType + base64 data）。
@@ -365,5 +359,3 @@ func gcd(a, b int) int {
 	}
 	return a
 }
-
-

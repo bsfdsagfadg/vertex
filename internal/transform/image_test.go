@@ -49,29 +49,6 @@ func TestAspectRatioAllowedFor(t *testing.T) {
 	}
 }
 
-func TestOutputMimeTypeAllowedFor(t *testing.T) {
-	cases := []struct {
-		name  string
-		model string
-		mime  string
-		want  bool
-	}{
-		{"flash-png", "gemini-3.1-flash-image", "image/png", true},
-		{"flash-jpeg", "gemini-3.1-flash-image", "image/jpeg", true},
-		{"flash-webp unsupported", "gemini-3.1-flash-image", "image/webp", false},
-		{"pro-png", "gemini-3-pro-image", "image/png", true},
-		{"pro-jpeg", "gemini-3-pro-image", "image/jpeg", true},
-		{"unknown-png", "unknown-model", "image/png", true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := OutputMimeTypeAllowedFor(c.model, c.mime); got != c.want {
-				t.Errorf("OutputMimeTypeAllowedFor(%q,%q)=%v, want %v", c.model, c.mime, got, c.want)
-			}
-		})
-	}
-}
-
 func TestBuildTypedImageRequest_All4Models(t *testing.T) {
 	t.Run("gemini-2.5-flash-image - 1024x1024 generates 1K and 1:1", func(t *testing.T) {
 		typedReq := BuildTypedImageRequest("gemini-2.5-flash-image", "A futuristic city", nil, nil, "1024x1024", "", "", "", "")
@@ -113,59 +90,4 @@ func TestBuildTypedImageRequest_All4Models(t *testing.T) {
 			t.Errorf("expected ImageSize 4K for gemini-3.1-flash-image, got %v", ic)
 		}
 	})
-}
-
-func TestSplitResponseParts_ImageMimeAndFallback(t *testing.T) {
-	cases := []struct {
-		name       string
-		parts      []Part
-		wantText   string
-		wantImages int
-	}{
-		{
-			name: "uppercase image mime",
-			parts: []Part{
-				{InlineData: &InlineData{MimeType: "IMAGE/JPEG", Data: "abc123"}},
-			},
-			wantText:   "\n![image](data:image/jpeg;base64,abc123)",
-			wantImages: 1,
-		},
-		{
-			name: "empty mime defaults to image/png",
-			parts: []Part{
-				{InlineData: &InlineData{MimeType: "", Data: "xyz789"}},
-			},
-			wantText:   "\n![image](data:image/png;base64,xyz789)",
-			wantImages: 1,
-		},
-		{
-			name: "non-image mime ignored",
-			parts: []Part{
-				{InlineData: &InlineData{MimeType: "audio/mp3", Data: "audio123"}},
-			},
-			wantText:   "",
-			wantImages: 0,
-		},
-		{
-			name: "mixed text and uppercase image",
-			parts: []Part{
-				{Text: "Here is your picture:"},
-				{InlineData: &InlineData{MimeType: " Image/WebP ", Data: "webp456"}},
-			},
-			wantText:   "Here is your picture:\n![image](data:image/webp;base64,webp456)",
-			wantImages: 1,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			text, _, _, images := SplitResponseParts(tc.parts)
-			if text != tc.wantText {
-				t.Errorf("text = %q, want %q", text, tc.wantText)
-			}
-			if len(images) != tc.wantImages {
-				t.Errorf("len(images) = %d, want %d", len(images), tc.wantImages)
-			}
-		})
-	}
 }

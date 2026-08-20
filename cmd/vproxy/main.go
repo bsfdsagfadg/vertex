@@ -28,7 +28,6 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/logger"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/spool"
-	"github.com/bsfdsagfadg/vertex/internal/telemetry"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
@@ -103,12 +102,6 @@ func main() {
 	logDir := filepath.Join(filepath.Dir(config.ConfigDir()), "logs")
 	dailyLogger := logger.NewDailyLogger(logDir)
 
-	// ---- 状态文件迁移（提前执行，无输出） ----
-	telemetry.MigrateStateFile("config/.instance_id", "config/state/.instance_id")
-	telemetry.MigrateStateFile("config/.telemetry_state", "config/state/.telemetry_state")
-	telemetry.MigrateStateFile("config/.rules_agreed", "config/state/.rules_agreed")
-	telemetry.MigrateStateFile("config/agreed-rules-docker.txt", "config/state/agreed-rules-docker.txt")
-
 	// ---- 规则同意检查 ----
 	curHash := rulesHash()
 	if inDocker() {
@@ -140,7 +133,7 @@ func main() {
 			fmt.Println(rulesText)
 			fmt.Println()
 			if hasOldAgreement() {
-				fmt.Println("  ⚠️  规则已更新（含遥测披露等内容），需要您重新确认。")
+				fmt.Println("  ⚠️  规则已更新，需要您重新确认。")
 				fmt.Println()
 			}
 			fmt.Print("  请输入 yes 同意以上规则（输入其他内容退出）：")
@@ -196,12 +189,6 @@ func main() {
 
 	vc := vertex.NewVertexAIClient(cfg, netClient)
 
-	telemetryEnabled := true
-	if cfg.TelemetryEnabled() != nil {
-		telemetryEnabled = *cfg.TelemetryEnabled()
-	}
-	telemetry.Start(version, runtime.GOOS+"/"+runtime.GOARCH, telemetryEnabled)
-
 	srv := api.NewServer(vc, keys, cfg)
 	//nolint:exhaustruct
 	httpServer := &http.Server{
@@ -228,7 +215,6 @@ func main() {
 		cancel()
 		dialer.StopAll()
 		stopAdminCleanup()
-		telemetry.Stop()
 		_ = dailyLogger.Close()
 	}
 

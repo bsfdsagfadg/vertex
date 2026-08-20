@@ -29,13 +29,8 @@ dist/
 test-generated-*.png
 *.code-workspace
 
-# Build output
-telemetry-server
-cmd/telemetry-server/
-
 # Runtime state (auto-generated, never commit)
 config/state/
-config/migrated/
 
 # 运行时目录：管理员后台上传的自定义背景图（由程序自动创建，勿提交）
 /assets/

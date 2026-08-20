@@ -13,38 +13,6 @@ type ImagePayload struct {
 	MimeType string
 }
 
-// SplitResponseParts 从 Parts 提取文本、思考文本、工具调用与图片列表。
-func SplitResponseParts(parts []Part) (text string, thinking string, toolCalls []*FunctionCall, images []string) {
-	var textBuf strings.Builder
-	var thinkBuf strings.Builder
-
-	for _, p := range parts {
-		if p.Thought {
-			thinkBuf.WriteString(p.Text)
-		} else if p.Text != "" {
-			textBuf.WriteString(p.Text)
-		}
-		if p.FunctionCall != nil {
-			toolCalls = append(toolCalls, p.FunctionCall)
-		}
-		if p.InlineData != nil && p.InlineData.Data != "" {
-			mime := strings.ToLower(strings.TrimSpace(p.InlineData.MimeType))
-			if mime == "" {
-				mime = "image/png"
-			}
-			if strings.HasPrefix(mime, "image/") {
-				images = append(images, p.InlineData.Data)
-				textBuf.WriteString("\n![image](data:")
-				textBuf.WriteString(mime)
-				textBuf.WriteString(";base64,")
-				textBuf.WriteString(p.InlineData.Data)
-				textBuf.WriteByte(')')
-			}
-		}
-	}
-	return textBuf.String(), thinkBuf.String(), toolCalls, images
-}
-
 // ExtractImagesTyped 从强类型响应抽取图片。
 //
 // ① 优先 inlineData：每个带 data 的 inlineData → {b64_json, mime_type}。

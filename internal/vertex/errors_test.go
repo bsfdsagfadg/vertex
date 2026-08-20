@@ -15,7 +15,7 @@ func TestClassifyBatch_ContextCause_IsTerminal(t *testing.T) {
 	if got := err.ClassifyBatch(); got != Terminal {
 		t.Errorf("context.Canceled 应裁决为 Terminal，实际 %v", got)
 	}
-	if err.IsRetryable() {
+	if err.ClassifyBatch() == Transient {
 		t.Error("context 类错误不应可重试")
 	}
 
@@ -30,7 +30,7 @@ func TestClassifyBatch_Truncated_IsCommitted(t *testing.T) {
 	if got := err.ClassifyBatch(); got != Committed {
 		t.Errorf("Truncated 应裁决为 Committed，实际 %v", got)
 	}
-	if err.IsRetryable() {
+	if err.ClassifyBatch() == Transient {
 		t.Error("Committed 错误不应可重试")
 	}
 	if !err.Truncated {
@@ -55,7 +55,7 @@ func TestClassifyBatch_GlobalHardError_IsFailFast(t *testing.T) {
 		if !c.err.IsGlobalHardError() {
 			t.Errorf("%s 应命中 IsGlobalHardError", c.name)
 		}
-		if c.err.IsRetryable() {
+		if c.err.ClassifyBatch() == Transient {
 			t.Errorf("%s 不应可重试", c.name)
 		}
 	}
@@ -85,7 +85,7 @@ func TestClassifyBatch_Transient(t *testing.T) {
 		if got := c.err.ClassifyBatch(); got != Transient {
 			t.Errorf("%s 应裁决为 Transient，实际 %v", c.name, got)
 		}
-		if !c.err.IsRetryable() {
+		if c.err.ClassifyBatch() != Transient {
 			t.Errorf("%s 应可重试", c.name)
 		}
 	}
@@ -116,9 +116,6 @@ func TestNormalizeError_NonVertexError_Defaults(t *testing.T) {
 	if ve.ClassifyBatch() != Transient {
 		t.Errorf("internal(500) 应裁决为 Transient，实际 %v", ve.ClassifyBatch())
 	}
-	if !ve.IsRetryable() {
-		t.Error("internal(500) 应可重试")
-	}
 }
 
 func TestNormalizeError_Nil(t *testing.T) {
@@ -142,17 +139,6 @@ func TestFriendlyErrorMessage_TruncatedSuffix(t *testing.T) {
 	plain := FriendlyErrorMessage(NewNetworkError(fmt.Errorf("tcp reset")))
 	if strings.Contains(plain, "（内容已截断）") {
 		t.Errorf("非截断错误不应带后缀，实际 %q", plain)
-	}
-}
-
-// ── IsRetryable 薄别名 ──
-
-func TestIsRetryable_Alias(t *testing.T) {
-	if !NewNetworkError(fmt.Errorf("x")).IsRetryable() {
-		t.Error("network 应可重试")
-	}
-	if NewInvalidArgumentError("x", nil).IsRetryable() {
-		t.Error("invalid 不应可重试")
 	}
 }
 

@@ -13,5 +13,3 @@ func SetBatchGraphqlURL(url string) {
 func (c *VertexAIClient) SetTokenPool(pool *recaptcha.TokenPool) {
 	c.pool = pool
 }
-
-

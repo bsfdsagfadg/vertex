@@ -1,4 +1,3 @@
-
 // Package vertex 实现与 Google 匿名 batchGraphql 端点交互的核心请求循环。
 package vertex
 

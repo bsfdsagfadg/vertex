@@ -35,8 +35,6 @@ type ConfigProvider interface {
 	CustomBgPresets() []string
 	AutoRefreshLogs() bool
 
-	TelemetryEnabled() *bool
-
 	BaseModels() []string
 	AliasMap() map[string]string
 	ModelsWithFakeVariants() []string
@@ -103,14 +101,6 @@ func (d dynamicConfig) CustomBgPresets() []string {
 	out := make([]string, len(c.CustomBgPresets))
 	copy(out, c.CustomBgPresets)
 	return out
-}
-func (d dynamicConfig) TelemetryEnabled() *bool {
-	c := Load()
-	if c.TelemetryEnabled == nil {
-		return nil
-	}
-	v := *c.TelemetryEnabled
-	return &v
 }
 func (d dynamicConfig) BaseModels() []string              { return Load().BaseModels() }
 func (d dynamicConfig) AliasMap() map[string]string       { return Load().AliasMap() }

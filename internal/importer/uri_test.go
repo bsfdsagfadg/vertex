@@ -155,4 +155,3 @@ func TestProxyMapToURISSHRoundTrip(t *testing.T) {
 		t.Fatalf("expected empty URI for unsupported naive type, got %q", got)
 	}
 }
-

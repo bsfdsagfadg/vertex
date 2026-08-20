@@ -76,7 +76,6 @@ func (c *fakeCfg) FontColorType() string             { panic("unexpected") }
 func (c *fakeCfg) FontColor() string                 { panic("unexpected") }
 func (c *fakeCfg) CustomBgPresets() []string         { panic("unexpected") }
 func (c *fakeCfg) AutoRefreshLogs() bool             { panic("unexpected") }
-func (c *fakeCfg) TelemetryEnabled() *bool           { panic("unexpected") }
 func (c *fakeCfg) BaseModels() []string              { panic("unexpected") }
 func (c *fakeCfg) AliasMap() map[string]string       { panic("unexpected") }
 func (c *fakeCfg) ModelsWithFakeVariants() []string  { panic("unexpected") }

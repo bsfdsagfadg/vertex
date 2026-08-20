@@ -25,9 +25,9 @@ func TestResolveThinkingConfig_GenericUnknownTextModel(t *testing.T) {
 
 func TestResolveThinkingConfig_AutoLevel(t *testing.T) {
 	tests := []struct {
-		name    string
-		model   string
-		wantTC  bool
+		name       string
+		model      string
+		wantTC     bool
 		wantBudget int
 	}{
 		{"2.5-pro-budget-minus1", "gemini-2.5-pro", true, -1},
@@ -74,10 +74,10 @@ func TestResolveThinkingConfig_ThinkingLevelModels(t *testing.T) {
 
 func TestResolveThinkingConfig_ThinkingBudgetModels(t *testing.T) {
 	tests := []struct {
-		name   string
-		model  string
-		level  string
-		want   int
+		name  string
+		model string
+		level string
+		want  int
 	}{
 		{"2.5-pro-min", "gemini-2.5-pro", "最低", 8192},
 		{"2.5-pro-low", "gemini-2.5-pro", "低", 16384},

@@ -6,7 +6,7 @@
 
 ## 一、 架构分层与 Package 职责概览
 
-项目采用四层架构（接入与协议适配层、核心领域业务层、基础设施与通用服务层、横切关注点层），`internal/` 下包含 19 个独立 package。代码搜索与定位请使用 `glob` / `grep` 工具动态检索，禁止维护或依赖静态文件名清单。
+项目采用四层架构（接入与协议适配层、核心领域业务层、基础设施与通用服务层、横切关注点层），`internal/` 下包含 17 个独立 package（另有 `internal/assets` 静态资源目录，非 Go package）。代码搜索与定位请使用 `glob` / `grep` 工具动态检索，禁止维护或依赖静态文件名清单。
 
 ### 1. 接入与协议适配层 (Access & Delivery Layer)
 - **`internal/api`**：Gemini 原生 REST 路由入口（`/v1beta/models/*` 等）、模型家族物理隔离 Pipeline 调度（文本、生图、语音）、后台管理 API 及认证/流控中间件。
@@ -34,7 +34,8 @@
 - **`internal/vertex` (`errors.go`)**：全局统一错误内核，负责网络、上下文、安全拦截及空响应的归一化映射 (`NormalizeError`)。
 - **`internal/logger`**：结构化日志输出与等级控制。
 - **`internal/cli`**：TUI 终端监控面板与交互命令行支持。
-- **`internal/telemetry`**：指标收集与遥测数据上报。
+
+> **历史注记**：遥测功能（原 `internal/telemetry`）已于 2026-08-21 废案清理中整体移除（详见 `.kilo/plans/CLEANUP_DEAD_FEATURES.md`）。
 
 > **说明**：`internal/` 保持物理目录扁平，新增功能或重构切片需遵循 **package 内按功能语义切分** 原则（零破坏重构），不得随意增加冗余层级。
 
@@ -43,6 +44,8 @@
 ## 二、 校验指令与静态门禁
 
 ### 1. 常用开发校验命令
+- 代码格式检查：`gofmt -l internal cmd scripts`
+- 代码格式自动修复：`gofmt -w -s internal cmd scripts`
 - 单包测试：`go test ./internal/<pkg>/...`
 - 全量测试：`go test ./...`
 - 静态检查：`go vet ./...`
@@ -62,7 +65,7 @@
 
 ### 2. 静态分析门禁约定（防回潮）
 
-1. **提交门禁**：仓库启用 `.githooks/pre-commit` 钩子（`git config core.hooksPath .githooks`），提交前自动执行 `go vet` + `staticcheck` + `gochecks`，告警非零即阻止提交。**任何人（含 Agent）提交前必须保证三者输出为空**。钩子为**纯 sh 实现，跨平台**（Windows Git Bash / Linux / macOS），依赖 `go` 与 `staticcheck`（`go install honnef.co/go/tools/cmd/staticcheck@latest`）在 PATH 中；`core.hooksPath` 为本地配置不入库，换环境克隆后需重新执行启用命令。
+1. **提交门禁**：仓库启用 `.githooks/pre-commit` 钩子（`git config core.hooksPath .githooks`），提交前自动执行 `gofmt` + `go vet` + `staticcheck` + `gochecks` 四重门禁，告警非零即阻止提交。**任何人（含 Agent）提交前必须保证四者输出为空**。钩子为**纯 sh 实现，跨平台**（Windows Git Bash / Linux / macOS），依赖 `go` 与 `staticcheck`（`go install honnef.co/go/tools/cmd/staticcheck@latest`）在 PATH 中；`core.hooksPath` 为本地配置不入库，换环境克隆后需重新执行启用命令。
 2. **新增/修改代码要求**：新增导出函数不得留下"仅测试引用"的死代码；删除代码时同步清理随之失效的 import（`go build` / `go test` 会兜底抓出）。新增参数必须被使用或命名为 `_`（`gochecks` 的 `unusedparams` 会拦截）；字符串拼接严禁用 `sb.WriteString(a + b)` 形式（`gochecks` 的 `writestring` 会拦截）；嵌套复合字面量省略可推断类型（`gofmt -s` / `gochecks` 的 `simplifycompositelit`）；基准测试循环使用 `b.Loop()`（`gochecks` 的 `modernize` 会拦截）。
 3. **gochecks 工具说明**：`scripts/gochecks/` 为挂在根模块下的聚合检查器（无独立 go.mod，直接 `go run ./scripts/gochecks`），豁免规则对齐 gopls 行为（接口实现方法参数、方法接收者不报）。`infertypeargs` 检查器依赖完整类型推断、仅存在于 gopls 内部，无命令行等价物，依靠编辑器提示人工处理（无行为风险）。若需新增检查项，在 `scripts/gochecks/main.go` 注册进 `checkers` map，同步更新本文件与 `.githooks/pre-commit` 注释。
 4. **导出死代码巡检（staticcheck 盲区）**：staticcheck 的 U1000 不检查导出符号，对导出函数的清理需人工复核或定期分析调用链：

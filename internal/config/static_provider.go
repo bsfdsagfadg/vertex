@@ -37,7 +37,6 @@ func (s staticConfig) FontColorType() string             { return s.c.FontColorT
 func (s staticConfig) FontColor() string                 { return s.c.FontColor }
 func (s staticConfig) CustomBgPresets() []string         { return s.c.CustomBgPresets }
 func (s staticConfig) AutoRefreshLogs() bool             { return s.c.GetAutoRefreshLogs() }
-func (s staticConfig) TelemetryEnabled() *bool           { return s.c.TelemetryEnabled }
 func (s staticConfig) BaseModels() []string              { return s.c.BaseModels() }
 func (s staticConfig) AliasMap() map[string]string       { return s.c.AliasMap() }
 func (s staticConfig) ModelsWithFakeVariants() []string  { return s.c.ModelsWithFakeVariants() }

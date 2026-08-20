@@ -25,7 +25,7 @@ const (
 
 // VertexError 是统一错误类型，兼容 Gemini API 错误格式。
 //
-// Kind 用于区分语义（auth/ratelimit/invalid/...），便于 IsRetryable 判定与对外错误映射。
+// Kind 用于区分语义（auth/ratelimit/invalid/...），便于 ClassifyBatch 判定与对外错误映射。
 // 认证错误对外返回 502 而非 401：这是我方 recaptcha/token 的临时问题，返 401 会让上游
 // 网关误判为“密钥失效”并自动禁用渠道，造成误杀；用 502 让网关当作可重试的服务端错误。
 type VertexError struct { //nolint:govet
@@ -57,13 +57,6 @@ func (e *VertexError) WithCause(cause error) *VertexError {
 func (e *VertexError) WithTruncated() *VertexError {
 	e.Truncated = true
 	return e
-}
-
-// IsRetryable 判定是否可重试：薄别名，语义收敛为 ClassifyBatch() == Transient。
-// context 错误（cause 链含 Canceled/DeadlineExceeded）由 ClassifyBatch 首步判为
-// Terminal（不可重试），与旧实现的防御性兜底语义一致。
-func (e *VertexError) IsRetryable() bool {
-	return e.ClassifyBatch() == Transient
 }
 
 // BatchDisposition 是批次级重试裁决的四态分类。
@@ -179,7 +172,7 @@ func NewEmptyResponseError(msg string, cause error) *VertexError {
 }
 
 // NewNetworkError 包装网络抖动错误（连接超时、DNS 失败、TCP Reset 等）。
-// Code=502 避免上游网关误判；Kind="network" 触发 IsRetryable 持续重试。
+// Code=502 避免上游网关误判；Kind="network" 触发 ClassifyBatch 持续重试。
 func NewNetworkError(err error) *VertexError {
 	return &VertexError{Message: err.Error(), Code: 502, Status: StatusUnavailable, Kind: "network", cause: err}
 }
