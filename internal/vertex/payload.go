@@ -2,8 +2,10 @@ package vertex
 
 import (
 	"crypto/rand"
-	"fmt"
 	"math/big"
+	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
@@ -39,14 +41,7 @@ func randomTrackingID() string {
 }
 
 func randomUUID() string {
-	uuid := make([]byte, 16)
-	_, _ = rand.Read(uuid)
-	// Set version 4
-	uuid[6] = (uuid[6] & 0x0f) | 0x40
-	// Set variant to RFC4122
-	uuid[8] = (uuid[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%X-%X-%X-%X-%X",
-		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16])
+	return strings.ToUpper(uuid.NewString())
 }
 
 // buildRequestPayload 构建发往上游的完整请求体（对齐 _build_request_payload）：

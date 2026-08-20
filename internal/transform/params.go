@@ -127,7 +127,7 @@ func normalizeImageSize(value any) string {
 				if errW != nil || errH != nil {
 					return ""
 				}
-				return pixelsToTier(maxInt(w, h))
+				return pixelsToTier(max(w, h))
 			}
 		}
 		if isAllDigits(s) {

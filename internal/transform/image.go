@@ -257,7 +257,7 @@ func sizeToImageSize(size string) string {
 	if !ok {
 		return ""
 	}
-	maxSide := maxInt(w, h)
+	maxSide := max(w, h)
 	switch {
 	case maxSide >= 3000:
 		return "4K"

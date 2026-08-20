@@ -3,8 +3,9 @@ package vertex
 import (
 	"context"
 	"encoding/json"
-	"strconv"
 	"strings"
+
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 // CountTokens 统计给定 contents 在指定模型下的 token 数。
@@ -67,7 +68,7 @@ func parseCountTokensResponse(raw []byte) int {
 			}
 			if countData != nil {
 				if tt, ok := countData["totalTokens"]; ok {
-					return coerceTokenCount(tt)
+					return strutil.ToInt(tt, 0)
 				}
 			}
 		}
@@ -75,20 +76,11 @@ func parseCountTokensResponse(raw []byte) int {
 	return 0
 }
 
-// coerceTokenCount 把 totalTokens（数字或数字字符串）转 int。
+// coerceTokenCount converts token count values to int via strutil.ToInt.
 func coerceTokenCount(v any) int {
-	switch n := v.(type) {
-	case float64:
-		return int(n)
-	case int:
-		return n
-	case string:
-		if x, err := strconv.Atoi(n); err == nil {
-			return x
-		}
-	}
-	return 0
+	return strutil.ToInt(v, 0)
 }
+
 
 // estimateTokens 递归或嵌套遍历 contents 计算估算的 token 总数。
 func estimateTokens(contents []any) int {

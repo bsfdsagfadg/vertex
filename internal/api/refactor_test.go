@@ -123,10 +123,6 @@ func geminiNonStreamingResponse() string {
 	return `{"candidates":[{"content":{"parts":[{"text":"Hello! How can I help you today?"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":20,"totalTokenCount":30}}`
 }
 
-// geminiStreamingChunk 构造一个 Gemini 流式 chunk。
-func geminiStreamingChunk(text, finishReason string) string {
-	return fmt.Sprintf(`{"results":[{"data":{"ui":{"streamGenerateContentAnonymous":{"candidates":[{"content":{"parts":[{"text":"%s"}],"role":"model"},"finishReason":"%s"}]}}}}}]}`, text, finishReason)
-}
 
 // ──────────────────────────────────────────────
 // 集成测试

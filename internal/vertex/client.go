@@ -51,6 +51,8 @@ type VertexAIClient struct {
 	cfg  config.ConfigProvider
 }
 
+func (c *VertexAIClient) Net() *transport.NetworkClient { return c.net }
+
 func (c *VertexAIClient) prepareRequest(ctx context.Context) context.Context {
 	ctx = transport.WithRequestID(ctx, RequestIDFromContext(ctx))
 	modelEntries := config.SelectEntryProxySequence(requestConcurrency(c.cfg), c.cfg)

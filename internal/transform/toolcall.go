@@ -110,12 +110,6 @@ func firstPresentIn(m map[string]any, keys ...string) any {
 	return map[string]any{}
 }
 
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
 
 func isAllDigits(s string) bool {
 	if s == "" {

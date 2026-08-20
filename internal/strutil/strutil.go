@@ -14,7 +14,7 @@ import (
 
 var (
 	camelRe   = regexp.MustCompile(`([a-z0-9])([A-Z])`)
-	idCounter uint64
+	idCounter uint64 //nolint:gochecknoglobals // Atomic counter for fallback ID generation
 )
 
 // PadB64 normalizes base64url characters (- and _) to standard (+ and /)
@@ -62,6 +62,12 @@ func IsTruthyStr(v string) bool {
 	default:
 		return false
 	}
+}
+
+// NonBlankStr reports whether v is a string that contains at least one non-whitespace character.
+func NonBlankStr(v any) bool {
+	s, ok := v.(string)
+	return ok && strings.TrimSpace(s) != ""
 }
 
 // ToStr converts v to string if it is a string type, otherwise returns "".

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -93,9 +92,6 @@ func newSSEWriter(w http.ResponseWriter, contentType string) *sseWriter {
 	return sw
 }
 
-func reqID24() string {
-	return strutil.ReqID()
-}
 
 func vertexErrorToOAI(e *vertex.VertexError) map[string]any {
 	var errType string
@@ -162,7 +158,7 @@ func isSafetyBlock(e *vertex.VertexError) bool {
 
 func oaiSafetyResponse(model string) map[string]any {
 	return map[string]any{
-		"id":      "chatcmpl-" + reqID24(),
+		"id":      "chatcmpl-" + strutil.ReqID(),
 		"object":  "chat.completion",
 		"created": time.Now().Unix(),
 		"model":   model,
@@ -202,14 +198,6 @@ func resolveN(raw any, maxN int) (int, string) {
 	return n, ""
 }
 
-func randomDigits(n int) string {
-	const digits = "0123456789"
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = digits[rand.IntN(len(digits))]
-	}
-	return string(b)
-}
 
 func adminErr(msg string) map[string]any {
 	return map[string]any{"error": map[string]any{"message": msg}}

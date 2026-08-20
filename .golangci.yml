@@ -4,21 +4,25 @@ run:
 linters:
   default: none
   enable:
+    - bodyclose
     - copyloopvar
     - errcheck
     - exhaustive
     - gochecknoglobals
     - gochecknoinits
     - gochecksumtype
+    - govet
+    - ineffassign
     - staticcheck
+    - unconvert
+    - unused
   settings:
     gochecksumtype:
       default-signifies-exhaustive: false
     govet:
-      enable-all: true
-      settings:
-        shadow:
-          strict: true
+      disable:
+        - fieldalignment
+        - shadow
   exclusions:
     generated: lax
     presets:

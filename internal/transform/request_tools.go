@@ -3,6 +3,8 @@ package transform
 import (
 	"fmt"
 	"strings"
+
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 // toolKeys 是 Vertex AI tools 列表里可与 functionDeclarations 共存的内置工具键集合。
@@ -170,7 +172,7 @@ func convertToolsFormat(data any) any {
 			default:
 				camelKey := k
 				if strings.Contains(k, "_") {
-					camelKey = SnakeToCamel(k)
+					camelKey = strutil.SnakeToCamel(k)
 				}
 				out[camelKey] = convertToolsFormatLeaf(v)
 			}

@@ -8,30 +8,6 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/config"
 )
 
-func TestSnakeToCamel(t *testing.T) {
-	cases := map[string]string{
-		"max_output_tokens": "maxOutputTokens",
-		"top_p":             "topP",
-		"topK":              "topK", // 无下划线原样
-		"temperature":       "temperature",
-		"thinking_config":   "thinkingConfig",
-	}
-	for in, want := range cases {
-		if got := SnakeToCamel(in); got != want {
-			t.Errorf("SnakeToCamel(%q)=%q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestCamelToSnake(t *testing.T) {
-	if got := CamelToSnake("topP"); got != "top_p" {
-		t.Errorf("CamelToSnake(topP)=%q", got)
-	}
-	if got := CamelToSnake("maxOutputTokens"); got != "max_output_tokens" {
-		t.Errorf("CamelToSnake(maxOutputTokens)=%q", got)
-	}
-}
-
 func TestNormalizeBase64(t *testing.T) {
 	if got := NormalizeBase64("data:image/png;base64,AAAA"); got != "AAAA" {
 		t.Errorf("data URI 剥离失败: %q", got)

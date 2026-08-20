@@ -10,6 +10,7 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
@@ -87,7 +88,7 @@ func (m *middleware) withBodyLimit(next http.Handler) http.Handler {
 func (m *middleware) withMetrics(next http.Handler) http.Handler {
 	skip := map[string]bool{"/": true, "/health": true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqID := reqID24()
+		reqID := strutil.ReqID()
 		ctx := context.WithValue(r.Context(), vertex.RequestIDKey{}, reqID)
 		ctx = transport.WithRequestID(ctx, reqID)
 		if skip[r.URL.Path] || isAdminPath(r.URL.Path) {

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 // assistantImageMarkdownRe 匹配 assistant 文本里嵌的 markdown data-URI 图片。
@@ -175,7 +176,7 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 		if v, ok := geminiPayload[field]; ok {
 			vars[field] = v
 		} else {
-			if v, ok := geminiPayload[CamelToSnake(field)]; ok {
+			if v, ok := geminiPayload[strutil.CamelToSnake(field)]; ok {
 				vars[field] = v
 			}
 		}
@@ -455,7 +456,7 @@ func normalizePart(part map[string]any) map[string]any {
 		if k == "type" {
 			continue
 		}
-		out[SnakeToCamel(k)] = v
+		out[strutil.SnakeToCamel(k)] = v
 	}
 	return out
 }
@@ -472,13 +473,13 @@ func handleInlineDataCase(contents any) any {
 	case map[string]any:
 		out := map[string]any{}
 		for k, v := range c {
-			camelK := SnakeToCamel(k)
+			camelK := strutil.SnakeToCamel(k)
 			switch camelK {
 			case "inlineData":
 				if vm, ok := v.(map[string]any); ok {
 					nid := map[string]any{}
 					for ik, iv := range vm {
-						nid[SnakeToCamel(ik)] = iv
+						nid[strutil.SnakeToCamel(ik)] = iv
 					}
 					out["inlineData"] = nid
 					continue
@@ -513,7 +514,7 @@ func camelizeFunctionRef(v map[string]any, payloadKey string) map[string]any {
 		out["id"] = fid
 	}
 	for ik, iv := range v {
-		cik := SnakeToCamel(ik)
+		cik := strutil.SnakeToCamel(ik)
 		switch cik {
 		case payloadKey:
 			out[cik] = iv

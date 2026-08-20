@@ -1,8 +1,6 @@
 package config
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
+
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 var (
@@ -71,11 +70,7 @@ func GetSubscriptionConfig() SubscriptionConfig {
 }
 
 func newConfigID(prefix string) string {
-	var data [8]byte
-	if _, err := rand.Read(data[:]); err == nil {
-		return prefix + hex.EncodeToString(data[:])
-	}
-	return fmt.Sprintf("%s%d", prefix, time.Now().UnixNano())
+	return prefix + strutil.RandomHex(8)
 }
 
 func normalizeSubscriptionConfig(conf *SubscriptionConfig) (bool, error) {

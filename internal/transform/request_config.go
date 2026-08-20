@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 // ensureGenCfg 返回 geminiPayload["generationConfig"]（不存在则创建）。
@@ -35,7 +36,7 @@ func buildGenerationConfig(geminiPayload map[string]any) map[string]any {
 func convertToGeminiFormat(cfg map[string]any) map[string]any {
 	out := map[string]any{}
 	for k, v := range cfg {
-		camelKey := SnakeToCamel(k)
+		camelKey := strutil.SnakeToCamel(k)
 		switch camelKey {
 		case "thinkingConfig":
 			if vm, ok := v.(map[string]any); ok {
@@ -88,7 +89,7 @@ func camelizeNested(v any) any {
 	case map[string]any:
 		out := map[string]any{}
 		for k, val := range x {
-			out[SnakeToCamel(k)] = camelizeNested(val)
+			out[strutil.SnakeToCamel(k)] = camelizeNested(val)
 		}
 		return out
 	case []any:

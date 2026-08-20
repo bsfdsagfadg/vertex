@@ -29,6 +29,11 @@ func isTruthy(v any) bool {
 	return jsonx.Truthy(v)
 }
 
+// numOf 把任意 JSON 数字（float64/int/int64/string）转 int，非数字返回 0。
+func numOf(v any) int {
+	return strutil.ToInt(v, 0)
+}
+
 // asMapSlice 把 any 规整成 []map[string]any（非 map 元素丢弃）。
 func asMapSlice(v any) []map[string]any {
 	arr, ok := v.([]any)

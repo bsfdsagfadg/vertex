@@ -413,7 +413,7 @@ func geminiResponseText(resp map[string]any) string {
 			if !ok2 {
 				continue
 			}
-			if isTruthyAny(p["thought"]) {
+			if jsonx.Truthy(p["thought"]) {
 				continue
 			}
 			if t, ok3 := p["text"].(string); ok3 {
@@ -424,7 +424,6 @@ func geminiResponseText(resp map[string]any) string {
 	return sb.String()
 }
 
-func isTruthyAny(v any) bool { return jsonx.Truthy(v) }
 func generateVPSuffix() string {
 	var buf [4]byte
 	_, _ = rand.Read(buf[:])

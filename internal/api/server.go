@@ -8,6 +8,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"path/filepath"
 	"time"
 
@@ -80,16 +81,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/models/", s.gemini.handleModelsSubtree)
 
 	if s.mw.cfg.DebugPprof() {
-		mux.HandleFunc("/debug/pprof/", pprofIndex)
-		mux.HandleFunc("/debug/pprof/cmdline", pprintCmdline)
-		mux.HandleFunc("/debug/pprof/profile", pprofProfile)
-		mux.HandleFunc("/debug/pprof/symbol", pprofSymbol)
-		mux.HandleFunc("/debug/pprof/trace", pprofTrace)
-		mux.HandleFunc("/debug/pprof/goroutine", pprofGoroutine)
-		mux.HandleFunc("/debug/pprof/heap", pprofHeap)
-		mux.HandleFunc("/debug/pprof/threadcreate", pprofThreadcreate)
-		mux.HandleFunc("/debug/pprof/block", pprofBlock)
-		mux.HandleFunc("/debug/pprof/mutex", pprofMutex)
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		mux.HandleFunc("/debug/pprof/goroutine", pprof.Handler("goroutine").ServeHTTP)
+		mux.HandleFunc("/debug/pprof/heap", pprof.Handler("heap").ServeHTTP)
+		mux.HandleFunc("/debug/pprof/threadcreate", pprof.Handler("threadcreate").ServeHTTP)
+		mux.HandleFunc("/debug/pprof/block", pprof.Handler("block").ServeHTTP)
+		mux.HandleFunc("/debug/pprof/mutex", pprof.Handler("mutex").ServeHTTP)
 	}
 
 	return s.mw.withRecover(s.mw.withCORS(s.mw.withMetrics(s.mw.withAPIKey(s.mw.withBodyLimit(mux)))))

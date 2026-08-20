@@ -295,14 +295,6 @@ func candidateResponseIndex(candidate map[string]any, fallback int) int {
 
 // ---- 响应解析用的小工具 ----
 
-func firstCandidate(resp map[string]any) map[string]any {
-	if cands, ok := resp["candidates"].([]any); ok && len(cands) > 0 {
-		if c, ok := cands[0].(map[string]any); ok {
-			return c
-		}
-	}
-	return map[string]any{}
-}
 
 func candidateParts(candidate map[string]any) []any {
 	if content, ok := candidate["content"].(map[string]any); ok {
@@ -343,16 +335,3 @@ func firstNonEmpty(vals ...any) any {
 	return ""
 }
 
-// numOf 把任意 JSON 数字（float64/int）转 int，非数字返回 0。
-func numOf(v any) int {
-	switch n := v.(type) {
-	case float64:
-		return int(n)
-	case int:
-		return n
-	case int64:
-		return int(n)
-	default:
-		return 0
-	}
-}

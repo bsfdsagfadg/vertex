@@ -1,13 +1,12 @@
 package transform
 
 import (
-	"strings"
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
-// truthyStr 判断一个 any 是否为"非空字符串"。
+// truthyStr 判断一个 any 是否为"非空字符串"（委托至 strutil.NonBlankStr）。
 func truthyStr(v any) bool {
-	s, ok := v.(string)
-	return ok && strings.TrimSpace(s) != ""
+	return strutil.NonBlankStr(v)
 }
 
 // CleanPart 清洗单个 part，去除空字段、修复边界情况。
