@@ -2,6 +2,13 @@ package config
 
 import "testing"
 
+func TestDefaultConfigHasBoundedRequestSize(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.MaxRequestMB != DefaultMaxRequestMB {
+		t.Fatalf("default max request size=%d MB, want %d MB", cfg.MaxRequestMB, DefaultMaxRequestMB)
+	}
+}
+
 func TestShouldLogSuccessfulLoadOnlyWhenConfigChanges(t *testing.T) {
 	writeMu.Lock()
 	previousHash := lastLoadedConfigHash

@@ -92,7 +92,9 @@ func (a *Migration) Start() error {
 		Addr:              "0.0.0.0:" + strconv.Itoa(bootstrap.Port),
 		Handler:           migrationServer.Handler(),
 		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       2 * time.Minute,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 	a.started = true
 	log.Printf("[Migration] 请打开 http://<host>:%d/admin/ 完成迁移", bootstrap.Port)

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -18,9 +19,68 @@ import (
 )
 
 const (
-	adminCookieName = "admin_token"
-	adminSessionTTL = 24 * time.Hour
+	adminCookieName          = "admin_token"
+	adminSessionTTL          = 24 * time.Hour
+	adminLoginWindowDuration = 5 * time.Minute
+	adminLoginFailureLimit   = 5
 )
+
+type adminLoginWindow struct {
+	started  time.Time
+	failures int
+}
+
+func adminClientAddress(r *http.Request) string {
+	if r == nil {
+		return "unknown"
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil && host != "" {
+		return host
+	}
+	if raw := strings.TrimSpace(r.RemoteAddr); raw != "" {
+		return raw
+	}
+	return "unknown"
+}
+
+func (adm *AdminHandler) adminLoginBlocked(address string) bool {
+	adm.loginMu.Lock()
+	defer adm.loginMu.Unlock()
+	if adm.loginFailures == nil {
+		adm.loginFailures = make(map[string]adminLoginWindow)
+	}
+	now := time.Now()
+	window, ok := adm.loginFailures[address]
+	if !ok || now.Sub(window.started) >= adminLoginWindowDuration {
+		if ok {
+			delete(adm.loginFailures, address)
+		}
+		return false
+	}
+	return window.failures >= adminLoginFailureLimit
+}
+
+func (adm *AdminHandler) recordAdminLoginFailure(address string) {
+	adm.loginMu.Lock()
+	defer adm.loginMu.Unlock()
+	if adm.loginFailures == nil {
+		adm.loginFailures = make(map[string]adminLoginWindow)
+	}
+	now := time.Now()
+	window := adm.loginFailures[address]
+	if window.started.IsZero() || now.Sub(window.started) >= adminLoginWindowDuration {
+		window = adminLoginWindow{started: now}
+	}
+	window.failures++
+	adm.loginFailures[address] = window
+}
+
+func (adm *AdminHandler) clearAdminLoginFailures(address string) {
+	adm.loginMu.Lock()
+	delete(adm.loginFailures, address)
+	adm.loginMu.Unlock()
+}
 
 var (
 	//nolint:gochecknoglobals // Admin sessions state
@@ -164,6 +224,12 @@ func (adm *AdminHandler) adminLogin(w http.ResponseWriter, r *http.Request) {
 		adm.adminMethodNotAllowed(w)
 		return
 	}
+	address := adminClientAddress(r)
+	if adm.adminLoginBlocked(address) {
+		w.Header().Set("Retry-After", "60")
+		writeJSON(w, http.StatusTooManyRequests, adminErr("登录失败次数过多，请稍后重试"))
+		return
+	}
 	var body struct {
 		Password string `json:"password"`
 	}
@@ -176,10 +242,12 @@ func (adm *AdminHandler) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(body.Password)), []byte(expected)) != 1 {
+		adm.recordAdminLoginFailure(address)
 		log.Printf("[Security] 警告：后台登录失败，密码错误。来源 IP: %s", r.RemoteAddr)
 		writeJSON(w, http.StatusUnauthorized, adminErr("密码错误 (invalid password)"))
 		return
 	}
+	adm.clearAdminLoginFailures(address)
 	log.Printf("[Admin] 管理后台登录成功。来源 IP: %s", r.RemoteAddr)
 	cleanupAdminSessions()
 	tok := issueAdminToken()

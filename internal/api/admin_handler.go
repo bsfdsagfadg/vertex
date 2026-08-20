@@ -21,12 +21,34 @@ type AdminHandler struct {
 	subscriptionService *subscriptions.Service
 	routesOnce          sync.Once
 	router              http.Handler
+	loginMu             sync.Mutex
+	loginFailures       map[string]adminLoginWindow
 	nodeTestMu          sync.Mutex
 	nodeTestCancel      context.CancelFunc
 	nodeTestGeneration  uint64
 	proxyTestMu         sync.Mutex
 	proxyTestState      entryProxyTestProgress
 	proxyTestGeneration uint64
+}
+
+const maxAdminLogBytes = 4 << 20
+
+func readAdminLogTail(path string, maxBytes int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxBytes {
+		if _, err := file.Seek(-maxBytes, io.SeekEnd); err != nil {
+			return nil, err
+		}
+	}
+	return io.ReadAll(io.LimitReader(file, maxBytes))
 }
 
 func (adm *AdminHandler) handleAdminPage(w http.ResponseWriter, r *http.Request) {
@@ -172,7 +194,7 @@ func (adm *AdminHandler) adminGetLog(w http.ResponseWriter, r *http.Request) {
 		logPath = "logs/logs_latest.log"
 	}
 
-	data, err := os.ReadFile(logPath)
+	data, err := readAdminLogTail(logPath, maxAdminLogBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "content": ""})

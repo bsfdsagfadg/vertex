@@ -1,6 +1,11 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
+
+const sseWriteDeadline = 30 * time.Second
 
 // 本文件实现假流式：模型名带 "假流式-"/"fake-" 前缀时，先完整非流式生成、再切片按 SSE 推。
 // OpenAI 端点与 Gemini 端点（use_fake 分支）共用此机制。
@@ -61,6 +66,9 @@ func (sw *sseWriter) hasWritten() bool {
 // write 写一条原始字符串并 flush。返回 false 表示客户端断开。
 func (sw *sseWriter) write(line string) bool {
 	sw.ensureHeader()
+	// A client that stops reading must not pin the upstream stream forever.
+	// ResponseController is a no-op for test writers and unsupported servers.
+	_ = http.NewResponseController(sw.w).SetWriteDeadline(time.Now().Add(sseWriteDeadline))
 	if _, err := sw.w.Write([]byte(line)); err != nil {
 		return false
 	}

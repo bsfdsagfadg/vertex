@@ -23,6 +23,8 @@ const (
 	MinEntryProxyProbeIntervalSeconds     = 60
 	MaxEntryProxyProbeSeconds             = 86400
 	MaxEntryProxyAutoDisableFailures      = 100
+	DefaultMaxRequestMB                   = 64
+	MaxMaxRequestMB                       = 1024
 )
 
 type AppConfig struct { //nolint:govet
@@ -88,6 +90,7 @@ func DefaultConfig() AppConfig {
 		CountTokensQuerySignature:          defaultCountTokensQuerySig,
 		MaxN:                               8,
 		MaxSpillMB:                         2048,
+		MaxRequestMB:                       DefaultMaxRequestMB,
 		RequestTimeout:                     180,
 		FakeStreamEnabled:                  true,
 		RaceTimeout:                        0,
@@ -310,6 +313,14 @@ func Reload() AppConfig {
 			log.Printf("[Config] 解析 config.json 失败: %v", errUnm)
 		} else {
 			var needsSave bool
+			if cfg.MaxRequestMB <= 0 {
+				cfg.MaxRequestMB = DefaultMaxRequestMB
+				needsSave = true
+			} else if cfg.MaxRequestMB > MaxMaxRequestMB {
+				log.Printf("[Config] 警告: 请求体上限过高 (%d MB)，已限制为上限 %d MB", cfg.MaxRequestMB, MaxMaxRequestMB)
+				cfg.MaxRequestMB = MaxMaxRequestMB
+				needsSave = true
+			}
 			switch strings.ToLower(strings.TrimSpace(cfg.GlobalProxySelection)) {
 			case "health", "round_robin":
 				cfg.GlobalProxySelection = strings.ToLower(strings.TrimSpace(cfg.GlobalProxySelection))

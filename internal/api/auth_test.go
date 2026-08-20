@@ -1,12 +1,51 @@
 package api
 
 import (
+	"bytes"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/bsfdsagfadg/vertex/internal/config"
 )
+
+func TestAdminLoginRateLimitByClientAddress(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.AdminPassword = "correct-password"
+	adm := &AdminHandler{handler: handler{cfg: config.StaticProvider(cfg)}}
+	for attempt := 0; attempt < adminLoginFailureLimit; attempt++ {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/admin/login", bytes.NewBufferString(`{"password":"wrong"}`))
+		request.RemoteAddr = "192.0.2.10:1234"
+		adm.adminLogin(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d got %d, want 401", attempt+1, recorder.Code)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/login", bytes.NewBufferString(`{"password":"wrong"}`))
+	request.RemoteAddr = "192.0.2.10:9999"
+	adm.adminLogin(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("blocked login got %d, want 429: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Retry-After"); got == "" {
+		t.Fatal("blocked login must include Retry-After")
+	}
+
+	// A different client address has its own budget.
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/api/admin/login", bytes.NewBufferString(fmt.Sprintf(`{"password":%q}`, "wrong")))
+	request.RemoteAddr = "192.0.2.11:1"
+	adm.adminLogin(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("different client got %d, want 401", recorder.Code)
+	}
+}
 
 // ---- extractAPIKey：Bearer 头 > x-goog-api-key 头 > query ?key= ----
 

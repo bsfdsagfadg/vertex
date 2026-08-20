@@ -266,7 +266,7 @@ func (adm *AdminHandler) adminUpdateSubscriptions(w http.ResponseWriter, r *http
 }
 
 func (adm *AdminHandler) fetchSubWithFallback(ctx context.Context, rawURL, primaryUA string) (string, error) {
-	if err := validateSubscriptionURL(rawURL); err != nil {
+	if err := validateSubscriptionURLResolved(ctx, rawURL); err != nil {
 		return "", err
 	}
 	uasToTry := []string{primaryUA}
@@ -307,6 +307,9 @@ func (adm *AdminHandler) fetchSubWithFallback(ctx context.Context, rawURL, prima
 }
 
 func (adm *AdminHandler) fetchSubDataWithUA(ctx context.Context, rawURL, ua string) ([]byte, error) {
+	if err := validateSubscriptionURLResolved(ctx, rawURL); err != nil {
+		return nil, err
+	}
 	proxyURI, direct, err := adm.planSubscriptionRoute(ctx, adm.cfg)
 	if err != nil {
 		return nil, err
@@ -359,7 +362,7 @@ func (adm *AdminHandler) fetchSubscriptionDataViaProxyWithUA(ctx context.Context
 		return nil, fmt.Errorf("network client unavailable")
 	}
 
-	sess, err := netClient.CreateSession(30, proxyURI, "admin-fetch-sub")
+	sess, err := netClient.CreateSessionWithoutRedirects(30, proxyURI, "admin-fetch-sub")
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
 	}
@@ -369,7 +372,7 @@ func (adm *AdminHandler) fetchSubscriptionDataViaProxyWithUA(ctx context.Context
 		"user-agent": {ua},
 		"accept":     {"*/*"},
 	}
-	statusCode, data, err := sess.DoAndRead(ctx, http.MethodGet, rawURL, header, nil)
+	statusCode, data, err := sess.DoAndReadLimit(ctx, http.MethodGet, rawURL, header, nil, maxSubscriptionResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
 	}

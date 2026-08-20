@@ -56,15 +56,37 @@ func (s *Session) Do(ctx context.Context, method, url string, header http.Header
 }
 
 func (s *Session) DoAndRead(ctx context.Context, method, url string, header http.Header, body io.Reader) (int, []byte, error) {
+	return s.doAndRead(ctx, method, url, header, body, 0)
+}
+
+// DoAndReadLimit reads at most maxBytes+1 bytes and rejects responses that
+// exceed the configured limit. Callers handling untrusted remote responses
+// should use this method instead of the intentionally unbounded compatibility
+// helper above.
+func (s *Session) DoAndReadLimit(ctx context.Context, method, url string, header http.Header, body io.Reader, maxBytes int64) (int, []byte, error) {
+	if maxBytes <= 0 {
+		return 0, nil, errors.New("response size limit must be positive")
+	}
+	return s.doAndRead(ctx, method, url, header, body, maxBytes)
+}
+
+func (s *Session) doAndRead(ctx context.Context, method, url string, header http.Header, body io.Reader, maxBytes int64) (int, []byte, error) {
 	resp, err := s.Do(ctx, method, url, header, body)
 	if err != nil {
 		return 0, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	data, readErr := io.ReadAll(resp.Body)
+	var reader io.Reader = resp.Body
+	if maxBytes > 0 {
+		reader = io.LimitReader(resp.Body, maxBytes+1)
+	}
+	data, readErr := io.ReadAll(reader)
 	if readErr != nil {
 		return resp.StatusCode, nil, fmt.Errorf("error: %w", readErr)
 
+	}
+	if maxBytes > 0 && int64(len(data)) > maxBytes {
+		return resp.StatusCode, nil, fmt.Errorf("response exceeds %d bytes", maxBytes)
 	}
 	return resp.StatusCode, data, nil
 }
@@ -223,7 +245,18 @@ func (c *NetworkClient) CreateSession(timeoutSec int, proxyURI string, reqID str
 	if proxyURI != "" && c.entryProxyURI != nil {
 		entryProxyURI = strings.TrimSpace(c.entryProxyURI())
 	}
-	return c.createSession(timeoutSec, proxyURI, entryProxyURI, reqID)
+	return c.createSession(timeoutSec, proxyURI, entryProxyURI, reqID, false)
+}
+
+// CreateSessionWithoutRedirects creates a session for untrusted URL fetches.
+// Redirect targets must be checked by the caller rather than followed inside
+// a proxy, where the destination resolver is outside this process's control.
+func (c *NetworkClient) CreateSessionWithoutRedirects(timeoutSec int, proxyURI string, reqID string) (*Session, error) {
+	entryProxyURI := ""
+	if proxyURI != "" && c.entryProxyURI != nil {
+		entryProxyURI = strings.TrimSpace(c.entryProxyURI())
+	}
+	return c.createSession(timeoutSec, proxyURI, entryProxyURI, reqID, true)
 }
 
 // CreateSessionContext is CreateSession with an explicit request route.
@@ -247,15 +280,15 @@ func (c *NetworkClient) CreateSessionRoute(timeoutSec int, route Route, reqID st
 		}
 		return nil, err
 	}
-	return c.createSession(timeoutSec, planned.RequestNodeURI, planned.GlobalProxyURI, reqID)
+	return c.createSession(timeoutSec, planned.RequestNodeURI, planned.GlobalProxyURI, reqID, false)
 }
 
 // CreateSessionWithoutEntryProxy 创建只经过指定代理的隔离会话，用于验证入口代理候选本身。
 func (c *NetworkClient) CreateSessionWithoutEntryProxy(timeoutSec int, proxyURI string, reqID string) (*Session, error) {
-	return c.createSession(timeoutSec, proxyURI, "", reqID)
+	return c.createSession(timeoutSec, proxyURI, "", reqID, false)
 }
 
-func (c *NetworkClient) createSession(timeoutSec int, proxyURI, entryProxyURI, reqID string) (*Session, error) {
+func (c *NetworkClient) createSession(timeoutSec int, proxyURI, entryProxyURI, reqID string, noRedirects bool) (*Session, error) {
 	prof := pickProfile()
 	if c.debugMode {
 		log.Printf("[Transport] 请求ID=%s，已分配 TLS 配置：%s", reqID, prof.GetClientHelloStr())
@@ -265,6 +298,9 @@ func (c *NetworkClient) createSession(timeoutSec int, proxyURI, entryProxyURI, r
 		tls_client.WithTimeoutSeconds(timeoutSec),
 		tls_client.WithClientProfile(prof),
 		tls_client.WithCookieJar(tls_client.NewCookieJar()),
+	}
+	if noRedirects {
+		opts = append(opts, tls_client.WithNotFollowRedirects())
 	}
 
 	// 使用 injectProxy 挂载代理，失败则直接熔断，坚决不走静默直连！

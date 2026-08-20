@@ -9,6 +9,7 @@
   "default_image_size": "1K",
   "default_response_modalities": "图文",
   "max_n": 8,
+	"max_request_mb": 64,
   "max_retries": 1,
   "global_proxy_enabled": false,
   "global_proxy_required": true,

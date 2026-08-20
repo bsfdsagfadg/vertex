@@ -139,7 +139,9 @@ func (a *Normal) Start() error {
 		Addr:              "0.0.0.0:" + strconv.Itoa(cfg.PortAPI()),
 		Handler:           a.apiServer.Handler(),
 		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       2 * time.Minute,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 	a.reloadDone = startReloadLoop(runtimeCtx)
 	a.started = true

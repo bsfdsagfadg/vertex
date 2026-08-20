@@ -121,6 +121,12 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 					} else if val > 1800 {
 						val = 1800
 					}
+				case "max_request_mb":
+					if val <= 0 {
+						val = config.DefaultMaxRequestMB
+					} else if val > config.MaxMaxRequestMB {
+						val = config.MaxMaxRequestMB
+					}
 				case "race_timeout":
 					if val < 0 {
 						val = 0

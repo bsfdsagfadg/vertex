@@ -459,6 +459,12 @@ func (adm *AdminHandler) fetchSubscriptionText(ctx context.Context, rawURL strin
 	if err := validateSubscriptionURL(rawURL); err != nil {
 		return "", err
 	}
+	// Validate DNS destinations even when the request is sent through a
+	// configured proxy. The proxy must not become an SSRF bypass for private
+	// or metadata hostnames.
+	if err := validateSubscriptionURLResolved(ctx, rawURL); err != nil {
+		return "", err
+	}
 
 	proxyURI, direct, err := adm.planSubscriptionRoute(ctx, adm.cfg)
 	if err != nil {
@@ -556,8 +562,11 @@ func fetchSubscriptionDataViaProxy(ctx context.Context, netClient *transport.Net
 	if netClient == nil {
 		return nil, errors.New("network client unavailable")
 	}
+	if err := validateSubscriptionURLResolved(ctx, rawURL); err != nil {
+		return nil, err
+	}
 
-	sess, err := netClient.CreateSession(30, proxyURI, "admin-fetch-sub")
+	sess, err := netClient.CreateSessionWithoutRedirects(30, proxyURI, "admin-fetch-sub")
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
 	}
@@ -567,7 +576,7 @@ func fetchSubscriptionDataViaProxy(ctx context.Context, netClient *transport.Net
 		"user-agent": {subscriptionFetchUserAgent},
 		"accept":     {"*/*"},
 	}
-	statusCode, data, err := sess.DoAndRead(ctx, http.MethodGet, rawURL, header, nil)
+	statusCode, data, err := sess.DoAndReadLimit(ctx, http.MethodGet, rawURL, header, nil, maxSubscriptionResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
 	}
