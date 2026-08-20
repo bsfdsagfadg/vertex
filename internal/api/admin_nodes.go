@@ -534,9 +534,12 @@ func fetchSubscriptionDataDirect(ctx context.Context, rawURL string) ([]byte, er
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSubscriptionResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
+	}
+	if len(data) > maxSubscriptionResponseBytes {
+		return nil, fmt.Errorf("subscription response exceeds %d bytes", maxSubscriptionResponseBytes)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status code %d", resp.StatusCode)
