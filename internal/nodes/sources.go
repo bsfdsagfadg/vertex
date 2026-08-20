@@ -1,12 +1,16 @@
 package nodes
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"sort"
 	"strings"
+	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/db"
+	"github.com/bsfdsagfadg/vertex/internal/repository"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
@@ -88,109 +92,62 @@ func cloneHealthMapUnsafe() map[string]*NodeHealth {
 	return cloned
 }
 
-func cloneStickyPoolUnsafe() map[string]bool {
+func cloneStickyPoolUnsafe() map[string]time.Time {
 	globalStickyPool.mu.Lock()
 	defer globalStickyPool.mu.Unlock()
-	cloned := make(map[string]bool, len(globalStickyPool.pool))
+	cloned := make(map[string]time.Time, len(globalStickyPool.pool))
 	for rawURI, sticky := range globalStickyPool.pool {
 		cloned[rawURI] = sticky
 	}
 	return cloned
 }
 
-func restoreStickyPoolUnsafe(snapshot map[string]bool) {
+func restoreStickyPoolUnsafe(snapshot map[string]time.Time) {
 	globalStickyPool.mu.Lock()
 	defer globalStickyPool.mu.Unlock()
 	globalStickyPool.pool = snapshot
 }
 
 func saveNodeStateUnsafe() error {
-	if db.GlobalDB == nil {
+	if nodeRepository == nil {
 		return nil
 	}
-	tx, err := db.GlobalDB.Begin()
-	if err != nil {
-		return err
-	}
-	rollback := func(err error) error {
-		_ = tx.Rollback()
-		return err
-	}
-
-	existingRows, err := tx.Query("SELECT raw_uri FROM nodes")
-	if err != nil {
-		return rollback(err)
-	}
-	existing := make(map[string]struct{})
-	for existingRows.Next() {
-		var rawURI string
-		if err = existingRows.Scan(&rawURI); err != nil {
-			_ = existingRows.Close()
-			return rollback(err)
-		}
-		existing[rawURI] = struct{}{}
-	}
-	if err = existingRows.Err(); err != nil {
-		_ = existingRows.Close()
-		return rollback(err)
-	}
-	if err = existingRows.Close(); err != nil {
-		return rollback(err)
-	}
-
-	upsert, err := tx.Prepare(`INSERT INTO nodes (raw_uri, type, name, disabled)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(raw_uri) DO UPDATE SET
-		type = excluded.type, name = excluded.name, disabled = excluded.disabled`)
-	if err != nil {
-		return rollback(err)
-	}
-	current := make(map[string]struct{}, len(nodeList))
+	repositoryNodes := make([]repository.Node, 0, len(nodeList))
+	ids := make(map[string]string, len(nodeList))
 	for _, node := range nodeList {
-		current[node.RawURI] = struct{}{}
-		if _, err = upsert.Exec(node.RawURI, node.Type, node.Name, node.Disabled); err != nil {
-			_ = upsert.Close()
-			return rollback(err)
+		converted, err := repositoryNode(node)
+		if err != nil {
+			return err
 		}
+		repositoryNodes = append(repositoryNodes, converted)
+		ids[node.RawURI] = converted.ID
 	}
-	if err = upsert.Close(); err != nil {
-		return rollback(err)
-	}
-
-	for rawURI := range existing {
-		if _, ok := current[rawURI]; ok {
-			continue
-		}
-		if _, err = tx.Exec("DELETE FROM node_health WHERE raw_uri = ?", rawURI); err != nil {
-			return rollback(err)
-		}
-		if _, err = tx.Exec("DELETE FROM nodes WHERE raw_uri = ?", rawURI); err != nil {
-			return rollback(err)
-		}
-	}
-
-	if _, err = tx.Exec("DELETE FROM node_sources"); err != nil {
-		return rollback(err)
-	}
-	sourceStmt, err := tx.Prepare("INSERT INTO node_sources (raw_uri, source_type, source_id) VALUES (?, ?, ?)")
-	if err != nil {
-		return rollback(err)
-	}
+	repositorySources := make([]repository.NodeSource, 0)
 	for rawURI, sources := range nodeSources {
-		if _, ok := current[rawURI]; !ok {
+		id := ids[rawURI]
+		if id == "" {
 			continue
 		}
 		for source := range sources {
-			if _, err = sourceStmt.Exec(rawURI, source.Type, source.ID); err != nil {
-				_ = sourceStmt.Close()
-				return rollback(err)
-			}
+			repositorySources = append(repositorySources, repository.NodeSource{
+				NodeID: id, SourceType: source.Type, SourceID: source.ID,
+			})
 		}
 	}
-	if err = sourceStmt.Close(); err != nil {
-		return rollback(err)
+	return nodeRepository.SaveNodeState(context.Background(), repositoryNodes, repositorySources)
+}
+
+func repositoryNode(node Node) (repository.Node, error) {
+	identity, err := transport.ProxyIdentity(node.RawURI)
+	if err != nil {
+		return repository.Node{}, fmt.Errorf("derive request node identity: %w", err)
 	}
-	return tx.Commit()
+	sum := sha256.Sum256([]byte("rn\x00" + identity.SemanticFingerprint))
+	return repository.Node{
+		ID: "rn_" + hex.EncodeToString(sum[:12]), RawURI: node.RawURI,
+		CanonicalIdentity: identity.SemanticFingerprint, EndpointFingerprint: identity.EndpointFingerprint,
+		Type: node.Type, Name: node.Name, Disabled: node.Disabled,
+	}, nil
 }
 
 func GetNodeSources(rawURI string) []NodeSource {

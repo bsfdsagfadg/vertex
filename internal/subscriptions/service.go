@@ -21,8 +21,15 @@ var (
 
 type FetchFunc func(ctx context.Context, rawURL, userAgent string) ([]nodes.Node, error)
 
+type NodeStore interface {
+	ReplaceSubscriptionNodes(context.Context, string, []nodes.Node, bool) error
+	RemoveSubscriptionSource(context.Context, string, bool) error
+}
+
 type Service struct {
 	fetch FetchFunc
+	store Store
+	nodes NodeStore
 
 	mutationMu sync.Mutex
 	runningMu  sync.Mutex
@@ -40,8 +47,20 @@ func New(fetch FetchFunc) *Service {
 	return &Service{fetch: fetch, running: make(map[string]struct{})}
 }
 
+func NewWithStore(fetch FetchFunc, store Store) *Service {
+	return &Service{fetch: fetch, store: store, running: make(map[string]struct{})}
+}
+
+func NewWithStores(fetch FetchFunc, store Store, nodeStore NodeStore) *Service {
+	return &Service{fetch: fetch, store: store, nodes: nodeStore, running: make(map[string]struct{})}
+}
+
 func (s *Service) Start(parent context.Context) error {
-	if err := config.LoadSubscriptions(); err != nil {
+	if s.store != nil {
+		if _, err := s.store.List(parent); err != nil {
+			return err
+		}
+	} else if err := config.LoadSubscriptions(); err != nil {
 		return err
 	}
 	s.lifecycleMu.Lock()
@@ -71,6 +90,13 @@ func (s *Service) Start(parent context.Context) error {
 		}
 	}()
 	return nil
+}
+
+// Started reports whether the periodic service lifecycle is active.
+func (s *Service) Started() bool {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.cancel != nil && !s.stopping
 }
 
 func (s *Service) Stop() {
@@ -137,11 +163,14 @@ func (s *Service) Update(ctx context.Context, id string) error {
 }
 
 func (s *Service) updateReserved(ctx context.Context, id string) error {
-	sub, ok := config.GetSubscription(id)
+	sub, ok, err := s.get(ctx, id)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return config.ErrSubscriptionNotFound
 	}
-	userAgent, err := config.ResolveSubscriptionUserAgent(sub)
+	userAgent, err := s.resolveUserAgent(ctx, sub)
 	if err != nil {
 		return s.recordFailure(sub, err)
 	}
@@ -161,15 +190,18 @@ func (s *Service) updateReserved(ctx context.Context, id string) error {
 
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	current, ok := config.GetSubscription(id)
+	current, ok, err := s.get(ctx, id)
+	if err != nil {
+		return err
+	}
 	if !ok || current.Generation != sub.Generation || current.Revision != sub.Revision {
 		return ErrStaleResult
 	}
-	if err := nodes.ReplaceSubscriptionNodes(id, parsedNodes, sub.AdoptManual); err != nil {
-		_, _ = config.UpdateSubscriptionStatus(id, sub.Generation, sub.Revision, sub.LastUpdateTime, "替换订阅节点失败: "+err.Error())
+	if err := s.replaceSubscriptionNodes(ctx, id, parsedNodes, sub.AdoptManual); err != nil {
+		_, _ = s.updateStatus(ctx, id, sub.Generation, sub.Revision, sub.LastUpdateTime, "替换订阅节点失败: "+err.Error())
 		return err
 	}
-	updated, err := config.UpdateSubscriptionStatus(id, sub.Generation, sub.Revision, time.Now().Unix(), "")
+	updated, err := s.updateStatus(ctx, id, sub.Generation, sub.Revision, time.Now().Unix(), "")
 	if err != nil {
 		return err
 	}
@@ -182,7 +214,7 @@ func (s *Service) updateReserved(ctx context.Context, id string) error {
 func (s *Service) recordFailure(sub config.Subscription, updateErr error) error {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	updated, err := config.UpdateSubscriptionStatus(sub.ID, sub.Generation, sub.Revision, sub.LastUpdateTime, updateErr.Error())
+	updated, err := s.updateStatus(context.Background(), sub.ID, sub.Generation, sub.Revision, sub.LastUpdateTime, updateErr.Error())
 	if err != nil {
 		return fmt.Errorf("%v; save status: %w", updateErr, err)
 	}
@@ -222,7 +254,11 @@ func (s *Service) Trigger(id string) bool {
 }
 
 func (s *Service) TriggerAll() int {
-	conf := config.GetSubscriptionConfig()
+	conf, err := s.List(context.Background())
+	if err != nil {
+		log.Printf("[Subscriptions] 列出订阅失败: %v", err)
+		return 0
+	}
 	triggered := 0
 	for _, sub := range conf.Subscriptions {
 		if s.Trigger(sub.ID) {
@@ -233,7 +269,11 @@ func (s *Service) TriggerAll() int {
 }
 
 func (s *Service) triggerDue(now time.Time) {
-	conf := config.GetSubscriptionConfig()
+	conf, err := s.List(context.Background())
+	if err != nil {
+		log.Printf("[Subscriptions] 定时读取订阅失败: %v", err)
+		return
+	}
 	for _, sub := range conf.Subscriptions {
 		if sub.UpdateInterval <= 0 {
 			continue
@@ -249,23 +289,28 @@ func (s *Service) triggerDue(now time.Time) {
 func (s *Service) SaveSubscription(sub config.Subscription) error {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
+	if s.store != nil {
+		return s.store.Save(context.Background(), sub)
+	}
 	return config.UpdateSubscription(sub)
 }
 
 func (s *Service) DeleteSubscription(id string, deleteNodes bool) error {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	if _, ok := config.GetSubscription(id); !ok {
+	if _, ok, getErr := s.get(context.Background(), id); getErr != nil {
+		return getErr
+	} else if !ok {
 		return config.ErrSubscriptionNotFound
 	}
-	deleted, err := config.DeleteSubscription(id)
+	deleted, err := s.delete(context.Background(), id)
 	if err != nil {
 		return err
 	}
-	if err = nodes.RemoveSubscriptionSource(id, deleteNodes); err == nil {
+	if err = s.removeSubscriptionSource(context.Background(), id, deleteNodes); err == nil {
 		return nil
 	}
-	if restoreErr := config.UpdateSubscription(deleted); restoreErr != nil {
+	if restoreErr := s.save(context.Background(), deleted); restoreErr != nil {
 		return fmt.Errorf("remove subscription nodes: %v; restore subscription: %w", err, restoreErr)
 	}
 	return err
@@ -274,11 +319,89 @@ func (s *Service) DeleteSubscription(id string, deleteNodes bool) error {
 func (s *Service) SaveCustomUA(ua config.CustomUA) (config.CustomUA, error) {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
+	if s.store != nil {
+		return s.store.SaveUserAgent(context.Background(), ua)
+	}
 	return config.SaveCustomUA(ua)
 }
 
 func (s *Service) DeleteCustomUA(id string) error {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
+	if s.store != nil {
+		return s.store.DeleteUserAgent(context.Background(), id)
+	}
 	return config.DeleteCustomUA(id)
+}
+
+func (s *Service) List(ctx context.Context) (config.SubscriptionConfig, error) {
+	if s.store != nil {
+		return s.store.List(ctx)
+	}
+	if err := config.LoadSubscriptions(); err != nil {
+		return config.SubscriptionConfig{}, err
+	}
+	return config.GetSubscriptionConfig(), nil
+}
+
+func (s *Service) Get(ctx context.Context, id string) (config.Subscription, bool, error) {
+	return s.get(ctx, id)
+}
+
+func (s *Service) FindCustomUAByName(ctx context.Context, name string) (config.CustomUA, bool, error) {
+	if s.store != nil {
+		return s.store.FindUserAgentByName(ctx, name)
+	}
+	value, ok := config.FindCustomUAByName(name)
+	return value, ok, nil
+}
+
+func (s *Service) get(ctx context.Context, id string) (config.Subscription, bool, error) {
+	if s.store != nil {
+		return s.store.Get(ctx, id)
+	}
+	value, ok := config.GetSubscription(id)
+	return value, ok, nil
+}
+
+func (s *Service) resolveUserAgent(ctx context.Context, subscription config.Subscription) (string, error) {
+	if s.store != nil {
+		return s.store.ResolveUserAgent(ctx, subscription)
+	}
+	return config.ResolveSubscriptionUserAgent(subscription)
+}
+
+func (s *Service) updateStatus(ctx context.Context, id, generation string, revision uint64, lastUpdate int64, lastError string) (bool, error) {
+	if s.store != nil {
+		return s.store.UpdateStatus(ctx, id, generation, revision, lastUpdate, lastError)
+	}
+	return config.UpdateSubscriptionStatus(id, generation, revision, lastUpdate, lastError)
+}
+
+func (s *Service) delete(ctx context.Context, id string) (config.Subscription, error) {
+	if s.store != nil {
+		return s.store.Delete(ctx, id)
+	}
+	return config.DeleteSubscription(id)
+}
+
+func (s *Service) save(ctx context.Context, subscription config.Subscription) error {
+	if s.store != nil {
+		return s.store.Save(ctx, subscription)
+	}
+	return config.UpdateSubscription(subscription)
+}
+
+func (s *Service) replaceSubscriptionNodes(ctx context.Context, id string, values []nodes.Node, adoptManual bool) error {
+	if s.nodes != nil {
+		return s.nodes.ReplaceSubscriptionNodes(ctx, id, values, adoptManual)
+	}
+	return nodes.ReplaceSubscriptionNodes(id, values, adoptManual)
+}
+
+func (s *Service) removeSubscriptionSource(ctx context.Context, id string, deleteNodes bool) error {
+	if s.nodes != nil {
+		return s.nodes.RemoveSubscriptionSource(ctx, id, deleteNodes)
+	}
+	return nodes.RemoveSubscriptionSource(id, deleteNodes)
 }

@@ -39,7 +39,7 @@ func TestConvertUsageTypes(t *testing.T) {
 	}
 }
 
-func TestDualTrackStreamUsage(t *testing.T) {
+func TestTerminalStreamUsageHasSingleOwner(t *testing.T) {
 	chunk := map[string]any{
 		"candidates": []any{
 			map[string]any{
@@ -58,7 +58,7 @@ func TestDualTrackStreamUsage(t *testing.T) {
 	}
 
 	events := ConvertRealtimeChunk(chunk, "gpt-4", "req-test", false)
-	// Expect: content frame + finish frame with usage + terminal usage-only frame (choices:[])
+	// Expect: content frame + finish frame + one terminal usage-only frame (choices:[])
 	if len(events) != 3 {
 		t.Fatalf("expected 3 events, got %d: %v", len(events), events)
 	}
@@ -78,13 +78,13 @@ func TestDualTrackStreamUsage(t *testing.T) {
 		t.Fatalf("failed to parse terminalJSON: %v", err)
 	}
 
-	if finishObj["usage"] == nil {
-		t.Errorf("track 1: finish chunk must include usage")
+	if finishObj["usage"] != nil {
+		t.Errorf("finish chunk must not duplicate usage")
 	}
 	if choices, ok := terminalObj["choices"].([]any); !ok || len(choices) != 0 {
-		t.Errorf("track 2: terminal usage chunk must have choices: []")
+		t.Errorf("terminal usage chunk must have choices: []")
 	}
 	if terminalObj["usage"] == nil {
-		t.Errorf("track 2: terminal usage chunk must include usage")
+		t.Errorf("terminal usage chunk must include usage")
 	}
 }

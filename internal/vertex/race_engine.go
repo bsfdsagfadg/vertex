@@ -9,6 +9,8 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/scheduler"
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
 // RunRace runs a hedged race across candidate nodes.
@@ -17,12 +19,19 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 	run func(ctx context.Context, proxyURI string) (T, error),
 	opts ...RaceOption[T],
 ) (T, error) {
+	return runRaceWithDependencies(ctx, cfg, run, legacyRaceDependencies(), opts...)
+}
+
+func runRaceWithDependencies[T any](ctx context.Context, cfg config.ConfigProvider,
+	run func(ctx context.Context, proxyURI string) (T, error), dependencies raceDependencies,
+	opts ...RaceOption[T],
+) (T, error) {
 	var rc raceConfig[T]
 	for _, o := range opts {
 		o(&rc)
 	}
 
-	stickyPool := nodes.GetStickyPool()
+	stickyPool := dependencies.nodes.StickyPool()
 	raceTimeout := cfg.RaceTimeout()
 
 	// 换批预算：关单节点重试时，重试由"换一批新节点"完成（最多 MaxRetries 批）。
@@ -32,32 +41,92 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 	}
 
 	usedURIs := make(map[string]bool)
-	var zero T
-
-	selectFreshCands := func() []nodes.Node {
-		cands := nodes.SelectForParallel(cfg.ParallelPoolSize(), cfg.ParallelNodeTopK(), cfg.DebugMode(), cfg.StickyNodePriority())
-		fresh := make([]nodes.Node, 0, len(cands))
-		for _, c := range cands {
-			if !usedURIs[c.RawURI] {
-				fresh = append(fresh, c)
+	unlaunchedReservations := make(map[string]int)
+	defer func() {
+		for uri, count := range unlaunchedReservations {
+			for range count {
+				dependencies.nodes.DecInFlight(uri)
 			}
 		}
-		return fresh
+	}()
+	var zero T
+
+	selectFreshCands := func() ([]scheduler.Candidate, error) {
+		selected := dependencies.nodes.Select(cfg.ParallelPoolSize(), cfg.ParallelNodeTopK(), cfg.StickyNodePriority(), true)
+		fresh := make([]nodes.Node, 0, len(selected))
+		for _, c := range selected {
+			if !usedURIs[c.RawURI] {
+				fresh = append(fresh, c)
+				continue
+			}
+			dependencies.nodes.DecInFlight(c.RawURI)
+		}
+		if len(fresh) == 0 {
+			return nil, nil
+		}
+		planned, err := dependencies.planner.PlanCandidates(cfg, fresh, scheduler.MetadataFromContext(ctx))
+		if err != nil {
+			for _, node := range fresh {
+				dependencies.nodes.DecInFlight(node.RawURI)
+			}
+			return nil, err
+		}
+
+		plannedCounts := make(map[string]int, len(planned))
+		for i := range planned {
+			planned[i].Reserved = true
+			uri := planned[i].Route.RequestNodeURI
+			plannedCounts[uri]++
+			unlaunchedReservations[uri]++
+		}
+		for _, node := range fresh {
+			if plannedCounts[node.RawURI] > 0 {
+				plannedCounts[node.RawURI]--
+				continue
+			}
+			dependencies.nodes.DecInFlight(node.RawURI)
+		}
+		return planned, nil
 	}
 
-	cands := selectFreshCands()
-	if !cfg.ParallelPoolEnabled() || len(cands) == 0 {
-		proxy := cfg.ActiveNodeURI()
-		if proxy == "" {
-			proxy = cfg.ProxyURL()
+	if !cfg.ParallelPoolEnabled() {
+		node := nodes.Node{RawURI: cfg.ActiveNodeURI(), Name: dependencies.nodes.NodeName(cfg.ActiveNodeURI())}
+		planned, err := dependencies.planner.PlanCandidates(cfg, []nodes.Node{node}, scheduler.MetadataFromContext(ctx))
+		if err != nil {
+			return zero, err
 		}
-		log.Printf("[Vertex] [RunParallel] 降级为单节点运行: %s", nodes.GetNodeName(proxy))
-		return run(ctx, proxy)
+		candidate := planned[0]
+		log.Printf("[Vertex] [RunParallel] 降级为单节点运行: %s", dependencies.nodes.NodeName(candidate.Route.RequestNodeURI))
+		routedCtx := transport.WithEntryProxy(ctx, candidate.Route.GlobalProxyURI)
+		value, err := run(routedCtx, candidate.Route.RequestNodeURI)
+		if err == nil && candidate.Route.GlobalProxyURI != "" {
+			_ = dependencies.planner.MarkGlobalProxySuccess(candidate.Route.GlobalProxyURI)
+		}
+		return value, err
+	}
+	cands, err := selectFreshCands()
+	if err != nil {
+		return zero, err
+	}
+	if len(cands) == 0 {
+		node := nodes.Node{RawURI: cfg.ActiveNodeURI(), Name: dependencies.nodes.NodeName(cfg.ActiveNodeURI())}
+		planned, planErr := dependencies.planner.PlanCandidates(cfg, []nodes.Node{node}, scheduler.MetadataFromContext(ctx))
+		if planErr != nil {
+			return zero, planErr
+		}
+		candidate := planned[0]
+		log.Printf("[Vertex] [RunParallel] 无并发候选，降级为单节点运行: %s", dependencies.nodes.NodeName(candidate.Route.RequestNodeURI))
+		routedCtx := transport.WithEntryProxy(ctx, candidate.Route.GlobalProxyURI)
+		value, runErr := run(routedCtx, candidate.Route.RequestNodeURI)
+		if runErr == nil && candidate.Route.GlobalProxyURI != "" {
+			_ = dependencies.planner.MarkGlobalProxySuccess(candidate.Route.GlobalProxyURI)
+		}
+		return value, runErr
 	}
 	if cfg.DebugMode() {
 		log.Printf("[Vertex] [RunParallel] 开启对冲延迟竞速, %d 个节点参与", len(cands))
 		for _, c := range cands {
-			log.Printf("[Vertex] [RunParallel] 参与节点: %s", c.Name)
+			log.Printf("[Vertex] [RunParallel] 参与节点: %s", c.Node.Name)
 		}
 	}
 
@@ -71,20 +140,28 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		}
 	}()
 
-	recorder := newResultRecorder[T](stickyPool)
+	recorder := newResultRecorder[T](stickyPool, scheduler.MetadataFromContext(ctx), dependencies)
 	var failedErrors []error
 
 	for round := 0; ; round++ {
 		resCh := make(chan raceResult[T], len(cands))
-		launcher := newCandidateLauncher[T](ctxRace, raceTimeout, run)
-		scheduler := newHedgeScheduler(cfg, cands)
+		launcher := newCandidateLauncher[T](ctxRace, raceTimeout, rc.noCancelOnSuccess, run, dependencies.nodes)
+		scheduler := newHedgeScheduler(cfg, len(cands), dependencies.nodes.AverageLatency())
 
 		launchNext := func() bool {
 			if !scheduler.HasMore() {
 				return false
 			}
 			candidate := cands[scheduler.NextIndex()]
-			usedURIs[candidate.RawURI] = true
+			usedURIs[candidate.Route.RequestNodeURI] = true
+			if candidate.Reserved {
+				uri := candidate.Route.RequestNodeURI
+				if unlaunchedReservations[uri] <= 1 {
+					delete(unlaunchedReservations, uri)
+				} else {
+					unlaunchedReservations[uri]--
+				}
+			}
 			launcher.Launch(candidate, round, resCh)
 			return true
 		}
@@ -105,7 +182,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 			case <-scheduler.TimerChan():
 				if scheduler.HasMore() {
 					if cfg.DebugMode() {
-						log.Printf("[Racing] 对冲延迟唤醒，启动备份节点: %s", cands[scheduler.nextIdx].Name)
+						log.Printf("[Racing] 对冲延迟唤醒，启动备份节点: %s", cands[scheduler.nextIdx].Node.Name)
 					}
 					launchNext()
 					scheduler.ResetTimer()
@@ -120,7 +197,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 					cancel()
 					return zero, parentErr
 				}
-				name := nodes.GetNodeName(res.uri)
+				name := dependencies.nodes.NodeName(res.uri)
 
 				if res.err == nil {
 					// 判定是否可立即胜出。
@@ -129,11 +206,13 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 						log.Printf("[Racing] 竞速胜出节点: %s", name)
 						cli.UpdateReqWinner(RequestIDFromContext(ctx), name)
 						cli.UpdateReqState(RequestIDFromContext(ctx), "🟢 数据传输", "\033[32m", "已建立连接")
-						nodes.RecordTest(res.uri, true, 50, "")
-						stickyPool.Add(res.uri)
+						recorder.Record(res)
 
 						returnedOnWinPath = true
-						launcher.CancelAllExcept(res.uri)
+						if res.route.GlobalProxyURI != "" {
+							_ = dependencies.planner.MarkGlobalProxySuccess(res.route.GlobalProxyURI)
+						}
+						launcher.CancelAllExcept(res.key)
 
 						collectTimeout := time.Duration(min(30, 5+cfg.ParallelPoolSize())) * time.Second
 						go func() {
@@ -169,12 +248,11 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 					}
 
 					// 非胜出成功结果：收集（CompleteChat 非 STOP 结果），继续等其余候选。
-					launcher.CancelCandidate(res.uri)
+					launcher.CancelCandidate(res.key)
 					rc.collectedResults = append(rc.collectedResults, res)
-					nodes.RecordTest(res.uri, true, 50, "")
-					stickyPool.Add(res.uri)
+					recorder.Record(res)
 				} else {
-					launcher.CancelCandidate(res.uri)
+					launcher.CancelCandidate(res.key)
 					recorder.Record(res)
 					ve := asVertexError(res.err)
 					failedErrors = append(failedErrors, res.err)
@@ -190,7 +268,7 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 
 				if launcher.ActiveCount() == 0 && scheduler.HasMore() {
 					if cfg.DebugMode() {
-						log.Printf("[Racing] 已启动候选全部结束，立即接力节点: %s", cands[scheduler.nextIdx].Name)
+						log.Printf("[Racing] 已启动候选全部结束，立即接力节点: %s", cands[scheduler.nextIdx].Node.Name)
 					}
 					launchNext()
 					scheduler.ResetTimer()
@@ -214,13 +292,21 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 
 					// 本轮全部失败且无成功：换一批从未用过的节点再试（关单节点重试模式）。
 					if roundBudget > 0 {
-						next := selectFreshCands()
+						next, planErr := selectFreshCands()
+						if planErr != nil {
+							cancel()
+							return zero, planErr
+						}
 						if len(next) == 0 {
 							if cfg.DebugMode() {
 								log.Printf("[Racing] 新鲜节点已耗尽，清空防重过滤，允许节点跨轮次重试复用...")
 							}
 							usedURIs = make(map[string]bool)
-							next = selectFreshCands()
+							next, planErr = selectFreshCands()
+							if planErr != nil {
+								cancel()
+								return zero, planErr
+							}
 						}
 						if len(next) == 0 {
 							cancel()

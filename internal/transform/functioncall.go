@@ -1,7 +1,6 @@
 package transform
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"strings"
 
@@ -77,11 +76,8 @@ func cleanPartWithID(part map[string]any, functionCallNames []string, responseIn
 				if fid, _ := frMap["id"].(string); fid != "" && callIDMap != nil {
 					name = callIDMap[fid]
 				}
-				if name == "" && responseIndex >= 0 && responseIndex < len(functionCallNames) {
-					name = functionCallNames[responseIndex]
-				}
 				if name == "" {
-					name = "unknown"
+					return nil, false
 				}
 			}
 			fixed := copyMap(frMap)
@@ -163,13 +159,6 @@ func finalizeCleanedPart(cleaned map[string]any) {
 	if _, ok := cleaned["functionResponse"]; ok {
 		delete(cleaned, "thought")
 		delete(cleaned, "thoughtSignature")
-	} else {
-		_, hasFC := cleaned["functionCall"]
-		_, hasThought := cleaned["thought"]
-		_, hasSig := cleaned["thoughtSignature"]
-		if (hasFC || hasThought) && !hasSig {
-			cleaned["thoughtSignature"] = skipThoughtSentinel
-		}
 	}
 
 	if truthyStr(cleaned["text"]) && !isTruthy(cleaned["thought"]) {
@@ -179,62 +168,13 @@ func finalizeCleanedPart(cleaned map[string]any) {
 }
 
 func ensureBase64Signature(signature string) string {
-	if signature == skipThoughtSentinel {
-		return base64.StdEncoding.EncodeToString([]byte(signature))
-	}
-	normalized := NormalizeBase64(signature)
-	decoded, err := base64.StdEncoding.DecodeString(normalized)
-	if err == nil && base64.StdEncoding.EncodeToString(decoded) == normalized {
-		return normalized
-	}
-	return base64.StdEncoding.EncodeToString([]byte(signature))
+	return signature
 }
 
-// EncodeThoughtSignature recursively normalizes thought signatures to standard Base64.
+// EncodeThoughtSignature is retained as a compatibility shim. Thought
+// signatures are opaque protocol state and must never be decoded or rewritten.
 func EncodeThoughtSignature(contents any, depth int) any {
-	const maxDepth = 64
-	if depth > maxDepth {
-		return contents
-	}
-	switch v := contents.(type) {
-	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			out[i] = EncodeThoughtSignature(item, depth+1)
-		}
-		return out
-	case map[string]any:
-		out := map[string]any{}
-		for k, val := range v {
-			if k == "parts" {
-				if parts, ok := val.([]any); ok {
-					newParts := make([]any, len(parts))
-					for i, p := range parts {
-						if pm, ok := p.(map[string]any); ok {
-							np := copyMap(pm)
-							if sig, ok := np["thoughtSignature"].(string); ok && sig != "" {
-								np["thoughtSignature"] = ensureBase64Signature(sig)
-							}
-							newParts[i] = np
-						} else {
-							newParts[i] = p
-						}
-					}
-					out[k] = newParts
-					continue
-				}
-			}
-			switch val.(type) {
-			case map[string]any, []any:
-				out[k] = EncodeThoughtSignature(val, depth+1)
-			default:
-				out[k] = val
-			}
-		}
-		return out
-	default:
-		return contents
-	}
+	return contents
 }
 
 // HandleBase64InContents 递归规范化 contents 中 inlineData 的 base64 数据。
@@ -290,13 +230,9 @@ func MergeContentBlocks(parts []map[string]any) []map[string]any {
 			continue
 		}
 		isThought := isTruthy(part["thought"])
-		if current != nil && isTruthy(current["thought"]) == isThought {
+		_, hasSignature := part["thoughtSignature"]
+		if current != nil && !isThought && !hasSignature && isTruthy(current["thought"]) == isThought {
 			current["text"] = toString(current["text"]) + toString(part["text"])
-			if sig, ok := part["thoughtSignature"]; ok {
-				if _, exists := current["thoughtSignature"]; !exists {
-					current["thoughtSignature"] = sig
-				}
-			}
 		} else {
 			np := map[string]any{"text": toString(part["text"])}
 			if isThought {

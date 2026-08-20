@@ -38,9 +38,15 @@ var (
 	// 从 enterprise.js 提取 reCAPTCHA release 版本号（Google 定期滚动，不能硬编码）。
 	versionRe = regexp.MustCompile(`releases/([A-Za-z0-9_-]{20,})`)
 
-	versionMu sync.Mutex //nolint:gochecknoglobals
-	cachedVer string     //nolint:gochecknoglobals
+	defaultVersionCache = &VersionCache{} //nolint:gochecknoglobals // compatibility entry points only
 )
+
+type VersionCache struct {
+	mu      sync.Mutex
+	version string
+}
+
+func NewVersionCache() *VersionCache { return &VersionCache{} }
 
 // fetchVersionFromJS 从 enterprise.js 提取当前 reCAPTCHA release 版本号。
 //
@@ -68,35 +74,41 @@ func enterpriseJSHeaders() transport.Header {
 }
 
 // currentVersion 返回缓存的 reCAPTCHA 版本号，未缓存则现场拉取。
-func currentVersion(ctx context.Context, sess *transport.Session) (string, error) {
-	versionMu.Lock()
-	if cachedVer != "" {
-		version := cachedVer
-		versionMu.Unlock()
+func currentVersion(ctx context.Context, sess *transport.Session, cache *VersionCache) (string, error) {
+	if cache == nil {
+		cache = defaultVersionCache
+	}
+	cache.mu.Lock()
+	if cache.version != "" {
+		version := cache.version
+		cache.mu.Unlock()
 		return version, nil
 	}
-	versionMu.Unlock()
+	cache.mu.Unlock()
 
 	version, err := fetchVersionFromSession(ctx, sess)
 	if err != nil {
 		return "", err
 	}
-	versionMu.Lock()
-	if cachedVer == "" {
-		cachedVer = version
+	cache.mu.Lock()
+	if cache.version == "" {
+		cache.version = version
 	} else {
-		version = cachedVer
+		version = cache.version
 	}
-	versionMu.Unlock()
+	cache.mu.Unlock()
 	return version, nil
 }
 
 // invalidateVersion 清除版本缓存：token 获取失败时调用，强制下一次重新拉取版本
 // （旧版本号过期是 token 失败的首要原因）。
-func invalidateVersion() {
-	versionMu.Lock()
-	cachedVer = ""
-	versionMu.Unlock()
+func invalidateVersion(cache *VersionCache) {
+	if cache == nil {
+		cache = defaultVersionCache
+	}
+	cache.mu.Lock()
+	cache.version = ""
+	cache.mu.Unlock()
 }
 
 func randomString(n int) string {
@@ -112,9 +124,22 @@ func randomString(n int) string {
 // 最多 3 次重试，每次新建一个 short Timeout Session
 // （即用即毁，FRESH_CONNECT 语义）。返回非空字符串表示成功；全部失败返回显式错误。
 func FetchRecaptchaToken(ctx context.Context, net *transport.NetworkClient, proxyURI string, debugMode bool) (string, error) {
+	return FetchRecaptchaTokenWithRoute(ctx, net, transport.Route{RequestNodeURI: proxyURI}, debugMode)
+}
+
+// FetchRecaptchaTokenWithRoute obtains the token using the exact immutable
+// global-proxy/request-node tuple used by the model request.
+func FetchRecaptchaTokenWithRoute(ctx context.Context, net *transport.NetworkClient, route transport.Route, debugMode bool) (string, error) {
+	return fetchRecaptchaTokenWithNamer(ctx, net, route, debugMode, nodes.GetNodeName, defaultVersionCache)
+}
+
+func fetchRecaptchaTokenWithNamer(ctx context.Context, net *transport.NetworkClient, route transport.Route, debugMode bool, nameFor func(string) string, cache *VersionCache) (string, error) {
 	// 【核心修改：解析并缓存节点友好名称】
-	nodeName := nodes.GetNodeName(proxyURI)
-	if proxyURI == "" {
+	nodeName := "Unknown"
+	if nameFor != nil {
+		nodeName = nameFor(route.RequestNodeURI)
+	}
+	if route.RequestNodeURI == "" {
 		nodeName = "直连 (Direct)"
 	}
 
@@ -128,7 +153,7 @@ func FetchRecaptchaToken(ctx context.Context, net *transport.NetworkClient, prox
 		if debugMode {
 			log.Printf("[Recaptcha] [节点: %s] 开始获取 reCAPTCHA token (尝试 %d/3)", nodeName, retry+1)
 		}
-		token, err := fetchOnce(ctx, net, proxyURI)
+		token, err := fetchOnceWithRouteAndCache(ctx, net, route, cache)
 		if err == nil && token != "" {
 			elapsed := time.Since(start)
 			if debugMode {
@@ -137,7 +162,7 @@ func FetchRecaptchaToken(ctx context.Context, net *transport.NetworkClient, prox
 			return token, nil
 		}
 		lastErr = err
-		invalidateVersion()
+		invalidateVersion(cache)
 		if retry < 2 {
 			timer := time.NewTimer(time.Duration(retry+1) * 200 * time.Millisecond)
 			select {
@@ -164,22 +189,34 @@ func FetchRecaptchaToken(ctx context.Context, net *transport.NetworkClient, prox
 }
 
 func fetchOnce(ctx context.Context, net *transport.NetworkClient, proxyURI string) (string, error) {
+	return fetchOnceWithRoute(ctx, net, transport.Route{RequestNodeURI: proxyURI})
+}
+
+func fetchOnceWithRoute(ctx context.Context, net *transport.NetworkClient, route transport.Route) (string, error) {
+	return fetchOnceWithRouteAndCache(ctx, net, route, defaultVersionCache)
+}
+
+func fetchOnceWithRouteAndCache(ctx context.Context, net *transport.NetworkClient, route transport.Route, cache *VersionCache) (string, error) {
 	// rT 的获取路线由调用方明确指定；不能再次从全局入口选择器挂载第二个入口。
 	reqID := transport.RequestIDFromContext(ctx)
 	if reqID == "" {
 		reqID = "recaptcha"
 	}
-	sess, err := net.CreateSessionWithoutEntryProxy(15, proxyURI, reqID)
+	sess, err := net.CreateSessionRoute(15, route, reqID)
 	if err != nil {
 		return "", fmt.Errorf("创建 reCAPTCHA Session 失败: %w", err)
 	}
 	defer sess.Close()
-	return FetchRecaptchaTokenWithSession(ctx, sess)
+	return fetchRecaptchaTokenWithSessionAndCache(ctx, sess, cache)
 }
 
 // FetchRecaptchaTokenWithSession 在同一 Session 中完成版本、anchor 与 reload 请求。
 func FetchRecaptchaTokenWithSession(ctx context.Context, sess *transport.Session) (string, error) {
-	version, err := currentVersion(ctx, sess)
+	return fetchRecaptchaTokenWithSessionAndCache(ctx, sess, defaultVersionCache)
+}
+
+func fetchRecaptchaTokenWithSessionAndCache(ctx context.Context, sess *transport.Session, cache *VersionCache) (string, error) {
+	version, err := currentVersion(ctx, sess, cache)
 	if err != nil {
 		version = recaptchaVFallback
 	}

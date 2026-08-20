@@ -22,6 +22,18 @@ const (
 	StatusUnknown           = "UNKNOWN"
 )
 
+type ErrorScope string
+
+const (
+	ScopeRequest     ErrorScope = "request"
+	ScopeModel       ErrorScope = "model"
+	ScopeUpstream    ErrorScope = "upstream"
+	ScopeRoute       ErrorScope = "route"
+	ScopeGlobalProxy ErrorScope = "global_proxy"
+	ScopeRequestNode ErrorScope = "request_node"
+	ScopeTransient   ErrorScope = "transient"
+)
+
 // VertexError 是统一错误类型，兼容 Gemini API 错误格式。
 //
 // Kind 用于区分语义（auth/ratelimit/invalid/...），便于 IsRetryable 判定与对外错误映射。
@@ -32,6 +44,10 @@ type VertexError struct { //nolint:govet
 	Code             int
 	Status           string
 	Kind             string
+	Scope            ErrorScope
+	Param            string
+	StableCode       string
+	PublicText       string
 	Details          map[string]any
 	UpstreamResponse string
 	RetryAfter       int   // 仅 ratelimit 用，0 表示未设
@@ -45,6 +61,18 @@ func (e *VertexError) Unwrap() error { return e.cause }
 
 func (e *VertexError) WithCause(cause error) *VertexError {
 	e.cause = cause
+	return e
+}
+
+func (e *VertexError) WithScope(scope ErrorScope) *VertexError {
+	e.Scope = scope
+	return e
+}
+
+func (e *VertexError) WithPublicDetail(param, stableCode, publicText string) *VertexError {
+	e.Param = param
+	e.StableCode = stableCode
+	e.PublicText = publicText
 	return e
 }
 
@@ -68,6 +96,9 @@ func (e *VertexError) IsRetryable() bool {
 
 // IsGlobalHardError 判断所有候选节点都会得到相同结果的请求级错误。
 func (e *VertexError) IsGlobalHardError() bool {
+	if e.Scope == ScopeRequest || e.Scope == ScopeModel {
+		return true
+	}
 	switch e.Kind {
 	case "invalid", "notfound", "safety":
 		return true
@@ -87,54 +118,54 @@ func firstCause(causes []error) error {
 
 // NewAuthenticationError 认证错误（recaptcha/token 过期）。code=502（见类型注释）。
 func NewAuthenticationError(msg string, causes ...error) *VertexError {
-	return &VertexError{Message: msg, Code: 502, Status: StatusUnauthenticated, Kind: "auth", cause: firstCause(causes)} //nolint:exhaustruct
+	return &VertexError{Message: msg, Code: 502, Status: StatusUnauthenticated, Kind: "auth", Scope: ScopeRoute, cause: firstCause(causes)} //nolint:exhaustruct
 }
 
 // NewPermissionDeniedError 权限拒绝（403）。
 func NewPermissionDeniedError(msg string, causes ...error) *VertexError {
-	return &VertexError{Message: msg, Code: 403, Status: StatusPermissionDenied, Kind: "permission", cause: firstCause(causes)} //nolint:exhaustruct
+	return &VertexError{Message: msg, Code: 403, Status: StatusPermissionDenied, Kind: "permission", Scope: ScopeUpstream, cause: firstCause(causes)} //nolint:exhaustruct
 }
 
 // NewInvalidArgumentError 参数错误（400）。
 func NewInvalidArgumentError(msg string, causes ...error) *VertexError {
-	return &VertexError{Message: msg, Code: 400, Status: StatusInvalidArgument, Kind: "invalid", cause: firstCause(causes)}
+	return &VertexError{Message: msg, Code: 400, Status: StatusInvalidArgument, Kind: "invalid", Scope: ScopeRequest, cause: firstCause(causes)}
 }
 
 // NewNotFoundError 资源不存在（404）。
 func NewNotFoundError(msg string, causes ...error) *VertexError {
-	return &VertexError{Message: msg, Code: 404, Status: StatusNotFound, Kind: "notfound", cause: firstCause(causes)}
+	return &VertexError{Message: msg, Code: 404, Status: StatusNotFound, Kind: "notfound", Scope: ScopeModel, cause: firstCause(causes)}
 }
 
 // NewRateLimitError 限流/资源耗尽（429）。
 func NewRateLimitError(msg string, retryAfter int, causes ...error) *VertexError {
-	return &VertexError{Message: msg, Code: 429, Status: StatusResourceExhausted, Kind: "ratelimit", RetryAfter: retryAfter, cause: firstCause(causes)}
+	return &VertexError{Message: msg, Code: 429, Status: StatusResourceExhausted, Kind: "ratelimit", Scope: ScopeRequestNode, RetryAfter: retryAfter, cause: firstCause(causes)}
 }
 
 // NewInternalError 内部错误（500）。
 func NewInternalError(msg string, causes ...error) *VertexError {
-	return &VertexError{Message: msg, Code: 500, Status: StatusInternal, Kind: "internal", cause: firstCause(causes)}
+	return &VertexError{Message: msg, Code: 500, Status: StatusInternal, Kind: "internal", Scope: ScopeUpstream, cause: firstCause(causes)}
 }
 
 // NewEmptyResponseError 上游空响应（502）。
 func NewEmptyResponseError(msg string, causes ...error) *VertexError {
-	return &VertexError{Message: msg, Code: 502, Status: StatusInternal, Kind: "empty", cause: firstCause(causes)}
+	return &VertexError{Message: msg, Code: 502, Status: StatusInternal, Kind: "empty", Scope: ScopeRequestNode, cause: firstCause(causes)}
 }
 
 func NewNetworkError(err error) *VertexError {
-	return &VertexError{Message: err.Error(), Code: 502, Status: StatusUnavailable, Kind: "network", cause: err}
+	return &VertexError{Message: err.Error(), Code: 502, Status: StatusUnavailable, Kind: "network", Scope: ScopeRoute, cause: err}
 }
 
 func NewContextError(err error) *VertexError {
-	return &VertexError{Message: err.Error(), Code: 500, Status: StatusInternal, Kind: "internal", cause: err} //nolint:exhaustruct
+	return &VertexError{Message: err.Error(), Code: 500, Status: StatusInternal, Kind: "internal", Scope: ScopeTransient, cause: err} //nolint:exhaustruct
 }
 
 func NewSafetyError(msg, status string, causes ...error) *VertexError {
-	return &VertexError{Message: msg, Code: 400, Status: status, Kind: "safety", cause: firstCause(causes)}
+	return &VertexError{Message: msg, Code: 400, Status: status, Kind: "safety", Scope: ScopeModel, cause: firstCause(causes)}
 }
 
 // NewUnavailableError 服务不可用（503）。
 func NewUnavailableError(msg string, causes ...error) *VertexError {
-	return &VertexError{Message: msg, Code: 503, Status: StatusUnavailable, Kind: "unavailable", cause: firstCause(causes)}
+	return &VertexError{Message: msg, Code: 503, Status: StatusUnavailable, Kind: "unavailable", Scope: ScopeUpstream, cause: firstCause(causes)}
 }
 
 // isRecaptchaAuthError identifies upstream messages that mean the request-scoped
@@ -180,13 +211,13 @@ func raiseForStatus(code int, status, message string, details map[string]any, up
 	case status == StatusUnavailable || code == 14 || code == 503:
 		e = NewUnavailableError(message)
 	case code >= 400 && code < 500:
-		e = &VertexError{Message: message, Code: code, Status: status, Kind: "client"}
+		e = &VertexError{Message: message, Code: code, Status: status, Kind: "client", Scope: ScopeRequest}
 	default:
 		c := code
 		if c == 0 {
 			c = 500
 		}
-		e = &VertexError{Message: message, Code: c, Status: status, Kind: "server"}
+		e = &VertexError{Message: message, Code: c, Status: status, Kind: "server", Scope: ScopeUpstream}
 	}
 	if details != nil {
 		e.Details = details

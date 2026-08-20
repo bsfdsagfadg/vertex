@@ -168,15 +168,26 @@ func hasRemotePrefix(url string) bool {
 
 // BuildVertexVariables 由 geminiPayload 构建发往上游的 variables。
 func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config.ConfigProvider) map[string]any {
-	vars := map[string]any{}
+	vars := make(map[string]any, len(geminiPayload)+1)
+	for field, value := range geminiPayload {
+		if strings.HasPrefix(field, "_vproxy") {
+			continue
+		}
+		vars[field] = value
+	}
 	vars["model"] = parseModelName(model)
+	if protocolOf(geminiPayload) == "gemini" && strings.EqualFold(cfg.GeminiParameterPolicy(), "passthrough") {
+		return vars
+	}
 
 	for _, field := range supportedVarFields {
-		if v, ok := geminiPayload[field]; ok {
-			vars[field] = v
-		} else {
-			if v, ok := geminiPayload[strutil.CamelToSnake(field)]; ok {
-				vars[field] = v
+		if _, exists := vars[field]; exists {
+			continue
+		}
+		if snake := strutil.CamelToSnake(field); snake != field {
+			if value, ok := geminiPayload[snake]; ok {
+				vars[field] = value
+				delete(vars, snake)
 			}
 		}
 	}
@@ -194,7 +205,6 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 		if trailingFix {
 			c = appendTrailingUserTurn(c)
 		}
-		c = EncodeThoughtSignature(c, 0)
 		vars["contents"] = c
 	}
 
@@ -212,7 +222,7 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 	}
 
 	if genCfg := buildGenerationConfig(geminiPayload); len(genCfg) > 0 {
-		dropUnsupportedPenaltyConfig(model, cfg, genCfg)
+		dropUnsupportedPenaltyFields(model, genCfg)
 		if len(genCfg) > 0 {
 			vars["generationConfig"] = genCfg
 		}
@@ -227,16 +237,29 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 	return vars
 }
 
-func dropUnsupportedPenaltyConfig(model string, cfg config.ConfigProvider, generationConfig map[string]any) {
-	realModel := model
-	if cfg != nil {
-		realModel = cfg.ResolveModelName(model)
+// New Gemini Flash variants reject the legacy OpenAI penalty fields even when
+// they arrive under either snake_case or camelCase spellings.
+func dropUnsupportedPenaltyFields(model string, generationConfig map[string]any) {
+	lowerModel := strings.ToLower(strings.TrimSpace(model))
+	if !strings.Contains(lowerModel, "gemini-3.6-flash") && !strings.Contains(lowerModel, "gemini-3.5-flash-lite") {
+		return
 	}
-	switch strings.ToLower(strings.TrimSpace(realModel)) {
-	case "gemini-3.6-flash", "gemini-3.5-flash-lite":
-		delete(generationConfig, "presencePenalty")
-		delete(generationConfig, "frequencyPenalty")
+	delete(generationConfig, "presencePenalty")
+	delete(generationConfig, "frequencyPenalty")
+}
+
+func MarkProtocol(payload map[string]any, protocol string) {
+	metadata, _ := payload["_vproxy"].(map[string]any)
+	if metadata == nil {
+		metadata = map[string]any{}
+		payload["_vproxy"] = metadata
 	}
+	metadata["protocol"] = protocol
+}
+
+func protocolOf(payload map[string]any) string {
+	metadata, _ := payload["_vproxy"].(map[string]any)
+	return strings.ToLower(strings.TrimSpace(toString(metadata["protocol"])))
 }
 
 // handleSystemInstruction 把 systemInstruction 在无 user content 时降级为首条 user message。
@@ -411,6 +434,9 @@ func normalizePart(part map[string]any) map[string]any {
 		return map[string]any{"text": toString(part["text"])}
 
 	case "image_url", "input_image":
+		if fileID := toString(part["file_id"]); fileID != "" {
+			return map[string]any{"fileData": map[string]any{"mimeType": firstTruthyString(part["mime_type"], part["mimeType"]), "fileUri": fileID}}
+		}
 		var url string
 		switch u := firstNonEmpty(part["image_url"], part["input_image"]).(type) {
 		case map[string]any:
@@ -427,8 +453,8 @@ func normalizePart(part map[string]any) map[string]any {
 			return map[string]any{"fileData": map[string]any{"mimeType": guessMIMEFromURI(url), "fileUri": url}}
 		}
 
-	case "media", "file", "file_data":
-		fileURI := toString(firstNonEmpty(part["fileUri"], part["file_uri"], part["uri"], part["url"]))
+	case "media", "file", "file_data", "input_file":
+		fileURI := toString(firstNonEmpty(part["file_id"], part["fileUri"], part["file_uri"], part["uri"], part["url"]))
 		if fileURI != "" {
 			mime := firstTruthyString(part["mimeType"], part["mime_type"])
 			if mime == "" {

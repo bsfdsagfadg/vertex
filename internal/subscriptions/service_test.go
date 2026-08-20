@@ -8,9 +8,23 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/db"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/repository"
 )
+
+func setupSubscriptionRepository(t *testing.T, path string) *repository.SQLite {
+	t.Helper()
+	repo, err := repository.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes.SetRepository(repo)
+	t.Cleanup(func() {
+		nodes.SetRepository(nil)
+		_ = repo.Close()
+	})
+	return repo
+}
 
 func TestServiceDiscardsStaleResultsAndKeepsDeletedNodesAsManual(t *testing.T) {
 	dir := t.TempDir()
@@ -18,10 +32,7 @@ func TestServiceDiscardsStaleResultsAndKeepsDeletedNodesAsManual(t *testing.T) {
 	if err := config.LoadSubscriptions(); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.InitDB(filepath.Join(dir, "data.db")); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(db.CloseDB)
+	setupSubscriptionRepository(t, filepath.Join(dir, "data.db"))
 
 	sub := config.Subscription{ID: "sub-a", Name: "A", URL: "https://example.com/original", UserAgent: "Chrome"}
 	if err := config.UpdateSubscription(sub); err != nil {
@@ -115,10 +126,7 @@ func TestDeleteAndRecreateRejectsOldInFlightResult(t *testing.T) {
 	if err := config.LoadSubscriptions(); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.InitDB(filepath.Join(dir, "data.db")); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(db.CloseDB)
+	setupSubscriptionRepository(t, filepath.Join(dir, "data.db"))
 
 	sub := config.Subscription{ID: "sub-reused", Name: "Old", URL: "https://example.com/old"}
 	if err := config.UpdateSubscription(sub); err != nil {
@@ -256,10 +264,7 @@ func TestDeleteRestoresSubscriptionWhenNodeCleanupFails(t *testing.T) {
 	if err := config.LoadSubscriptions(); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.InitDB(filepath.Join(dir, "data.db")); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(db.CloseDB)
+	repo := setupSubscriptionRepository(t, filepath.Join(dir, "data.db"))
 
 	sub := config.Subscription{ID: "sub-restore", Name: "Restore", URL: "https://example.com/restore"}
 	if err := config.UpdateSubscription(sub); err != nil {
@@ -269,7 +274,7 @@ func TestDeleteRestoresSubscriptionWhenNodeCleanupFails(t *testing.T) {
 	if err := nodes.ReplaceSubscriptionNodes(sub.ID, []nodes.Node{{RawURI: "vless://restore@example.com:443#restore", Name: "restore"}}, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.GlobalDB.Close(); err != nil {
+	if err := repo.Close(); err != nil {
 		t.Fatal(err)
 	}
 	service := New(nil)

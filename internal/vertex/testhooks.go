@@ -11,5 +11,8 @@ func SetBatchGraphqlURL(url string) {
 // SetTokenPool replaces the token pool for testing.
 // Will be replaced by dependency injection in phase 3/4.
 func (c *VertexAIClient) SetTokenPool(pool *recaptcha.TokenPool) {
+	c.graphMu.Lock()
+	defer c.graphMu.Unlock()
 	c.pool = pool
+	c.graph = nil
 }

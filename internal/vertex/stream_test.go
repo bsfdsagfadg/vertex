@@ -431,7 +431,11 @@ func TestEmitAndCheckFinish(t *testing.T) {
 
 func TestStreamCompletionStateWaitsForEveryCandidateAndUsage(t *testing.T) {
 	state := newStreamCompletionState()
-	emit := func(map[string]any) bool { return true }
+	var emitted []map[string]any
+	emit := func(chunk map[string]any) bool {
+		emitted = append(emitted, chunk)
+		return true
+	}
 
 	_, done := emitAndCheckFinish(map[string]any{"candidates": []any{
 		map[string]any{"index": 0, "finishReason": "STOP"},
@@ -447,8 +451,21 @@ func TestStreamCompletionStateWaitsForEveryCandidateAndUsage(t *testing.T) {
 	_, done = emitAndCheckFinish(map[string]any{"candidates": []any{
 		map[string]any{"index": 1, "finishReason": "MAX_TOKENS"},
 	}}, emit, state)
-	if !done {
-		t.Fatal("stream did not stop after all candidates finished and usage was observed")
+	if done {
+		t.Fatal("stream must wait for EOF even after all currently seen candidates finish")
+	}
+	if !state.allFinished() {
+		t.Fatal("all candidates should be recorded as finished")
+	}
+	if !state.flush(emit) {
+		t.Fatal("terminal flush was rejected")
+	}
+	terminal := emitted[len(emitted)-1]
+	if _, ok := terminal["usageMetadata"]; !ok {
+		t.Fatal("terminal flush lost usageMetadata")
+	}
+	if candidates, _ := terminal["candidates"].([]any); len(candidates) != 2 {
+		t.Fatalf("terminal candidates=%#v, want 2", terminal["candidates"])
 	}
 }
 
@@ -466,14 +483,33 @@ func TestEmitAndCheckFinishObservesBeforeEmitMutation(t *testing.T) {
 		return true
 	}, state)
 
-	if !done {
-		t.Fatal("completion state must be observed before downstream mutates the emitted chunk")
+	if done {
+		t.Fatal("stateful completion must wait for EOF")
 	}
 	if _, ok := state.seen[7]; !ok {
 		t.Fatal("candidate index was not observed before emit")
 	}
 	if _, ok := state.finished[7]; !ok {
 		t.Fatal("candidate finish reason was not observed before emit")
+	}
+}
+
+func TestStreamCompletionStateFlushesFinishOnlyAtEOF(t *testing.T) {
+	state := newStreamCompletionState()
+	var emitted []map[string]any
+	emit := func(chunk map[string]any) bool {
+		emitted = append(emitted, chunk)
+		return true
+	}
+
+	_, done := emitAndCheckFinish(map[string]any{"candidates": []any{
+		map[string]any{"index": 0, "finishReason": "STOP"},
+	}}, emit, state)
+	if done || len(emitted) != 0 {
+		t.Fatalf("finish-only frame must be deferred until EOF: done=%v emitted=%d", done, len(emitted))
+	}
+	if !state.flush(emit) || len(emitted) != 1 || !hasRealFinishReason(emitted[0]) {
+		t.Fatalf("EOF terminal=%#v, want one real finish frame", emitted)
 	}
 }
 
@@ -496,8 +532,11 @@ func TestProcessStreamingObjectDoesNotStopInsideParallelCandidateList(t *testing
 	if err != nil || stop {
 		t.Fatalf("processStreamingObject stop=%v err=%v", stop, err)
 	}
-	if emitted != 2 {
-		t.Fatalf("emitted=%d, want both parallel candidates", emitted)
+	if emitted != 1 {
+		t.Fatalf("emitted=%d, want only the unfinished candidate before EOF", emitted)
+	}
+	if !state.flush(emit) || emitted != 2 {
+		t.Fatalf("emitted=%d after EOF, want unfinished frame plus terminal", emitted)
 	}
 }
 

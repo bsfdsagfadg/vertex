@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -25,6 +26,11 @@ type Session struct {
 	client        tls_client.HttpClient
 	ProxyURI      string
 	EntryProxyURI string
+}
+
+// Route returns the immutable tuple used to create this session.
+func (s *Session) Route() Route {
+	return Route{GlobalProxyURI: s.EntryProxyURI, RequestNodeURI: s.ProxyURI}
 }
 
 // EntryProxyError preserves the first-hop URI when session construction fails.
@@ -95,9 +101,11 @@ func (s *Session) Close() {
 type NetworkClient struct {
 	debugMode     bool
 	entryProxyURI func() string
+	proxyManager  *ProxyManager
 }
 
 type entryProxyContextKey struct{}
+type entryProxyRequiredContextKey struct{}
 
 type requestIDContextKey struct{}
 
@@ -137,6 +145,10 @@ func WithEntryProxyPool(ctx context.Context, entryURIs []string) context.Context
 	return context.WithValue(ctx, entryProxyContextKey{}, &entryProxyPool{uris: clean})
 }
 
+func WithGlobalProxyRequired(ctx context.Context, required bool) context.Context {
+	return context.WithValue(ctx, entryProxyRequiredContextKey{}, required)
+}
+
 func entryProxyFromContext(ctx context.Context) (string, bool) {
 	if value, ok := ctx.Value(entryProxyContextKey{}).(pinnedEntryProxy); ok {
 		return value.uri, true
@@ -152,11 +164,18 @@ func entryProxyFromContext(ctx context.Context) (string, bool) {
 }
 
 func NewNetworkClient(debugMode bool, entryProxyURI ...func() string) *NetworkClient {
-	client := &NetworkClient{debugMode: debugMode}
+	client := &NetworkClient{debugMode: debugMode, proxyManager: defaultProxyManager}
 	if len(entryProxyURI) > 0 {
 		client.entryProxyURI = entryProxyURI[0]
 	}
 	return client
+}
+
+func NewNetworkClientWithManager(debugMode bool, manager *ProxyManager) *NetworkClient {
+	if manager == nil {
+		manager = defaultProxyManager
+	}
+	return &NetworkClient{debugMode: debugMode, proxyManager: manager}
 }
 
 //nolint:gochecknoglobals // Read-only list of browser profiles
@@ -169,7 +188,7 @@ func pickProfile() profiles.ClientProfile {
 }
 
 // injectProxy 统一处理网络代理挂载，如果代理初始化失败，返回 error
-func injectProxy(opts []tls_client.HttpClientOption, proxyURI, entryProxyURI, reqID string, debugMode bool) ([]tls_client.HttpClientOption, error) {
+func injectProxyWithManager(opts []tls_client.HttpClientOption, proxyURI, entryProxyURI, reqID string, debugMode bool, manager *ProxyManager) ([]tls_client.HttpClientOption, error) {
 	if proxyURI == "" {
 		return opts, nil
 	}
@@ -182,13 +201,20 @@ func injectProxy(opts []tls_client.HttpClientOption, proxyURI, entryProxyURI, re
 
 	// 第二跳通过 mihomo DialerForAPI 复用第一跳，形成 entry -> candidate 代理链。
 	// 两跳相同则只构造一次，避免代理自引用。
-	dialCtx, err := getOrStartProxyDialer(proxyURI, reqID, debugMode, entryProxyURI)
+	if manager == nil {
+		manager = defaultProxyManager
+	}
+	dialCtx, err := manager.getOrStartProxyDialer(proxyURI, reqID, debugMode, entryProxyURI)
 	if err != nil {
 		return nil, fmt.Errorf("节点内部 Dialer 启动失败: %w", err)
 	}
 
 	opts = append(opts, tls_client.WithDialContext(dialCtx))
 	return opts, nil
+}
+
+func injectProxy(opts []tls_client.HttpClientOption, proxyURI, entryProxyURI, reqID string, debugMode bool) ([]tls_client.HttpClientOption, error) {
+	return injectProxyWithManager(opts, proxyURI, entryProxyURI, reqID, debugMode, defaultProxyManager)
 }
 
 // CreateSession 创建一个新 Session：随机 Chrome 指纹 + 可选代理 + 独立 cookie jar。
@@ -206,7 +232,22 @@ func (c *NetworkClient) CreateSessionContext(ctx context.Context, timeoutSec int
 	if !pinned && proxyURI != "" && c.entryProxyURI != nil {
 		entryProxyURI = strings.TrimSpace(c.entryProxyURI())
 	}
-	return c.createSession(timeoutSec, proxyURI, entryProxyURI, reqID)
+	if required, _ := ctx.Value(entryProxyRequiredContextKey{}).(bool); required && entryProxyURI == "" {
+		return nil, &EntryProxyError{Err: errors.New("no_global_proxy_route")}
+	}
+	return c.CreateSessionRoute(timeoutSec, Route{GlobalProxyURI: entryProxyURI, RequestNodeURI: proxyURI}, reqID)
+}
+
+// CreateSessionRoute creates a session bound to one explicit route tuple.
+func (c *NetworkClient) CreateSessionRoute(timeoutSec int, route Route, reqID string) (*Session, error) {
+	planned, err := PlanRoute(route.GlobalProxyURI, route.RequestNodeURI)
+	if err != nil {
+		if route.GlobalProxyURI != "" {
+			return nil, &EntryProxyError{EntryURI: route.GlobalProxyURI, Err: err}
+		}
+		return nil, err
+	}
+	return c.createSession(timeoutSec, planned.RequestNodeURI, planned.GlobalProxyURI, reqID)
 }
 
 // CreateSessionWithoutEntryProxy 创建只经过指定代理的隔离会话，用于验证入口代理候选本身。
@@ -228,7 +269,7 @@ func (c *NetworkClient) createSession(timeoutSec int, proxyURI, entryProxyURI, r
 
 	// 使用 injectProxy 挂载代理，失败则直接熔断，坚决不走静默直连！
 	var err error
-	opts, err = injectProxy(opts, proxyURI, entryProxyURI, reqID, c.debugMode)
+	opts, err = injectProxyWithManager(opts, proxyURI, entryProxyURI, reqID, c.debugMode, c.proxyManager)
 	if err != nil {
 		if entryProxyURI != "" {
 			return nil, &EntryProxyError{EntryURI: entryProxyURI, Err: err}

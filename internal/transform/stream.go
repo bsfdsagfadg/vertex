@@ -1,7 +1,9 @@
 package transform
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,8 +14,6 @@ import (
 
 // FinishReasonUnspecified 是匿名端点每帧携带的 protobuf 默认值。
 const FinishReasonUnspecified = "FINISH_REASON_UNSPECIFIED"
-
-
 
 // FunctionCallIDAssigner supplies IDs in response order. Reuse one assigner
 // for all chunks in a stream so separate tool-call frames remain distinct.
@@ -36,6 +36,27 @@ func (a *FunctionCallIDAssigner) Ensure(value any) {
 // clients when an upstream non-streaming functionCall omits it.
 func EnsureFunctionCallIDs(value any) {
 	NewFunctionCallIDAssigner().Ensure(value)
+}
+
+// AssignExternalFunctionCallIDs replaces provider-local identifiers with
+// opaque, process-independent OpenAI call IDs. Provider IDs are not safe as a
+// durable primary key and are never required for transcript restoration.
+func AssignExternalFunctionCallIDs(value any) {
+	switch current := value.(type) {
+	case map[string]any:
+		if call, ok := current["functionCall"].(map[string]any); ok && strings.TrimSpace(toString(call["name"])) != "" {
+			call["id"] = "call_" + reqID()
+			delete(call, "call_id")
+			delete(call, "toolCallId")
+		}
+		for _, child := range current {
+			AssignExternalFunctionCallIDs(child)
+		}
+	case []any:
+		for _, child := range current {
+			AssignExternalFunctionCallIDs(child)
+		}
+	}
 }
 
 func ensureFunctionCallIDs(value any, next *int) {
@@ -64,16 +85,21 @@ type streamToolCallEntry struct {
 
 // StreamToolCallTracker 保存一次 OpenAI SSE 请求内的工具调用编号。
 type StreamToolCallTracker struct {
-	entries   map[string]streamToolCallEntry
-	nextIndex map[int]int
-	hasCalls  map[int]bool
+	entries           map[string]streamToolCallEntry
+	nextIndex         map[int]int
+	hasCalls          map[int]bool
+	captured          map[int][]any
+	capturedCallParts map[string]int
+	captureErr        error
 }
 
 func NewStreamToolCallTracker() *StreamToolCallTracker {
 	return &StreamToolCallTracker{
-		entries:   map[string]streamToolCallEntry{},
-		nextIndex: map[int]int{},
-		hasCalls:  map[int]bool{},
+		entries:           map[string]streamToolCallEntry{},
+		nextIndex:         map[int]int{},
+		hasCalls:          map[int]bool{},
+		captured:          map[int][]any{},
+		capturedCallParts: map[string]int{},
 	}
 }
 
@@ -84,21 +110,129 @@ func (t *StreamToolCallTracker) process(candidateIndex int, ordinal int, functio
 	name := toString(functionCall["name"])
 	explicitID := toString(firstNonEmpty(functionCall["id"], functionCall["call_id"], functionCall["toolCallId"]))
 	key := "candidate:" + strconv.Itoa(candidateIndex) + ":part:" + strconv.Itoa(ordinal) + ":name:" + name
-	if explicitID != "" {
+	// The ordinal is stable across repeated upstream deltas. The tracker may
+	// write the generated ID back into the part map, so switching to that ID on
+	// the next frame would incorrectly create a second tool call.
+	if explicitID != "" && !strings.HasPrefix(explicitID, "call_") {
 		key = "candidate:" + strconv.Itoa(candidateIndex) + ":id:" + explicitID
 	}
 	t.hasCalls[candidateIndex] = true
 	if entry, ok := t.entries[key]; ok {
+		functionCall["id"] = entry.callID
+		delete(functionCall, "call_id")
+		delete(functionCall, "toolCallId")
 		return entry.index, entry.callID
 	}
 	index := t.nextIndex[candidateIndex]
 	t.nextIndex[candidateIndex] = index + 1
-	callID := explicitID
-	if callID == "" {
-		callID = "call_" + reqID()
-	}
+	callID := "call_" + reqID()
+	functionCall["id"] = callID
+	delete(functionCall, "call_id")
+	delete(functionCall, "toolCallId")
 	t.entries[key] = streamToolCallEntry{index: index, callID: callID}
 	return index, callID
+}
+
+func (t *StreamToolCallTracker) capture(candidateIndex int, parts []any) {
+	if t == nil {
+		return
+	}
+	for _, rawPart := range parts {
+		part, ok := rawPart.(map[string]any)
+		if !ok {
+			continue
+		}
+		cloned := cloneStreamPart(part)
+		if call, ok := cloned["functionCall"].(map[string]any); ok {
+			callID := toString(firstNonEmpty(call["id"], call["call_id"], call["toolCallId"]))
+			if callID != "" {
+				key := strconv.Itoa(candidateIndex) + "\x00" + callID
+				if existingIndex, exists := t.capturedCallParts[key]; exists {
+					existing, _ := t.captured[candidateIndex][existingIndex].(map[string]any)
+					merged, err := mergeCapturedCallPart(existing, cloned)
+					if err != nil && t.captureErr == nil {
+						t.captureErr = err
+					}
+					if err == nil {
+						t.captured[candidateIndex][existingIndex] = merged
+					}
+					continue
+				}
+				t.capturedCallParts[key] = len(t.captured[candidateIndex])
+			}
+		}
+		t.captured[candidateIndex] = append(t.captured[candidateIndex], cloned)
+	}
+}
+
+// CaptureError reports an invalid incremental opaque-state transition.
+func (t *StreamToolCallTracker) CaptureError() error {
+	if t == nil {
+		return nil
+	}
+	return t.captureErr
+}
+
+// CapturedResponse returns a synthetic Gemini response containing the exact
+// streamed tool-step parts collected for durable transcript storage.
+func (t *StreamToolCallTracker) CapturedResponse() map[string]any {
+	response := map[string]any{"candidates": []any{}}
+	if t == nil || len(t.captured) == 0 {
+		return response
+	}
+	indexes := make([]int, 0, len(t.captured))
+	for index := range t.captured {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	candidates := make([]any, 0, len(indexes))
+	for _, index := range indexes {
+		if !t.hasCalls[index] {
+			continue
+		}
+		candidates = append(candidates, map[string]any{
+			"index":   index,
+			"content": map[string]any{"role": "model", "parts": t.captured[index]},
+		})
+	}
+	response["candidates"] = candidates
+	return response
+}
+
+func cloneStreamPart(part map[string]any) map[string]any {
+	encoded, _ := json.Marshal(part)
+	var cloned map[string]any
+	_ = json.Unmarshal(encoded, &cloned)
+	return cloned
+}
+
+func mergeCapturedCallPart(existing, incoming map[string]any) (map[string]any, error) {
+	merged := cloneStreamPart(existing)
+	existingSignature, existingHasSignature := existing["thoughtSignature"]
+	incomingSignature, incomingHasSignature := incoming["thoughtSignature"]
+	if existingHasSignature && incomingHasSignature && toString(existingSignature) != toString(incomingSignature) {
+		return nil, fmt.Errorf("streamed thought signature changed within one tool call")
+	}
+	for key, value := range incoming {
+		if key != "functionCall" && key != "thoughtSignature" {
+			merged[key] = value
+		}
+	}
+	existingCall, _ := merged["functionCall"].(map[string]any)
+	incomingCall, _ := incoming["functionCall"].(map[string]any)
+	if existingCall == nil {
+		existingCall = map[string]any{}
+		merged["functionCall"] = existingCall
+	}
+	for key, value := range incomingCall {
+		existingCall[key] = value
+	}
+	if incomingHasSignature {
+		merged["thoughtSignature"] = incomingSignature
+	} else if existingHasSignature {
+		merged["thoughtSignature"] = existingSignature
+	}
+	return merged, nil
 }
 
 // reqID 生成唯一 ID。
@@ -122,7 +256,20 @@ func sseLine(obj map[string]any) string {
 
 // ConvertRealtimeChunk 把单个 Gemini 增量 dict 转为 OAI SSE 事件字符串列表。
 func ConvertRealtimeChunk(chunk map[string]any, model, requestID string, isFirst bool, trackers ...*StreamToolCallTracker) []string {
-	created := time.Now().Unix()
+	var tracker *StreamToolCallTracker
+	if len(trackers) > 0 {
+		tracker = trackers[0]
+	}
+	return ConvertRealtimeChunkWithUsage(chunk, model, requestID, isFirst, true, tracker)
+}
+
+func ConvertRealtimeChunkWithUsage(chunk map[string]any, model, requestID string, isFirst, includeUsage bool, tracker *StreamToolCallTracker) []string {
+	return ConvertRealtimeChunkWithUsageAt(chunk, model, requestID, time.Now().Unix(), isFirst, includeUsage, tracker)
+}
+
+// ConvertRealtimeChunkWithUsageAt converts one upstream chunk while keeping
+// the OpenAI created timestamp stable across the entire SSE response.
+func ConvertRealtimeChunkWithUsageAt(chunk map[string]any, model, requestID string, created int64, isFirst, includeUsage bool, tracker *StreamToolCallTracker) []string {
 	base := func() map[string]any {
 		return map[string]any{
 			"id":      "chatcmpl-" + requestID,
@@ -132,10 +279,6 @@ func ConvertRealtimeChunk(chunk map[string]any, model, requestID string, isFirst
 		}
 	}
 	var events []string
-	var tracker *StreamToolCallTracker
-	if len(trackers) > 0 {
-		tracker = trackers[0]
-	}
 	candidates := responseCandidates(chunk)
 
 	if isFirst {
@@ -156,6 +299,9 @@ func ConvertRealtimeChunk(chunk map[string]any, model, requestID string, isFirst
 		candidateIndex := candidateResponseIndex(candidate, position)
 		parts := candidateParts(candidate)
 		text, toolCalls, reasoning := extractPartsTracked(parts, true, tracker, candidateIndex)
+		if tracker != nil {
+			tracker.capture(candidateIndex, parts)
+		}
 		if reasoning != "" {
 			b := base()
 			b["choices"] = []any{map[string]any{"index": candidateIndex, "delta": map[string]any{"reasoning_content": reasoning}, "finish_reason": nil}}
@@ -184,14 +330,10 @@ func ConvertRealtimeChunk(chunk map[string]any, model, requestID string, isFirst
 	if len(finishChoices) > 0 {
 		finishEvent := base()
 		finishEvent["choices"] = finishChoices
-		if hasUsage && len(usageMeta) > 0 {
-			// Track 1: Include usage directly in the finish frame for legacy aggregators
-			finishEvent["usage"] = ConvertUsage(usageMeta)
-		}
 		events = append(events, sseLine(finishEvent))
 	}
-	if hasUsage && len(usageMeta) > 0 {
-		// Track 2: Dedicated terminal usage chunk with empty choices for standard OpenAI SDKs / Cherry Studio
+	if includeUsage && hasUsage && len(usageMeta) > 0 {
+		// OpenAI-compatible usage is owned by one dedicated terminal event.
 		usageEvent := base()
 		usageEvent["choices"] = []any{}
 		usageEvent["usage"] = ConvertUsage(usageMeta)
@@ -300,7 +442,6 @@ func candidateResponseIndex(candidate map[string]any, fallback int) int {
 
 // ---- 响应解析用的小工具 ----
 
-
 func candidateParts(candidate map[string]any) []any {
 	if content, ok := candidate["content"].(map[string]any); ok {
 		if parts, ok := content["parts"].([]any); ok {
@@ -339,4 +480,3 @@ func firstNonEmpty(vals ...any) any {
 	}
 	return ""
 }
-

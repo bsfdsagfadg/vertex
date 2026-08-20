@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
 // TestTokenPoolRealtime 验证每次 GetToken 都实时获取，且 Start/Stop 不阻塞、Stats 返回 0,0。
@@ -55,7 +57,7 @@ func TestTokenPoolSharedStartsFiveRoutesImmediately(t *testing.T) {
 			<-ctx.Done()
 			return "", ctx.Err()
 		},
-		routes: func() []string {
+		routes: func(context.Context) []string {
 			return []string{"route-1", "route-2", "route-3", "route-4", "route-5"}
 		},
 	}
@@ -78,7 +80,7 @@ func TestTokenPoolSharedCapsRoutesAtFive(t *testing.T) {
 			calls.Add(1)
 			return "", errors.New("failed")
 		},
-		routes: func() []string {
+		routes: func(context.Context) []string {
 			return []string{"1", "2", "3", "4", "5", "6"}
 		},
 	}
@@ -99,7 +101,7 @@ func TestTokenPoolSharedDoesNotSingleflightCallers(t *testing.T) {
 			<-release
 			return fmt.Sprintf("token-%d", n), nil
 		},
-		routes: func() []string { return []string{"route"} },
+		routes: func(context.Context) []string { return []string{"route"} },
 	}
 
 	var wg sync.WaitGroup
@@ -138,6 +140,29 @@ func TestTokenPoolContextCancellation(t *testing.T) {
 	}
 }
 
+func TestTokenPoolRouteFetchDoesNotUseSharedRace(t *testing.T) {
+	want := transport.Route{GlobalProxyURI: "socks5://global.example:1080", RequestNodeURI: "vless://node@request.example:443"}
+	var got transport.Route
+	var sharedCalled bool
+	p := &TokenPool{
+		fetchRoute: func(_ context.Context, route transport.Route) (string, error) {
+			got = route
+			return "token", nil
+		},
+		routes: func(context.Context) []string {
+			sharedCalled = true
+			return []string{"wrong"}
+		},
+	}
+	token, err := p.GetTokenWithRouteContext(context.Background(), want)
+	if err != nil || token != "token" {
+		t.Fatalf("route token=%q err=%v", token, err)
+	}
+	if got != want || sharedCalled {
+		t.Fatalf("route affinity lost: got=%+v sharedCalled=%t", got, sharedCalled)
+	}
+}
+
 func TestTokenPoolUsesDynamicDefaultButExplicitEmptyMeansDirect(t *testing.T) {
 	currentProxy := "http://proxy-a.example:7890"
 	var gotProxy string
@@ -146,7 +171,7 @@ func TestTokenPoolUsesDynamicDefaultButExplicitEmptyMeansDirect(t *testing.T) {
 			gotProxy = proxyURI
 			return "token", nil
 		},
-		defaultProxy: func() string { return currentProxy },
+		defaultProxy: func(context.Context) string { return currentProxy },
 	}
 
 	if _, err := p.GetTokenContext(context.Background()); err != nil {

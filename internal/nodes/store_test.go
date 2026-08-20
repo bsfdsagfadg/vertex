@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -8,8 +9,22 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/db"
+	"github.com/bsfdsagfadg/vertex/internal/repository"
 )
+
+func setupNodeRepository(t *testing.T, name string) *repository.SQLite {
+	t.Helper()
+	repo, err := repository.Open(filepath.Join(t.TempDir(), name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetRepository(repo)
+	t.Cleanup(func() {
+		SetRepository(nil)
+		_ = repo.Close()
+	})
+	return repo
+}
 
 func resetState() {
 	mu.Lock()
@@ -208,28 +223,23 @@ func TestUpdateNodeTestResult(t *testing.T) {
 }
 
 func TestRecordTestTransportFailureDoesNotDisableNodeInDB(t *testing.T) {
-	db.CloseDB()
 	resetState()
-	if err := db.InitDB(filepath.Join(t.TempDir(), "data.db")); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		resetState()
-		db.CloseDB()
-	})
+	repo := setupNodeRepository(t, "data.db")
+	t.Cleanup(resetState)
 
-	MergeNodes([]Node{{RawURI: "uri1", Name: "node1"}})
-	RecordTest("uri1", false, 0, "dial tcp: i/o timeout")
+	uri := "socks5://127.0.0.1:10001#uri1"
+	MergeNodes([]Node{{RawURI: uri, Name: "node1"}})
+	RecordTest(uri, false, 0, "dial tcp: i/o timeout")
 
 	nodes := LoadNodes()
 	if len(nodes) != 1 || nodes[0].Disabled {
 		t.Fatalf("临时网络错误不应禁用内存节点: %+v", nodes)
 	}
-	var disabled bool
-	if err := db.GlobalDB.QueryRow("SELECT disabled FROM nodes WHERE raw_uri = ?", "uri1").Scan(&disabled); err != nil {
+	loadedNodes, _, _, err := repo.LoadNodeState(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if disabled {
+	if len(loadedNodes) != 1 || loadedNodes[0].Disabled {
 		t.Fatal("临时网络错误不应将数据库节点标记为 disabled")
 	}
 
@@ -413,25 +423,19 @@ func TestSubscriptionRefreshCanAdoptManualMetadata(t *testing.T) {
 }
 
 func TestUpsertFailureRestoresPrunedHealth(t *testing.T) {
-	db.CloseDB()
 	resetState()
-	defer func() {
-		db.CloseDB()
-		resetState()
-	}()
-	if err := db.InitDB(filepath.Join(t.TempDir(), "data.db")); err != nil {
-		t.Fatal(err)
-	}
-	if err := UpsertNodesWithSource([]Node{{RawURI: "uri1", Name: "one"}}, SourceManual, ""); err != nil {
+	repo := setupNodeRepository(t, "data.db")
+	t.Cleanup(resetState)
+	if err := UpsertNodesWithSource([]Node{{RawURI: "socks5://127.0.0.1:10002#uri1", Name: "one"}}, SourceManual, ""); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
 	healthMap["orphan"] = &NodeHealth{SuccessCount: 7}
 	mu.Unlock()
-	if err := db.GlobalDB.Close(); err != nil {
+	if err := repo.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := UpsertNodesWithSource([]Node{{RawURI: "uri2", Name: "two"}}, SourceManual, ""); err == nil {
+	if err := UpsertNodesWithSource([]Node{{RawURI: "socks5://127.0.0.1:10003#uri2", Name: "two"}}, SourceManual, ""); err == nil {
 		t.Fatal("closed database must make upsert fail")
 	}
 	mu.Lock()
@@ -513,28 +517,33 @@ func TestSelectForParallelSkipsActiveCooldown(t *testing.T) {
 }
 
 func TestCooldownAndSubHealthyStateSurvivesReload(t *testing.T) {
-	db.CloseDB()
 	resetState()
-	if err := db.InitDB(filepath.Join(t.TempDir(), "data.db")); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		resetState()
-		db.CloseDB()
-	})
+	repo := setupNodeRepository(t, "data.db")
+	t.Cleanup(resetState)
 
+	limitedURI := "socks5://127.0.0.1:10004#limited"
+	healthyURI := "socks5://127.0.0.1:10005#healthy"
 	MergeNodes([]Node{
-		{RawURI: "limited", Name: "limited"},
-		{RawURI: "healthy", Name: "healthy"},
+		{RawURI: limitedURI, Name: "limited"},
+		{RawURI: healthyURI, Name: "healthy"},
 	})
-	RecordRateLimit("limited", 60)
+	RecordRateLimit(limitedURI, 60)
 
 	deadline := time.Now().Add(3 * time.Second)
 	for {
+		loadedNodes, _, health, err := repo.LoadNodeState(context.Background())
+		nodeIDs := make(map[string]string, len(loadedNodes))
+		for _, node := range loadedNodes {
+			nodeIDs[node.ID] = node.RawURI
+		}
 		var cooldownUntil, last429At, lastSubHealthyAt int64
 		var rateLimitCount int
-		err := db.GlobalDB.QueryRow(`SELECT cooldown_until, last_429_at, rate_limit_count, last_sub_healthy_at FROM node_health WHERE raw_uri = ?`, "limited").
-			Scan(&cooldownUntil, &last429At, &rateLimitCount, &lastSubHealthyAt)
+		for _, item := range health {
+			if nodeIDs[item.NodeID] == limitedURI {
+				cooldownUntil, last429At, rateLimitCount, lastSubHealthyAt = item.CooldownUntil, item.Last429At, item.RateLimitCount, item.LastSubHealthyAt
+				break
+			}
+		}
 		if err == nil && cooldownUntil > time.Now().Unix() && last429At > 0 && rateLimitCount == 1 && lastSubHealthyAt > 0 {
 			break
 		}
@@ -546,12 +555,12 @@ func TestCooldownAndSubHealthyStateSurvivesReload(t *testing.T) {
 
 	resetState()
 	health := LoadHealth()
-	h := health["limited"]
+	h := health[limitedURI]
 	if h == nil || h.CooldownUntil <= time.Now().Unix() || h.LastSubHealthyAt == 0 || h.Last429At == 0 || h.RateLimitCount != 1 {
 		t.Fatalf("重载后的冷却/亚健康状态错误: %+v", h)
 	}
 	selected := SelectForParallel(2, 80, false, false)
-	if len(selected) != 1 || selected[0].RawURI != "healthy" {
+	if len(selected) != 1 || selected[0].RawURI != healthyURI {
 		t.Fatalf("重载后活动冷却节点不应进入候选: %+v", selected)
 	}
 
@@ -562,7 +571,7 @@ func TestCooldownAndSubHealthyStateSurvivesReload(t *testing.T) {
 	if len(selected) != 2 {
 		t.Fatalf("冷却到期后亚健康节点应作为 Tier 2 候选: %+v", selected)
 	}
-	if tier := getNodeTier(Node{RawURI: "limited"}, h); tier != 2 {
+	if tier := getNodeTier(Node{RawURI: limitedURI}, h); tier != 2 {
 		t.Fatalf("冷却到期不应自动恢复为健康 Tier 1, got Tier %d", tier)
 	}
 }

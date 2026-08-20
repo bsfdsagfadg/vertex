@@ -3,6 +3,9 @@ package vertex
 import (
 	"errors"
 	"fmt"
+	"time"
+
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
 // raceConfig 是 RunRace 的可配置策略。
@@ -47,9 +50,12 @@ func WithCollectedFinalizer[T any](fn func([]raceResult[T]) (T, error)) RaceOpti
 }
 
 type raceResult[T any] struct {
-	uri string
-	val T
-	err error
+	key     string
+	uri     string
+	route   transport.Route
+	val     T
+	err     error
+	elapsed time.Duration
 }
 
 // errorPriority 返回错误的优先级数值（越小优先级越高）。

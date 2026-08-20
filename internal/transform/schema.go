@@ -1,9 +1,43 @@
 package transform
 
 import (
+	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
+
+func unsupportedSchemaPaths(schema any, path string) []string {
+	result := make([]string, 0)
+	var walk func(any, string)
+	walk = func(value any, current string) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				childPath := fmt.Sprintf("%s.%s", current, key)
+				if key != "properties" && (schemaUnsupportedKeys[key] || !geminiAllowedSchemaFields[key]) {
+					result = append(result, childPath)
+				}
+				if key == "properties" {
+					if properties, ok := child.(map[string]any); ok {
+						for name, property := range properties {
+							walk(property, childPath+"."+name)
+						}
+					}
+				} else {
+					walk(child, childPath)
+				}
+			}
+		case []any:
+			for index, child := range typed {
+				walk(child, fmt.Sprintf("%s[%d]", current, index))
+			}
+		}
+	}
+	walk(schema, path)
+	sort.Strings(result)
+	return result
+}
 
 // geminiAllowedSchemaFields 是 functionDeclarations.parameters 的 JSON Schema 字段白名单。
 var geminiAllowedSchemaFields = map[string]bool{ //nolint:gochecknoglobals

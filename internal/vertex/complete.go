@@ -3,6 +3,8 @@ package vertex
 import (
 	"context"
 	"sort"
+
+	"github.com/bsfdsagfadg/vertex/internal/config"
 )
 
 type candidateResult struct {
@@ -20,10 +22,12 @@ func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, geminiP
 }
 
 func (c *VertexAIClient) completeChatWithRoute(ctx context.Context, model string, geminiPayload map[string]any) (map[string]any, error) {
+	ctx = executionContext(ctx, "generateContent", model, geminiPayload)
+	cfg := config.FromContext(ctx, c.cfg)
 	run := func(ctx context.Context, proxyURI string) (map[string]any, error) {
 		return c.runSingleCandidate(ctx, model, geminiPayload, proxyURI)
 	}
-	return RunRace(ctx, c.cfg, run,
+	return runRaceWithDependencies(ctx, cfg, run, c.race,
 		WithWinningCheck(func(resp map[string]any) bool {
 			return candidateFinish(resp) == "STOP"
 		}),
@@ -65,12 +69,6 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, g
 	resp, err := c.buildCompleteResponse(result)
 	if err != nil {
 		return nil, err
-	}
-
-	if _, hasSafety := geminiPayload["safetySettings"]; candidateFinish(resp) == "SAFETY" && !hasSafety {
-		retryPayload := shallowCopy(geminiPayload)
-		retryPayload["safetySettings"] = defaultSafetySettings
-		return c.runSingleCandidate(ctx, model, retryPayload, proxyURI)
 	}
 
 	return resp, nil

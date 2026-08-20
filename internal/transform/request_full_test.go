@@ -1,7 +1,6 @@
 package transform
 
 import (
-	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -236,7 +235,7 @@ func TestToolCallRoundTrip_IDAnchor(t *testing.T) {
 	vars := BuildVertexVariables(model, gemini, config.StaticProvider(config.DefaultConfig()))
 	contents := vars["contents"].([]any)
 
-	// 找到 model 消息：两个 functionCall 都应带 base64 编码的 thoughtSignature 哨兵、不带 id。
+	// 找到 model 消息：外部关联 id 在出站时移除，且绝不伪造 thought signature。
 	var modelParts []any
 	var funcParts []any
 	for _, c := range contents {
@@ -251,7 +250,6 @@ func TestToolCallRoundTrip_IDAnchor(t *testing.T) {
 	if len(modelParts) != 2 {
 		t.Fatalf("model parts=%d, want 2", len(modelParts))
 	}
-	wantSig := base64.StdEncoding.EncodeToString([]byte(skipThoughtSentinel))
 	for _, p := range modelParts {
 		pm := p.(map[string]any)
 		fc := pm["functionCall"].(map[string]any)
@@ -262,8 +260,8 @@ func TestToolCallRoundTrip_IDAnchor(t *testing.T) {
 		if _, ok := fc["args"].(map[string]any); !ok {
 			t.Errorf("args 应是对象: %v", fc["args"])
 		}
-		if pm["thoughtSignature"] != wantSig {
-			t.Errorf("哨兵 thoughtSignature=%v, want %v", pm["thoughtSignature"], wantSig)
+		if _, exists := pm["thoughtSignature"]; exists {
+			t.Errorf("不得伪造 thoughtSignature: %v", pm["thoughtSignature"])
 		}
 	}
 
@@ -285,8 +283,7 @@ func TestToolCallRoundTrip_IDAnchor(t *testing.T) {
 	}
 }
 
-func TestToolCallNameResolution_PositionalFallback(t *testing.T) {
-	// 无 id 时按位置兜底：两个 functionResponse 按出现顺序配 [fa, fb]。
+func TestToolCallNameResolutionRejectsMissingIDs(t *testing.T) {
 	body := map[string]any{
 		"model": "m",
 		"messages": []any{
@@ -299,20 +296,8 @@ func TestToolCallNameResolution_PositionalFallback(t *testing.T) {
 			map[string]any{"role": "tool", "content": "r2"},
 		},
 	}
-	model, gemini, _ := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
-	vars := BuildVertexVariables(model, gemini, config.StaticProvider(config.DefaultConfig()))
-	var names []string
-	for _, c := range vars["contents"].([]any) {
-		cm := c.(map[string]any)
-		if cm["role"] == "function" {
-			for _, p := range cm["parts"].([]any) {
-				fr := p.(map[string]any)["functionResponse"].(map[string]any)
-				names = append(names, fr["name"].(string))
-			}
-		}
-	}
-	if len(names) != 2 || names[0] != "fa" || names[1] != "fb" {
-		t.Errorf("位置兜底 names=%v, want [fa fb]", names)
+	if _, _, err := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig())); err == nil {
+		t.Fatal("missing tool call ids must be rejected")
 	}
 }
 
@@ -327,12 +312,8 @@ func TestEmptyToolCallGuard(t *testing.T) {
 			}},
 		},
 	}
-	_, gemini, _ := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
-	contents := gemini["contents"].([]any)
-	for _, c := range contents {
-		if cm := c.(map[string]any); cm["role"] == "model" {
-			t.Errorf("空 name tool_call 应被跳过，不应产生 model content: %v", cm)
-		}
+	if _, _, err := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig())); err == nil {
+		t.Fatal("empty tool call names must be rejected")
 	}
 }
 

@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,25 +16,12 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
+	runtimeroute "github.com/bsfdsagfadg/vertex/internal/runtime/route"
+	"github.com/bsfdsagfadg/vertex/internal/scheduler"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
+	"github.com/bsfdsagfadg/vertex/internal/upstream/anonymousgraph"
 )
-
-const (
-	anonBaseURL      = "https://cloudconsole-pa.clients6.google.com"
-	batchGraphqlPath = "/v3/entityServices/AiplatformEntityService/schemas/AIPLATFORM_GRAPHQL:batchGraphql"
-	anonAPIKey       = "AIzaSyCI-zsRP85UVOi0DjtiCwWBwQ1djDy741g"
-)
-
-var batchGraphqlURL = anonBaseURL + batchGraphqlPath + "?key=" + anonAPIKey + "&prettyPrint=false" //nolint:gochecknoglobals
-
-var defaultSafetySettings = []any{ //nolint:gochecknoglobals
-	map[string]any{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-	map[string]any{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-	map[string]any{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-	map[string]any{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-	map[string]any{"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
-}
 
 // RequestIDKey 是 context 中存储 reqID 的键类型。
 type RequestIDKey struct{}
@@ -47,52 +35,115 @@ func RequestIDFromContext(ctx context.Context) string {
 }
 
 type VertexAIClient struct {
-	net  *transport.NetworkClient
-	pool *recaptcha.TokenPool
-	cfg  config.ConfigProvider
+	net          *transport.NetworkClient
+	pool         *recaptcha.TokenPool
+	graphMu      sync.Mutex
+	graph        *anonymousgraph.Client
+	cfg          config.ConfigProvider
+	race         raceDependencies
+	proxyManager *transport.ProxyManager
 }
 
-func (c *VertexAIClient) Net() *transport.NetworkClient { return c.net }
+var batchGraphqlURL string //nolint:gochecknoglobals // Compatibility test override; production remains empty.
+
+func (c *VertexAIClient) Net() *transport.NetworkClient         { return c.net }
+func (c *VertexAIClient) ProxyManager() *transport.ProxyManager { return c.proxyManager }
+
+func (c *VertexAIClient) anonymousGraph() *anonymousgraph.Client {
+	c.graphMu.Lock()
+	defer c.graphMu.Unlock()
+	if c.graph == nil {
+		graph, err := anonymousgraph.New(c.net, c.pool)
+		if err != nil {
+			panic(err)
+		}
+		c.graph = graph
+	}
+	if batchGraphqlURL != "" {
+		c.graph.SetEndpointOverride(batchGraphqlURL)
+	}
+	return c.graph
+}
 
 func (c *VertexAIClient) prepareRequest(ctx context.Context) context.Context {
-	ctx = transport.WithRequestID(ctx, RequestIDFromContext(ctx))
-	modelEntries := config.SelectEntryProxySequence(requestConcurrency(c.cfg), c.cfg)
-	return transport.WithEntryProxyPool(ctx, modelEntries)
+	ctx = config.WithSnapshot(ctx, c.cfg)
+	return transport.WithRequestID(ctx, RequestIDFromContext(ctx))
 }
 
-func requestConcurrency(cfg config.ConfigProvider) int {
-	if cfg == nil || !cfg.ParallelPoolEnabled() {
-		return 1
-	}
-	if size := cfg.ParallelPoolSize(); size > 0 {
-		return size
-	}
-	return 1
+func executionContext(ctx context.Context, operation, model string, payload map[string]any) context.Context {
+	payloadBytes, _ := json.Marshal(payload)
+	payloadHash := sha256.Sum256(payloadBytes)
+	return scheduler.WithExecutionMetadata(ctx, scheduler.ExecutionMetadata{
+		RequestID: RequestIDFromContext(ctx), Operation: operation,
+		EndpointFamily: "anonymous_graph", ModelFamily: model,
+		ModelProfileVersion: "models-v2", PayloadHash: fmt.Sprintf("%x", payloadHash[:]),
+	})
 }
 
-func NewVertexAIClient(cfg config.ConfigProvider) *VertexAIClient {
-	net := transport.NewNetworkClient(cfg.DebugMode(), cfg.ProxyURL)
-	return &VertexAIClient{
-		net:  net,
-		pool: recaptcha.NewTokenPool(net, cfg),
-		cfg:  cfg,
+type ClientOption func(*VertexAIClient)
+
+func WithNodePool(pool *runtimeroute.NodePool) ClientOption {
+	return func(client *VertexAIClient) {
+		if pool != nil {
+			client.race.nodes = pool
+		}
 	}
+}
+
+func WithRoutePlanner(planner *scheduler.RoutePlanner) ClientOption {
+	return func(client *VertexAIClient) {
+		if planner != nil {
+			client.race.planner = planner
+		}
+	}
+}
+
+func WithProxyManager(manager *transport.ProxyManager) ClientOption {
+	return func(client *VertexAIClient) { client.proxyManager = manager }
+}
+
+func NewVertexAIClient(cfg config.ConfigProvider, options ...ClientOption) *VertexAIClient {
+	if cfg == nil {
+		cfg = config.StaticProvider(config.DefaultConfig())
+	}
+	client := &VertexAIClient{
+		cfg: cfg, race: legacyRaceDependencies(),
+	}
+	for _, option := range options {
+		if option != nil {
+			option(client)
+		}
+	}
+	client.net = transport.NewNetworkClientWithManager(cfg.DebugMode(), client.proxyManager)
+	client.pool = recaptcha.NewTokenPool(client.net, cfg, client.race.nodes)
+	graph, err := anonymousgraph.New(client.net, client.pool)
+	if err != nil {
+		panic(err)
+	}
+	client.graph = graph
+	return client
+}
+
+func (c *VertexAIClient) nodeName(uri string) string {
+	if c == nil || c.race.nodes == nil {
+		return "Unknown"
+	}
+	return c.race.nodes.NodeName(uri)
+}
+
+func (c *VertexAIClient) NodePool() *runtimeroute.NodePool {
+	pool, _ := c.race.nodes.(*runtimeroute.NodePool)
+	return pool
+}
+
+func (c *VertexAIClient) RoutePlanner() *scheduler.RoutePlanner {
+	planner, _ := c.race.planner.(*scheduler.RoutePlanner)
+	return planner
 }
 
 func (c *VertexAIClient) StartTokenPool()                  { c.pool.Start() }
 func (c *VertexAIClient) StopTokenPool()                   { c.pool.Stop() }
 func (c *VertexAIClient) TokenPoolStats() (size, fill int) { return c.pool.Stats() }
-
-func (c *VertexAIClient) getBatchGraphqlURL() string {
-	if !strings.HasPrefix(batchGraphqlURL, anonBaseURL) {
-		return batchGraphqlURL
-	}
-	key := c.cfg.VertexAPIKey()
-	if key == "" {
-		key = anonAPIKey
-	}
-	return anonBaseURL + batchGraphqlPath + "?key=" + key + "&prettyPrint=false"
-}
 
 const largePayloadThreshold = 1 << 20 // 1MB
 

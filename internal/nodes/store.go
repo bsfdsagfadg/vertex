@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -14,9 +15,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/db"
+	"github.com/bsfdsagfadg/vertex/internal/repository"
 	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
+
 type Node struct {
 	Type     string `json:"type" db:"type"`
 	Name     string `json:"name" db:"name"`
@@ -39,8 +41,9 @@ type NodeHealth struct { //nolint:govet
 	RecentUseCount      int     `json:"recent_use_count" db:"-"`
 	LastSelectedAt      int64   `json:"last_selected_at" db:"-"`
 	LastSubHealthyAt    int64   `json:"last_sub_healthy_at" db:"last_sub_healthy_at"` // 记录上一次处于亚健康状态的时间
-	InFlight            int32   `json:"-" db:"-"` // 当前并发连接数，不持久化
+	InFlight            int32   `json:"-" db:"-"`                                     // 当前并发连接数，不持久化
 }
+
 var (
 	mu                     sync.RWMutex                               //nolint:gochecknoglobals
 	nodeList               []Node                                     //nolint:gochecknoglobals
@@ -51,7 +54,19 @@ var (
 	deleteNodeCallbackMu   sync.RWMutex                               //nolint:gochecknoglobals
 	deleteNodeCallbackFunc func(uri string)                           //nolint:gochecknoglobals
 	DeleteNodeCallback     func(uri string)                           //nolint:gochecknoglobals
+	nodeRepository         *repository.SQLite                         //nolint:gochecknoglobals
 )
+
+func SetRepository(repo *repository.SQLite) {
+	StopHealthWriter()
+	mu.Lock()
+	nodeRepository = repo
+	nodeList = nil
+	healthMap = make(map[string]*NodeHealth)
+	nodeSources = make(map[string]map[NodeSource]struct{})
+	loaded = false
+	mu.Unlock()
+}
 
 // SetDeleteNodeCallback 设置节点删除时的回调函数。
 func SetDeleteNodeCallback(cb func(uri string)) {
@@ -77,36 +92,34 @@ func ensureLoaded() {
 	}
 	loaded = true
 
-	if db.GlobalDBX == nil {
+	if nodeRepository == nil {
 		return
 	}
-
-	// Load nodes
-	var loadedNodes []Node
-	if err := db.GlobalDBX.Select(&loadedNodes, "SELECT raw_uri, type, name, disabled FROM nodes"); err == nil {
-		nodeList = loadedNodes
+	loadedNodes, loadedSources, loadedHealth, err := nodeRepository.LoadNodeState(context.Background())
+	if err != nil {
+		log.Printf("[ERROR] Failed to load request nodes: %v", err)
+		return
 	}
-
-	sourceRows, err := db.GlobalDB.Query("SELECT raw_uri, source_type, source_id FROM node_sources")
-	if err == nil {
-		defer func() {
-			_ = sourceRows.Close()
-		}()
-		for sourceRows.Next() {
-			var rawURI string
-			var source NodeSource
-			if err := sourceRows.Scan(&rawURI, &source.Type, &source.ID); err == nil {
-				addNodeSourceUnsafe(rawURI, source)
-			}
+	nodeByID := make(map[string]string, len(loadedNodes))
+	for _, node := range loadedNodes {
+		nodeList = append(nodeList, Node{Type: node.Type, Name: node.Name, RawURI: node.RawURI, Disabled: node.Disabled})
+		nodeByID[node.ID] = node.RawURI
+	}
+	for _, source := range loadedSources {
+		if rawURI := nodeByID[source.NodeID]; rawURI != "" {
+			addNodeSourceUnsafe(rawURI, NodeSource{Type: source.SourceType, ID: source.SourceID})
 		}
 	}
-
-	// Load health
-	var healthList []NodeHealth
-	if err := db.GlobalDBX.Select(&healthList, "SELECT raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until, last_429_at, rate_limit_count, last_sub_healthy_at FROM node_health"); err == nil {
-		for _, h := range healthList {
-			hc := h
-			healthMap[h.RawURI] = &hc
+	for _, health := range loadedHealth {
+		if rawURI := nodeByID[health.NodeID]; rawURI != "" {
+			healthMap[rawURI] = &NodeHealth{
+				RawURI: rawURI, SuccessCount: health.SuccessCount, FailCount: health.FailCount,
+				ConsecutiveFailures: health.ConsecutiveFailures, LastTestMs: health.LastTestMS,
+				LastTestError: health.LastTestError, LastSuccessAt: health.LastSuccessAt,
+				LastFailAt: health.LastFailAt, CooldownUntil: health.CooldownUntil,
+				Last429At: health.Last429At, RateLimitCount: health.RateLimitCount,
+				LastSubHealthyAt: health.LastSubHealthyAt,
+			}
 		}
 	}
 	pruneHealthUnsafe()
@@ -139,13 +152,18 @@ type healthUpdate struct {
 }
 
 var (
+	healthQueueMu    sync.Mutex        //nolint:gochecknoglobals
 	healthUpdateChan chan healthUpdate //nolint:gochecknoglobals
-	healthOnce       sync.Once         //nolint:gochecknoglobals
+	healthWriterDone chan struct{}     //nolint:gochecknoglobals
 )
 
-func initHealthQueue() {
+func initHealthQueueUnsafe() {
 	healthUpdateChan = make(chan healthUpdate, 2048)
+	healthWriterDone = make(chan struct{})
+	updates := healthUpdateChan
+	done := healthWriterDone
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 
@@ -155,7 +173,7 @@ func initHealthQueue() {
 			if len(batch) == 0 {
 				return
 			}
-			if db.GlobalDB == nil {
+			if nodeRepository == nil {
 				if len(batch) > 1000 {
 					for k := range batch {
 						delete(batch, k)
@@ -163,35 +181,26 @@ func initHealthQueue() {
 				}
 				return
 			}
-			tx, err := db.GlobalDB.Begin()
-			if err != nil {
-				log.Printf("[ERROR] Failed to begin health save transaction: %v", err)
-				if len(batch) > 1000 {
-					for k := range batch {
-						delete(batch, k)
-					}
-				}
-				return
-			}
-			stmt, err := tx.Prepare(`INSERT OR REPLACE INTO node_health
-				(raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until, last_429_at, rate_limit_count, last_sub_healthy_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			if err != nil {
-				_ = tx.Rollback()
-				log.Printf("[ERROR] Failed to prepare health save statement: %v", err)
-				if len(batch) > 1000 {
-					for k := range batch {
-						delete(batch, k)
-					}
-				}
-				return
-			}
-			defer stmt.Close()
-
+			updates := make([]repository.NodeHealth, 0, len(batch))
 			for uri, h := range batch {
-				_, _ = stmt.Exec(uri, h.SuccessCount, h.FailCount, h.ConsecutiveFailures, h.LastTestMs, h.LastTestError, h.LastSuccessAt, h.LastFailAt, h.CooldownUntil, h.Last429At, h.RateLimitCount, h.LastSubHealthyAt)
+				node, err := repositoryNode(Node{RawURI: uri})
+				if err != nil {
+					log.Printf("[ERROR] Failed to identify request node health record: %v", err)
+					continue
+				}
+				updates = append(updates, repository.NodeHealth{
+					NodeID: node.ID, SuccessCount: h.SuccessCount, FailCount: h.FailCount,
+					ConsecutiveFailures: h.ConsecutiveFailures, LastTestMS: h.LastTestMs,
+					LastTestError: h.LastTestError, LastSuccessAt: h.LastSuccessAt,
+					LastFailAt: h.LastFailAt, CooldownUntil: h.CooldownUntil,
+					Last429At: h.Last429At, RateLimitCount: h.RateLimitCount,
+					LastSubHealthyAt: h.LastSubHealthyAt,
+				})
 			}
-			_ = tx.Commit()
+			if err := nodeRepository.UpsertNodeHealthBatch(context.Background(), updates); err != nil {
+				log.Printf("[ERROR] Failed to save request node health batch: %v", err)
+				return
+			}
 			for k := range batch {
 				delete(batch, k)
 			}
@@ -199,7 +208,7 @@ func initHealthQueue() {
 
 		for {
 			select {
-			case update, ok := <-healthUpdateChan:
+			case update, ok := <-updates:
 				if !ok {
 					flush()
 					return
@@ -216,6 +225,11 @@ func initHealthQueue() {
 }
 
 func queueHealthUpdate(update healthUpdate) {
+	healthQueueMu.Lock()
+	defer healthQueueMu.Unlock()
+	if healthUpdateChan == nil {
+		initHealthQueueUnsafe()
+	}
 	select {
 	case healthUpdateChan <- update:
 	default:
@@ -230,11 +244,34 @@ func queueHealthUpdate(update healthUpdate) {
 	}
 }
 
+func StopHealthWriter() {
+	_ = StopHealthWriterContext(context.Background())
+}
+
+func StopHealthWriterContext(ctx context.Context) error {
+	healthQueueMu.Lock()
+	updates := healthUpdateChan
+	done := healthWriterDone
+	healthUpdateChan = nil
+	healthWriterDone = nil
+	if updates != nil {
+		close(updates)
+	}
+	healthQueueMu.Unlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
 func saveHealthUnsafe() {
-	if db.GlobalDB == nil {
+	if nodeRepository == nil {
 		return
 	}
-	healthOnce.Do(initHealthQueue)
 	for uri, h := range healthMap {
 		if h != nil {
 			queueHealthUpdate(healthUpdate{uri: uri, h: *h})
@@ -243,18 +280,19 @@ func saveHealthUnsafe() {
 }
 
 func updateSingleNodeHealthUnsafe(uri string, h *NodeHealth) {
-	if db.GlobalDB == nil || h == nil {
+	if nodeRepository == nil || h == nil {
 		return
 	}
-	healthOnce.Do(initHealthQueue)
 	queueHealthUpdate(healthUpdate{uri: uri, h: *h})
 }
 
 func updateSingleNodeDisabledUnsafe(uri string, disabled bool) {
-	if db.GlobalDB == nil {
+	if nodeRepository == nil {
 		return
 	}
-	_, _ = db.GlobalDB.Exec("UPDATE nodes SET disabled = ? WHERE raw_uri = ?", disabled, uri)
+	if node, err := repositoryNode(Node{RawURI: uri}); err == nil {
+		_ = nodeRepository.SetNodesDisabled(context.Background(), []string{node.ID}, disabled)
+	}
 }
 
 type TestProgress struct {
@@ -456,18 +494,14 @@ func BatchUpdateNodesDisabled(uris []string, disabled bool) {
 			nodeList[i].Disabled = disabled
 		}
 	}
-	if db.GlobalDB != nil && len(uris) > 0 {
-		tx, err := db.GlobalDB.Begin()
-		if err == nil {
-			stmt, _ := tx.Prepare("UPDATE nodes SET disabled = ? WHERE raw_uri = ?")
-			if stmt != nil {
-				for _, u := range uris {
-					_, _ = stmt.Exec(disabled, u)
-				}
-				_ = stmt.Close()
+	if nodeRepository != nil && len(uris) > 0 {
+		ids := make([]string, 0, len(uris))
+		for _, uri := range uris {
+			if node, err := repositoryNode(Node{RawURI: uri}); err == nil {
+				ids = append(ids, node.ID)
 			}
-			_ = tx.Commit()
 		}
+		_ = nodeRepository.SetNodesDisabled(context.Background(), ids, disabled)
 	}
 }
 
@@ -624,7 +658,6 @@ func EnableNode(uri string) bool {
 	return found
 }
 
-
 func parseNodeIdentity(rawURI string) (scheme, userinfo, host string, port int, ok bool) {
 	if strings.HasPrefix(rawURI, "vmess://") {
 		b64Str := rawURI[8:]
@@ -683,7 +716,6 @@ func parseNodeIdentity(rawURI string) (scheme, userinfo, host string, port int, 
 	}
 	return scheme, userinfo, host, port, true
 }
-
 
 func RecordTest(uri string, ok bool, ms float64, errStr string) {
 	mu.Lock()
@@ -767,6 +799,16 @@ type tierCandidate struct {
 }
 
 func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool) []Node {
+	return selectForParallel(k, topK, debugMode, stickyBonusEnabled, false)
+}
+
+// SelectAndReserveForParallel atomically selects nodes and increments their
+// admission counters before releasing the selection lock.
+func SelectAndReserveForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool) []Node {
+	return selectForParallel(k, topK, debugMode, stickyBonusEnabled, true)
+}
+
+func selectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool, reserve bool) []Node {
 	mu.Lock()
 	defer mu.Unlock()
 	ensureLoaded()
@@ -877,6 +919,9 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 	}
 
 	for _, s := range selected {
+		if reserve {
+			IncInFlight(s.RawURI)
+		}
 		if h := healthMap[s.RawURI]; h != nil {
 			h.LastSelectedAt = now
 			h.RecentUseCount++

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,10 +18,10 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
-	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/spool"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
+	"github.com/bsfdsagfadg/vertex/internal/upstream/anonymousgraph"
 )
 
 // finishReasonUnspecified 是匿名 batchGraphql 每帧都携带的 protobuf 默认值（无意义）。
@@ -54,6 +55,8 @@ type StreamChunk struct {
 // 重试退避被打断、上游流连接中断，不再空转。
 func (c *VertexAIClient) StreamChat(ctx context.Context, model string, geminiPayload map[string]any, yield func(StreamChunk) bool) {
 	routedCtx := c.prepareRequest(ctx)
+	routedCtx = executionContext(routedCtx, "streamGenerateContent", model, geminiPayload)
+	cfg := config.FromContext(routedCtx, c.cfg)
 	op := func(ctx context.Context, proxyURI string) <-chan StreamChunk {
 		ch := make(chan StreamChunk, 64)
 		go func() {
@@ -69,11 +72,12 @@ func (c *VertexAIClient) StreamChat(ctx context.Context, model string, geminiPay
 		}()
 		return ch
 	}
-	StreamParallel(routedCtx, c.cfg, op, yield)
+	streamParallelWithDependencies(routedCtx, cfg, op, yield, c.race)
 }
 
 func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model string, geminiPayload map[string]any, proxyURI string, yield func(StreamChunk) bool) {
-	cfg := c.cfg
+	cfg := config.FromContext(ctx, c.cfg)
+	graph := c.anonymousGraph()
 	maxRetries := cfg.MaxRetries()
 	// 单节点重试关闭（并发池开启）：节点内只打 1 次，重试由竞速层换批节点完成。
 	if cfg.ParallelPoolEnabled() && !cfg.ParallelPoolRetryEnabled() {
@@ -96,21 +100,24 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 		if entry == "" || entryFailureMarked || ctx.Err() != nil {
 			return
 		}
-		_ = config.MarkEntryProxyFailure(entry, failure.Error())
+		_ = c.race.planner.MarkGlobalProxyFailure(entry, failure.Error(), cfg.EntryProxyProbeCooldownSeconds())
 		entryFailureMarked = true
 	}
 
 	reqID := RequestIDFromContext(ctx)
-	sess, err := c.net.CreateSessionContext(ctx, cfg.RequestTimeout(), proxyURI, reqID)
+	sess, err := graph.OpenSession(ctx, cfg.RequestTimeout(), proxyURI, reqID)
 	if err != nil {
 		var entryErr *transport.EntryProxyError
 		if errors.As(err, &entryErr) {
 			markEntryFailure(entryErr.EntryURI, err)
+			yield(StreamChunk{Err: NewUnavailableError("create global proxy route: "+err.Error(), err).WithScope(ScopeGlobalProxy)})
+			return
 		}
-		yield(StreamChunk{Err: NewInternalError("create session: " + err.Error())})
+		yield(StreamChunk{Err: NewUnavailableError("create request node session: "+err.Error(), err).WithScope(ScopeRequestNode)})
 		return
 	}
 	defer sess.Close()
+	route := sess.Route()
 
 	recaptchaToken := ""
 	isFirstAuth := true
@@ -123,9 +130,9 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 
 retryLoop:
 	for attempt <= maxRetries {
-		log.Printf("[Vertex] [StreamChat] 开始尝试 (Attempt %d/%d), 模型=%s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, reqID, nodes.GetNodeName(proxyURI))
+		log.Printf("[Vertex] [StreamChat] 开始尝试 (Attempt %d/%d), 模型=%s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, reqID, c.nodeName(proxyURI))
 		if recaptchaToken == "" {
-			tok, tokenErr := c.pool.GetTokenSharedContext(ctx)
+			tok, tokenErr := graph.RouteToken(ctx, route)
 			if tokenErr != nil && ctx.Err() != nil {
 				lastError = NewContextError(ctx.Err())
 				break retryLoop
@@ -154,7 +161,7 @@ retryLoop:
 		validChunkCount := 0
 		var pendingChunks []map[string]any
 		attemptErr := c.executeStreamingAttempt(ctx, sess, model, geminiPayload, recaptchaToken, isFirstAuth, func(ch map[string]any) bool {
-			if isValidContentChunk(ch) {
+			if isValidContentChunk(ch) || hasRealFinishReason(ch) {
 				for _, pending := range pendingChunks {
 					if !yield(StreamChunk{Data: pending}) {
 						return false
@@ -183,13 +190,6 @@ retryLoop:
 			}
 			return
 		}
-		if sess.EntryProxyURI != "" {
-			ve := asVertexError(attemptErr)
-			if ve != nil && (ve.Kind == "network" || ve.Kind == "unavailable") {
-				markEntryFailure(sess.EntryProxyURI, attemptErr)
-			}
-		}
-
 		ve := asVertexError(attemptErr)
 		switch {
 		case ve != nil && ve.Kind == "auth":
@@ -216,18 +216,20 @@ retryLoop:
 		case ve != nil && ve.Kind == "ratelimit":
 			lastError = ve
 			if contentYielded || attempt >= maxRetries {
-				log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发 429 失败, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, reqID, nodes.GetNodeName(proxyURI))
+				log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发 429 失败, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, reqID, c.nodeName(proxyURI))
 				break retryLoop
 			}
 			// 429：销毁旧 session 重建新的，换 token。
 			sess.Close()
-			newSess, e := c.net.CreateSessionContext(ctx, cfg.RequestTimeout(), proxyURI, reqID)
+			newSess, e := graph.OpenRouteSession(cfg.RequestTimeout(), route, reqID)
 			if e != nil {
 				var entryErr *transport.EntryProxyError
 				if errors.As(e, &entryErr) {
 					markEntryFailure(entryErr.EntryURI, e)
+					yield(StreamChunk{Err: NewUnavailableError("recreate global proxy route: "+e.Error(), e).WithScope(ScopeGlobalProxy)})
+					return
 				}
-				yield(StreamChunk{Err: NewInternalError("recreate session: " + e.Error())})
+				yield(StreamChunk{Err: NewUnavailableError("recreate request node session: "+e.Error(), e).WithScope(ScopeRequestNode)})
 				return
 			}
 			sess = newSess
@@ -238,7 +240,7 @@ retryLoop:
 			if wait <= 0 {
 				wait = min(10, 1+attempt)
 			}
-			log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发 429 将重试 (延迟 %ds), 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, wait, reqID, nodes.GetNodeName(proxyURI))
+			log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发 429 将重试 (延迟 %ds), 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, wait, reqID, c.nodeName(proxyURI))
 			attempt++
 			if err := sleepCtx(ctx, time.Duration(wait)*time.Second); err != nil {
 				break retryLoop
@@ -249,13 +251,13 @@ retryLoop:
 			// 内部实现错误直接停止；明确分类的临时网络/上游错误按策略重试。
 			if ve.Kind == "internal" || !ve.IsRetryable() || contentYielded || attempt >= maxRetries {
 				if errors.Is(ve, context.Canceled) {
-					log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 取消/断开: [%s] %s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, ve.Kind, ve.Message, reqID, nodes.GetNodeName(proxyURI))
+					log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 取消/断开: [%s] %s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, ve.Kind, ve.Message, reqID, c.nodeName(proxyURI))
 				} else {
-					log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发异常错误失败: [%s] %s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, ve.Kind, ve.Message, reqID, nodes.GetNodeName(proxyURI))
+					log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发异常错误失败: [%s] %s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, ve.Kind, ve.Message, reqID, c.nodeName(proxyURI))
 				}
 				break retryLoop
 			}
-			log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发异常错误将重试: [%s] %s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, ve.Kind, ve.Message, reqID, nodes.GetNodeName(proxyURI))
+			log.Printf("[Vertex] [StreamChat] (Attempt %d/%d) 节点 %s 触发异常错误将重试: [%s] %s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, ve.Kind, ve.Message, reqID, c.nodeName(proxyURI))
 			attempt++
 			if err := sleepCtx(ctx, backoff(attempt)); err != nil {
 				break retryLoop
@@ -297,8 +299,8 @@ func (ir *idleTouchingReader) Read(p []byte) (int, error) {
 // ctx 绑定 to 上游流连接：ctx 取消时 Body.Read 报错，scanStream 干净结束（返回 nil，不 panic）。
 func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *transport.Session, model string, geminiPayload map[string]any, recaptchaToken string, _ bool, emit func(map[string]any) bool) error {
 	reqID := RequestIDFromContext(ctx)
-	log.Printf("[Vertex] [executeStreamingAttempt] 准备发送流式请求: 模型=%s, 请求ID=%s, 代理=%s", model, reqID, nodes.GetNodeName(sess.ProxyURI))
-	cfg := c.cfg
+	log.Printf("[Vertex] [executeStreamingAttempt] 准备发送流式请求: 模型=%s, 请求ID=%s, 代理=%s", model, reqID, c.nodeName(sess.ProxyURI))
+	cfg := config.FromContext(ctx, c.cfg)
 	newBody := buildRequestPayload(model, geminiPayload, recaptchaToken, cfg)
 	// 上游请求 payload 序列化到 spool 缓冲（大媒体自动落盘）。流式：请求体在 DoStream 发送期被读取，
 	// 缓冲存活到本函数返回（整个流消费完）后由 defer Close 删除临时文件。
@@ -311,11 +313,6 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	if err != nil {
 		return NewInternalError("spool reader: " + err.Error())
 	}
-	header := transport.XHRHeaders(
-		"application/json", "*/*",
-		"https://console.cloud.google.com", "https://console.cloud.google.com/", "cross-site",
-	)
-
 	streamReqCtx, cancelStreamReq := context.WithCancel(ctx)
 	defer cancelStreamReq()
 
@@ -371,7 +368,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 		}
 	}()
 
-	sr, err := sess.DoStream(streamReqCtx, "POST", c.getBatchGraphqlURL(), header, reader)
+	sr, err := c.anonymousGraph().DoStream(streamReqCtx, sess, cfg.VertexAPIKey(), reader)
 	if err != nil {
 		if idleTriggered.Load() {
 			return NewUnavailableError("stream idle timeout before first byte")
@@ -409,12 +406,15 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 
 	// 增量扫描上游流，逐个完整 JSON 对象提取 chunk。
 	completionState := newStreamCompletionState()
-	scanErr := scanStream(&idleTouchingReader{r: sr.Body, touch: touchActivity}, func(obj map[string]any) (stop bool, err error) {
+	scanErr := anonymousgraph.ScanObjects(&idleTouchingReader{r: sr.Body, touch: touchActivity}, func(obj map[string]any) (stop bool, err error) {
 		return processStreamingObject(obj, emit, completionState)
 	})
 
 	if idleTriggered.Load() {
 		if completionState.allFinished() {
+			if !completionState.flush(emit) {
+				return nil
+			}
 			return nil
 		}
 		return NewUnavailableError("stream chunk idle timeout")
@@ -435,6 +435,9 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 			return scanErr
 		}
 		return NewNetworkError(fmt.Errorf("upstream stream: %w", scanErr))
+	}
+	if !completionState.flush(emit) {
+		return nil
 	}
 	return nil
 }
@@ -598,93 +601,52 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool, 
 	if len(states) > 0 {
 		state = states[0]
 	}
-	results, _ := obj["results"].([]any)
-	for _, rRaw := range results {
-		result, ok := rRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		// results 内的错误处理。
-		if errs, ok := result["errors"].([]any); ok && len(errs) > 0 {
-			if parsed := parseErrorResponse(map[string]any{"errors": errs}); parsed != nil {
+	legacyDone := false
+	for _, event := range anonymousgraph.DecodeObject(obj) {
+		if len(event.Errors) > 0 {
+			if parsed := parseErrorResponse(map[string]any{"errors": event.Errors}); parsed != nil {
 				return false, parsed
 			}
-		}
-
-		data, ok := result["data"].(map[string]any)
-		if !ok {
 			continue
 		}
-
-		// unwrap data.ui.streamGenerateContentAnonymous（匿名端点把载荷包在这里面）。
-		if ui, ok := data["ui"].(map[string]any); ok {
-			if innerRaw, exists := ui["streamGenerateContentAnonymous"]; exists {
-				switch inner := innerRaw.(type) {
-				case map[string]any:
-					data = inner
-				case []any:
-					outerMeta := map[string]any{}
-					for _, key := range []string{"usageMetadata", "modelVersion", "responseId", "promptFeedback"} {
-						if v, ok := data[key]; ok && jsonx.Truthy(v) {
-							outerMeta[key] = v
-						}
-					}
-					legacyDone := false
-					// inner list 的各项是同一批平级候选；必须全部 emit 后再判断完成。
-					for _, itemRaw := range inner {
-						if item, ok := itemRaw.(map[string]any); ok {
-							for k, v := range outerMeta {
-								if _, exists := item[k]; !exists {
-									item[k] = v
-								}
-							}
-							if chunk := extractChunk(item); chunk != nil {
-								stopByClient, done := emitAndCheckFinish(chunk, emit, state)
-								if stopByClient {
-									return true, nil
-								}
-								legacyDone = legacyDone || done
-							}
-						}
-					}
-					if state != nil {
-						if state.sawUsage && state.allFinished() {
-							return true, nil
-						}
-					} else if legacyDone {
-						return true, nil
-					}
-					continue
-				default:
-					continue
-				}
-			}
+		if event.Payload == nil {
+			continue
 		}
-
-		if chunk := extractChunk(data); chunk != nil {
-			if _, done := emitAndCheckFinish(chunk, emit, state); done {
+		if chunk := extractChunk(event.Payload); chunk != nil {
+			stopByClient, done := emitAndCheckFinish(chunk, emit, state)
+			if stopByClient {
 				return true, nil
 			}
+			legacyDone = legacyDone || done
 		}
+	}
+	if state != nil {
+		return false, nil
+	}
+	if legacyDone {
+		return true, nil
 	}
 	return false, nil
 }
 
 // emitAndCheckFinish emit 一个 chunk 并判定是否应结束流。
 //
-// 无状态调用保留旧语义；带状态调用会等待所有已见 candidate 完成且收到 usageMetadata，
-// 避免首候选先结束时截断其他候选或丢失延迟 usage 包。
+// 无状态调用保留旧语义；带状态调用会把终止状态与最后一份 usage 暂存到 EOF，
+// 避免首候选先结束时截断其他候选或重复发送 usage 包。
 // 返回 (stopByClient, done)：done=true 表示应停止扫描；stopByClient 区分是客户端断开还是正常 finish。
 func emitAndCheckFinish(chunk map[string]any, emit func(map[string]any) bool, states ...*streamCompletionState) (stopByClient bool, done bool) {
 	if len(states) > 0 && states[0] != nil {
 		state := states[0]
-		// Observe before handing the mutable chunk to downstream consumers.
-		state.observe(chunk)
-		done = state.sawUsage && state.allFinished()
+		// Vertex may emit STOP before later content. Detach terminal state and
+		// flush it only after EOF (or the explicit idle-close fallback).
+		state.observeAndDetach(chunk)
+		done = false
 	} else {
 		fr := chunkFinishReason(chunk)
 		done = fr != "" && fr != finishReasonUnspecified
+	}
+	if len(chunk) == 0 {
+		return false, false
 	}
 	if !emit(chunk) {
 		// 客户端断开 / 上层要求停止。
@@ -699,27 +661,29 @@ func emitAndCheckFinish(chunk map[string]any, emit func(map[string]any) bool, st
 }
 
 type streamCompletionState struct {
-	seen     map[int]struct{}
-	finished map[int]struct{}
-	sawUsage bool
+	seen        map[int]struct{}
+	finished    map[int]map[string]any
+	latestUsage map[string]any
+	flushed     bool
 }
 
 func newStreamCompletionState() *streamCompletionState {
 	return &streamCompletionState{
 		seen:     map[int]struct{}{},
-		finished: map[int]struct{}{},
-		sawUsage: false,
+		finished: map[int]map[string]any{},
 	}
 }
 
-func (s *streamCompletionState) observe(chunk map[string]any) {
+func (s *streamCompletionState) observeAndDetach(chunk map[string]any) {
 	if s == nil {
 		return
 	}
 	if usage, ok := chunk["usageMetadata"].(map[string]any); ok && len(usage) > 0 {
-		s.sawUsage = true
+		s.latestUsage = shallowCopy(usage)
+		delete(chunk, "usageMetadata")
 	}
 	candidates, _ := chunk["candidates"].([]any)
+	detached := make([]any, 0, len(candidates))
 	for position, rawCandidate := range candidates {
 		candidate, ok := rawCandidate.(map[string]any)
 		if !ok {
@@ -732,13 +696,66 @@ func (s *streamCompletionState) observe(chunk map[string]any) {
 		s.seen[index] = struct{}{}
 		finish := toStr(candidate["finishReason"])
 		if finish != "" && finish != finishReasonUnspecified {
-			s.finished[index] = struct{}{}
+			terminal := map[string]any{"index": index, "finishReason": finish}
+			for _, key := range []string{"finishMessage", "safetyRatings", "citationMetadata", "groundingMetadata"} {
+				if value, ok := candidate[key]; ok {
+					terminal[key] = value
+				}
+			}
+			s.finished[index] = terminal
+			copy := shallowCopy(candidate)
+			for _, key := range []string{"finishReason", "finishMessage", "safetyRatings", "citationMetadata", "groundingMetadata"} {
+				delete(copy, key)
+			}
+			if candidateHasIncrementalPayload(copy) {
+				detached = append(detached, copy)
+			}
+			continue
+		}
+		detached = append(detached, candidate)
+	}
+	if len(detached) > 0 {
+		chunk["candidates"] = detached
+	} else {
+		delete(chunk, "candidates")
+	}
+}
+
+func candidateHasIncrementalPayload(candidate map[string]any) bool {
+	for key := range candidate {
+		if key != "index" {
+			return true
 		}
 	}
+	return false
 }
 
 func (s *streamCompletionState) allFinished() bool {
 	return s != nil && len(s.seen) > 0 && len(s.finished) == len(s.seen)
+}
+
+func (s *streamCompletionState) flush(emit func(map[string]any) bool) bool {
+	if s == nil || s.flushed || (len(s.finished) == 0 && len(s.latestUsage) == 0) {
+		return true
+	}
+	s.flushed = true
+	indexes := make([]int, 0, len(s.finished))
+	for index := range s.finished {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	candidates := make([]any, 0, len(indexes))
+	for _, index := range indexes {
+		candidates = append(candidates, s.finished[index])
+	}
+	terminal := map[string]any{}
+	if len(candidates) > 0 {
+		terminal["candidates"] = candidates
+	}
+	if len(s.latestUsage) > 0 {
+		terminal["usageMetadata"] = s.latestUsage
+	}
+	return emit(terminal)
 }
 
 // chunkFinishReason 取 chunk 的 candidates[0].finishReason。
@@ -757,6 +774,12 @@ func chunkFinishReason(chunk map[string]any) string {
 // isValidContentChunk reports whether a chunk contains generated content or a real safety block.
 // Empty STOP frames and protobuf default enums are not evidence of a successful response.
 func isValidContentChunk(chunk map[string]any) bool {
+	// Internal stream adapters and test doubles may carry already-normalized
+	// text chunks instead of a Gemini candidates envelope. Treat non-empty text
+	// as semantic data so race establishment does not wait for channel close.
+	if text, ok := chunk["text"].(string); ok && text != "" {
+		return true
+	}
 	candidates, _ := chunk["candidates"].([]any)
 	for _, rawCandidate := range candidates {
 		candidate, ok := rawCandidate.(map[string]any)
@@ -779,6 +802,9 @@ func isValidContentChunk(chunk map[string]any) bool {
 			if thought, ok := part["thought"].(bool); ok && thought {
 				return true
 			}
+			if signature, ok := part["thoughtSignature"].(string); ok && signature != "" {
+				return true
+			}
 			for _, key := range []string{"functionCall", "executableCode", "codeExecutionResult", "inlineData", "fileData"} {
 				if value, ok := part[key].(map[string]any); ok && value != nil {
 					return true
@@ -792,6 +818,18 @@ func isValidContentChunk(chunk map[string]any) bool {
 	if feedback, ok := chunk["promptFeedback"].(map[string]any); ok {
 		blockReason := toStr(feedback["blockReason"])
 		return blockReason != "" && !strings.EqualFold(blockReason, blockReasonUnspecified)
+	}
+	return false
+}
+
+func hasRealFinishReason(chunk map[string]any) bool {
+	candidates, _ := chunk["candidates"].([]any)
+	for _, raw := range candidates {
+		candidate, _ := raw.(map[string]any)
+		finish := toStr(candidate["finishReason"])
+		if finish != "" && finish != finishReasonUnspecified {
+			return true
+		}
 	}
 	return false
 }

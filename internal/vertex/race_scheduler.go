@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/nodes"
 )
 
 // hedgeScheduler manages timer-based and failure-based candidate progression.
@@ -15,10 +14,10 @@ type hedgeScheduler struct {
 	nextIdx int
 }
 
-func newHedgeScheduler(cfg config.ConfigProvider, candidates []nodes.Node) *hedgeScheduler {
+func newHedgeScheduler(cfg config.ConfigProvider, total int, averageLatencyMS float64) *hedgeScheduler {
 	delay := time.Duration(cfg.ParallelPoolDelayMs()) * time.Millisecond
 	if cfg.ParallelPoolDelayDynamic() {
-		delay = time.Duration(nodes.GetAverageLatency()) * time.Millisecond
+		delay = time.Duration(averageLatencyMS) * time.Millisecond
 	}
 	if delay < 0 {
 		delay = 0
@@ -28,7 +27,7 @@ func newHedgeScheduler(cfg config.ConfigProvider, candidates []nodes.Node) *hedg
 	return &hedgeScheduler{
 		delay:   delay,
 		timer:   timer,
-		total:   len(candidates),
+		total:   total,
 		nextIdx: 0,
 	}
 }

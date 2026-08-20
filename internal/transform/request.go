@@ -79,18 +79,20 @@ func ConvertChatRequest(body map[string]any, cfg config.ConfigProvider) (string,
 				parts = append(parts, splitAssistantContent(content)...)
 			}
 			if toolCalls, ok := msg["tool_calls"].([]any); ok {
-				for _, tc := range toolCalls {
+				for toolIndex, tc := range toolCalls {
 					parsed := extractOAIToolCall(tc)
 					if parsed == nil {
-						continue
+						return "", nil, fmt.Errorf("messages assistant tool_calls[%d] requires a function name", toolIndex)
 					}
-					if parsed.id != "" {
-						toolIDToName[parsed.id] = parsed.name
+					if parsed.id == "" {
+						return "", nil, fmt.Errorf("messages assistant tool_calls[%d] requires id", toolIndex)
 					}
+					if _, duplicate := toolIDToName[parsed.id]; duplicate {
+						return "", nil, fmt.Errorf("duplicate tool_call id %q", parsed.id)
+					}
+					toolIDToName[parsed.id] = parsed.name
 					fc := map[string]any{"name": parsed.name, "args": parsed.args}
-					if parsed.id != "" {
-						fc["id"] = parsed.id
-					}
+					fc["id"] = parsed.id
 					parts = append(parts, map[string]any{"functionCall": fc})
 				}
 			}
@@ -99,14 +101,16 @@ func ConvertChatRequest(body map[string]any, cfg config.ConfigProvider) (string,
 			}
 		case "tool":
 			tcID, _ := msg["tool_call_id"].(string)
+			if strings.TrimSpace(tcID) == "" {
+				return "", nil, fmt.Errorf("tool message requires tool_call_id")
+			}
 			name := firstTruthyString(msg["name"], toolIDToName[tcID])
+			if name == "" {
+				return "", nil, fmt.Errorf("tool message references unknown tool_call_id %q", tcID)
+			}
 			fr := map[string]any{"response": coerceFunctionResponse(msg["content"])}
-			if name != "" {
-				fr["name"] = name
-			}
-			if tcID != "" {
-				fr["id"] = tcID
-			}
+			fr["name"] = name
+			fr["id"] = tcID
 			contents = appendFunctionResponse(contents, map[string]any{"functionResponse": fr})
 		case "function":
 			name := firstTruthyString(msg["name"])
@@ -123,7 +127,7 @@ func ConvertChatRequest(body map[string]any, cfg config.ConfigProvider) (string,
 		geminiPayload["systemInstruction"] = map[string]any{"parts": systemParts}
 	}
 
-	declaredToolNames, err := convertTools(body, geminiPayload)
+	declaredToolNames, err := convertTools(body, geminiPayload, cfg)
 	if err != nil {
 		return "", nil, err
 	}
@@ -200,6 +204,32 @@ func ConvertChatRequest(body map[string]any, cfg config.ConfigProvider) (string,
 	if len(genCfg) > 0 {
 		geminiPayload["generationConfig"] = genCfg
 	}
+	if modalities, ok := body["modalities"].([]any); ok && len(modalities) > 0 {
+		values := make([]any, 0, len(modalities))
+		for _, modality := range modalities {
+			values = append(values, strings.ToUpper(strings.TrimSpace(toString(modality))))
+		}
+		ensureGenCfg(geminiPayload)["responseModalities"] = values
+	}
+	if audio, ok := body["audio"].(map[string]any); ok && len(audio) > 0 {
+		ensureGenCfg(geminiPayload)["audioConfig"] = deepCopyAny(audio)
+	}
+	if value, present := body["service_tier"]; present {
+		geminiPayload["serviceTier"] = value
+	}
+	if value, present := body["store"]; present {
+		geminiPayload["store"] = value
+	}
+	local := map[string]any{}
+	for _, field := range []string{"metadata", "user", "parallel_tool_calls", "stream_options"} {
+		if value, present := body[field]; present {
+			local[field] = deepCopyAny(value)
+		}
+	}
+	if len(local) > 0 {
+		geminiPayload["_vproxy"] = local
+	}
+	MarkProtocol(geminiPayload, "openai")
 
 	mrRaw := firstPresentRaw(body, "media_resolution", "mediaResolution")
 	if mrRaw == nil {
@@ -269,6 +299,7 @@ func coerceFunctionResponse(raw any) map[string]any {
 	}
 	return map[string]any{"result": obj}
 }
+
 // parseModelName 解析模型名：经 models.json 的 alias_map 重映射。
 func parseModelName(model string) string {
 	return config.ResolveModelName(model)

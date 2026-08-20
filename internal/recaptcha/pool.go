@@ -14,20 +14,40 @@ const sharedTokenConcurrency = 5
 
 type TokenPool struct {
 	fetch        func(context.Context, string) (string, error)
-	defaultProxy func() string
-	routes       func() []string
+	fetchRoute   func(context.Context, transport.Route) (string, error)
+	defaultProxy func(context.Context) string
+	routes       func(context.Context) []string
 }
 
-func NewTokenPool(net *transport.NetworkClient, cfg config.ConfigProvider) *TokenPool {
+type NodeRuntime interface {
+	Select(k, topK int, stickyBonus bool, reserve bool) []nodes.Node
+	NodeName(uri string) string
+}
+
+func NewTokenPool(net *transport.NetworkClient, cfg config.ConfigProvider, runtimes ...NodeRuntime) *TokenPool {
+	var runtime NodeRuntime
+	if len(runtimes) > 0 {
+		runtime = runtimes[0]
+	}
+	versionCache := NewVersionCache()
 	return &TokenPool{
 		fetch: func(ctx context.Context, proxyURI string) (string, error) {
-			return FetchRecaptchaToken(ctx, net, proxyURI, cfg.DebugMode())
+			return fetchRecaptchaTokenWithNamer(ctx, net, transport.Route{RequestNodeURI: proxyURI}, config.FromContext(ctx, cfg).DebugMode(), nodeNamer(runtime), versionCache)
 		},
-		defaultProxy: cfg.ProxyURL,
-		routes: func() []string {
-			return sharedTokenRoutes(cfg)
+		fetchRoute: func(ctx context.Context, route transport.Route) (string, error) {
+			return fetchRecaptchaTokenWithNamer(ctx, net, route, config.FromContext(ctx, cfg).DebugMode(), nodeNamer(runtime), versionCache)
+		},
+		routes: func(ctx context.Context) []string {
+			return sharedTokenRoutes(config.FromContext(ctx, cfg), runtime)
 		},
 	}
+}
+
+func nodeNamer(runtime NodeRuntime) func(string) string {
+	if runtime != nil {
+		return runtime.NodeName
+	}
+	return nodes.GetNodeName
 }
 
 // NewTokenPoolCustom creates a token pool with a custom fetch function.
@@ -72,17 +92,29 @@ func (p *TokenPool) GetTokenWithProxyContext(ctx context.Context, proxyURI strin
 	return p.fetch(ctx, proxyURI)
 }
 
+// GetTokenWithRouteContext obtains a token over the exact route used by the
+// model request. It never falls back to shared route racing.
+func (p *TokenPool) GetTokenWithRouteContext(ctx context.Context, route transport.Route) (string, error) {
+	if p.fetchRoute != nil {
+		return p.fetchRoute(ctx, route)
+	}
+	if route.GlobalProxyURI != "" {
+		return "", fmt.Errorf("route-aware recaptcha fetch is unavailable")
+	}
+	return p.fetch(ctx, route.RequestNodeURI)
+}
+
 // GetTokenSharedContext 每次调用都会独立获取一份 token，不缓存，也不使用 singleflight。
 // 最多五条路线立即并发执行完整 reCAPTCHA 流程，首个成功结果胜出并取消其余请求。
 func (p *TokenPool) GetTokenSharedContext(ctx context.Context) (string, error) {
 	routes := []string(nil)
 	if p.routes != nil {
-		routes = p.routes()
+		routes = p.routes(ctx)
 	}
 	if len(routes) == 0 {
 		proxyURI := ""
 		if p.defaultProxy != nil {
-			proxyURI = p.defaultProxy()
+			proxyURI = p.defaultProxy(ctx)
 		}
 		routes = []string{proxyURI}
 	}
@@ -127,7 +159,7 @@ func (p *TokenPool) GetTokenSharedContext(ctx context.Context) (string, error) {
 	return "", firstErr
 }
 
-func sharedTokenRoutes(cfg config.ConfigProvider) []string {
+func sharedTokenRoutes(cfg config.ConfigProvider, runtimes ...NodeRuntime) []string {
 	routes := make([]string, 0, sharedTokenConcurrency)
 	seen := make(map[string]struct{}, sharedTokenConcurrency)
 	add := func(route string) {
@@ -142,17 +174,15 @@ func sharedTokenRoutes(cfg config.ConfigProvider) []string {
 	}
 
 	if cfg != nil {
-		// C 分支传空 proxy 时由 NetworkClient 选择一个入口代理；当前传输层要求
-		// 显式指定路线，因此在这里先取一个入口代理参与同一轮竞速。
-		for _, entry := range config.SelectEntryProxySequence(1, cfg) {
-			add(entry)
-		}
-		if proxyURI := cfg.ProxyURL(); proxyURI != "" {
-			add(proxyURI)
-		}
 		// 为最后的直连路线预留一个名额；所有已选路线仍会同时启动。
 		candidateSlots := sharedTokenConcurrency - len(routes) - 1
-		for _, candidate := range nodes.SelectForParallel(max(0, candidateSlots), cfg.ParallelNodeTopK(), cfg.DebugMode(), false) {
+		var candidates []nodes.Node
+		if len(runtimes) > 0 && runtimes[0] != nil {
+			candidates = runtimes[0].Select(max(0, candidateSlots), cfg.ParallelNodeTopK(), false, false)
+		} else {
+			candidates = nodes.SelectForParallel(max(0, candidateSlots), cfg.ParallelNodeTopK(), cfg.DebugMode(), false)
+		}
+		for _, candidate := range candidates {
 			add(candidate.RawURI)
 		}
 	}

@@ -33,6 +33,29 @@ func TestConvertRealtimeChunk_FirstAndContent(t *testing.T) {
 	}
 }
 
+func TestConvertRealtimeChunkWithUsageAtKeepsCreatedStable(t *testing.T) {
+	const created = int64(1_700_000_000)
+	tracker := NewStreamToolCallTracker()
+	chunks := []map[string]any{
+		{"candidates": []any{map[string]any{"index": 0, "content": map[string]any{"parts": []any{map[string]any{"text": "a"}}}}}},
+		{"candidates": []any{map[string]any{"index": 0, "finishReason": "STOP"}}, "usageMetadata": map[string]any{"totalTokenCount": 1}},
+	}
+	var events []string
+	for index, chunk := range chunks {
+		events = append(events, ConvertRealtimeChunkWithUsageAt(chunk, "m", "req", created, index == 0, true, tracker)...)
+	}
+	for _, event := range events {
+		var packet map[string]any
+		payload := strings.TrimSuffix(strings.TrimPrefix(event, "data: "), "\n\n")
+		if err := json.Unmarshal([]byte(payload), &packet); err != nil {
+			t.Fatalf("invalid event %q: %v", event, err)
+		}
+		if packet["created"] != float64(created) {
+			t.Fatalf("created=%v, want %d", packet["created"], created)
+		}
+	}
+}
+
 func TestConvertRealtimeChunkPreservesMultipleCandidates(t *testing.T) {
 	chunk := map[string]any{"candidates": []any{
 		map[string]any{"index": 0, "content": map[string]any{"parts": []any{map[string]any{"text": "first"}}}, "finishReason": "STOP"},
@@ -195,7 +218,7 @@ func TestConvertRealtimeChunk_UnspecifiedNoFinishEvent(t *testing.T) {
 	}
 }
 
-// 真实 finishReason（STOP）发 finish 事件，并带上 usage。
+// 真实 finishReason（STOP）发 finish 事件，usage 只由独立终端帧写一次。
 func TestConvertRealtimeChunk_RealFinishWithUsage(t *testing.T) {
 	chunk := map[string]any{
 		"candidates": []any{map[string]any{
@@ -207,22 +230,23 @@ func TestConvertRealtimeChunk_RealFinishWithUsage(t *testing.T) {
 		},
 	}
 	events := ConvertRealtimeChunk(chunk, "m", "r", false)
-	// content 事件 + finish(with usage) 事件 + 独立 terminal usage 事件。
+	// content 事件 + finish 事件 + 独立 terminal usage 事件。
 	if len(events) != 3 {
-		t.Fatalf("events=%d, want 3 (content + finish_with_usage + terminal_usage)\n%v", len(events), events)
+		t.Fatalf("events=%d, want 3 (content + finish + terminal_usage)\n%v", len(events), events)
 	}
 	finishEvt := events[1]
 	if !strings.Contains(finishEvt, `"finish_reason":"stop"`) {
 		t.Errorf("应发 finish_reason=stop: %s", finishEvt)
 	}
-	if !strings.Contains(finishEvt, `"usage"`) || !strings.Contains(finishEvt, `"total_tokens":15`) {
-		t.Errorf("finish 事件应带 usage: %s", finishEvt)
+	if strings.Contains(finishEvt, `"usage"`) {
+		t.Errorf("finish 事件不应重复携带 usage: %s", finishEvt)
 	}
 	terminalUsageEvt := events[2]
 	if !strings.Contains(terminalUsageEvt, `"choices":[]`) || !strings.Contains(terminalUsageEvt, `"total_tokens":15`) {
 		t.Errorf("末尾应发标准 choices:[] usage 帧: %s", terminalUsageEvt)
 	}
 }
+
 // MAX_TOKENS → length。
 func TestConvertRealtimeChunk_MaxTokensLength(t *testing.T) {
 	chunk := map[string]any{"candidates": []any{map[string]any{

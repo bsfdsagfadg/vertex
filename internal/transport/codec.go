@@ -71,6 +71,10 @@ func CanonicalURI(rawURI string) (string, error) {
 
 // ParseURI 解析各种协议的节点链接
 func ParseURI(uri string) (map[string]any, error) {
+	uri = strings.TrimSpace(uri)
+	if separator := strings.Index(uri, "://"); separator > 0 {
+		uri = strings.ToLower(uri[:separator]) + uri[separator:]
+	}
 	if strings.HasPrefix(uri, "vless://") {
 		return parseSimple(uri, "vless")
 	}
@@ -105,9 +109,17 @@ func ParseURI(uri string) (map[string]any, error) {
 		return parseAnyTLS(uri)
 	}
 	if strings.HasPrefix(uri, "clash://") {
-		b, _ := base64.StdEncoding.DecodeString(strutil.PadB64(uri[8:]))
+		b, err := base64.StdEncoding.DecodeString(strutil.PadB64(uri[8:]))
+		if err != nil {
+			return nil, fmt.Errorf("decode clash URI: %w", err)
+		}
 		var d map[string]any
-		_ = json.Unmarshal(b, &d)
+		if err := json.Unmarshal(b, &d); err != nil {
+			return nil, fmt.Errorf("decode clash proxy: %w", err)
+		}
+		if strings.TrimSpace(fmt.Sprint(d["type"])) == "" {
+			return nil, fmt.Errorf("decode clash proxy: missing type")
+		}
 		return d, nil
 	}
 	safeURI := uri

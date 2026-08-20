@@ -1,25 +1,72 @@
 package vertex
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"strings"
 
+	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/strutil"
+	"github.com/bsfdsagfadg/vertex/internal/upstream/anonymousgraph"
 )
 
 // CountTokens 统计给定 contents 在指定模型下的 token 数。
-func (c *VertexAIClient) CountTokens(ctx context.Context, model string, contents []any) int {
-	return estimateTokens(contents)
+func (c *VertexAIClient) CountTokens(ctx context.Context, model string, contents []any) (int, error) {
+	ctx = c.prepareRequest(ctx)
+	ctx = executionContext(ctx, "countTokens", model, map[string]any{"contents": contents})
+	cfg := config.FromContext(ctx, c.cfg)
+	if strings.TrimSpace(cfg.CountTokensQuerySignature()) == "" {
+		return 0, NewUnavailableError("countTokens anonymous Graph operation is unavailable").WithPublicDetail("", "unsupported_endpoint", "countTokens is not supported by the configured anonymous upstream")
+	}
+	run := func(candidateCtx context.Context, requestNodeURI string) (int, error) {
+		graph := c.anonymousGraph()
+		session, err := graph.OpenSession(candidateCtx, cfg.RequestTimeout(), requestNodeURI, RequestIDFromContext(candidateCtx))
+		if err != nil {
+			return 0, NewUnavailableError("create countTokens route: "+err.Error(), err).WithScope(ScopeRoute)
+		}
+		defer session.Close()
+		token, err := graph.RouteToken(candidateCtx, session.Route())
+		if err != nil || token == "" {
+			return 0, NewAuthenticationError("Could not fetch recaptcha token for countTokens", err)
+		}
+		payload := anonymousgraph.BuildCountTokensEnvelope(model, contents, token, cfg.CountTokensQuerySignature())
+		body, err := jsonx.Marshal(payload)
+		if err != nil {
+			return 0, NewInternalError("marshal countTokens payload: "+err.Error(), err)
+		}
+		status, raw, err := graph.DoCountTokens(candidateCtx, session, cfg.VertexAPIKey(), bytes.NewReader(body))
+		if err != nil {
+			return 0, NewNetworkError(fmt.Errorf("countTokens upstream request: %w", err))
+		}
+		if status != http.StatusOK {
+			return 0, classifyUpstreamHTTPError(status, string(raw))
+		}
+		count, found := parseCountTokensResponseOK(raw)
+		if !found {
+			return 0, NewUnavailableError("countTokens upstream response did not contain totalTokens")
+		}
+		return count, nil
+	}
+	return runRaceWithDependencies(ctx, cfg, run, c.race)
 }
+
 // parseCountTokensResponse 从 CountTokens 响应里抠 totalTokens。
 //
 // 上游可能是单对象或数组；逐层 results → data.ui.countTokensV2 / data.countTokensV2 / data.countTokens，
 // 命中 totalTokens 即返回。任何错误/缺字段返回 0。
 func parseCountTokensResponse(raw []byte) int {
+	count, _ := parseCountTokensResponseOK(raw)
+	return count
+}
+
+func parseCountTokensResponseOK(raw []byte) (int, bool) {
 	var parsed any
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return 0
+		return 0, false
 	}
 	var items []any
 	switch v := parsed.(type) {
@@ -28,7 +75,7 @@ func parseCountTokensResponse(raw []byte) int {
 	case map[string]any:
 		items = []any{v}
 	default:
-		return 0
+		return 0, false
 	}
 
 	for _, entryRaw := range items {
@@ -68,19 +115,18 @@ func parseCountTokensResponse(raw []byte) int {
 			}
 			if countData != nil {
 				if tt, ok := countData["totalTokens"]; ok {
-					return strutil.ToInt(tt, 0)
+					return strutil.ToInt(tt, 0), true
 				}
 			}
 		}
 	}
-	return 0
+	return 0, false
 }
 
 // coerceTokenCount converts token count values to int via strutil.ToInt.
 func coerceTokenCount(v any) int {
 	return strutil.ToInt(v, 0)
 }
-
 
 // estimateTokens 递归或嵌套遍历 contents 计算估算的 token 总数。
 func estimateTokens(contents []any) int {

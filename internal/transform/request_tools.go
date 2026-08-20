@@ -2,8 +2,11 @@ package transform
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
+	"github.com/bsfdsagfadg/vertex/internal/config"
+	coremodel "github.com/bsfdsagfadg/vertex/internal/core/model"
 	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
@@ -16,7 +19,7 @@ var toolKeys = map[string]bool{ //nolint:gochecknoglobals
 
 // convertTools 把 OpenAI tools（或 legacy functions）转为 functionDeclarations，写入
 // geminiPayload["tools"]。返回已声明的工具名集合（供 tool_choice 校验）。
-func convertTools(body, geminiPayload map[string]any) (map[string]bool, error) {
+func convertTools(body, geminiPayload map[string]any, cfg config.ConfigProvider) (map[string]bool, error) {
 	oaiTools, _ := body["tools"].([]any)
 	// 兼容已废弃的顶层 functions 字段（无 tools 时回退）。
 	if len(oaiTools) == 0 {
@@ -43,8 +46,17 @@ func convertTools(body, geminiPayload map[string]any) (map[string]bool, error) {
 			decl["description"] = f["description"]
 		}
 		if params, ok := f["parameters"].(map[string]any); ok && len(params) > 0 {
-			// 对 parameters 递归白名单清洗，剔除 Gemini 不支持的 schema 字段。
-			decl["parameters"] = cleanFunctionParameters(deepCopyAny(params))
+			unsupported := unsupportedSchemaPaths(params, "parameters")
+			policy := coremodel.ParsePolicy(cfg.ToolSchemaPolicy(), coremodel.PolicyAdaptive)
+			if len(unsupported) > 0 && policy == coremodel.PolicyStrict {
+				return nil, &PolicyError{Code: "unsupported_tool_schema", Param: "tools", Message: fmt.Sprintf("tool schema contains unsupported constraint %s", unsupported[0])}
+			}
+			if len(unsupported) > 0 && policy == coremodel.PolicyAdaptive {
+				log.Printf("[ProtocolPolicy] tool schema action=adaptive_remove fields=%s", strings.Join(unsupported, ","))
+				decl["parameters"] = cleanFunctionParameters(deepCopyAny(params))
+			} else {
+				decl["parameters"] = deepCopyAny(params)
+			}
 		} else {
 			// 缺省 parameters 时补默认空对象 schema，满足 Gemini functionDeclarations 要求。
 			decl["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}
