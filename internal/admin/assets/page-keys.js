@@ -1,15 +1,20 @@
+import { toast } from './utils.js';
+
+let API;
+export function configureKeysService(service) { API = service; }
+
 function maskKey(k) {
   return (!k || k.length < 8) ? k : (k.slice(0, 6) + '\u2026' + k.slice(-4));
 }
 
-function generateKey() {
+export function generateKey() {
   var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   var sk = 'sk-';
   for (var i = 0; i < 48; i++) sk += chars.charAt(Math.floor(Math.random() * chars.length));
   document.getElementById('kKey').value = sk;
 }
 
-async function loadKeys() {
+export async function loadKeys() {
   const d = await API.keys.list();
   const keys = d.keys || [];
   const tbody = document.getElementById('keysBody');
@@ -67,7 +72,7 @@ async function loadKeys() {
   });
 }
 
-async function addKey() {
+export async function addKey() {
   var name = document.getElementById('kName').value.trim();
   var key = document.getElementById('kKey').value.trim();
   var desc = document.getElementById('kDesc').value.trim();
@@ -86,3 +91,9 @@ async function delKey(name) {
   loadKeys();
   toast('\u5DF2\u5220\u9664');
 }
+
+document.getElementById('page-keys').addEventListener('click', event => {
+  const action = event.target.closest('[data-keys-action]')?.dataset.keysAction;
+  if (action === 'generate') generateKey();
+  if (action === 'add') addKey();
+});

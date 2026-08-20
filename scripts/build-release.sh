@@ -15,11 +15,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${1:-dev}"
+VERSION="${1:-2.0.0-dev+local}"
 OUT="dist"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-LDFLAGS="-s -w -X main.version=${VERSION} -X main.buildCommit=${COMMIT} -X main.buildTime=${BUILD_TIME}"
+LDFLAGS="-s -w -X github.com/bsfdsagfadg/vertex/internal/buildinfo.ReleaseVersion=${VERSION} -X github.com/bsfdsagfadg/vertex/internal/buildinfo.ReleaseCommit=${COMMIT} -X github.com/bsfdsagfadg/vertex/internal/buildinfo.ReleaseBuildTime=${BUILD_TIME} -X github.com/bsfdsagfadg/vertex/internal/buildinfo.ReleaseSource=release"
 
 rm -rf "$OUT"
 mkdir -p "$OUT"

@@ -1,11 +1,35 @@
+import { toast } from './utils.js';
+
+let API;
+export function configureSubscriptionsService(service) { API = service; }
+
 let subscriptionUpdatePollToken = 0;
+
+function importNodeFile(inputID, replace, jsonFormat) {
+  const fileInput = document.getElementById(inputID);
+  if (!fileInput.files.length) return toast(jsonFormat ? '请先选择一个 nodes.json 配置文件' : '请先选择一个节点配置文件');
+  const file = fileInput.files[0];
+  const reader = new FileReader();
+  toast('正在读取配置文件并解析...');
+  reader.onload = async event => {
+    try {
+      const text = event.target.result;
+      const result = jsonFormat ? await API.nodes.importJson(text, replace) : await API.nodes.import(text, replace);
+      fileInput.value = '';
+      toast(replace ? `替换成功，导入了 ${result.count} 个节点` : `导入成功，追加了 ${result.count} 个节点`);
+    } catch (error) {
+      toast((jsonFormat ? 'nodes.json' : '文件') + ' 导入解析失败: ' + error.message);
+    }
+  };
+  reader.readAsText(file);
+}
 
 function initSubscriptions() {
   loadSubscriptions();
 }
 
-function loadSubscriptions() {
-  return API.raw('/api/admin/subscriptions/list')
+export function loadSubscriptions() {
+  return API.subscriptions.list()
     .then(data => {
       if (!data) return null;
       const customUAs = data.custom_uas || [];
@@ -171,10 +195,7 @@ function submitUA() {
     return;
   }
 
-  API.raw('/api/admin/subscriptions/custom_ua/save', {
-    method: 'POST',
-    body: JSON.stringify({ id, name, user_agent: userAgent })
-  })
+  API.subscriptions.saveCustomUA({ id, name, user_agent: userAgent })
     .then(() => {
       closeUAModal();
       loadSubscriptions();
@@ -290,10 +311,7 @@ function deleteUA(ua) {
     message: `确定要删除自定义 UA “${ua.name}”吗？`,
     allowNodeChoice: false,
     onConfirm: () => {
-      API.raw('/api/admin/subscriptions/custom_ua/delete', {
-        method: 'POST',
-        body: JSON.stringify({ id: ua.id })
-      })
+      API.subscriptions.deleteCustomUA(ua.id)
         .then(() => {
           loadSubscriptions();
           toast('UA 已删除', 'ok');
@@ -362,7 +380,7 @@ function submitSub() {
     update_interval: interval,
     adopt_manual: adoptManual
   };
-  API.raw('/api/admin/subscriptions/save', { method: 'POST', body: JSON.stringify(payload) })
+  API.subscriptions.save(payload)
     .then(() => {
       closeSubModal();
       loadSubscriptions();
@@ -379,10 +397,7 @@ function deleteSub(id) {
     message: '确定要删除此订阅吗？',
     allowNodeChoice: true,
     onConfirm: deleteNodes => {
-      API.raw('/api/admin/subscriptions/delete', {
-        method: 'POST',
-        body: JSON.stringify({ id, delete_nodes: deleteNodes })
-      })
+      API.subscriptions.delete(id, deleteNodes)
         .then(() => {
           loadSubscriptions();
           toast(deleteNodes ? '订阅及其独占节点已删除' : '订阅已删除，节点转为手动管理', 'ok');
@@ -393,7 +408,7 @@ function deleteSub(id) {
 }
 
 function updateSub(id) {
-  API.raw('/api/admin/subscriptions/update', { method: 'POST', body: JSON.stringify({ id }) })
+  API.subscriptions.update(id)
     .then(result => {
       toast(result.triggered ? '已触发后台更新' : '该订阅正在更新', 'ok');
       monitorSubscriptionUpdates(result.target_ids || [id], false);
@@ -402,10 +417,36 @@ function updateSub(id) {
 }
 
 function updateAllSubs() {
-  API.raw('/api/admin/subscriptions/update', { method: 'POST', body: JSON.stringify({ id: '' }) })
+  API.subscriptions.update('')
     .then(result => {
       toast(`已触发 ${result.triggered || 0} 个订阅更新`, 'ok');
       monitorSubscriptionUpdates(result.target_ids || [], true);
     })
     .catch(err => toast('更新请求失败: ' + err, 'err'));
+}
+
+export function teardownSubscriptions() {
+  subscriptionUpdatePollToken++;
+}
+
+function handleSubscriptionClick(event) {
+  const action = event.target.closest('[data-subscription-action]')?.dataset.subscriptionAction;
+  if (!action) return;
+  if (action === 'show-ua') showAddUAModal();
+  else if (action === 'show-subscription') showAddSubModal();
+  else if (action === 'update-all') updateAllSubs();
+  else if (action === 'close-ua') closeUAModal();
+  else if (action === 'submit-ua') submitUA();
+  else if (action === 'close-subscription') closeSubModal();
+  else if (action === 'submit-subscription') submitSub();
+  else if (action === 'import-file') importNodeFile('nodeImportFile', event.target.closest('[data-replace]').dataset.replace === 'true', false);
+  else if (action === 'import-json') importNodeFile('nodeJsonImportFile', event.target.closest('[data-replace]').dataset.replace === 'true', true);
+}
+
+for (const root of [
+  document.getElementById('page-subscriptions'),
+  document.getElementById('addUAModal'),
+  document.getElementById('addSubModal'),
+]) {
+  root.addEventListener('click', handleSubscriptionClick);
 }

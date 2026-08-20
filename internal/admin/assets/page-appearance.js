@@ -1,10 +1,21 @@
+import { $, DEFAULT_BG, esc, toast } from './utils.js';
+
+let API;
+export function configureAppearanceService(service) { API = service; }
+
 let currentAppearanceSettings = {};
+
+export function teardownAppearance() {
+  document.querySelector('.color-palette-container')?.classList.remove('show');
+  document.querySelectorAll('.color-preview-box, .gradient-stop-box').forEach(el => el.classList.remove('active'));
+  activeColorTarget = null;
+}
 
 function applyBg(v) { document.documentElement.style.setProperty('--bg-img', v); applyThemeColorFromBg(v); }
 
 async function initBg() {
   try {
-    const res = await API.checkAuth();
+    const res = await API.session();
     if (res) currentAppearanceSettings = res;
     
     // Apply font size
@@ -37,7 +48,7 @@ async function initBg() {
   const s = localStorage.getItem('vproxy_bg');
   if (s) applyBg(s);
 }
-initBg();
+export function initAppearance() { return initBg(); }
 
 let _saveTimeout = null;
 async function saveAppearanceSettings(update) {
@@ -119,9 +130,8 @@ async function uploadBg(e) {
   const fd = new FormData();
   fd.append('file', f);
   try {
-    const res = await fetch('/api/admin/upload-bg', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (res.ok && data.ok) {
+    const data = await API.appearance.upload(fd);
+    if (data.ok) {
       setBgAndSync(data.url);
       loadAppearance();
     } else {
@@ -139,7 +149,7 @@ function resetBg() {
   toast('已恢复默认'); 
 }
 
-async function loadAppearance() {
+export async function loadAppearance() {
   try {
     const data = await API.settings.get();
     if (data) {
@@ -176,8 +186,8 @@ async function loadAppearance() {
       const isImg = p.val.startsWith('url');
       const style = isImg ? `background-image:${p.val}` : `background:${p.val}`;
       const activeClass = (p.val === curBg) ? ' active' : '';
-      const delBtn = canDelete ? `<div class="del-btn" onclick="deletePreset(&quot;${p.val}&quot;, event)" title="删除预设">×</div>` : '';
-      return `<div class="thumb${activeClass}" style="${style}" onclick="setBgAndSync(&quot;${p.val}&quot;)" title="${p.name}">${delBtn}</div>`;
+      const delBtn = canDelete ? `<button type="button" class="del-btn" data-appearance-action="delete-preset" data-bg="${esc(p.val)}" title="删除预设">×</button>` : '';
+      return `<div class="thumb${activeClass}" style="${style}" data-appearance-action="set-bg" data-bg="${esc(p.val)}" title="${esc(p.name)}">${delBtn}</div>`;
     }).join('');
   };
 
@@ -192,9 +202,8 @@ async function loadAppearance() {
   }
   
   try {
-    const res = await fetch('/api/admin/list-bgs');
-    const data = await res.json();
-    if (res.ok && data.ok && data.files) {
+    const data = await API.appearance.listBackgrounds();
+    if (data.ok && data.files) {
       data.files.forEach((f, i) => {
         presetsImg.push({ name: `自定义${i+1}`, val: `url('/assets/${f}')`, canDel: true });
       });
@@ -211,8 +220,8 @@ async function loadAppearance() {
       const isImg = p.val.startsWith('url');
       const style = isImg ? `background-image:${p.val}` : `background:${p.val}`;
       const activeClass = (p.val === curBg) ? ' active' : '';
-      const delBtn = p.canDel ? `<div class="del-btn" onclick="deletePreset(&quot;${p.val}&quot;, event)" title="删除图片">×</div>` : '';
-      return `<div class="thumb${activeClass}" style="${style}" onclick="setBgAndSync(&quot;${p.val}&quot;)" title="${p.name}">${delBtn}</div>`;
+      const delBtn = p.canDel ? `<button type="button" class="del-btn" data-appearance-action="delete-preset" data-bg="${esc(p.val)}" title="删除图片">×</button>` : '';
+      return `<div class="thumb${activeClass}" style="${style}" data-appearance-action="set-bg" data-bg="${esc(p.val)}" title="${esc(p.name)}">${delBtn}</div>`;
     }).join('');
   }
   renderThumbs(presetsColor, 'presetsColor');
@@ -230,7 +239,6 @@ async function loadAppearance() {
   renderGradientStops(false);
   setActiveColorTarget('font');
   
-  PAGE_CACHE['appearance'] = $('#page-appearance').innerHTML;
 }
 
 function applyThemeColorFromBg(bgValue) {
@@ -478,7 +486,7 @@ function hsvToRgb(h, s, v) {
 
 let currentHSV = [0, 1, 1]; // h, s, v [0-1]
 
-window.resetColorTarget = function() {
+function resetColorTarget() {
   if (activeColorTarget === 'bg') {
     currentPaletteHex = '#002fa7';
   } else if (activeColorTarget === 'font') {
@@ -488,7 +496,7 @@ window.resetColorTarget = function() {
   }
   syncPaletteUI(currentPaletteHex);
   applyPaletteToTarget(currentPaletteHex);
-};
+}
 
 function setActiveColorTarget(target, index = -1, hexColor = null, event = null) {
   if (activeColorTarget === 'bg' && target !== 'bg' && currentPaletteHex) {
@@ -607,7 +615,7 @@ function updatePickersUI() {
   }
 }
 
-window.updateFromRGB = function() {
+function updateFromRGB() {
   let r = parseInt($('#rgb-r').value) || 0;
   let g = parseInt($('#rgb-g').value) || 0;
   let b = parseInt($('#rgb-b').value) || 0;
@@ -617,9 +625,9 @@ window.updateFromRGB = function() {
   const hex = rgbToHexStr(r, g, b);
   syncPaletteUI(hex);
   applyPaletteToTarget(hex);
-};
+}
 
-window.updateFromHSB = function() {
+function updateFromHSB() {
   let h = parseInt($('#hsb-h').value) || 0;
   let s = parseInt($('#hsb-s').value) || 0;
   let v = parseInt($('#hsb-b').value) || 0;
@@ -630,17 +638,17 @@ window.updateFromHSB = function() {
   const hex = rgbToHexStr(r, g, b);
   syncPaletteUI(hex);
   applyPaletteToTarget(hex);
-};
+}
 
-window.updateFromHEX = function() {
+function updateFromHEX() {
   let hex = $('#hex-input').value.trim();
   if (/^#[0-9A-Fa-f]{6}$/.test(hex)) {
     syncPaletteUI(hex);
     applyPaletteToTarget(hex);
   }
-};
+}
 
-window.activateEyeDropper = async function() {
+async function activateEyeDropper() {
   if (!window.EyeDropper) {
     toast('您的浏览器不支持吸管工具', true);
     return;
@@ -652,7 +660,7 @@ window.activateEyeDropper = async function() {
     applyPaletteToTarget(result.sRGBHex);
   } catch (e) {
   }
-};
+}
 
 // Panel Interactions
 const svPanel = $('#svPanel');
@@ -754,9 +762,9 @@ function renderGradientStops(stealFocus = true) {
   container.innerHTML = gradientColors.map((c, i) => `
     <div class="gradient-stop-box ${activeColorTarget === 'gradient' && activeColorIndex === i ? 'active' : ''}" 
          style="background-color: ${c}" 
-         onclick="setActiveColorTarget('gradient', ${i}, '${c}', event)"
+         data-appearance-action="edit-gradient" data-index="${i}" data-color="${c}"
          title="点击编辑色标">
-      ${gradientColors.length > 2 ? `<button class="del-btn" onclick="removeGradientStop(event, ${i})">×</button>` : ''}
+      ${gradientColors.length > 2 ? `<button type="button" class="del-btn" data-appearance-action="remove-gradient" data-index="${i}">×</button>` : ''}
     </div>
   `).join('');
   
@@ -831,50 +839,7 @@ document.addEventListener('click', (e) => {
   activeColorTarget = null;
 });
 
-// Make palette draggable on any non-interactive part
-document.addEventListener('DOMContentLoaded', () => {
-  const palette = document.getElementById('colorPaletteContainer');
-  let isDraggingContainer = false, dragOffsetX = 0, dragOffsetY = 0;
-  if (palette) {
-    const startDrag = (e) => {
-      // Ignore interactive elements unless it's the drag icon
-      if (e.target.closest('button, input, .sv-panel, .hue-slider, .palette-preview, .input-row')) {
-        if (!e.target.closest('.drag-icon')) return;
-      }
-      isDraggingContainer = true;
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      dragOffsetX = clientX - palette.offsetLeft;
-      dragOffsetY = clientY - palette.offsetTop;
-      if (!e.touches) e.preventDefault(); // prevent text selection
-    };
-
-    const doDrag = (e) => {
-      if (!isDraggingContainer) return;
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      palette.style.left = (clientX - dragOffsetX) + 'px';
-      palette.style.top = (clientY - dragOffsetY) + 'px';
-      palette.style.bottom = 'auto';
-      palette.style.right = 'auto';
-    };
-
-    const stopDrag = () => {
-      isDraggingContainer = false;
-    };
-
-    palette.addEventListener('mousedown', startDrag);
-    palette.addEventListener('touchstart', startDrag, { passive: false });
-    
-    document.addEventListener('mousemove', doDrag);
-    document.addEventListener('touchmove', doDrag, { passive: false });
-    
-    document.addEventListener('mouseup', stopDrag);
-    document.addEventListener('touchend', stopDrag);
-  }
-});
-
-window.deletePreset = async function(val, event) {
+async function deletePreset(val, event) {
   if (event) event.stopPropagation();
   if (!confirm('确定要删除这个预设吗？')) return;
 
@@ -882,7 +847,7 @@ window.deletePreset = async function(val, event) {
     const match = val.match(/\/assets\/(background.*?\.jpg)/);
     if (match && match[1]) {
       try {
-        const res = await API.raw('/api/admin/delete-bg', { method: 'POST', body: JSON.stringify({ filename: match[1] }) });
+        const res = await API.appearance.deleteBackground(match[1]);
         if (res.ok) {
           toast('图片已删除');
           loadAppearance();
@@ -903,4 +868,37 @@ window.deletePreset = async function(val, event) {
       }
     }
   }
-};
+}
+
+document.getElementById('page-appearance').addEventListener('click', event => {
+  const target = event.target.closest('[data-appearance-action]');
+  if (!target) return;
+  const action = target.dataset.appearanceAction;
+  if (action === 'apply-url') applyBgUrl();
+  else if (action === 'choose-file') document.getElementById('bgFile').click();
+  else if (action === 'reset-bg') resetBg();
+  else if (action === 'edit-bg') setActiveColorTarget('bg', -1, null, event);
+  else if (action === 'save-color') saveCustomPreset('color');
+  else if (action === 'add-gradient') addGradientStop();
+  else if (action === 'apply-gradient') applyGradient();
+  else if (action === 'save-gradient') saveCustomPreset('gradient');
+  else if (action === 'font-smaller') adjustFontSize(-1);
+  else if (action === 'font-larger') adjustFontSize(1);
+  else if (action === 'font-adaptive') setFontColorType('adaptive');
+  else if (action === 'font-specified') setFontColorType('specified');
+  else if (action === 'edit-font') setActiveColorTarget('font', -1, null, event);
+  else if (action === 'eyedropper') activateEyeDropper();
+  else if (action === 'reset-color') resetColorTarget();
+  else if (action === 'set-bg') setBgAndSync(target.dataset.bg);
+  else if (action === 'delete-preset') deletePreset(target.dataset.bg, event);
+  else if (action === 'edit-gradient') setActiveColorTarget('gradient', Number(target.dataset.index), target.dataset.color, event);
+  else if (action === 'remove-gradient') removeGradientStop(event, Number(target.dataset.index));
+});
+
+document.getElementById('page-appearance').addEventListener('input', event => {
+  if (event.target.id === 'hex-input') updateFromHEX();
+  else if (event.target.id.startsWith('rgb-')) updateFromRGB();
+  else if (event.target.id.startsWith('hsb-')) updateFromHSB();
+});
+
+document.getElementById('bgFile').addEventListener('change', uploadBg);

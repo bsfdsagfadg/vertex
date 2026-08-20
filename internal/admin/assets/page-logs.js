@@ -1,6 +1,11 @@
+import { $, toast } from './utils.js';
+
+let API;
+export function configureLogsService(service) { API = service; }
+
 let logsRefreshTimer = null;
 
-async function loadLogs() {
+export async function loadLogs() {
   const check = $('#autoRefreshLogsCheck');
   if (check) {
     try {
@@ -17,9 +22,8 @@ async function loadLogs() {
     }
   }
   try {
-    const res = await fetch('/api/admin/log');
-    const data = await res.json();
-    if (res.ok && data.ok) {
+    const data = await API.logs.get();
+    if (data.ok) {
       renderLogs(data.content || '');
     } else {
       toast('拉取日志失败', true);
@@ -85,7 +89,7 @@ function escapeHtml(str) {
   });
 }
 
-function toggleAutoRefreshLogs(silent) {
+export function toggleAutoRefreshLogs(silent) {
   const check = $('#autoRefreshLogsCheck');
   if (!check) return;
   if (silent !== true) {
@@ -109,3 +113,17 @@ function toggleAutoRefreshLogs(silent) {
     }
   }
 }
+
+export function teardownLogs() {
+  if (logsRefreshTimer) {
+    clearInterval(logsRefreshTimer);
+    logsRefreshTimer = null;
+  }
+}
+
+document.getElementById('page-logs').addEventListener('click', event => {
+  if (event.target.closest('[data-logs-action="refresh"]')) loadLogs();
+});
+document.getElementById('page-logs').addEventListener('change', event => {
+  if (event.target.matches('[data-logs-action="toggle"]')) toggleAutoRefreshLogs();
+});

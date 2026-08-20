@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Vertex V2 数据迁移</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+  <link rel="stylesheet" href="/admin/migration.css">
+</head>
+<body>
+  <div class="bg" aria-hidden="true"></div>
+  <div class="bg-veil" aria-hidden="true"></div>
+
+  <main class="migration-shell">
+    <section id="migration-login" class="glass migration-card">
+      <div class="migration-mark">V2</div>
+      <h1>需要迁移 V1 数据</h1>
+      <p class="migration-muted">业务接口已安全暂停。登录后预检并确认迁移。</p>
+      <form id="migration-login-form">
+        <label for="migration-password">管理员密码或一次性迁移令牌</label>
+        <input id="migration-password" name="password" type="password" autocomplete="current-password" required>
+        <button class="btn migration-primary" type="submit">登录迁移控制台</button>
+      </form>
+      <p id="migration-login-error" class="err" role="alert"></p>
+    </section>
+
+    <section id="migration-console" class="glass migration-card hidden" aria-live="polite">
+      <header class="migration-header">
+        <div>
+          <p class="migration-eyebrow">Vertex AI Proxy</p>
+          <h1>V1 → V2 数据迁移</h1>
+        </div>
+        <span id="migration-state" class="migration-state">Required</span>
+      </header>
+
+      <p class="migration-muted">迁移会先在同一数据卷生成并验证 V2 数据，再把旧文件改名为 <code>.needrm</code>。旧数据不会被物理删除。</p>
+
+      <div class="migration-actions">
+        <button id="migration-prepare" class="btn" type="button">执行只读预检</button>
+        <button id="migration-refresh" class="btn ghost" type="button">刷新状态</button>
+      </div>
+
+      <section class="migration-panel">
+        <h2>检测结果</h2>
+        <pre id="migration-findings">等待读取…</pre>
+      </section>
+
+      <section class="migration-panel">
+        <h2>迁移计划</h2>
+        <pre id="migration-plan">尚未生成计划。</pre>
+      </section>
+
+      <div class="migration-confirmations">
+        <label><input id="migration-confirm-backup" type="checkbox"> 我已理解旧数据会保留为 <code>.needrm</code>，并已确认持久化卷可用。</label>
+        <label><input id="migration-confirm-rollback" type="checkbox"> 我已阅读回滚说明：V2 不会把数据库反向转换为 V1。</label>
+      </div>
+
+      <button id="migration-apply" class="btn migration-primary" type="button" disabled>开始迁移</button>
+
+      <section id="migration-rollback-panel" class="migration-panel hidden">
+        <h2>准备回滚到 V1</h2>
+        <p class="migration-muted">此操作不反向转换数据库。当前 V2 文件会改名为 <code>.v2rollback</code>，随后严格按迁移报告恢复 <code>.needrm</code>。</p>
+        <div class="migration-actions">
+          <button id="migration-rollback-prepare" class="btn" type="button">执行回滚预检</button>
+        </div>
+        <pre id="migration-rollback-plan">尚未生成回滚计划。</pre>
+        <div class="migration-confirmations">
+          <label><input id="migration-confirm-v1-binary" type="checkbox"> 我已确认原 V1 二进制和启动配置可用。</label>
+          <label><input id="migration-confirm-traffic-stop" type="checkbox"> 我理解业务会保持停止，完成后本进程将退出。</label>
+        </div>
+        <button id="migration-rollback-apply" class="btn migration-primary" type="button" disabled>归档 V2 并恢复 V1 数据</button>
+      </section>
+      <p id="migration-error" class="err" role="alert"></p>
+      <footer id="migration-build" class="migration-muted"></footer>
+    </section>
+  </main>
+
+  <script src="/admin/migration.js" defer></script>
+</body>
+</html>

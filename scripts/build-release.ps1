@@ -3,7 +3,7 @@
 # 切换到项目根目录
 Set-Location -Path $PSScriptRoot\..
 
-$VERSION = "dev"
+$VERSION = "2.0.0-dev+local"
 if ($args.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($args[0])) {
     $VERSION = $args[0]
 }
@@ -21,7 +21,7 @@ catch {
 }
 
 $BUILD_TIME = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-$LDFLAGS = "-s -w -X main.version=$VERSION -X main.buildCommit=$COMMIT -X main.buildTime=$BUILD_TIME"
+$LDFLAGS = "-s -w -X github.com/bsfdsagfadg/vertex/internal/buildinfo.ReleaseVersion=$VERSION -X github.com/bsfdsagfadg/vertex/internal/buildinfo.ReleaseCommit=$COMMIT -X github.com/bsfdsagfadg/vertex/internal/buildinfo.ReleaseBuildTime=$BUILD_TIME -X github.com/bsfdsagfadg/vertex/internal/buildinfo.ReleaseSource=release"
 
 if (Test-Path $OUT) {
     Remove-Item -Recurse -Force $OUT

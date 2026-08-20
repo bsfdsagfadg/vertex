@@ -1,5 +1,9 @@
 FROM golang:1.26-alpine AS builder
 
+ARG VERSION=2.0.0-dev+local
+ARG COMMIT=
+ARG BUILD_TIME=
+
 WORKDIR /build
 
 COPY go.mod go.sum* ./
@@ -9,7 +13,9 @@ RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 
-RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="-s -w" -o vproxy ./cmd/vproxy \
+RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath \
+    -ldflags="-s -w -X github.com/bsfdsagfadg/vertex/internal/buildinfo.ReleaseVersion=${VERSION} -X github.com/bsfdsagfadg/vertex/internal/buildinfo.ReleaseCommit=${COMMIT} -X github.com/bsfdsagfadg/vertex/internal/buildinfo.ReleaseBuildTime=${BUILD_TIME} -X github.com/bsfdsagfadg/vertex/internal/buildinfo.ReleaseSource=docker" \
+    -o vproxy ./cmd/vproxy \
     && go clean -cache -modcache -testcache
 
 FROM alpine:3.20

@@ -20,13 +20,13 @@
       <div class="sub">OpenAI 兼容 · Vertex / Gemini 代理</div>
       <label for="pw" class="sr-only">管理员密码</label><input id="pw" type="password" placeholder="管理员密码"
         autocomplete="current-password">
-      <button class="btn" onclick="login()">登 录</button>
+      <button class="btn" type="button" data-shell-action="login">登 录</button>
       <div class="err" id="loginErr"></div>
     </div>
   </div>
 
   <div id="app" class="hidden">
-    <button class="menu-btn" id="menuBtn" onclick="toggleMenu()">☰</button>
+    <button class="menu-btn" id="menuBtn" type="button" data-shell-action="toggle-menu">☰</button>
     <aside class="glass">
       <div class="brand"><span class="mk">V</span> Vertex AI Proxy</div>
       <nav>
@@ -38,12 +38,13 @@
         <button data-page="subscriptions"><span class="ic">📦</span> 订阅管理</button>
         <button data-page="logs"><span class="ic">📝</span> 运行日志</button>
         <button data-page="appearance"><span class="ic">🎨</span> 外观</button>
+        <button data-page="build"><span class="ic">ℹ️</span> 构建信息</button>
       </nav>
       <div class="spacer"></div>
-      <button class="btn ghost" onclick="logout()">退出登录</button>
+      <button class="btn ghost" type="button" data-shell-action="logout">退出登录</button>
     </aside>
 
-    <div class="menu-overlay" id="menuOverlay" onclick="closeMenu()"></div>
+    <div class="menu-overlay" id="menuOverlay" data-shell-action="close-menu"></div>
 
     <main>
       <div class="glass main-glass-bg"></div>
@@ -54,7 +55,7 @@
               <h2>概览</h2>
               <div class="hint">服务运行状态与资源概况</div>
             </div>
-            <button class="btn ghost" onclick="loadOverview()">刷新</button>
+            <button class="btn ghost" type="button" data-shell-action="refresh-overview">刷新</button>
           </div>
           <div class="grid stats" id="ovCards"></div>
         </section>
@@ -80,11 +81,11 @@
             <div class="toolbar">
               <div class="key-input-wrap"><label for="kName" class="sr-only">名称（如 alice）</label><input id="kName"
                   placeholder="名称（如 alice）"><label for="kKey" class="sr-only">密钥（留空自动生成）</label><input id="kKey"
-                  placeholder="密钥（留空自动生成）"><button class="key-gen-btn" onclick="generateKey()" title="随机生成">✨</button>
+                  placeholder="密钥（留空自动生成）"><button class="key-gen-btn" type="button" data-keys-action="generate" title="随机生成">✨</button>
               </div>
             </div>
             <div class="toolbar"><label for="kDesc" class="sr-only">描述</label><input id="kDesc"
-                placeholder="描述（可选）"><button class="btn" onclick="addKey()">添加</button></div>
+                placeholder="描述（可选）"><button class="btn" type="button" data-keys-action="add">添加</button></div>
             <div class="table-wrap">
               <table>
                 <thead>
@@ -108,10 +109,10 @@
               <div class="hint">统一管理模型启用、假流式、尾部修复和任意数量别名</div>
             </div>
             <div class="toolbar m-0">
-              <button class="btn ghost" onclick="addModelRow()">新增模型</button>
-              <button class="btn ghost" onclick="openModelImport('models')">导入模型列表</button>
-              <button class="btn ghost" onclick="openModelImport('aliases')">导入别名列表</button>
-              <button class="btn" onclick="saveModels()">保存设置</button>
+              <button class="btn ghost" type="button" data-model-action="add-row">新增模型</button>
+              <button class="btn ghost" type="button" data-model-action="open-import" data-import-mode="models">导入模型列表</button>
+              <button class="btn ghost" type="button" data-model-action="open-import" data-import-mode="aliases">导入别名列表</button>
+              <button class="btn" type="button" data-model-action="save">保存设置</button>
             </div>
           </div>
           <div class="card glass model-registry-card">
@@ -122,11 +123,11 @@
                 <thead>
                   <tr>
                     <th class="model-check">启用<br><input style="margin: 4px 0 0;" id="allModelsEnabled" type="checkbox"
-                        onchange="setAllModelFlags('enabled',this.checked)"></th>
+                        data-model-action="all-flags" data-model-key="enabled"></th>
                     <th class="model-check">假流式<br><input style="margin: 4px 0 0;" id="allModelsFake" type="checkbox"
-                        onchange="setAllModelFlags('fake_stream_enabled',this.checked)"></th>
+                        data-model-action="all-flags" data-model-key="fake_stream_enabled"></th>
                     <th class="model-check">尾部修复<br><input style="margin: 4px 0 0;" id="allModelsTrailing"
-                        type="checkbox" onchange="setAllModelFlags('trailing_fix_enabled',this.checked)"></th>
+                        type="checkbox" data-model-action="all-flags" data-model-key="trailing_fix_enabled"></th>
                     <th>模型 ID</th>
                     <th>别名</th>
                     <th style="width: 80px; text-align: center;">操作</th>
@@ -147,26 +148,26 @@
           </div>
           <div class="grid grid-1">
             <div class="card glass">
-              <div class="field"><label for="globalProxy">全局入口代理</label>
+              <div class="field"><label for="globalProxy">全局代理</label>
                 <div class="toolbar m-0"><input id="globalProxy"
                     placeholder="socks5://127.0.0.1:1080 或 vless://..."><button class="btn"
-                    onclick="importProxyNode()">导入候选</button></div>
-                <div class="desc">启用的入口按顶层请求轮询，同一请求内的并行节点固定使用同一个入口。</div>
+                    type="button" data-nodes-action="import-proxy">导入候选</button></div>
+                <div class="desc">全局代理是独立第一跳；模型请求固定同一 GlobalProxy × RequestNode 路由，订阅抓取也优先遵循该策略。</div>
               </div>
               <div class="divider"></div>
               <div class="field m-0">
                 <div class="field-heading" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-                  <span>入口代理候选</span>
+                  <span>全局代理池</span>
                 </div>
                 <div class="actions proxy-actions">
-                  <button class="btn ghost" onclick="batchTestSelectedProxyNodes()">批量测试</button>
-                  <button class="btn ghost" onclick="sortProxyNodesByLatency()">按延迟顺序排序</button>
-                  <button class="btn ghost" onclick="sortProxyNodesByLatencyDesc()">按延迟降序排序</button>
-                  <button class="btn ghost" onclick="toggleSelectAllProxyNodes()">全选/反选</button>
-                  <button class="btn ghost btn-green" onclick="batchEnableSelectedProxyNodes()">批量启用</button>
-                  <button class="btn ghost btn-red" onclick="batchDisableSelectedProxyNodes()">批量禁用</button>
-                  <button class="btn danger" onclick="batchDeleteSelectedProxyNodes()">批量删除</button>
-                  <button class="btn danger" onclick="deleteDisabledProxyNodes()">删除禁用入口</button>
+                  <button class="btn ghost" type="button" data-nodes-action="test-selected-proxies">批量测试</button>
+                  <button class="btn ghost" type="button" data-nodes-action="sort-proxies-asc">按延迟顺序排序</button>
+                  <button class="btn ghost" type="button" data-nodes-action="sort-proxies-desc">按延迟降序排序</button>
+                  <button class="btn ghost" type="button" data-nodes-action="toggle-all-proxies">全选/反选</button>
+                  <button class="btn ghost btn-green" type="button" data-nodes-action="enable-selected-proxies">批量启用</button>
+                  <button class="btn ghost btn-red" type="button" data-nodes-action="disable-selected-proxies">批量禁用</button>
+                  <button class="btn danger" type="button" data-nodes-action="delete-selected-proxies">批量删除</button>
+                  <button class="btn danger" type="button" data-nodes-action="delete-disabled-proxies">删除禁用全局代理</button>
                 </div>
                 <div id="proxyTestProgress" class="test-progress">
                   <div id="proxyTestProgressText" class="test-progress-text">准备测试...</div>
@@ -178,7 +179,7 @@
                     <thead>
                       <tr>
                         <th class="th-center"><label for="selectAllProxyNodesCheckbox" class="sr-only">全选</label><input
-                            type="checkbox" id="selectAllProxyNodesCheckbox" onclick="toggleSelectAllProxyNodesCheckbox(this)"></th>
+                            type="checkbox" id="selectAllProxyNodesCheckbox"></th>
                         <th>名称</th>
                         <th>类型</th>
                         <th>状态</th>
@@ -193,41 +194,51 @@
                   style="margin-top: 12px; justify-content: space-between; align-items: center;">
                   <div id="proxyNodesPaginationInfo" style="font-size: 13px; color: var(--text-dim);"></div>
                   <div class="flex-gap-11" style="display: flex; gap: 8px; align-items: center;">
-                    <button class="btn ghost" id="btnProxyPageFirst" onclick="changeProxyPage(1)">首页</button>
-                    <button class="btn ghost" id="btnProxyPagePrev" onclick="changeProxyPage(curProxyPage - 1)">上一页</button>
+                    <button class="btn ghost" id="btnProxyPageFirst" type="button" data-nodes-action="proxy-page" data-page-target="first">首页</button>
+                    <button class="btn ghost" id="btnProxyPagePrev" type="button" data-nodes-action="proxy-page" data-page-target="prev">上一页</button>
                     <span id="proxyNodesPageNumDisplay" style="font-size: 13px; font-weight: 600; padding: 0 6px;">1 / 1</span>
-                    <button class="btn ghost" id="btnProxyPageNext" onclick="changeProxyPage(curProxyPage + 1)">下一页</button>
-                    <button class="btn ghost" id="btnProxyPageLast" onclick="changeProxyPage(totalProxyPages)">末页</button>
+                    <button class="btn ghost" id="btnProxyPageNext" type="button" data-nodes-action="proxy-page" data-page-target="next">下一页</button>
+                    <button class="btn ghost" id="btnProxyPageLast" type="button" data-nodes-action="proxy-page" data-page-target="last">末页</button>
                   </div>
                 </div>
               </div>
             </div>
             <div class="card glass">
+              <div class="field">
+                <label for="requestNodeURI">导入单个请求节点</label>
+                <div class="toolbar m-0">
+                  <input id="requestNodeURI" autocomplete="off"
+                    placeholder="粘贴 Clash / VMess / VLESS / SS(R) / Trojan / Hysteria / Hy2 / TUIC / AnyTLS / SOCKS / HTTP 等节点 URI">
+                  <button class="btn" id="btnImportRequestNode" type="button">导入节点</button>
+                </div>
+                <div class="desc">支持范围以服务端节点解析器为准，不限定 VLESS；此处只导入单个节点 URI，订阅 URL 请前往“订阅管理”。</div>
+              </div>
+              <div class="divider"></div>
               <div class="desc summary-text" id="nodesSummary" style="margin-bottom: 12px; font-weight: bold;">当前共 0 个节点
               </div>
               <div class="actions">
-                <button class="btn ghost" onclick="testAllNodes()">批量测试</button>
-                <button class="btn ghost" onclick="sortNodesByLatency()">按延迟顺序排序</button>
-                <button class="btn ghost" onclick="sortNodesByLatencyDesc()">按延迟降序排序</button>
-                <button class="btn ghost" onclick="dedupNodes()">一键去重</button>
-                <button class="btn ghost" onclick="exportNodes()">导出节点</button>
-                <button class="btn danger" onclick="deleteDisabledNodes()">删除禁用节点</button>
-                <button class="btn ghost" onclick="addSelectedNodesToEntryProxies()">将已选节点加入全局入口代理</button>
-                <button class="btn ghost" onclick="removeSelectedNodesFromEntryProxies()">将已选节点移出全局入口代理</button>
+                <button class="btn ghost" type="button" data-nodes-action="test-all">批量测试</button>
+                <button class="btn ghost" type="button" data-nodes-action="sort-asc">按延迟顺序排序</button>
+                <button class="btn ghost" type="button" data-nodes-action="sort-desc">按延迟降序排序</button>
+                <button class="btn ghost" type="button" data-nodes-action="dedup">一键去重</button>
+                <button class="btn ghost" type="button" data-nodes-action="export">导出节点</button>
+                <button class="btn danger" type="button" data-nodes-action="delete-disabled">删除禁用节点</button>
+                <button class="btn ghost" type="button" data-nodes-action="promote-selected">将已选 RequestNode 提升为 GlobalProxy</button>
+                <button class="btn ghost" type="button" data-nodes-action="remove-selected-proxies">将已选节点移出全局代理池</button>
                 <span class="flex-1"></span>
-                <button class="btn ghost btn-blue" onclick="toggleSelectAllNodes()">全选/反选</button>
-                <button class="btn ghost btn-green" onclick="batchEnableSelectedNodes()">批量启用</button>
-                <button class="btn ghost btn-red" onclick="batchDisableSelectedNodes()">批量禁用</button>
-                <button class="btn danger" onclick="batchDeleteSelectedNodes()">批量删除</button>
+                <button class="btn ghost btn-blue" type="button" data-nodes-action="toggle-all">全选/反选</button>
+                <button class="btn ghost btn-green" type="button" data-nodes-action="enable-selected">批量启用</button>
+                <button class="btn ghost btn-red" type="button" data-nodes-action="disable-selected">批量禁用</button>
+                <button class="btn danger" type="button" data-nodes-action="delete-selected">批量删除</button>
               </div>
               <div id="testProgress" class="test-progress">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
                   <div id="testProgressText" class="test-progress-text" style="margin-bottom:0;">准备测试...</div>
                   <div style="display:flex; gap:8px;">
-                    <button class="btn ghost" id="btnTestPauseResume" style="padding:2px 10px; font-size:12px;"
-                      onclick="toggleTestPauseResume()">暂停</button>
-                    <button class="btn danger" style="padding:2px 10px; font-size:12px;"
-                      onclick="terminateTestAll()">终止</button>
+                    <button class="btn ghost" id="btnTestPauseResume" type="button" style="padding:2px 10px; font-size:12px;"
+                      data-nodes-action="pause-test">暂停</button>
+                    <button class="btn danger" type="button" style="padding:2px 10px; font-size:12px;"
+                      data-nodes-action="terminate-test">终止</button>
                   </div>
                 </div>
                 <div class="progress-track">
@@ -238,15 +249,15 @@
               <div id="crossPageSelectBanner" class="test-progress"
                 style="display:none; background: rgba(143,208,232,0.15); border: 1px solid var(--blue); color: var(--text); padding: 8px 12px; border-radius: 6px; margin-bottom: 10px;">
                 <span id="crossPageSelectText"></span>
-                <button class="btn ghost btn-blue" style="margin-left:12px; padding:2px 8px; font-size:12px;"
-                  onclick="selectAllNodesAcrossPages()">全选所有页共 <span id="crossPageSelectTotal">0</span> 个节点</button>
+                <button class="btn ghost btn-blue" type="button" style="margin-left:12px; padding:2px 8px; font-size:12px;"
+                  data-nodes-action="select-across-pages">全选所有页共 <span id="crossPageSelectTotal">0</span> 个节点</button>
               </div>
               <div class="table-wrap">
                 <table id="nodesTable">
                   <thead>
                     <tr>
                       <th class="th-center"><label for="selectAllNodesCheckbox" class="sr-only">全选</label><input
-                          type="checkbox" id="selectAllNodesCheckbox" onclick="toggleSelectAllNodesCheckbox(this)"></th>
+                          type="checkbox" id="selectAllNodesCheckbox"></th>
                       <th>节点名 & 连接属性</th>
                       <th>协议</th>
                       <th>状态/延迟</th>
@@ -260,11 +271,11 @@
                 style="margin-top: 12px; justify-content: space-between; align-items: center;">
                 <div id="nodesPaginationInfo" style="font-size: 13px; color: var(--text-dim);"></div>
                 <div class="flex-gap-11" style="display: flex; gap: 8px; align-items: center;">
-                  <button class="btn ghost" id="btnPageFirst" onclick="changeNodePage(1)">首页</button>
-                  <button class="btn ghost" id="btnPagePrev" onclick="changeNodePage(curNodePage - 1)">上一页</button>
+                  <button class="btn ghost" id="btnPageFirst" type="button" data-nodes-action="node-page" data-page-target="first">首页</button>
+                  <button class="btn ghost" id="btnPagePrev" type="button" data-nodes-action="node-page" data-page-target="prev">上一页</button>
                   <span id="nodesPageNumDisplay" style="font-size: 13px; font-weight: 600; padding: 0 6px;">1 / 1</span>
-                  <button class="btn ghost" id="btnPageNext" onclick="changeNodePage(curNodePage + 1)">下一页</button>
-                  <button class="btn ghost" id="btnPageLast" onclick="changeNodePage(totalNodePages)">末页</button>
+                  <button class="btn ghost" id="btnPageNext" type="button" data-nodes-action="node-page" data-page-target="next">下一页</button>
+                  <button class="btn ghost" id="btnPageLast" type="button" data-nodes-action="node-page" data-page-target="last">末页</button>
                 </div>
               </div>
             </div>
@@ -284,8 +295,8 @@
               <div class="toolbar m-0 gap-8">
                 <label for="nodeImportFile" class="sr-only">选择节点导入文件</label><input type="file" id="nodeImportFile"
                   accept=".txt,.yaml,.yml,.json,.conf,.list" class="file-input">
-                <button class="btn ghost" onclick="importFileNodes(false)">导入追加</button>
-                <button class="btn danger" onclick="importFileNodes(true)">清空并替换</button>
+                <button class="btn ghost" type="button" data-subscription-action="import-file" data-replace="false">导入追加</button>
+                <button class="btn danger" type="button" data-subscription-action="import-file" data-replace="true">清空并替换</button>
               </div>
               <div class="desc">导入本地导出的节点配置文件 (.txt / .yaml)。支持以追加或覆盖形式批量配置节点。</div>
             </div>
@@ -295,8 +306,8 @@
               <div class="toolbar m-0 gap-8">
                 <label for="nodeJsonImportFile" class="sr-only">选择 nodes.json 导入文件</label><input type="file"
                   id="nodeJsonImportFile" accept=".json" class="file-input">
-                <button class="btn ghost" onclick="importJsonNodes(false)">导入追加</button>
-                <button class="btn danger" onclick="importJsonNodes(true)">清空并替换</button>
+                <button class="btn ghost" type="button" data-subscription-action="import-json" data-replace="false">导入追加</button>
+                <button class="btn danger" type="button" data-subscription-action="import-json" data-replace="true">清空并替换</button>
               </div>
               <div class="desc">导入旧版 nodes.json。支持以追加或覆盖形式批量配置节点。</div>
             </div>
@@ -306,7 +317,7 @@
             <div class="field-heading" style="display:flex; justify-content:space-between; align-items:center;">
               <span>自定义 User-Agent</span>
               <div class="toolbar m-0">
-                <button class="btn ghost" onclick="showAddUAModal()">添加 UA</button>
+                <button class="btn ghost" type="button" data-subscription-action="show-ua">添加 UA</button>
               </div>
             </div>
             <div class="table-wrap mb-20">
@@ -325,8 +336,8 @@
             <div class="field-heading mt-20" style="display:flex; justify-content:space-between; align-items:center;">
               <span>订阅列表</span>
               <div class="toolbar m-0">
-                <button class="btn ghost" onclick="showAddSubModal()">添加订阅</button>
-                <button class="btn ghost" onclick="updateAllSubs()">一键更新所有订阅</button>
+                <button class="btn ghost" type="button" data-subscription-action="show-subscription">添加订阅</button>
+                <button class="btn ghost" type="button" data-subscription-action="update-all">一键更新所有订阅</button>
               </div>
             </div>
             <div class="table-wrap">
@@ -356,16 +367,16 @@
           </div>
           <div class="card glass">
             <div class="field"><label for="bgUrl">图片 URL</label>
-              <div class="toolbar m-0"><input id="bgUrl" placeholder="粘贴图片 URL…"><button class="btn"
-                  onclick="applyBgUrl()">应用</button></div>
+              <div class="toolbar m-0"><input id="bgUrl" placeholder="粘贴图片 URL…"><button class="btn" type="button"
+                  data-appearance-action="apply-url">应用</button></div>
             </div>
             <div class="field">
               <div class="field-heading">从本地上传</div>
-              <div class="flex-gap-11"><button class="btn ghost"
-                  onclick="document.getElementById('bgFile').click()">选择图片…</button><button class="btn ghost"
-                  onclick="resetBg()">恢复默认</button></div>
+              <div class="flex-gap-11"><button class="btn ghost" type="button"
+                  data-appearance-action="choose-file">选择图片…</button><button class="btn ghost" type="button"
+                  data-appearance-action="reset-bg">恢复默认</button></div>
               <label for="bgFile" class="sr-only">上传背景图片</label><input id="bgFile" type="file" accept="image/*"
-                class="hidden" onchange="uploadBg(event)">
+                class="hidden">
             </div>
             <div class="field m-0">
               <div class="field-heading">图片预设</div>
@@ -386,9 +397,9 @@
               </div>
               <div class="font-ctrl-group" style="margin-top: 12px; margin-bottom: 20px;">
                 <span>自定义单色背景:</span>
-                <div class="color-preview-box" id="bgColorBox" onclick="setActiveColorTarget('bg', -1, null, event)"
+                <div class="color-preview-box" id="bgColorBox" data-appearance-action="edit-bg"
                   title="点击编辑单色背景"></div>
-                <button class="btn ghost" onclick="saveCustomPreset('color')" style="margin-left:12px;">保存为预设</button>
+                <button class="btn ghost" type="button" data-appearance-action="save-color" style="margin-left:12px;">保存为预设</button>
               </div>
             </div>
 
@@ -396,9 +407,9 @@
             <div class="gradient-builder" style="margin-bottom: 20px;">
               <div class="gradient-stops" id="gradientStops"></div>
               <div class="flex-gap-11" style="margin-top: 8px;">
-                <button class="btn ghost" onclick="addGradientStop()">+ 添加色标</button>
-                <button class="btn ghost" onclick="applyGradient()">应用渐变</button>
-                <button class="btn ghost" onclick="saveCustomPreset('gradient')">保存为预设</button>
+                <button class="btn ghost" type="button" data-appearance-action="add-gradient">+ 添加色标</button>
+                <button class="btn ghost" type="button" data-appearance-action="apply-gradient">应用渐变</button>
+                <button class="btn ghost" type="button" data-appearance-action="save-gradient">保存为预设</button>
               </div>
             </div>
 
@@ -406,15 +417,15 @@
             <div class="appearance-advanced">
               <div class="font-ctrl-group">
                 <span>基础字号:</span>
-                <button class="btn ghost" onclick="adjustFontSize(-1)">A-</button>
+                <button class="btn ghost" type="button" data-appearance-action="font-smaller">A-</button>
                 <span id="currentFontSize" style="min-width: 40px; text-align: center;">14px</span>
-                <button class="btn ghost" onclick="adjustFontSize(1)">A+</button>
+                <button class="btn ghost" type="button" data-appearance-action="font-larger">A+</button>
               </div>
               <div class="font-ctrl-group">
                 <span>字体颜色:</span>
-                <button class="btn ghost" id="btnColorAdaptive" onclick="setFontColorType('adaptive')">自适应</button>
-                <button class="btn ghost" id="btnColorSpecified" onclick="setFontColorType('specified')">指定色</button>
-                <div class="color-preview-box" id="fontColorBox" onclick="setActiveColorTarget('font', -1, null, event)"
+                <button class="btn ghost" id="btnColorAdaptive" type="button" data-appearance-action="font-adaptive">自适应</button>
+                <button class="btn ghost" id="btnColorSpecified" type="button" data-appearance-action="font-specified">指定色</button>
+                <div class="color-preview-box" id="fontColorBox" data-appearance-action="edit-font"
                   title="点击编辑字体颜色"></div>
               </div>
             </div>
@@ -427,7 +438,7 @@
 
               <div class="palette-tools">
                 <div class="palette-preview" id="palettePreview"></div>
-                <button class="btn ghost btn-icon palette-btn" onclick="activateEyeDropper()" title="吸管工具">
+                <button class="btn ghost btn-icon palette-btn" type="button" data-appearance-action="eyedropper" title="吸管工具">
                   <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <path d="m2 22 6-6" />
@@ -439,7 +450,7 @@
                   </svg>
                   <span>取色工具</span>
                 </button>
-                <button class="btn ghost btn-icon palette-btn" title="重置" onclick="resetColorTarget()">
+                <button class="btn ghost btn-icon palette-btn" type="button" title="重置" data-appearance-action="reset-color">
                   <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
@@ -464,26 +475,19 @@
               <div class="palette-inputs">
                 <div class="input-row hex-row">
                   <span class="input-label">HEX</span>
-                  <input type="text" id="hex-input" class="hex-input" value="#FF0000" onchange="updateFromHEX()"
-                    oninput="updateFromHEX()">
+                  <input type="text" id="hex-input" class="hex-input" value="#FF0000">
                 </div>
                 <div class="input-row rgb-row">
                   <span class="input-label">RGB</span>
-                  <label>R: <input type="number" id="rgb-r" min="0" max="255" value="255" onchange="updateFromRGB()"
-                      oninput="updateFromRGB()"></label>
-                  <label>G: <input type="number" id="rgb-g" min="0" max="255" value="0" onchange="updateFromRGB()"
-                      oninput="updateFromRGB()"></label>
-                  <label>B: <input type="number" id="rgb-b" min="0" max="255" value="0" onchange="updateFromRGB()"
-                      oninput="updateFromRGB()"></label>
+                  <label>R: <input type="number" id="rgb-r" min="0" max="255" value="255"></label>
+                  <label>G: <input type="number" id="rgb-g" min="0" max="255" value="0"></label>
+                  <label>B: <input type="number" id="rgb-b" min="0" max="255" value="0"></label>
                 </div>
                 <div class="input-row hsb-row">
                   <span class="input-label">HSB</span>
-                  <label>H: <input type="number" id="hsb-h" min="0" max="360" value="0" onchange="updateFromHSB()"
-                      oninput="updateFromHSB()"></label>
-                  <label>S: <input type="number" id="hsb-s" min="0" max="100" value="100" onchange="updateFromHSB()"
-                      oninput="updateFromHSB()"></label>
-                  <label>B: <input type="number" id="hsb-b" min="0" max="100" value="100" onchange="updateFromHSB()"
-                      oninput="updateFromHSB()"></label>
+                  <label>H: <input type="number" id="hsb-h" min="0" max="360" value="0"></label>
+                  <label>S: <input type="number" id="hsb-s" min="0" max="100" value="100"></label>
+                  <label>B: <input type="number" id="hsb-b" min="0" max="100" value="100"></label>
                 </div>
               </div>
             </div>
@@ -503,11 +507,11 @@
                 <span
                   style="font-size:calc(var(--base-font-size) * 13 / 14); color:var(--text); font-weight:500;">自动刷新</span>
                 <label class="toggle">
-                  <input type="checkbox" id="autoRefreshLogsCheck" checked onchange="toggleAutoRefreshLogs()">
+                  <input type="checkbox" id="autoRefreshLogsCheck" checked data-logs-action="toggle">
                   <span class="track"></span>
                 </label>
               </div>
-              <button class="btn ghost" onclick="loadLogs()">立即刷新</button>
+              <button class="btn ghost" type="button" data-logs-action="refresh">立即刷新</button>
             </div>
           </div>
           <div class="card glass">
@@ -525,6 +529,19 @@
             </div>
           </div>
         </section>
+
+        <section id="page-build" class="hidden">
+          <div class="page-head">
+            <div>
+              <h2>构建信息</h2>
+              <div class="hint">当前运行二进制的可追溯版本、提交与构建环境</div>
+            </div>
+            <button class="btn ghost" type="button" data-build-action="refresh">刷新</button>
+          </div>
+          <div class="card glass">
+            <div class="grid grid-2" id="buildInfoGrid"></div>
+          </div>
+        </section>
       </div>
     </main>
   </div>
@@ -535,12 +552,12 @@
     <div class="modal-card model-import-card">
       <h3 id="modelImportTitle">导入模型列表</h3>
       <div id="modelImportHint" class="hint"></div>
-      <textarea id="modelImportText" class="font-mono" rows="12" oninput="previewModelImport()"
+      <textarea id="modelImportText" class="font-mono" rows="12" data-model-action="preview-import"
         placeholder="在此粘贴内容"></textarea>
       <div id="modelImportPreview" class="model-import-preview">粘贴内容后显示预览</div>
       <div class="toolbar justify-end">
-        <button class="btn ghost" onclick="closeModelImport()">取消</button>
-        <button class="btn" onclick="applyModelImport()">合并导入</button>
+        <button class="btn ghost" type="button" data-model-action="close-import">取消</button>
+        <button class="btn" type="button" data-model-action="apply-import">合并导入</button>
       </div>
     </div>
   </div>
@@ -578,8 +595,8 @@
       <div class="err" id="changePwErr" style="color:#ff5f56;font-size:12px;margin-bottom:12px;text-align:center;">
       </div>
       <div style="display:flex;gap:12px;justify-content:flex-end;">
-        <button class="btn ghost" onclick="closeChangePasswordModal()">取消</button>
-        <button class="btn" onclick="submitChangePassword()">确定修改</button>
+        <button class="btn ghost" type="button" data-settings-action="close-password">取消</button>
+        <button class="btn" type="button" data-settings-action="submit-password">确定修改</button>
       </div>
     </div>
   </div>
@@ -598,8 +615,8 @@
       </div>
       <div class="err" id="uaErr" style="color:#ff5f56;font-size:12px;margin-bottom:12px;text-align:center;"></div>
       <div style="display:flex;gap:12px;justify-content:flex-end;">
-        <button class="btn ghost" onclick="closeUAModal()">取消</button>
-        <button class="btn" onclick="submitUA()">确定</button>
+        <button class="btn ghost" type="button" data-subscription-action="close-ua">取消</button>
+        <button class="btn" type="button" data-subscription-action="submit-ua">确定</button>
       </div>
     </div>
   </div>
@@ -674,23 +691,13 @@
       </label>
       <div class="err" id="subErr" style="color:#ff5f56;font-size:12px;margin-bottom:12px;text-align:center;"></div>
       <div style="display:flex;gap:12px;justify-content:flex-end;">
-        <button class="btn ghost" onclick="closeSubModal()">取消</button>
-        <button class="btn" onclick="submitSub()">确定</button>
+        <button class="btn ghost" type="button" data-subscription-action="close-subscription">取消</button>
+        <button class="btn" type="button" data-subscription-action="submit-subscription">确定</button>
       </div>
     </div>
   </div>
 
-  <script src="utils.js"></script>
-  <script src="api.js"></script>
-  <script src="page-overview.js"></script>
-  <script src="page-settings.js"></script>
-  <script src="page-keys.js"></script>
-  <script src="page-models.js"></script>
-  <script src="page-nodes.js"></script>
-  <script src="page-subscriptions.js"></script>
-  <script src="page-appearance.js"></script>
-  <script src="page-logs.js"></script>
-  <script src="admin.js"></script>
+  <script type="module" src="admin.js"></script>
 </body>
 
 </html>

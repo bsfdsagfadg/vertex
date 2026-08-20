@@ -1,4 +1,9 @@
-async function loadOverview() {
+import { $ } from './utils.js';
+
+let API;
+export function configureOverviewService(service) { API = service; }
+
+export async function loadOverview() {
   const card = (label, value, cls, sub) => `<div class="card glass hoverable stat"><div class="label">${label}</div><div class="value ${cls||''}">${value}</div>${sub?`<div class="sub">${sub}</div>`:''}</div>`;
   const [keysD, modelsD, nodesD] = await Promise.all([
     API.keys.list().catch(() => ({keys:[]})),

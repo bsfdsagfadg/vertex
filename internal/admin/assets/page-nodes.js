@@ -1,3 +1,8 @@
+import { toast, typeLabels } from './utils.js';
+
+let API;
+export function configureNodesService(service) { API = service; }
+
 document.getElementById('nodesBody').addEventListener('click', function (e) {
   var btn = e.target.closest('[data-action]');
   if (!btn) return;
@@ -13,6 +18,14 @@ document.getElementById('nodesBody').addEventListener('click', function (e) {
   else if (action === 'remove-entry-proxy') removeNodeFromEntryProxies(uri);
 });
 
+document.getElementById('btnImportRequestNode').addEventListener('click', importRequestNode);
+document.getElementById('requestNodeURI').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    importRequestNode();
+  }
+});
+
 var curNodePage = 1;
 var nodePageSize = 50;
 var totalNodePages = 1;
@@ -22,11 +35,30 @@ var proxyPageSize = 10;
 var totalProxyPages = 1;
 var cachedEntryProxyURIs = new Set();
 var cachedProxyCandidates = [];
-window.selectedNodeURIs = window.selectedNodeURIs || new Set();
-window.selectedProxyURIs = window.selectedProxyURIs || new Set();
+var selectedNodeURIs = new Set();
+var selectedProxyURIs = new Set();
+var currentSettings = {};
 var proxyTestProgressTimer = null;
 var proxySortMode = '';
 var testProgressTimer = null;
+
+async function importRequestNode() {
+  var input = document.getElementById('requestNodeURI');
+  var uri = input.value.trim();
+  if (!uri) return toast('请先粘贴单个节点 URI');
+  if (/\r|\n/.test(uri)) return toast('这里只支持单个节点 URI；批量文件请使用订阅管理页的导入功能');
+
+  try {
+    var result = await API.nodes.importSingle(uri);
+    if (!result.count) throw new Error('服务端未识别该节点 URI');
+    input.value = '';
+    curNodePage = 1;
+    await loadNodes();
+    toast('请求节点导入成功');
+  } catch (e) {
+    toast('节点导入失败：' + e.message);
+  }
+}
 
 function entryProxyIdentity(rawURI) {
   var value = (rawURI || '').trim();
@@ -76,10 +108,10 @@ function updateSelectHeaderAndBanner() {
   var endIdx = Math.min(startIdx + nodePageSize, cachedNodesList.length);
   var pageNodes = cachedNodesList.slice(startIdx, endIdx);
 
-  var allPageChecked = pageNodes.length > 0 && pageNodes.every(function (n) { return window.selectedNodeURIs.has(n.raw_uri); });
+  var allPageChecked = pageNodes.length > 0 && pageNodes.every(function (n) { return selectedNodeURIs.has(n.raw_uri); });
   if (mainCb) mainCb.checked = allPageChecked;
 
-  if (allPageChecked && cachedNodesList.length > pageNodes.length && window.selectedNodeURIs.size < cachedNodesList.length) {
+  if (allPageChecked && cachedNodesList.length > pageNodes.length && selectedNodeURIs.size < cachedNodesList.length) {
     if (banner) {
       banner.style.display = 'block';
       if (bannerText) bannerText.textContent = '当前已选择本页 ' + pageNodes.length + ' 个节点。';
@@ -91,23 +123,21 @@ function updateSelectHeaderAndBanner() {
 }
 
 function selectAllNodesAcrossPages() {
-  cachedNodesList.forEach(function (n) { window.selectedNodeURIs.add(n.raw_uri); });
+  cachedNodesList.forEach(function (n) { selectedNodeURIs.add(n.raw_uri); });
   var cbs = document.querySelectorAll('.node-select-cb');
   cbs.forEach(function (cb) { cb.checked = true; });
   var banner = document.getElementById('crossPageSelectBanner');
   if (banner) banner.style.display = 'none';
   var mainCb = document.getElementById('selectAllNodesCheckbox');
   if (mainCb) mainCb.checked = true;
-  toast('已选择全部 ' + window.selectedNodeURIs.size + ' 个节点');
+  toast('已选择全部 ' + selectedNodeURIs.size + ' 个节点');
 }
 
-async function loadNodes() {
+export async function loadNodes() {
   var fallbackProxyCandidates = [];
   try {
     const sd = await API.settings.get();
-    if (typeof curSettings !== 'undefined') {
-      curSettings = sd.settings || sd;
-    }
+    currentSettings = sd.settings || sd;
     const gpEl = document.getElementById('globalProxy');
     if (gpEl && (sd.settings || sd).proxy_url !== undefined) {
       gpEl.value = (sd.settings || sd).proxy_url;
@@ -176,11 +206,11 @@ async function loadNodes() {
       cb.type = 'checkbox';
       cb.className = 'node-select-cb';
       cb.dataset.uri = n.raw_uri;
-      cb.checked = window.selectedNodeURIs.has(n.raw_uri);
+      cb.checked = selectedNodeURIs.has(n.raw_uri);
       cb.setAttribute('aria-label', '选择节点 ' + n.name);
       cb.onchange = function () {
-        if (this.checked) window.selectedNodeURIs.add(this.dataset.uri);
-        else window.selectedNodeURIs.delete(this.dataset.uri);
+        if (this.checked) selectedNodeURIs.add(this.dataset.uri);
+        else selectedNodeURIs.delete(this.dataset.uri);
         updateSelectHeaderAndBanner();
       };
       cbTd.appendChild(cb);
@@ -190,7 +220,7 @@ async function loadNodes() {
       var nameDiv = document.createElement('div');
       nameDiv.style.cssText = 'font-weight:600;font-size:13.5px;color:var(--text);';
       nameDiv.textContent = n.name;
-      var isLocked = n.raw_uri === curSettings.active_node_uri;
+      var isLocked = n.raw_uri === currentSettings.active_node_uri;
       if (isLocked) {
         var badge = document.createElement('span');
         badge.className = 'pill on';
@@ -239,7 +269,7 @@ async function loadNodes() {
 
       var typeTd = document.createElement('td');
       var typeCode = document.createElement('code');
-      typeCode.textContent = _tmap[n.type.toLowerCase()] || n.type.toUpperCase();
+      typeCode.textContent = typeLabels[n.type.toLowerCase()] || n.type.toUpperCase();
       typeTd.appendChild(typeCode);
       tr.appendChild(typeTd);
 
@@ -329,7 +359,7 @@ async function loadNodes() {
       entryBtn.style.cssText = 'padding:4px 10px;font-size:12px;margin-right:4px;';
       entryBtn.dataset.action = alreadyEntry ? 'remove-entry-proxy' : 'add-entry-proxy';
       entryBtn.dataset.uri = n.raw_uri;
-      entryBtn.textContent = alreadyEntry ? '移出入口池' : '添加至全局入口代理';
+      entryBtn.textContent = alreadyEntry ? '移出全局代理池' : '提升为全局代理';
       actionWrap.appendChild(entryBtn);
       var delBtn = document.createElement('button');
       delBtn.className = 'btn danger';
@@ -362,20 +392,6 @@ async function loadNodes() {
   if (btnLast) btnLast.disabled = curNodePage >= totalNodePages;
 
   updateSelectHeaderAndBanner();
-}
-
-async function addAndFetchSub() {
-  const u = $('#subUrl').value.trim();
-  if (!u) return toast('请填订阅 URL');
-  toast('正在拉取...');
-  try {
-    const res = await API.subscriptions.fetch(u);
-    $('#subUrl').value = '';
-    await loadNodes();
-    toast('拉取成功，导入了 ' + (res.count || 0) + ' 个节点');
-  } catch (e) {
-    toast('拉取失败: ' + e.message);
-  }
 }
 
 async function testAllNodes() {
@@ -597,19 +613,19 @@ async function disableNode(uri) {
   toast('已禁用该节点');
 }
 
-async function useNode(uri) { await API.useNode(uri); loadSettings(); loadNodes(); toast('已锁定使用该节点，并关闭并发池'); }
-async function unuseNode(uri) { await API.useNode(''); loadSettings(); loadNodes(); toast('已取消锁定，并恢复并发池'); }
+async function useNode(uri) { await API.useNode(uri); loadNodes(); toast('已锁定使用该节点，并关闭并发池'); }
+async function unuseNode(uri) { await API.useNode(''); loadNodes(); toast('已取消锁定，并恢复并发池'); }
 async function delNode(uri) { if (!confirm('删除该节点？')) return; await API.nodes.delete(uri); loadNodes(); toast('已删除'); }
 
 function getSelectedNodeURIs() {
-  return Array.from(window.selectedNodeURIs);
+  return Array.from(selectedNodeURIs);
 }
 
 function toggleSelectAllNodes() {
-  if (window.selectedNodeURIs.size === cachedNodesList.length && cachedNodesList.length > 0) {
-    window.selectedNodeURIs.clear();
+  if (selectedNodeURIs.size === cachedNodesList.length && cachedNodesList.length > 0) {
+    selectedNodeURIs.clear();
   } else {
-    cachedNodesList.forEach(function (n) { window.selectedNodeURIs.add(n.raw_uri); });
+    cachedNodesList.forEach(function (n) { selectedNodeURIs.add(n.raw_uri); });
   }
   loadNodes();
 }
@@ -620,8 +636,8 @@ function toggleSelectAllNodesCheckbox(mainCb) {
   const pageNodes = cachedNodesList.slice(startIdx, endIdx);
 
   pageNodes.forEach(function (n) {
-    if (mainCb.checked) window.selectedNodeURIs.add(n.raw_uri);
-    else window.selectedNodeURIs.delete(n.raw_uri);
+    if (mainCb.checked) selectedNodeURIs.add(n.raw_uri);
+    else selectedNodeURIs.delete(n.raw_uri);
   });
   loadNodes();
 }
@@ -632,7 +648,7 @@ async function batchEnableSelectedNodes() {
   toast('批量启用中...');
   try {
     await API.nodes.batchEnable(uris);
-    window.selectedNodeURIs.clear();
+    selectedNodeURIs.clear();
     await loadNodes();
     toast('已成功启用 ' + uris.length + ' 个节点');
   } catch (e) { toast('操作失败: ' + e.message); }
@@ -644,7 +660,7 @@ async function batchDisableSelectedNodes() {
   toast('批量禁用中...');
   try {
     await API.nodes.batchDisable(uris);
-    window.selectedNodeURIs.clear();
+    selectedNodeURIs.clear();
     await loadNodes();
     toast('已成功禁用 ' + uris.length + ' 个节点');
   } catch (e) { toast('操作失败: ' + e.message); }
@@ -657,7 +673,7 @@ async function batchDeleteSelectedNodes() {
   toast('批量删除中...');
   try {
     await API.nodes.batchDelete(uris);
-    window.selectedNodeURIs.clear();
+    selectedNodeURIs.clear();
     await loadNodes();
     toast('已成功删除 ' + uris.length + ' 个节点');
   } catch (e) { toast('操作失败: ' + e.message); }
@@ -665,19 +681,11 @@ async function batchDeleteSelectedNodes() {
 
 async function addNodeToEntryProxies(uri) {
   try {
-    var result = await API.proxyNodes.importBatch([uri]);
-    var invalid = result.invalid || [];
-    if (invalid.length) {
-      return toast('加入入口代理失败：节点配置无效');
-    }
+    await API.proxyNodes.promote(uri, false);
     await loadNodes();
-    if ((result.already_present || []).length) {
-      toast('该节点已在全局入口代理池中');
-    } else {
-      toast('已加入全局入口代理池');
-    }
+    toast('已提升为全局代理并记录 RequestNode 来源');
   } catch (e) {
-    toast('加入入口代理失败：' + e.message);
+    toast('提升全局代理失败：' + e.message);
   }
 }
 
@@ -685,7 +693,7 @@ async function removeNodeFromEntryProxies(uri) {
   try {
     await API.proxyNodes.delete(uri);
     await loadNodes();
-    toast('已移出全局入口代理池');
+    toast('已移出全局代理池');
   } catch (e) {
     toast('移出入口代理失败：' + e.message);
   }
@@ -693,77 +701,37 @@ async function removeNodeFromEntryProxies(uri) {
 
 async function addSelectedNodesToEntryProxies() {
   var uris = getSelectedNodeURIs();
-  if (!uris.length) return toast('请先勾选需要加入入口代理池的节点');
-  toast('正在加入全局入口代理池...');
+  if (!uris.length) return toast('请先勾选需要提升为全局代理的节点');
+  toast('正在提升为全局代理...');
   try {
-    var result = await API.proxyNodes.importBatch(uris);
-    var added = result.added || [];
-    var existing = result.already_present || [];
-    var invalid = result.invalid || [];
-    added.forEach(function (candidate) { window.selectedNodeURIs.delete(candidate.raw_uri); });
-    existing.forEach(function (uri) { window.selectedNodeURIs.delete(uri); });
+    var results = await Promise.allSettled(uris.map(function (uri) { return API.proxyNodes.promote(uri, false); }));
+    var succeeded = 0;
+    results.forEach(function (result, index) {
+      if (result.status === 'fulfilled') {
+        succeeded++;
+        selectedNodeURIs.delete(uris[index]);
+      }
+    });
     await loadNodes();
-    var message = '已新增 ' + added.length + ' 个，已存在 ' + existing.length + ' 个';
-    if (invalid.length) message += '，失败 ' + invalid.length + ' 个（仍保持选中）';
-    toast(message);
+    toast('已提升 ' + succeeded + ' 个，失败 ' + (uris.length - succeeded) + ' 个');
   } catch (e) {
-    toast('批量加入入口代理失败：' + e.message);
+    toast('批量提升全局代理失败：' + e.message);
   }
 }
 
 async function removeSelectedNodesFromEntryProxies() {
   var uris = getSelectedNodeURIs();
-  if (!uris.length) return toast('请先勾选需要移出入口代理池的节点');
-  if (!confirm('确定要将选中 ' + uris.length + ' 个节点移出全局入口代理池吗？')) return;
-  toast('正在移出全局入口代理池...');
+  if (!uris.length) return toast('请先勾选需要移出全局代理池的节点');
+  if (!confirm('确定要将选中 ' + uris.length + ' 个节点移出全局代理池吗？')) return;
+  toast('正在移出全局代理池...');
   try {
     await API.proxyNodes.deleteBatch(uris);
-    window.selectedNodeURIs.clear();
+    selectedNodeURIs.clear();
     await loadNodes();
     toast('已移出 ' + uris.length + ' 个节点');
   } catch (e) {
     toast('移出入口代理失败：' + e.message);
   }
-}
-
-function importFileNodes(replace) {
-  const fileInput = document.getElementById('nodeImportFile');
-  if (!fileInput.files.length) return toast('请先选择一个节点配置文件');
-  const file = fileInput.files[0];
-  const reader = new FileReader();
-  toast('正在读取配置文件并解析...');
-  reader.onload = async function (e) {
-    const text = e.target.result;
-    try {
-      const res = await API.nodes.import(text, replace);
-      await loadNodes();
-      fileInput.value = '';
-      toast(replace ? '替换成功，导入了 ' + res.count + ' 个节点' : '导入成功，追加了 ' + res.count + ' 个节点');
-    } catch (err) {
-      toast('文件导入解析失败: ' + err.message);
-    }
-  };
-  reader.readAsText(file);
-}
-
-function importJsonNodes(replace) {
-  const fileInput = document.getElementById('nodeJsonImportFile');
-  if (!fileInput.files.length) return toast('请先选择一个 nodes.json 配置文件');
-  const file = fileInput.files[0];
-  const reader = new FileReader();
-  toast('正在读取配置文件并解析...');
-  reader.onload = async function (e) {
-    const text = e.target.result;
-    try {
-      const res = await API.nodes.importJson(text, replace);
-      await loadNodes();
-      fileInput.value = '';
-      toast(replace ? '替换成功，导入了 ' + res.count + ' 个节点' : '导入成功，追加了 ' + res.count + ' 个节点');
-    } catch (err) {
-      toast('nodes.json 导入解析失败: ' + err.message);
-    }
-  };
-  reader.readAsText(file);
 }
 
 async function importProxyNode() {
@@ -845,7 +813,7 @@ function proxyActionButton(label, className, handler) {
 }
 
 function getSelectedProxyURIs() {
-  return Array.from(window.selectedProxyURIs);
+  return Array.from(selectedProxyURIs);
 }
 
 function proxyLatencyValue(candidate) {
@@ -870,10 +838,10 @@ function sortProxyNodesByLatency() { sortProxyCandidates(false); }
 function sortProxyNodesByLatencyDesc() { sortProxyCandidates(true); }
 
 function toggleSelectAllProxyNodes() {
-  if (window.selectedProxyURIs.size === cachedProxyCandidates.length && cachedProxyCandidates.length > 0) {
-    window.selectedProxyURIs.clear();
+  if (selectedProxyURIs.size === cachedProxyCandidates.length && cachedProxyCandidates.length > 0) {
+    selectedProxyURIs.clear();
   } else {
-    cachedProxyCandidates.forEach(function (candidate) { window.selectedProxyURIs.add(candidate.raw_uri); });
+    cachedProxyCandidates.forEach(function (candidate) { selectedProxyURIs.add(candidate.raw_uri); });
   }
   loadProxyNodes(cachedProxyCandidates);
 }
@@ -882,8 +850,8 @@ function toggleSelectAllProxyNodesCheckbox(mainCb) {
   var start = (curProxyPage - 1) * proxyPageSize;
   var page = cachedProxyCandidates.slice(start, start + proxyPageSize);
   page.forEach(function (candidate) {
-    if (mainCb.checked) window.selectedProxyURIs.add(candidate.raw_uri);
-    else window.selectedProxyURIs.delete(candidate.raw_uri);
+    if (mainCb.checked) selectedProxyURIs.add(candidate.raw_uri);
+    else selectedProxyURIs.delete(candidate.raw_uri);
   });
   loadProxyNodes(cachedProxyCandidates);
 }
@@ -893,7 +861,7 @@ async function batchTestSelectedProxyNodes() {
   if (!uris.length) return toast('请先勾选需要批量测试的入口代理');
   toast('后台批量测速任务已启动...');
   await API.proxyNodes.testBatch(uris);
-  window.selectedProxyURIs.clear();
+  selectedProxyURIs.clear();
   startProxyTestProgressPolling();
 }
 
@@ -933,7 +901,7 @@ async function batchEnableSelectedProxyNodes() {
   var uris = getSelectedProxyURIs();
   if (!uris.length) return toast('请先勾选需要批量启用的入口代理');
   await API.proxyNodes.enableBatch(uris);
-  window.selectedProxyURIs.clear();
+  selectedProxyURIs.clear();
   await loadNodes();
   toast('已启用 ' + uris.length + ' 个入口代理');
 }
@@ -942,7 +910,7 @@ async function batchDisableSelectedProxyNodes() {
   var uris = getSelectedProxyURIs();
   if (!uris.length) return toast('请先勾选需要批量禁用的入口代理');
   await API.proxyNodes.disableBatch(uris);
-  window.selectedProxyURIs.clear();
+  selectedProxyURIs.clear();
   await loadNodes();
   toast('已禁用 ' + uris.length + ' 个入口代理');
 }
@@ -952,7 +920,7 @@ async function batchDeleteSelectedProxyNodes() {
   if (!uris.length) return toast('请先勾选需要批量删除的入口代理');
   if (!confirm('确定要批量删除选中 ' + uris.length + ' 个入口代理吗？')) return;
   await API.proxyNodes.deleteBatch(uris);
-  window.selectedProxyURIs.clear();
+  selectedProxyURIs.clear();
   await loadNodes();
   toast('已删除 ' + uris.length + ' 个入口代理');
 }
@@ -968,7 +936,8 @@ async function loadProxyNodes(fallbackCandidates) {
     candidates = cachedProxyCandidates.slice(sortedStart, sortedStart + proxyPageSize);
   } else try {
     var result = await API.proxyNodes.list(curProxyPage, proxyPageSize);
-    candidates = result.candidates || [];
+	candidates = result.global_proxies || result.candidates || [];
+	cachedEntryProxyURIs = new Set((result.global_proxy_raw_uris || []).map(entryProxyIdentity));
     total = result.total || 0;
     totalProxyPages = Math.max(1, result.total_pages || Math.ceil(total / proxyPageSize));
     if (curProxyPage > totalProxyPages) {
@@ -1009,7 +978,7 @@ function renderProxyNodes(candidates) {
     var emptyCell = document.createElement('td');
     emptyCell.colSpan = 6;
     emptyCell.style.cssText = 'color:var(--text-dim);text-align:center;';
-    emptyCell.textContent = '暂无入口代理候选';
+    emptyCell.textContent = '暂无全局代理';
     emptyRow.appendChild(emptyCell);
     fragment.appendChild(emptyRow);
   }
@@ -1020,11 +989,11 @@ function renderProxyNodes(candidates) {
     var checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.className = 'proxy-select-cb';
-    checkbox.checked = window.selectedProxyURIs.has(candidate.raw_uri);
-    checkbox.setAttribute('aria-label', '选择入口代理 ' + (candidate.name || candidate.raw_uri));
+    checkbox.checked = selectedProxyURIs.has(candidate.raw_uri);
+    checkbox.setAttribute('aria-label', '选择全局代理 ' + (candidate.name || candidate.raw_uri));
     checkbox.onchange = function () {
-      if (this.checked) window.selectedProxyURIs.add(candidate.raw_uri);
-      else window.selectedProxyURIs.delete(candidate.raw_uri);
+      if (this.checked) selectedProxyURIs.add(candidate.raw_uri);
+      else selectedProxyURIs.delete(candidate.raw_uri);
       updateProxySelectionHeader();
     };
     selectCell.appendChild(checkbox);
@@ -1034,7 +1003,22 @@ function renderProxyNodes(candidates) {
     var nameSpan = document.createElement('span');
     nameSpan.textContent = candidate.name || candidate.raw_uri;
     nameContainer.appendChild(nameSpan);
+	if (candidate.pinned) {
+	  var pinnedPill = document.createElement('span');
+	  pinnedPill.className = 'pill on';
+	  pinnedPill.textContent = '固定';
+	  nameContainer.appendChild(pinnedPill);
+	}
     nameCell.appendChild(nameContainer);
+	var sourceText = (candidate.sources || []).map(function (source) {
+	  return source.source_type + (source.source_id ? (':' + source.source_id.slice(0, 12)) : '');
+	}).join('、') || '来源未知';
+	var identityText = document.createElement('div');
+	identityText.className = 'desc';
+	identityText.textContent = sourceText + ' · ID ' + String(candidate.canonical_identity || '').slice(0, 12);
+	var conflicts = candidate.incompatible_request_nodes || [];
+	if (conflicts.length) identityText.title = conflicts.length + ' 个 RequestNode 因身份重复不可组合';
+	nameCell.appendChild(identityText);
     var typeCell = document.createElement('td');
     typeCell.textContent = candidate.type || '-';
     var enabledCell = document.createElement('td');
@@ -1064,6 +1048,9 @@ function renderProxyNodes(candidates) {
     var actionCell = document.createElement('td');
     actionCell.style.cssText = 'white-space:nowrap;';
     actionCell.appendChild(proxyActionButton('测试', 'btn ghost', function () { testProxyNode(candidate.raw_uri); }));
+	actionCell.appendChild(proxyActionButton(candidate.pinned ? '取消固定' : '固定', 'btn ghost', function () {
+	  API.proxyNodes.pin(candidate.raw_uri, !candidate.pinned).then(function () { loadProxyNodes(); }).catch(function (e) { toast(e.message); });
+	}));
     if (candidate.disabled) {
       actionCell.appendChild(proxyActionButton('启用', 'btn ghost', function () { enableProxyNode(candidate.raw_uri); }));
     } else {
@@ -1089,6 +1076,66 @@ function updateProxySelectionHeader() {
   var start = (curProxyPage - 1) * proxyPageSize;
   var page = cachedProxyCandidates.slice(start, start + proxyPageSize);
   checkbox.checked = page.length > 0 && page.every(function (candidate) {
-    return window.selectedProxyURIs.has(candidate.raw_uri);
+    return selectedProxyURIs.has(candidate.raw_uri);
   });
+}
+
+export function teardownNodes() {
+  if (testProgressTimer) {
+    clearInterval(testProgressTimer);
+    testProgressTimer = null;
+  }
+  if (proxyTestProgressTimer) {
+    clearInterval(proxyTestProgressTimer);
+    proxyTestProgressTimer = null;
+  }
+}
+
+function handleNodesClick(event) {
+  const action = event.target.closest('[data-nodes-action]')?.dataset.nodesAction;
+  if (!action) return;
+  const actions = {
+    'import-proxy': importProxyNode,
+    'test-selected-proxies': batchTestSelectedProxyNodes,
+    'sort-proxies-asc': sortProxyNodesByLatency,
+    'sort-proxies-desc': sortProxyNodesByLatencyDesc,
+    'toggle-all-proxies': toggleSelectAllProxyNodes,
+    'enable-selected-proxies': batchEnableSelectedProxyNodes,
+    'disable-selected-proxies': batchDisableSelectedProxyNodes,
+    'delete-selected-proxies': batchDeleteSelectedProxyNodes,
+    'delete-disabled-proxies': deleteDisabledProxyNodes,
+    'test-all': testAllNodes,
+    'sort-asc': sortNodesByLatency,
+    'sort-desc': sortNodesByLatencyDesc,
+    'dedup': dedupNodes,
+    'export': exportNodes,
+    'delete-disabled': deleteDisabledNodes,
+    'promote-selected': addSelectedNodesToEntryProxies,
+    'remove-selected-proxies': removeSelectedNodesFromEntryProxies,
+    'toggle-all': toggleSelectAllNodes,
+    'enable-selected': batchEnableSelectedNodes,
+    'disable-selected': batchDisableSelectedNodes,
+    'delete-selected': batchDeleteSelectedNodes,
+    'pause-test': toggleTestPauseResume,
+    'terminate-test': terminateTestAll,
+    'select-across-pages': selectAllNodesAcrossPages,
+  };
+  if (action === 'proxy-page') changeProxyPage(pageTarget(event.target.closest('[data-page-target]'), curProxyPage, totalProxyPages));
+  else if (action === 'node-page') changeNodePage(pageTarget(event.target.closest('[data-page-target]'), curNodePage, totalNodePages));
+  else if (actions[action]) actions[action]();
+}
+
+document.getElementById('page-nodes').addEventListener('click', handleNodesClick);
+
+document.getElementById('page-nodes').addEventListener('change', event => {
+  if (event.target.id === 'selectAllNodesCheckbox') toggleSelectAllNodesCheckbox(event.target);
+  if (event.target.id === 'selectAllProxyNodesCheckbox') toggleSelectAllProxyNodesCheckbox(event.target);
+});
+
+function pageTarget(button, current, total) {
+  if (!button) return current;
+  if (button.dataset.pageTarget === 'first') return 1;
+  if (button.dataset.pageTarget === 'prev') return current - 1;
+  if (button.dataset.pageTarget === 'next') return current + 1;
+  return total;
 }

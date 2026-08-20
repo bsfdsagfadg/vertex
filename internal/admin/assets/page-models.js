@@ -1,9 +1,23 @@
+import { $, esc, toast } from './utils.js';
+
+let API;
+export function configureModelsService(service) { API = service; }
+
 let modelRows = [];
 let modelAliasMap = {};
 let modelGlobalSettings = { fake_stream_enabled: true, model_turn_guard_enabled: true };
 let modelImportMode = 'models';
+let modelsDirty = false;
 
-async function loadModels() {
+export function isModelsDirty() { return modelsDirty; }
+export function discardModelChanges() {
+  modelsDirty = false;
+  modelRows = [];
+  modelAliasMap = {};
+  $('#modelsTableBody')?.replaceChildren();
+}
+
+export async function loadModels() {
   const [data, settingsData] = await Promise.all([API.models.get(), API.settings.get()]);
   modelRows = (data.models || []).map(m => typeof m === 'string'
     ? defaultModelRow(m)
@@ -16,6 +30,7 @@ async function loadModels() {
   modelAliasMap = Object.assign({}, data.alias_map || {});
   modelGlobalSettings = Object.assign(modelGlobalSettings, settingsData.settings || settingsData || {});
   renderModelTable();
+  modelsDirty = false;
 }
 
 function defaultModelRow(id) {
@@ -37,14 +52,14 @@ function renderModelTable() {
   if (!body) return;
   body.innerHTML = modelRows.map((row, index) => {
     const aliases = aliasesForModel(row.id);
-    const chips = aliases.map((alias, aliasIndex) => `<span class="model-alias-chip">${esc(alias)}<button type="button" title="删除别名" onclick="removeModelAlias(${index},${aliasIndex})">×</button></span>`).join('');
+    const chips = aliases.map((alias, aliasIndex) => `<span class="model-alias-chip">${esc(alias)}<button type="button" title="删除别名" data-model-action="remove-alias" data-model-index="${index}" data-alias-index="${aliasIndex}">×</button></span>`).join('');
     return `<tr>
-      <td class="model-check"><input type="checkbox" ${row.enabled ? 'checked' : ''} onchange="setModelFlag(${index},'enabled',this.checked)"></td>
-      <td class="model-check"><input type="checkbox" ${row.fake_stream_enabled ? 'checked' : ''} ${modelGlobalSettings.fake_stream_enabled ? '' : 'disabled'} onchange="setModelFlag(${index},'fake_stream_enabled',this.checked)"></td>
-      <td class="model-check"><input type="checkbox" ${row.trailing_fix_enabled ? 'checked' : ''} ${modelGlobalSettings.model_turn_guard_enabled ? '' : 'disabled'} onchange="setModelFlag(${index},'trailing_fix_enabled',this.checked)"></td>
-      <td><input class="model-id-input font-mono" style="width: 260px; flex: none;" value="${esc(row.id)}" onchange="renameModel(${index},this.value)"></td>
-      <td><div class="model-alias-list">${chips}</div><div class="model-alias-add"><input id="modelAliasInput_${index}" style="width: 260px; flex: none;" placeholder="输入别名"><button type="button" class="btn ghost" onclick="addModelAlias(${index})">添加</button></div></td>
-      <td style="text-align: center; vertical-align: middle;"><button type="button" class="btn danger" onclick="removeModelRow(${index})">删除</button></td>
+      <td class="model-check"><input type="checkbox" ${row.enabled ? 'checked' : ''} data-model-action="flag" data-model-index="${index}" data-model-key="enabled"></td>
+      <td class="model-check"><input type="checkbox" ${row.fake_stream_enabled ? 'checked' : ''} ${modelGlobalSettings.fake_stream_enabled ? '' : 'disabled'} data-model-action="flag" data-model-index="${index}" data-model-key="fake_stream_enabled"></td>
+      <td class="model-check"><input type="checkbox" ${row.trailing_fix_enabled ? 'checked' : ''} ${modelGlobalSettings.model_turn_guard_enabled ? '' : 'disabled'} data-model-action="flag" data-model-index="${index}" data-model-key="trailing_fix_enabled"></td>
+      <td><input class="model-id-input font-mono" style="width: 260px; flex: none;" value="${esc(row.id)}" data-model-action="rename" data-model-index="${index}"></td>
+      <td><div class="model-alias-list">${chips}</div><div class="model-alias-add"><input id="modelAliasInput_${index}" style="width: 260px; flex: none;" placeholder="输入别名"><button type="button" class="btn ghost" data-model-action="add-alias" data-model-index="${index}">添加</button></div></td>
+      <td style="text-align: center; vertical-align: middle;"><button type="button" class="btn danger" data-model-action="remove-row" data-model-index="${index}">删除</button></td>
     </tr>`;
   }).join('');
   updateModelHeaderChecks();
@@ -57,13 +72,13 @@ function renderModelTable() {
 function setModelFlag(index, key, value) {
   if (modelRows[index]) modelRows[index][key] = !!value;
   updateModelHeaderChecks();
-  window.hasUnsavedSettings = true;
+  modelsDirty = true;
 }
 
 function setAllModelFlags(key, value) {
   modelRows.forEach(row => { row[key] = !!value; });
   renderModelTable();
-  window.hasUnsavedSettings = true;
+  modelsDirty = true;
 }
 
 function updateModelHeaderChecks() {
@@ -88,7 +103,7 @@ function renameModel(index, value) {
   row.id = newID;
   Object.keys(modelAliasMap).forEach(alias => { if (modelAliasMap[alias] === oldID) modelAliasMap[alias] = newID; });
   renderModelTable();
-  window.hasUnsavedSettings = true;
+  modelsDirty = true;
 }
 
 function addModelRow() {
@@ -96,7 +111,7 @@ function addModelRow() {
   while (modelRows.some(row => row.id === '新模型-' + serial)) serial++;
   modelRows.push(defaultModelRow('新模型-' + serial));
   renderModelTable();
-  window.hasUnsavedSettings = true;
+  modelsDirty = true;
 }
 
 function removeModelRow(index) {
@@ -106,7 +121,7 @@ function removeModelRow(index) {
   Object.keys(modelAliasMap).forEach(alias => { if (modelAliasMap[alias] === oldID) delete modelAliasMap[alias]; });
   modelRows.splice(index, 1);
   renderModelTable();
-  window.hasUnsavedSettings = true;
+  modelsDirty = true;
 }
 
 function addModelAlias(index) {
@@ -117,7 +132,7 @@ function addModelAlias(index) {
   if (modelAliasMap[alias] && modelAliasMap[alias] !== row.id) { toast(`别名“${alias}”已指向 ${modelAliasMap[alias]}`); return; }
   modelAliasMap[alias] = row.id;
   renderModelTable();
-  window.hasUnsavedSettings = true;
+  modelsDirty = true;
 }
 
 function removeModelAlias(modelIndex, aliasIndex) {
@@ -125,17 +140,18 @@ function removeModelAlias(modelIndex, aliasIndex) {
   const alias = row ? aliasesForModel(row.id)[aliasIndex] : '';
   if (alias) delete modelAliasMap[alias];
   renderModelTable();
-  window.hasUnsavedSettings = true;
+  modelsDirty = true;
 }
 
-async function saveModels() {
+export async function saveModels() {
   const ids = modelRows.map(row => row.id.trim());
-  if (ids.some(id => !id)) { toast('模型 ID 不能为空'); return; }
-  if (new Set(ids).size !== ids.length) { toast('模型 ID 不能重复'); return; }
+  if (ids.some(id => !id)) { toast('模型 ID 不能为空'); return false; }
+  if (new Set(ids).size !== ids.length) { toast('模型 ID 不能重复'); return false; }
   await API.models.put(modelRows, modelAliasMap);
   toast('模型设置已保存');
-  window.hasUnsavedSettings = false;
+  modelsDirty = false;
   await loadModels();
+  return true;
 }
 
 function openModelImport(mode) {
@@ -189,6 +205,40 @@ function applyModelImport() {
   }
   closeModelImport();
   renderModelTable();
-  window.hasUnsavedSettings = true;
+  modelsDirty = true;
   toast('导入内容已合并，请点击保存');
+}
+
+function handleModelClick(event) {
+  const target = event.target.closest('[data-model-action]');
+  if (!target) return;
+  const action = target.dataset.modelAction;
+  const index = Number(target.dataset.modelIndex);
+  if (action === 'add-row') addModelRow();
+  else if (action === 'save') saveModels();
+  else if (action === 'open-import') openModelImport(target.dataset.importMode);
+  else if (action === 'remove-row') removeModelRow(index);
+  else if (action === 'add-alias') addModelAlias(index);
+  else if (action === 'remove-alias') removeModelAlias(index, Number(target.dataset.aliasIndex));
+  else if (action === 'close-import') closeModelImport();
+  else if (action === 'apply-import') applyModelImport();
+}
+
+function handleModelChange(event) {
+  const target = event.target.closest('[data-model-action]');
+  if (!target) return;
+  const action = target.dataset.modelAction;
+  if (action === 'flag') setModelFlag(Number(target.dataset.modelIndex), target.dataset.modelKey, target.checked);
+  else if (action === 'all-flags') setAllModelFlags(target.dataset.modelKey, target.checked);
+  else if (action === 'rename') renameModel(Number(target.dataset.modelIndex), target.value);
+}
+
+function handleModelInput(event) {
+  if (event.target.matches('[data-model-action="preview-import"]')) previewModelImport();
+}
+
+for (const root of [document.getElementById('page-models'), document.getElementById('modelImportModal')]) {
+  root.addEventListener('click', handleModelClick);
+  root.addEventListener('change', handleModelChange);
+  root.addEventListener('input', handleModelInput);
 }
