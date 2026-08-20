@@ -4,12 +4,14 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -62,9 +64,10 @@ var defaultModelRegistry = []ModelEntry{
 }
 
 type modelsFile struct {
-	Version  int               `json:"version"`
-	Models   []ModelEntry      `json:"models"`
-	AliasMap map[string]string `json:"alias_map"`
+	Version    int                        `json:"version"`
+	Models     []ModelEntry               `json:"models"`
+	AliasMap   map[string]string          `json:"alias_map"`
+	Extensions map[string]json.RawMessage `json:"-"`
 }
 
 type modelsEnvelope struct {
@@ -80,7 +83,53 @@ var (
 	cachedModels *modelsFile
 	//nolint:gochecknoglobals // Global model cache
 	modelsCacheTime time.Time
+	//nolint:gochecknoglobals // Serializes models.json writers independently from readers.
+	modelsWriteMu sync.Mutex
 )
+
+func (mf modelsFile) MarshalJSON() ([]byte, error) {
+	versionJSON, err := json.Marshal(mf.Version)
+	if err != nil {
+		return nil, err
+	}
+	modelsJSON, err := json.Marshal(mf.Models)
+	if err != nil {
+		return nil, err
+	}
+	aliasesJSON, err := json.Marshal(mf.AliasMap)
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	out.WriteString(`{"version":`)
+	out.Write(versionJSON)
+	out.WriteString(`,"models":`)
+	out.Write(modelsJSON)
+	out.WriteString(`,"alias_map":`)
+	out.Write(aliasesJSON)
+	keys := make([]string, 0, len(mf.Extensions))
+	for key := range mf.Extensions {
+		if key != "version" && key != "models" && key != "alias_map" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		keyJSON, err := json.Marshal(key)
+		if err != nil {
+			return nil, err
+		}
+		if !json.Valid(mf.Extensions[key]) {
+			return nil, fmt.Errorf("invalid raw extension %q", key)
+		}
+		out.WriteByte(',')
+		out.Write(keyJSON)
+		out.WriteByte(':')
+		out.Write(mf.Extensions[key])
+	}
+	out.WriteByte('}')
+	return out.Bytes(), nil
+}
 
 func cloneModelEntries(in []ModelEntry) []ModelEntry {
 	out := make([]ModelEntry, len(in))
@@ -122,7 +171,7 @@ func defaultEntryFor(id string) ModelEntry {
 func DefaultModelEntry(id string) ModelEntry { return defaultEntryFor(strings.TrimSpace(id)) }
 
 func decodeModelsFile(data []byte) (mf modelsFile, migrated bool, err error) {
-	mf = modelsFile{Version: modelsFileVersion, AliasMap: map[string]string{}}
+	mf = modelsFile{Version: modelsFileVersion, AliasMap: map[string]string{}, Extensions: map[string]json.RawMessage{}}
 	trimmed := strings.TrimSpace(string(data))
 	if strings.HasPrefix(trimmed, "[") {
 		var ids []string
@@ -138,6 +187,16 @@ func decodeModelsFile(data []byte) (mf modelsFile, migrated bool, err error) {
 	var env modelsEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		return mf, false, err
+	}
+	var rawEnvelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &rawEnvelope); err != nil {
+		return mf, false, err
+	}
+	delete(rawEnvelope, "version")
+	delete(rawEnvelope, "models")
+	delete(rawEnvelope, "alias_map")
+	for key, value := range rawEnvelope {
+		mf.Extensions[key] = append(json.RawMessage(nil), value...)
 	}
 	if env.AliasMap != nil {
 		mf.AliasMap = env.AliasMap
@@ -161,7 +220,13 @@ func decodeModelsFile(data []byte) (mf modelsFile, migrated bool, err error) {
 }
 
 func normalizeModelsFile(mf modelsFile) (modelsFile, int) {
-	out := modelsFile{Version: modelsFileVersion, Models: make([]ModelEntry, 0, len(mf.Models)), AliasMap: map[string]string{}}
+	out := modelsFile{
+		Version: modelsFileVersion, Models: make([]ModelEntry, 0, len(mf.Models)),
+		AliasMap: map[string]string{}, Extensions: map[string]json.RawMessage{},
+	}
+	for key, value := range mf.Extensions {
+		out.Extensions[key] = append(json.RawMessage(nil), value...)
+	}
 	seen := make(map[string]bool, len(mf.Models))
 	for _, entry := range mf.Models {
 		entry.ID = strings.TrimSpace(entry.ID)
@@ -221,7 +286,10 @@ func loadModelsFile() *modelsFile {
 	}
 
 	path := modelsPath()
-	mf := modelsFile{Version: modelsFileVersion, Models: DefaultModelRegistry(), AliasMap: map[string]string{}}
+	mf := modelsFile{
+		Version: modelsFileVersion, Models: DefaultModelRegistry(),
+		AliasMap: map[string]string{}, Extensions: map[string]json.RawMessage{},
+	}
 	if data, err := os.ReadFile(path); err == nil {
 		parsed, migrated, decodeErr := decodeModelsFile(data)
 		if decodeErr != nil {
@@ -310,7 +378,21 @@ func ResolveModelName(model string) string {
 }
 
 func WriteModelRegistry(models []ModelEntry, aliasMap map[string]string) error {
-	normalized, _ := normalizeModelsFile(modelsFile{Version: modelsFileVersion, Models: models, AliasMap: aliasMap})
+	modelsWriteMu.Lock()
+	defer modelsWriteMu.Unlock()
+	extensions := map[string]json.RawMessage{}
+	if data, err := os.ReadFile(modelsPath()); err == nil {
+		parsed, _, decodeErr := decodeModelsFile(data)
+		if decodeErr != nil {
+			return fmt.Errorf("parse existing models before update: %w", decodeErr)
+		}
+		extensions = parsed.Extensions
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read existing models before update: %w", err)
+	}
+	normalized, _ := normalizeModelsFile(modelsFile{
+		Version: modelsFileVersion, Models: models, AliasMap: aliasMap, Extensions: extensions,
+	})
 	if err := writeJSONFile(modelsPath(), normalized); err != nil {
 		return err
 	}

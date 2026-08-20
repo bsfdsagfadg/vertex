@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bsfdsagfadg/vertex/internal/repository"
 	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
@@ -143,6 +145,31 @@ func normalizeSubscriptionConfig(conf *SubscriptionConfig) (bool, error) {
 }
 
 func loadSubscriptionsLocked() error {
+	if proxyRepository != nil {
+		subscriptions, userAgents, err := proxyRepository.LoadSubscriptions(context.Background())
+		if err != nil {
+			return err
+		}
+		conf := SubscriptionConfig{
+			Subscriptions: make([]Subscription, 0, len(subscriptions)),
+			CustomUAs:     make([]CustomUA, 0, len(userAgents)),
+		}
+		for _, subscription := range subscriptions {
+			conf.Subscriptions = append(conf.Subscriptions, Subscription{
+				ID: subscription.ID, Name: subscription.Name, URL: subscription.URL,
+				UserAgent: subscription.UserAgent, CustomUAID: subscription.CustomUAID,
+				UpdateInterval: subscription.UpdateInterval, AdoptManual: subscription.AdoptManual,
+				LastUpdateTime: subscription.LastUpdateTime, LastError: subscription.LastError,
+				Revision: subscription.Revision, Generation: subscription.Generation,
+			})
+		}
+		for _, ua := range userAgents {
+			conf.CustomUAs = append(conf.CustomUAs, CustomUA{ID: ua.ID, Name: ua.Name, UserAgent: ua.UserAgent})
+		}
+		globalSubConfig = conf
+		subscriptionsLoaded = true
+		return nil
+	}
 	path := subscriptionsPath()
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -191,7 +218,7 @@ func SaveSubscriptions(conf SubscriptionConfig) error {
 	if _, err := normalizeSubscriptionConfig(&conf); err != nil {
 		return err
 	}
-	if err := writeSubscriptionConfig(conf); err != nil {
+	if err := persistSubscriptionConfig(conf); err != nil {
 		return err
 	}
 	globalSubConfig = cloneSubscriptionConfig(conf)
@@ -212,11 +239,32 @@ func MutateSubscriptionConfig(mutate func(*SubscriptionConfig) error) error {
 	if _, err := normalizeSubscriptionConfig(&next); err != nil {
 		return err
 	}
-	if err := writeSubscriptionConfig(next); err != nil {
+	if err := persistSubscriptionConfig(next); err != nil {
 		return err
 	}
 	globalSubConfig = cloneSubscriptionConfig(next)
 	return nil
+}
+
+func persistSubscriptionConfig(conf SubscriptionConfig) error {
+	if proxyRepository == nil {
+		return writeSubscriptionConfig(conf)
+	}
+	subscriptions := make([]repository.Subscription, 0, len(conf.Subscriptions))
+	for _, subscription := range conf.Subscriptions {
+		subscriptions = append(subscriptions, repository.Subscription{
+			ID: subscription.ID, Name: subscription.Name, URL: subscription.URL,
+			UserAgent: subscription.UserAgent, CustomUAID: subscription.CustomUAID,
+			UpdateInterval: subscription.UpdateInterval, AdoptManual: subscription.AdoptManual,
+			LastUpdateTime: subscription.LastUpdateTime, LastError: subscription.LastError,
+			Revision: subscription.Revision, Generation: subscription.Generation,
+		})
+	}
+	userAgents := make([]repository.SubscriptionUserAgent, 0, len(conf.CustomUAs))
+	for _, ua := range conf.CustomUAs {
+		userAgents = append(userAgents, repository.SubscriptionUserAgent{ID: ua.ID, Name: ua.Name, UserAgent: ua.UserAgent})
+	}
+	return proxyRepository.ReplaceSubscriptions(context.Background(), subscriptions, userAgents)
 }
 
 func UpdateSubscription(sub Subscription) error {

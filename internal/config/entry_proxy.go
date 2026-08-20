@@ -1,11 +1,15 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/bsfdsagfadg/vertex/internal/repository"
 )
 
 var entryProxyCursor atomic.Uint64 //nolint:gochecknoglobals
@@ -38,29 +42,50 @@ func hasCaseSensitiveProxyPayload(scheme string) bool {
 
 // SelectEntryProxySequence reserves a stable round-robin sequence for one request.
 // An empty result means that the configured entry pool has no eligible entries.
-// When no database candidates exist, the legacy proxy_url remains a single fallback.
+// Legacy proxy_url is migration input only and is never a runtime fallback.
 func SelectEntryProxySequence(count int, cfg ConfigProvider) []string {
+	if cfg == nil || !cfg.GlobalProxyEnabled() {
+		return nil
+	}
 	items := ListProxyCandidates()
 	now := time.Now().Unix()
-	eligible := make([]string, 0, len(items))
+	eligible := make([]ProxyCandidate, 0, len(items))
 	for _, item := range items {
 		if strings.TrimSpace(item.RawURI) == "" || item.Disabled || item.CooldownUntil > now {
 			continue
 		}
-		eligible = append(eligible, strings.TrimSpace(item.RawURI))
+		item.RawURI = strings.TrimSpace(item.RawURI)
+		eligible = append(eligible, item)
 	}
-	if len(eligible) == 0 && len(items) == 0 && cfg != nil {
-		if legacy := strings.TrimSpace(cfg.ProxyURL()); legacy != "" {
-			eligible = append(eligible, legacy)
-		}
+	if strings.EqualFold(strings.TrimSpace(cfg.GlobalProxySelection()), "health") {
+		sort.SliceStable(eligible, func(i, j int) bool {
+			left, right := eligible[i], eligible[j]
+			if left.Pinned != right.Pinned {
+				return left.Pinned
+			}
+			if left.LastTestOK != right.LastTestOK {
+				return left.LastTestOK
+			}
+			if left.ConsecutiveFailures != right.ConsecutiveFailures {
+				return left.ConsecutiveFailures < right.ConsecutiveFailures
+			}
+			leftLatency, rightLatency := left.LastTestMs, right.LastTestMs
+			if leftLatency <= 0 {
+				leftLatency = 1e18
+			}
+			if rightLatency <= 0 {
+				rightLatency = 1e18
+			}
+			return leftLatency < rightLatency
+		})
 	}
 	if len(eligible) == 0 || count <= 0 {
 		return nil
 	}
-	start := entryProxyCursor.Add(uint64(count)) - uint64(count)
+	start := entryProxyCursor.Add(1) - 1
 	sequence := make([]string, count)
 	for i := range sequence {
-		sequence[i] = eligible[(start+uint64(i))%uint64(len(eligible))]
+		sequence[i] = eligible[(start+uint64(i))%uint64(len(eligible))].RawURI
 	}
 	return sequence
 }
@@ -89,7 +114,7 @@ func updateEntryProxyTest(rawURI string, success bool, elapsedMs float64, errTex
 }
 
 func SetProxyCandidateEnabled(rawURI string, enabled bool) error {
-	normalized, err := NormalizeProxyURI(rawURI)
+	identity, _, err := globalProxyIdentity(rawURI)
 	if err != nil {
 		return err
 	}
@@ -97,19 +122,30 @@ func SetProxyCandidateEnabled(rawURI string, enabled bool) error {
 	if err != nil {
 		return err
 	}
-	query := "UPDATE entry_proxy_candidates SET disabled = ? WHERE normalized_uri = ?"
-	args := []any{!enabled, normalized}
-	if enabled {
-		query = "UPDATE entry_proxy_candidates SET disabled = 0, cooldown_until = 0, consecutive_failures = 0 WHERE normalized_uri = ?"
-		args = []any{normalized}
-	}
-	result, err := store.Exec(query, args...)
+	records, err := store.ListGlobalProxies(context.Background())
 	if err != nil {
-		return fmt.Errorf("更新入口代理状态: %w", err)
+		return fmt.Errorf("读取全局代理状态: %w", err)
 	}
-	count, _ := result.RowsAffected()
-	if count == 0 {
+	var record *repository.GlobalProxyRecord
+	for index := range records {
+		if records[index].CanonicalIdentity == identity.SemanticFingerprint {
+			record = &records[index]
+			break
+		}
+	}
+	if record == nil {
 		return fmt.Errorf("未找到该候选 URI")
+	}
+	if enabled {
+		err = store.UpdateGlobalProxyHealth(context.Background(), repository.GlobalProxyHealth{
+			GlobalProxyID: record.ID, LastTestOK: record.LastTestOK, LastTestMS: record.LastTestMS,
+			LastTestAt: record.LastTestAt, LastTestError: record.LastTestError,
+		}, false)
+	} else {
+		err = store.SetGlobalProxyDisabled(context.Background(), identity.SemanticFingerprint, true)
+	}
+	if err != nil {
+		return fmt.Errorf("更新全局代理状态: %w", err)
 	}
 	InvalidateCandidateCache()
 	return nil

@@ -16,6 +16,7 @@ type DailyLogger struct {
 	logDir   string
 	latestFd *os.File
 	stopCh   chan struct{}
+	doneCh   chan struct{}
 	stopOnce sync.Once
 }
 
@@ -36,6 +37,7 @@ func NewDailyLogger(dir string) *DailyLogger {
 		logDir:   dir,
 		latestFd: f,
 		stopCh:   make(chan struct{}),
+		doneCh:   make(chan struct{}),
 	}
 	go dl.cleanupRoutine()
 	return dl
@@ -54,6 +56,7 @@ func (l *DailyLogger) Close() error {
 	l.stopOnce.Do(func() {
 		close(l.stopCh)
 	})
+	<-l.doneCh
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -85,6 +88,7 @@ func (l *DailyLogger) Close() error {
 }
 
 func (l *DailyLogger) cleanupRoutine() {
+	defer close(l.doneCh)
 	l.cleanup()
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()

@@ -5,6 +5,10 @@ type ConfigProvider interface {
 	MaxRetries() int
 	AdminPassword() string
 	ProxyURL() string
+	GlobalProxyEnabled() bool
+	GlobalProxyRequired() bool
+	GlobalProxySelection() string
+	AllowDirectWithoutGlobalProxy() bool
 	DebugPprof() bool
 	DebugMode() bool
 
@@ -19,6 +23,9 @@ type ConfigProvider interface {
 	RaceTimeout() int
 	StreamIdleTimeoutSeconds() int
 	ModelTurnGuardEnabled() bool
+	OpenAIParameterPolicy() string
+	GeminiParameterPolicy() string
+	ToolSchemaPolicy() string
 
 	VertexAPIKey() string
 	CountTokensQuerySignature() string
@@ -48,7 +55,6 @@ type ConfigProvider interface {
 	DefaultImageSize() string
 	DefaultResponseModalities() string
 
-
 	BaseModels() []string
 	ModelRegistry() []ModelEntry
 	AliasMap() map[string]string
@@ -70,10 +76,35 @@ type dynamicConfig struct{}
 
 func GetProvider() ConfigProvider { return dynamicConfig{} }
 
-func (d dynamicConfig) PortAPI() int                      { return Load().PortAPI }
-func (d dynamicConfig) MaxRetries() int                   { return Load().MaxRetries }
-func (d dynamicConfig) AdminPassword() string             { return Load().AdminPassword }
-func (d dynamicConfig) ProxyURL() string                  { return Load().ProxyURL }
+func (dynamicConfig) WriteSettings(values map[string]any) error { return WriteSettings(values) }
+func (dynamicConfig) WriteModels(models []string, aliases map[string]string) error {
+	return WriteModels(models, aliases)
+}
+
+func (dynamicConfig) Snapshot() ConfigProvider { return StaticProvider(Load()) }
+
+// Snapshot freezes a provider when it supports snapshot capture. Adapters that
+// are already immutable may simply return themselves.
+func Snapshot(provider ConfigProvider) ConfigProvider {
+	if provider == nil {
+		return StaticProvider(DefaultConfig())
+	}
+	if source, ok := provider.(interface{ Snapshot() ConfigProvider }); ok {
+		return source.Snapshot()
+	}
+	return provider
+}
+
+func (d dynamicConfig) PortAPI() int                 { return Load().PortAPI }
+func (d dynamicConfig) MaxRetries() int              { return Load().MaxRetries }
+func (d dynamicConfig) AdminPassword() string        { return Load().AdminPassword }
+func (d dynamicConfig) ProxyURL() string             { return Load().ProxyURL }
+func (d dynamicConfig) GlobalProxyEnabled() bool     { return Load().GlobalProxyEnabled }
+func (d dynamicConfig) GlobalProxyRequired() bool    { return Load().GlobalProxyRequired }
+func (d dynamicConfig) GlobalProxySelection() string { return Load().GlobalProxySelection }
+func (d dynamicConfig) AllowDirectWithoutGlobalProxy() bool {
+	return Load().AllowDirectWithoutGlobal
+}
 func (d dynamicConfig) DebugPprof() bool                  { return Load().DebugPprof }
 func (d dynamicConfig) DebugMode() bool                   { return Load().DebugMode }
 func (d dynamicConfig) DropMaxTokens() bool               { return Load().DropMaxTokens }
@@ -86,6 +117,9 @@ func (d dynamicConfig) RequestTimeout() int               { return Load().Reques
 func (d dynamicConfig) RaceTimeout() int                  { return Load().RaceTimeout }
 func (d dynamicConfig) StreamIdleTimeoutSeconds() int     { return Load().StreamIdleTimeoutSeconds }
 func (d dynamicConfig) ModelTurnGuardEnabled() bool       { return Load().ModelTurnGuardEnabled }
+func (d dynamicConfig) OpenAIParameterPolicy() string     { return Load().OpenAIParameterPolicy }
+func (d dynamicConfig) GeminiParameterPolicy() string     { return Load().GeminiParameterPolicy }
+func (d dynamicConfig) ToolSchemaPolicy() string          { return Load().ToolSchemaPolicy }
 func (d dynamicConfig) VertexAPIKey() string              { return Load().VertexAPIKey }
 func (d dynamicConfig) CountTokensQuerySignature() string { return Load().CountTokensQuerySignature }
 func (d dynamicConfig) SafetySettings() map[string]string {

@@ -30,6 +30,10 @@ type AppConfig struct { //nolint:govet
 	MaxRetries                int               `json:"max_retries"`
 	AdminPassword             string            `json:"admin_password"`
 	ProxyURL                  string            `json:"proxy_url"`
+	GlobalProxyEnabled        bool              `json:"global_proxy_enabled"`
+	GlobalProxyRequired       bool              `json:"global_proxy_required"`
+	GlobalProxySelection      string            `json:"global_proxy_selection"`
+	AllowDirectWithoutGlobal  bool              `json:"allow_direct_without_global_proxy"`
 	AggregateStream           bool              `json:"aggregate_stream"`
 	FakeStreamEnabled         bool              `json:"fake_stream_enabled"`
 	DropMaxTokens             bool              `json:"drop_max_tokens"`
@@ -43,6 +47,9 @@ type AppConfig struct { //nolint:govet
 	RaceTimeout               int               `json:"race_timeout"`
 	StreamIdleTimeoutSeconds  int               `json:"stream_idle_timeout_seconds"` // 流式包间空闲超时（秒），防呆连接假死
 	ModelTurnGuardEnabled     bool              `json:"model_turn_guard_enabled"`
+	OpenAIParameterPolicy     string            `json:"openai_parameter_policy"`
+	GeminiParameterPolicy     string            `json:"gemini_parameter_policy"`
+	ToolSchemaPolicy          string            `json:"tool_schema_policy"`
 
 	// 并发池与节点锁定配置
 	ActiveNodeURI                      string `json:"active_node_uri"`
@@ -60,7 +67,6 @@ type AppConfig struct { //nolint:govet
 	EntryProxyProbeCooldownSeconds     int    `json:"entry_proxy_probe_cooldown_seconds"`
 	EntryProxyProbeAutoDisableEnabled  bool   `json:"entry_proxy_probe_auto_disable_enabled"`
 	EntryProxyProbeAutoDisableFailures int    `json:"entry_proxy_probe_auto_disable_failures"`
-
 
 	// 外观配置
 	BackgroundImage string   `json:"background_image"`
@@ -87,7 +93,13 @@ func DefaultConfig() AppConfig {
 		RaceTimeout:                        0,
 		StreamIdleTimeoutSeconds:           30,
 		ModelTurnGuardEnabled:              true,
+		OpenAIParameterPolicy:              "adaptive",
+		GeminiParameterPolicy:              "passthrough",
+		ToolSchemaPolicy:                   "adaptive",
 		ParallelPoolEnabled:                true,
+		GlobalProxyRequired:                true,
+		GlobalProxySelection:               "health",
+		AllowDirectWithoutGlobal:           false,
 		StickyNodePriority:                 false,
 		ParallelPoolSize:                   15, // 默认为 15 并发
 		ParallelNodeTopK:                   80,
@@ -120,6 +132,16 @@ var (
 )
 
 const cacheTTL = 60 * time.Second
+
+func normalizeParameterPolicy(value, fallback string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "strict", "adaptive", "passthrough":
+		return normalized
+	default:
+		return fallback
+	}
+}
 
 func configPath() string {
 	if p := os.Getenv("VPROXY_CONFIG"); p != "" {
@@ -156,7 +178,14 @@ func writeSettingsUnsafe(updates map[string]any) error {
 	path := configPath()
 	raw := map[string]any{}
 	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &raw)
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return fmt.Errorf("parse existing config before update: %w", err)
+		}
+		if raw == nil {
+			raw = map[string]any{}
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read existing config before update: %w", err)
 	}
 	for k, v := range updates {
 		raw[k] = v
@@ -178,16 +207,66 @@ func writeSettingsUnsafe(updates map[string]any) error {
 }
 
 func writeJSONFile(path string, v any) error {
-	if dir := filepath.Dir(path); dir != "" {
-		_ = os.MkdirAll(dir, 0o755)
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", filepath.Base(path), err)
 	}
-	data, _ := json.MarshalIndent(v, "", "  ")
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("error: %w", err)
+	data = append(data, '\n')
+	return writeBytesAtomic(path, data, true)
+}
+
+func writeBytesAtomic(path string, data []byte, createBackup bool) error {
+	dir := filepath.Dir(path)
+	if dir == "" {
+		dir = "."
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create directory for %s: %w", filepath.Base(path), err)
+	}
+
+	if createBackup {
+		if current, err := os.ReadFile(path); err == nil {
+			if err := writeBytesAtomic(path+".bak", current, false); err != nil {
+				return fmt.Errorf("backup %s: %w", filepath.Base(path), err)
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("read %s for backup: %w", filepath.Base(path), err)
+		}
+	}
+
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temporary %s: %w", filepath.Base(path), err)
+	}
+	tmpPath := tmp.Name()
+	committed := false
+	defer func() {
+		_ = tmp.Close()
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		return fmt.Errorf("set temporary permissions for %s: %w", filepath.Base(path), err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fmt.Errorf("write temporary %s: %w", filepath.Base(path), err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync temporary %s: %w", filepath.Base(path), err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temporary %s: %w", filepath.Base(path), err)
+	}
+	if err := replaceFile(tmpPath, path); err != nil {
+		return fmt.Errorf("replace %s: %w", filepath.Base(path), err)
+	}
+	committed = true
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("sync directory for %s: %w", filepath.Base(path), err)
 
 	}
-	return os.Rename(tmp, path) //nolint:wrapcheck
+	return nil
 }
 
 func cloneConfig(c *AppConfig) AppConfig {
@@ -223,18 +302,33 @@ func Load() AppConfig {
 func Reload() AppConfig {
 	writeMu.Lock()
 	defer writeMu.Unlock()
-	// Double check after lock
-	if p := globalConfig.Load(); p != nil && cachedValid(p) {
-		return *p
-	}
 	cfg := DefaultConfig()
 	initializeConfigFromExample()
 	var saveUpdates map[string]any
 	if data, err := os.ReadFile(configPath()); err == nil {
 		if errUnm := json.Unmarshal(data, &cfg); errUnm != nil { //nolint:govet
-			log.Printf("[Config] 解析 config.json 失败: %v", err)
+			log.Printf("[Config] 解析 config.json 失败: %v", errUnm)
 		} else {
 			var needsSave bool
+			switch strings.ToLower(strings.TrimSpace(cfg.GlobalProxySelection)) {
+			case "health", "round_robin":
+				cfg.GlobalProxySelection = strings.ToLower(strings.TrimSpace(cfg.GlobalProxySelection))
+			default:
+				cfg.GlobalProxySelection = "health"
+				needsSave = true
+			}
+			if normalized := normalizeParameterPolicy(cfg.OpenAIParameterPolicy, "adaptive"); normalized != cfg.OpenAIParameterPolicy {
+				cfg.OpenAIParameterPolicy = normalized
+				needsSave = true
+			}
+			if normalized := normalizeParameterPolicy(cfg.GeminiParameterPolicy, "passthrough"); normalized != cfg.GeminiParameterPolicy {
+				cfg.GeminiParameterPolicy = normalized
+				needsSave = true
+			}
+			if normalized := normalizeParameterPolicy(cfg.ToolSchemaPolicy, "adaptive"); normalized != cfg.ToolSchemaPolicy {
+				cfg.ToolSchemaPolicy = normalized
+				needsSave = true
+			}
 			// 自动补偿 RequestTimeout 默认值
 			if cfg.RequestTimeout <= 0 {
 				cfg.RequestTimeout = 180
@@ -304,6 +398,10 @@ func Reload() AppConfig {
 			}
 			if needsSave {
 				saveUpdates = map[string]any{
+					"global_proxy_selection":                  cfg.GlobalProxySelection,
+					"openai_parameter_policy":                 cfg.OpenAIParameterPolicy,
+					"gemini_parameter_policy":                 cfg.GeminiParameterPolicy,
+					"tool_schema_policy":                      cfg.ToolSchemaPolicy,
 					"request_timeout":                         cfg.RequestTimeout,
 					"race_timeout":                            cfg.RaceTimeout,
 					"stream_idle_timeout_seconds":             cfg.StreamIdleTimeoutSeconds,
@@ -334,9 +432,6 @@ func Reload() AppConfig {
 	return result
 }
 
-func cachedValid(p *AppConfig) bool {
-	return p != nil
-}
 // shouldLogSuccessfulLoad suppresses the periodic success message when the
 // cache TTL expires but the effective configuration has not changed.
 // Load holds mu while calling this function.
@@ -367,11 +462,7 @@ func initializeConfigFromExample() {
 		}
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		log.Printf("[Config] 创建配置目录失败: %v", err)
-		return
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := writeBytesAtomic(path, data, false); err != nil {
 		log.Printf("[Config] 从 config.example.json 创建初始配置失败: %v", err)
 		return
 	}

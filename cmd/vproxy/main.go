@@ -8,36 +8,20 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata"
 	"unicode"
 
-	"github.com/bsfdsagfadg/vertex/internal/api"
-	"github.com/bsfdsagfadg/vertex/internal/cli"
+	"github.com/bsfdsagfadg/vertex/internal/app"
+	"github.com/bsfdsagfadg/vertex/internal/buildinfo"
 	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/db"
-	"github.com/bsfdsagfadg/vertex/internal/logger"
-	"github.com/bsfdsagfadg/vertex/internal/nodes"
-	"github.com/bsfdsagfadg/vertex/internal/spool"
-	"github.com/bsfdsagfadg/vertex/internal/transport"
-	"github.com/bsfdsagfadg/vertex/internal/vertex"
-)
-
-var (
-	//nolint:gochecknoglobals // Injected by build script
-	version = "dev"
-	//nolint:gochecknoglobals // Injected by build script
-	buildCommit = "unknown"
-	//nolint:gochecknoglobals // Injected by build script
-	buildTime = "unknown"
+	"github.com/bsfdsagfadg/vertex/internal/migration"
 )
 
 //go:embed rules.txt
@@ -46,9 +30,13 @@ var rulesText string
 
 const (
 	shutdownGrace         = 25 * time.Second
-	rulesAgreedFile       = "config/state/.rules_agreed"
-	rulesAgreedFileDocker = "config/state/agreed-rules-docker.txt"
+	rulesAgreedName       = ".rules_agreed"
+	rulesAgreedDockerName = "agreed-rules-docker.txt"
 )
+
+func rulesStatePath(name string) string {
+	return filepath.Join(config.ConfigDir(), "state", name)
+}
 
 func rulesHash() string {
 	cleanText := strings.Map(func(r rune) rune {
@@ -75,11 +63,11 @@ func inDocker() bool {
 }
 
 // 提取原有的终端普通打印，仅在需要同意规则阶段展示
-func printLegacyBanner() {
+func printLegacyBanner(info buildinfo.BuildInfo) {
 	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
-	fmt.Printf("║  Vertex AI Proxy  %-42s ║\n", version)
+	fmt.Printf("║  Vertex AI Proxy  %-42s ║\n", info.Version)
 	fmt.Println("║  PolyForm Noncommercial License 1.0.0   Deconstructed_Cube   ║")
-	fmt.Printf("║  Build: %s / %s                                  ║\n", buildCommit, buildTime)
+	fmt.Printf("║  Build: %s / %s                                  ║\n", info.Commit, info.BuildTime)
 	fmt.Printf("║  Platform: %s/%s                                       ║\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
 
@@ -96,21 +84,40 @@ func printLegacyBanner() {
 }
 
 func main() {
+	build := buildinfo.Current()
 	setupTermuxCerts() // 优先初始化 Termux 证书
-
-	logDir := filepath.Join(filepath.Dir(config.ConfigDir()), "logs")
-	dailyLogger := logger.NewDailyLogger(logDir)
+	migrationService, err := migration.NewService(config.ConfigDir())
+	if err != nil {
+		log.Fatalf("[vproxy] failed to initialize migration service: %v", err)
+	}
+	migrationStatus, err := migrationService.InspectAndMark(context.Background())
+	if err != nil {
+		log.Fatalf("[vproxy] failed to inspect persistent layout: %v", err)
+	}
+	if migrationStatus.Required {
+		migrationApp, appErr := app.NewMigration(app.MigrationOptions{
+			Build: build, Service: migrationService, Status: migrationStatus, ShutdownGrace: shutdownGrace,
+		})
+		if appErr != nil {
+			log.Fatalf("[Migration] 无法构建迁移模式: %v", appErr)
+		}
+		rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		if appErr := migrationApp.Run(rootCtx); appErr != nil {
+			log.Fatalf("[Migration] 迁移服务退出异常: %v", appErr)
+		}
+		return
+	}
 
 	// ---- 状态文件迁移（提前执行，无输出） ----
-	migrateStateFile("config/.rules_agreed", "config/state/.rules_agreed")
-	migrateStateFile("config/agreed-rules-docker.txt", "config/state/agreed-rules-docker.txt")
-	cleanLegacyStateFiles()
+	migrateStateFile(filepath.Join(config.ConfigDir(), rulesAgreedName), rulesStatePath(rulesAgreedName))
+	migrateStateFile(filepath.Join(config.ConfigDir(), rulesAgreedDockerName), rulesStatePath(rulesAgreedDockerName))
 
 	// ---- 规则同意检查 ----
 	curHash := rulesHash()
 	if inDocker() {
 		if !checkRulesAgreedDocker(curHash) {
-			printLegacyBanner()
+			printLegacyBanner(build)
 			fmt.Println()
 			fmt.Println("  ╔══════════════════════════════════════════════════════════╗")
 			fmt.Println("  ║  📦 检测到 Docker 环境                                   ║")
@@ -133,7 +140,7 @@ func main() {
 		}
 	} else {
 		if !checkRulesAgreed(curHash) {
-			printLegacyBanner()
+			printLegacyBanner(build)
 			fmt.Println(rulesText)
 			fmt.Println()
 			if hasOldAgreement() {
@@ -155,97 +162,22 @@ func main() {
 		}
 	}
 
-	// ---- 同意通过之后，干净地启动 TUI 看板，坚决不影响前面的交互输入 ───
-	cli.InitTracker(dailyLogger)
-	cli.SetAppInfo(version, buildCommit, buildTime, runtime.GOOS, runtime.GOARCH)
-	defer cli.StopTUI()
-
-	cfg := config.GetProvider()
-	if err := db.InitDB(filepath.Join(config.ConfigDir(), "data.db")); err != nil {
-		log.Fatalf("[vproxy] failed to init database: %v", err)
+	normalApp, err := app.NewNormal(app.NormalOptions{
+		Build: build, ConfigDir: config.ConfigDir(), ShutdownGrace: shutdownGrace,
+	})
+	if err != nil {
+		log.Fatalf("[vproxy] failed to construct application: %v", err)
 	}
-	defer db.CloseDB()
-	if legacyProxy := strings.TrimSpace(cfg.ProxyURL()); legacyProxy != "" {
-		if err := transport.ValidateProxyURI(legacyProxy); err != nil {
-			log.Printf("[vproxy] 旧 proxy_url 无法构造，保留旧路线: %v", err)
-		} else if err := config.MigrateLegacyProxy(legacyProxy); err != nil {
-			log.Printf("[vproxy] 迁移旧 proxy_url 到入口代理数据库失败，保留旧路线: %v", err)
-		}
+	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := normalApp.Run(rootCtx); err != nil {
+		log.Fatalf("[vproxy] application stopped with error: %v", err)
 	}
-
-	spool.SetMaxSpillBytes(int64(cfg.MaxSpillMB()) << 20)
-
-	nodes.SetDeleteNodeCallback(transport.RemoveProxy)
-	transport.StartProxyGC(5*time.Minute, 30*time.Minute)
-
-	keys := api.NewAPIKeyManager()
-	keys.LoadKeys()
-
-	api.EnsureAdminPassword()
-	api.StartAdminSessionCleanup(time.Hour)
-
-	vc := vertex.NewVertexAIClient(cfg)
-	stopEntryProxyProbe := api.StartEntryProxyProbeLoop(vc.Net())
-	defer stopEntryProxyProbe()
-
-
-	srv := api.NewServer(vc, keys, cfg)
-	//nolint:exhaustruct
-	httpServer := &http.Server{
-		Addr:              "0.0.0.0:" + strconv.Itoa(cfg.PortAPI()),
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 15 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
-
-	shutdownDone := make(chan struct{})
-	go func() {
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-		defer signal.Stop(sig)
-		for {
-			var reason string
-			select {
-			case s := <-sig:
-				if s == syscall.SIGHUP {
-					config.InvalidateCache()
-					config.InvalidateModelsCache()
-					log.Printf("[vproxy] 收到 SIGHUP：已清配置/模型缓存，下次读取即热重载")
-					continue
-				}
-				reason = s.String()
-			case <-cli.TUIDone():
-				reason = "TUI Ctrl+C"
-			}
-			log.Printf("[vproxy] 收到 %s：开始关闭程序，等待在途请求处理完成(最长 %s)…", reason, shutdownGrace)
-			ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
-			if err := httpServer.Shutdown(ctx); err != nil {
-				log.Printf("[vproxy] 关闭超时/出错：%v(强制结束)", err)
-			}
-			cancel()
-			srv.Close()
-			transport.StopAllProxies()
-			_ = dailyLogger.Close()
-			close(shutdownDone)
-			return
-		}
-	}()
-
-	poolStr := "关闭"
-	if cfg.ParallelPoolEnabled() {
-		poolStr = strconv.Itoa(cfg.ParallelPoolSize()) + "（开启）"
-	}
-	log.Printf("[vproxy] 监听 %s（API 密钥 %d 个，max_retries=%d，并发池=%s）",
-		httpServer.Addr, keys.Count(), cfg.MaxRetries(), poolStr)
-	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("[vproxy] server error: %v", err)
-	}
-	<-shutdownDone
 	log.Printf("[vproxy] 关闭完成，程序退出")
 }
 
 func checkRulesAgreed(curHash string) bool {
-	data, err := os.ReadFile(rulesAgreedFile)
+	data, err := os.ReadFile(rulesStatePath(rulesAgreedName))
 	if err != nil {
 		return false
 	}
@@ -253,7 +185,7 @@ func checkRulesAgreed(curHash string) bool {
 }
 
 func hasOldAgreement() bool {
-	data, err := os.ReadFile(rulesAgreedFile)
+	data, err := os.ReadFile(rulesStatePath(rulesAgreedName))
 	if err != nil {
 		return false
 	}
@@ -261,13 +193,13 @@ func hasOldAgreement() bool {
 }
 
 func saveRulesAgreed(curHash string) {
-	_ = os.MkdirAll("config/state", 0o700)
+	_ = os.MkdirAll(filepath.Join(config.ConfigDir(), "state"), 0o700)
 	line := fmt.Sprintf("%s\t%s\n", time.Now().Format(time.RFC3339), curHash)
-	_ = os.WriteFile(rulesAgreedFile, []byte(line), 0o600)
+	_ = os.WriteFile(rulesStatePath(rulesAgreedName), []byte(line), 0o600)
 }
 
 func checkRulesAgreedDocker(curHash string) bool {
-	data, err := os.ReadFile(rulesAgreedFileDocker)
+	data, err := os.ReadFile(rulesStatePath(rulesAgreedDockerName))
 	if err != nil {
 		return false
 	}
@@ -292,11 +224,4 @@ func migrateStateFile(oldPath, newPath string) {
 			}
 		}
 	}
-}
-
-func cleanLegacyStateFiles() {
-	_ = os.Remove("config/.instance_id")
-	_ = os.Remove("config/.telemetry_state")
-	_ = os.Remove("config/state/.instance_id")
-	_ = os.Remove("config/state/.telemetry_state")
 }

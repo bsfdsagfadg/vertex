@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/bubbletea/v2"
+	"github.com/bsfdsagfadg/vertex/internal/buildinfo"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
 )
@@ -51,14 +52,29 @@ func sendMsg(msg tea.Msg) {
 	p.Send(msg)
 }
 
-func SetAppInfo(ver, commit, bTime, goos, goarch string) {
+func SetAppInfo(info buildinfo.BuildInfo, goos, goarch string) {
 	sendMsg(setAppInfoMsg{
-		version:      ver,
-		buildInfo:    fmt.Sprintf("Build: %s / %s", commit, bTime),
+		version:      info.Version,
+		buildInfo:    formatBuildLine(info),
 		platformInfo: fmt.Sprintf("Platform: %s/%s", goos, goarch),
 	})
-	sendMsg(logLineMsg(fmt.Sprintf("[vproxy] 启动成功: Version=%s, Commit=%s, Built=%s", ver, commit, bTime)))
+	sendMsg(logLineMsg(fmt.Sprintf("[vproxy] build_info version=%s commit=%s build_time=%s dirty=%t source=%s",
+		info.Version, info.Commit, info.BuildTime, info.Dirty, info.Source)))
 	sendMsg(logLineMsg(fmt.Sprintf("[vproxy] 运行平台: %s/%s", goos, goarch)))
+}
+
+func formatBuildLine(info buildinfo.BuildInfo) string {
+	parts := []string{"Build: " + info.Source}
+	if info.Commit != "" {
+		parts = append(parts, info.Commit)
+	}
+	if info.BuildTime != "" {
+		parts = append(parts, info.BuildTime)
+	}
+	if info.Dirty {
+		parts = append(parts, "dirty")
+	}
+	return strings.Join(parts, " / ")
 }
 
 func InitTracker(fileLogger io.Writer) {

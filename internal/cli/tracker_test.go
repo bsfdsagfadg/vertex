@@ -5,7 +5,18 @@ import (
 	"testing"
 
 	"charm.land/bubbletea/v2"
+	"github.com/bsfdsagfadg/vertex/internal/buildinfo"
 )
+
+func TestFormatBuildLine(t *testing.T) {
+	got := formatBuildLine(buildinfo.BuildInfo{
+		Version: "2.0.0", Commit: "abcdef", BuildTime: "2026-08-20T00:00:00Z", Dirty: true, Source: "local",
+	})
+	want := "Build: local / abcdef / 2026-08-20T00:00:00Z / dirty"
+	if got != want {
+		t.Fatalf("formatBuildLine()=%q, want %q", got, want)
+	}
+}
 
 func TestCtrlCQuitsTUI(t *testing.T) {
 	m := TuiModel{activeReqs: make(map[string]*ReqState)}

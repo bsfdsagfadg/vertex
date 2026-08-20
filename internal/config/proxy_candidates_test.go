@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/db"
+	"github.com/bsfdsagfadg/vertex/internal/repository"
 )
 
 func TestProxyCandidateLifecycleAndActiveRemoval(t *testing.T) {
@@ -17,10 +17,15 @@ func TestProxyCandidateLifecycleAndActiveRemoval(t *testing.T) {
 	}
 	InvalidateCache()
 	t.Cleanup(InvalidateCache)
-	if err := db.InitDB(filepath.Join(t.TempDir(), "entry.db")); err != nil {
+	repo, err := repository.Open(filepath.Join(t.TempDir(), "entry.db"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(db.CloseDB)
+	SetRepository(repo)
+	t.Cleanup(func() {
+		SetRepository(nil)
+		_ = repo.Close()
+	})
 
 	uri := "socks5://user:pass@127.0.0.1:1080#%E5%85%A5%E5%8F%A3"
 	candidate, err := AddProxyCandidate(uri)

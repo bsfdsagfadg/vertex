@@ -1,11 +1,13 @@
 package config
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/bsfdsagfadg/vertex/internal/db"
+	"github.com/bsfdsagfadg/vertex/internal/repository"
 )
 
 func setupEntryProxyTest(t *testing.T, configJSON string) ConfigProvider {
@@ -17,10 +19,15 @@ func setupEntryProxyTest(t *testing.T, configJSON string) ConfigProvider {
 	}
 	InvalidateCache()
 	t.Cleanup(InvalidateCache)
-	if err := db.InitDB(filepath.Join(t.TempDir(), "entry.db")); err != nil {
+	repo, err := repository.Open(filepath.Join(t.TempDir(), "entry.db"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(db.CloseDB)
+	SetRepository(repo)
+	t.Cleanup(func() {
+		SetRepository(nil)
+		_ = repo.Close()
+	})
 	entryProxyCursor.Store(0)
 	return GetProvider()
 }
@@ -60,7 +67,7 @@ func TestMigrateLegacyProxyIsIdempotentAndReenablesCandidate(t *testing.T) {
 }
 
 func TestSelectEntryProxyRotatesAndFiltersUnavailableCandidates(t *testing.T) {
-	provider := setupEntryProxyTest(t, `{"proxy_url":""}`)
+	provider := setupEntryProxyTest(t, `{"proxy_url":"", "global_proxy_enabled":true, "global_proxy_selection":"round_robin"}`)
 	first := "socks5://127.0.0.1:1081#first"
 	disabled := "socks5://127.0.0.1:1082#disabled"
 	third := "socks5://127.0.0.1:1083#third"
@@ -90,7 +97,7 @@ func TestSelectEntryProxyRotatesAndFiltersUnavailableCandidates(t *testing.T) {
 }
 
 func TestSelectEntryProxySequenceReservesRoundRobinSlots(t *testing.T) {
-	provider := setupEntryProxyTest(t, `{"proxy_url":""}`)
+	provider := setupEntryProxyTest(t, `{"proxy_url":"", "global_proxy_enabled":true}`)
 	entries := []string{
 		"socks5://127.0.0.1:1091#one",
 		"socks5://127.0.0.1:1092#two",
@@ -114,7 +121,7 @@ func TestSelectEntryProxySequenceReservesRoundRobinSlots(t *testing.T) {
 }
 
 func TestSelectEntryProxySequenceReturnsEmptyWhenAllCandidatesCooling(t *testing.T) {
-	provider := setupEntryProxyTest(t, `{"proxy_url":"socks5://legacy:1080"}`)
+	provider := setupEntryProxyTest(t, `{"proxy_url":"socks5://legacy:1080", "global_proxy_enabled":true}`)
 	uri := "socks5://127.0.0.1:1094#cooling"
 	if _, err := AddProxyCandidate(uri); err != nil {
 		t.Fatal(err)
@@ -147,14 +154,18 @@ func TestNormalizeProxyURIPreservesEncodedPayloadCase(t *testing.T) {
 
 func TestAddProxyCandidateUsesCaseSensitiveEncodedIdentity(t *testing.T) {
 	setupEntryProxyTest(t, `{"proxy_url":""}`)
-	first := "vmess://AbCdEf012_-#first"
+	encode := func(id, name string) string {
+		payload, _ := json.Marshal(map[string]any{"add": "example.com", "port": 443, "id": id, "ps": name})
+		return "vmess://" + base64.StdEncoding.EncodeToString(payload) + "#" + name
+	}
+	first := encode("AbCdEf012_-", "first")
 	if _, err := AddProxyCandidate(first); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AddProxyCandidate("vmess://AbCdEf012_-#renamed"); err == nil {
+	if _, err := AddProxyCandidate(encode("AbCdEf012_-", "renamed")); err == nil {
 		t.Fatal("fragment-only change should be treated as a duplicate")
 	}
-	if _, err := AddProxyCandidate("vmess://aBcDeF012_-#different-payload"); err != nil {
+	if _, err := AddProxyCandidate(encode("aBcDeF012_-", "different-payload")); err != nil {
 		t.Fatalf("case-distinct payload was rejected as a duplicate: %v", err)
 	}
 	if items := ListProxyCandidates(); len(items) != 2 {
