@@ -370,37 +370,6 @@ func shallowCopy(m map[string]any) map[string]any {
 	return out
 }
 
-func deepCopyAny(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, val := range x {
-			// inlineData payload parts (e.g. huge base64 image strings) are immutable in candidate execution.
-			// Share inner map to avoid reallocating megabytes of base64 strings per candidate branch.
-			if k == "inlineData" || k == "inline_data" {
-				if idMap, ok := val.(map[string]any); ok {
-					copiedID := make(map[string]any, len(idMap))
-					for idK, idV := range idMap {
-						copiedID[idK] = idV
-					}
-					out[k] = copiedID
-					continue
-				}
-			}
-			out[k] = deepCopyAny(val)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, item := range x {
-			out[i] = deepCopyAny(item)
-		}
-		return out
-	default:
-		return v
-	}
-}
-
 func asVertexError(err error) *VertexError {
 	var ve *VertexError
 	if errors.As(err, &ve) {

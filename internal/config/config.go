@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -108,14 +109,10 @@ func DefaultConfig() AppConfig {
 }
 
 var (
-	//nolint:gochecknoglobals // Global configuration cache
-	mu sync.Mutex
+	//nolint:gochecknoglobals // Global atomic configuration snapshot
+	globalConfig atomic.Pointer[AppConfig]
 	//nolint:gochecknoglobals // writeMu serializes config.json read-modify-write operations.
 	writeMu sync.Mutex
-	//nolint:gochecknoglobals // Global configuration cache
-	cached *AppConfig
-	//nolint:gochecknoglobals // Global configuration cache
-	cacheTime time.Time
 	//nolint:gochecknoglobals // Tracks successful loads so unchanged TTL refreshes stay quiet.
 	lastLoadedConfigHash [sha256.Size]byte
 	//nolint:gochecknoglobals // Tracks whether lastLoadedConfigHash has been initialized.
@@ -152,7 +149,10 @@ func WriteSettings(updates map[string]any) error {
 func writeSettings(updates map[string]any) error {
 	writeMu.Lock()
 	defer writeMu.Unlock()
+	return writeSettingsUnsafe(updates)
+}
 
+func writeSettingsUnsafe(updates map[string]any) error {
 	path := configPath()
 	raw := map[string]any{}
 	if data, err := os.ReadFile(path); err == nil {
@@ -213,11 +213,19 @@ func cloneConfig(c *AppConfig) AppConfig {
 }
 
 func Load() AppConfig {
-	mu.Lock()
-	if cached != nil && time.Since(cacheTime) < cacheTTL {
-		res := cloneConfig(cached)
-		mu.Unlock()
-		return res
+	if p := globalConfig.Load(); p != nil {
+		return *p
+	}
+	return Reload()
+}
+
+// Reload forces a fresh configuration load from disk and atomically updates globalConfig.
+func Reload() AppConfig {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	// Double check after lock
+	if p := globalConfig.Load(); p != nil && cachedValid(p) {
+		return *p
 	}
 	cfg := DefaultConfig()
 	initializeConfigFromExample()
@@ -315,18 +323,19 @@ func Load() AppConfig {
 		log.Printf("[Config] 读取 config.json 失败: %v", err)
 	}
 	cloned := cloneConfig(&cfg)
-	cached = &cloned
-	cacheTime = time.Now()
-	result := cloneConfig(cached)
-	mu.Unlock()
+	globalConfig.Store(&cloned)
+	result := cloned
 
 	if saveUpdates != nil {
-		// 在释放 mu 锁后回写，避免持 mu 锁期间调用写锁导致的锁反转
-		if errSave := writeSettings(saveUpdates); errSave != nil {
+		if errSave := writeSettingsUnsafe(saveUpdates); errSave != nil {
 			log.Printf("[Config] 自动回写规范化配置失败: %v", errSave)
 		}
 	}
 	return result
+}
+
+func cachedValid(p *AppConfig) bool {
+	return p != nil
 }
 // shouldLogSuccessfulLoad suppresses the periodic success message when the
 // cache TTL expires but the effective configuration has not changed.
@@ -370,9 +379,7 @@ func initializeConfigFromExample() {
 }
 
 func InvalidateCache() {
-	mu.Lock()
-	defer mu.Unlock()
-	cached = nil
+	globalConfig.Store(nil)
 }
 
 func (c AppConfig) ConfigDir() string  { return ConfigDir() }

@@ -16,6 +16,7 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/subscriptions"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
@@ -30,6 +31,7 @@ type Server struct {
 }
 
 func NewServer(vc *vertex.VertexAIClient, keys *APIKeyManager, cfg config.ConfigProvider) *Server {
+	transport.SetProxyNameResolver(nodes.GetNodeName)
 	h := handler{vc: vc, keys: keys, cfg: cfg}
 	adminHandler := &AdminHandler{handler: h}
 	subscriptionService := subscriptions.New(func(ctx context.Context, rawURL, userAgent string) ([]nodes.Node, error) {

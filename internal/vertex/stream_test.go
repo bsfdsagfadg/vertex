@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
 // collectStream 把 scanStream 跑到底，收集所有 emit 出来的 chunk，返回 (chunks, 终止错误)。
@@ -292,7 +294,7 @@ func TestCleanPart_EmptyDefaults(t *testing.T) {
 		"functionResponse": map[string]any{},
 		"inlineData":       map[string]any{},
 	}
-	if got := cleanPart(part); got != nil {
+	if got := transform.CleanStreamPart(part); got != nil {
 		t.Errorf("empty defaults should return nil, got %v", got)
 	}
 }
@@ -304,7 +306,7 @@ func TestCleanPart_FunctionCallStringArgs(t *testing.T) {
 			"args": `{"q":"hello"}`,
 		},
 	}
-	got := cleanPart(part)
+	got := transform.CleanStreamPart(part)
 	if got == nil {
 		t.Fatal("expected non-nil part")
 	}
@@ -331,7 +333,7 @@ func TestCleanPart_FunctionResponseStringResponse(t *testing.T) {
 			"response": "result text",
 		},
 	}
-	got := cleanPart(part)
+	got := transform.CleanStreamPart(part)
 	if got == nil {
 		t.Fatal("expected non-nil part")
 	}

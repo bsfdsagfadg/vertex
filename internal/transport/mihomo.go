@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/component/proxydialer"
 	"github.com/metacubex/mihomo/constant"
@@ -297,9 +296,18 @@ func cleanupIdleProxies(maxIdle time.Duration) {
 	}
 }
 
+var proxyNameResolver func(uri string) string //nolint:gochecknoglobals
+
+// SetProxyNameResolver sets the external name resolver to avoid import cycles.
+func SetProxyNameResolver(resolver func(uri string) string) {
+	proxyNameResolver = resolver
+}
+
 func proxyDisplayName(uri string) string {
-	if name := nodes.GetNodeName(uri); name != "Unknown" {
-		return name
+	if proxyNameResolver != nil {
+		if name := proxyNameResolver(uri); name != "" && name != "Unknown" {
+			return name
+		}
 	}
 	for _, candidate := range config.ListProxyCandidates() {
 		if proxyIdentity(candidate.RawURI) == proxyIdentity(uri) && strings.TrimSpace(candidate.Name) != "" {

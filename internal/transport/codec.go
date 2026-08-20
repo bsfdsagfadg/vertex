@@ -11,6 +11,64 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
+// SupportedSchemes lists all supported proxy protocol schemes.
+var SupportedSchemes = map[string]bool{ //nolint:gochecknoglobals
+	"vless": true, "trojan": true, "vmess": true, "ss": true,
+	"hysteria2": true, "hy2": true, "tuic": true, "socks5": true,
+	"socks5h": true, "socks": true, "http": true, "https": true,
+	"ssr": true, "shadowsocksr": true, "hysteria": true, "anytls": true,
+	"clash": true,
+}
+
+// IsSupportedScheme reports whether scheme is a recognized proxy protocol.
+func IsSupportedScheme(scheme string) bool {
+	return SupportedSchemes[strings.ToLower(strings.TrimSpace(scheme))]
+}
+
+// CanonicalURI returns the normalized, deduplicated URI identity without fragment names.
+func CanonicalURI(rawURI string) (string, error) {
+	rawURI = strings.TrimSpace(rawURI)
+	if rawURI == "" {
+		return "", fmt.Errorf("empty URI")
+	}
+	if strings.HasPrefix(strings.ToLower(rawURI), "vmess://") {
+		body := rawURI[len("vmess://"):]
+		if idx := strings.Index(body, "#"); idx >= 0 {
+			body = body[:idx]
+		}
+		query := ""
+		if idx := strings.Index(body, "?"); idx >= 0 {
+			query = body[idx:]
+			body = body[:idx]
+		}
+		if decoded, err := strutil.DecodeBase64Loose(body); err == nil {
+			var payload map[string]any
+			if json.Unmarshal(decoded, &payload) == nil {
+				delete(payload, "ps")
+				if normalized, err := json.Marshal(payload); err == nil {
+					return "vmess:" + string(normalized) + query, nil
+				}
+			}
+		}
+	}
+
+	withoutName := rawURI
+	if idx := strings.Index(withoutName, "#"); idx >= 0 {
+		withoutName = withoutName[:idx]
+	}
+	parsed, err := url.Parse(withoutName)
+	if err != nil || parsed.Scheme == "" {
+		return withoutName, nil
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	if parsed.RawQuery != "" {
+		parsed.RawQuery = parsed.Query().Encode()
+	}
+	return parsed.String(), nil
+}
+
 // ParseURI 解析各种协议的节点链接
 func ParseURI(uri string) (map[string]any, error) {
 	if strings.HasPrefix(uri, "vless://") {

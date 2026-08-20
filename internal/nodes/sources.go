@@ -1,15 +1,13 @@
 package nodes
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/url"
 	"sort"
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/db"
-	"github.com/bsfdsagfadg/vertex/internal/strutil"
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
 const (
@@ -397,39 +395,11 @@ func ImportManualNodes(newNodes []Node, replace bool) error {
 }
 
 func canonicalNodeKey(rawURI string) string {
-	rawURI = strings.TrimSpace(rawURI)
-	if strings.HasPrefix(strings.ToLower(rawURI), "vmess://") {
-		body := rawURI[len("vmess://"):]
-		if idx := strings.Index(body, "#"); idx >= 0 {
-			body = body[:idx]
-		}
-		query := ""
-		if idx := strings.Index(body, "?"); idx >= 0 {
-			query = body[idx:]
-			body = body[:idx]
-		}
-		if decoded, err := strutil.DecodeBase64Loose(body); err == nil {
-			var payload map[string]any
-			if json.Unmarshal(decoded, &payload) == nil {
-				delete(payload, "ps")
-				if normalized, err := json.Marshal(payload); err == nil {
-					return "vmess:" + string(normalized) + query
-				}
-			}
-		}
+	key, err := transport.CanonicalURI(rawURI)
+	if err != nil {
+		return strings.TrimSpace(rawURI)
 	}
-
-	withoutName := rawURI
-	if idx := strings.Index(withoutName, "#"); idx >= 0 {
-		withoutName = withoutName[:idx]
-	}
-	parsed, err := url.Parse(withoutName)
-	if err != nil || parsed.Scheme == "" {
-		return withoutName
-	}
-	parsed.Scheme = strings.ToLower(parsed.Scheme)
-	parsed.RawQuery = parsed.Query().Encode()
-	return parsed.String()
+	return key
 }
 
 func previewDedupUnsafe() DedupPreview {

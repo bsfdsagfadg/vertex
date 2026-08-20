@@ -39,13 +39,14 @@ type NodeHealth struct { //nolint:govet
 	RecentUseCount      int     `json:"recent_use_count" db:"-"`
 	LastSelectedAt      int64   `json:"last_selected_at" db:"-"`
 	LastSubHealthyAt    int64   `json:"last_sub_healthy_at" db:"last_sub_healthy_at"` // 记录上一次处于亚健康状态的时间
-	InFlight            int32   `json:"-" db:"-"`                                     // 当前并发连接数，不持久化
+	InFlight            int32   `json:"-" db:"-"` // 当前并发连接数，不持久化
 }
 var (
-	mu                     sync.Mutex                                 //nolint:gochecknoglobals
+	mu                     sync.RWMutex                               //nolint:gochecknoglobals
 	nodeList               []Node                                     //nolint:gochecknoglobals
 	healthMap              = make(map[string]*NodeHealth)             //nolint:gochecknoglobals
 	nodeSources            = make(map[string]map[NodeSource]struct{}) //nolint:gochecknoglobals
+	inFlightMap            sync.Map                                   //nolint:gochecknoglobals
 	loaded                 bool                                       //nolint:gochecknoglobals
 	deleteNodeCallbackMu   sync.RWMutex                               //nolint:gochecknoglobals
 	deleteNodeCallbackFunc func(uri string)                           //nolint:gochecknoglobals
@@ -785,10 +786,7 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 			continue
 		}
 		tier := getNodeTier(n, h)
-		inFlight := int32(0)
-		if h != nil {
-			inFlight = h.InFlight
-		}
+		inFlight := GetInFlight(n.RawURI)
 		sticky := stickyBonusEnabled && globalStickyPool.IsSticky(n.RawURI)
 		switch tier {
 		case 1:
@@ -892,23 +890,31 @@ func SelectForParallel(k int, topK int, debugMode bool, stickyBonusEnabled bool)
 }
 
 func IncInFlight(uri string) {
-	mu.Lock()
-	defer mu.Unlock()
-	ensureLoaded()
-	if h := healthMap[uri]; h != nil {
-		h.InFlight++
-	}
+	val, _ := inFlightMap.LoadOrStore(uri, new(atomic.Int32))
+	val.(*atomic.Int32).Add(1)
 }
 
 func DecInFlight(uri string) {
-	mu.Lock()
-	defer mu.Unlock()
-	ensureLoaded()
-	if h := healthMap[uri]; h != nil {
-		if h.InFlight > 0 {
-			h.InFlight--
+	if val, ok := inFlightMap.Load(uri); ok {
+		counter := val.(*atomic.Int32)
+		for {
+			cur := counter.Load()
+			if cur <= 0 {
+				break
+			}
+			if counter.CompareAndSwap(cur, cur-1) {
+				break
+			}
 		}
 	}
+}
+
+// GetInFlight returns the current in-flight connection count for a node URI.
+func GetInFlight(uri string) int32 {
+	if val, ok := inFlightMap.Load(uri); ok {
+		return val.(*atomic.Int32).Load()
+	}
+	return 0
 }
 
 func GetAverageLatency() float64 {

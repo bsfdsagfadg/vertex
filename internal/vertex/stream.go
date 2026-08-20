@@ -19,6 +19,7 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/spool"
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
@@ -55,12 +56,9 @@ func (c *VertexAIClient) StreamChat(ctx context.Context, model string, geminiPay
 	routedCtx := c.prepareRequest(ctx)
 	op := func(ctx context.Context, proxyURI string) <-chan StreamChunk {
 		ch := make(chan StreamChunk, 64)
-		// 深度拷贝 geminiPayload，防止并发竞速（StreamParallel / RunRace）时
-		// 多个节点协程同时修改或读取同一个 map（引发 concurrent map read and map write 恐慌）
-		copiedPayload := deepCopyAny(geminiPayload).(map[string]any)
 		go func() {
 			defer close(ch)
-			c.executeStreamingWithRetries(ctx, model, copiedPayload, proxyURI, func(chunk StreamChunk) bool {
+			c.executeStreamingWithRetries(ctx, model, geminiPayload, proxyURI, func(chunk StreamChunk) bool {
 				select {
 				case ch <- chunk:
 					return true
@@ -855,7 +853,7 @@ func extractChunk(data map[string]any) map[string]any {
 	return chunk
 }
 
-// cleanStreamParts 清洗 parts 列表，展开畸形嵌套 + 移除 protobuf 空默认字段。
+// cleanStreamParts 清洗 parts 列表，展开畸形嵌套 + 委托 transform.CleanStreamPart 移除 protobuf 空默认字段。
 func cleanStreamParts(parts []any) []any {
 	cleaned := make([]any, 0, len(parts))
 	for _, pRaw := range parts {
@@ -869,7 +867,7 @@ func cleanStreamParts(parts []any) []any {
 				// 畸形嵌套：text 值是 list/dict 而非字符串，递归提取真正文本。
 				extracted := extractTextRecursive(textVal, 0)
 				if extracted != "" {
-					newPart := cleanPart(part)
+					newPart := transform.CleanStreamPart(part)
 					if newPart != nil {
 						newPart["text"] = extracted
 						cleaned = append(cleaned, newPart)
@@ -878,88 +876,11 @@ func cleanStreamParts(parts []any) []any {
 				continue
 			}
 		}
-		if cp := cleanPart(part); cp != nil {
+		if cp := transform.CleanStreamPart(part); cp != nil {
 			cleaned = append(cleaned, cp)
 		}
 	}
 	return cleaned
-}
-
-// cleanPart 清洗单个 Gemini part，移除内部 protobuf 空默认字段，仅保留真实内容字段。
-func cleanPart(part map[string]any) map[string]any {
-	cleaned := shallowCopy(part)
-
-	// 移除内部 protobuf oneof 指示器（always "text" / "inlineData" / "functionCall" / "functionResponse"）
-	delete(cleaned, "data")
-
-	// fileData：仅在 uri 为空时移除
-	if fd, ok := cleaned["fileData"].(map[string]any); ok {
-		if toStr(fd["fileUri"]) == "" && toStr(fd["mimeType"]) == "" {
-			delete(cleaned, "fileData")
-		}
-	}
-
-	// functionCall：name 和 args 都为空/无意义时移除
-	if fc, ok := cleaned["functionCall"].(map[string]any); ok {
-		hasName := toStr(fc["name"]) != ""
-		hasArgs := false
-		if args, ok := fc["args"]; ok && args != nil {
-			if m, ok := args.(map[string]any); ok && len(m) > 0 {
-				hasArgs = true
-			}
-		}
-		if !hasName && !hasArgs {
-			delete(cleaned, "functionCall")
-		} else if name, ok := fc["name"].(string); ok && name != "" {
-			if argStr, ok := fc["args"].(string); ok && argStr != "" {
-				var parsed any
-				if err := json.Unmarshal([]byte(argStr), &parsed); err == nil {
-					fc["args"] = parsed
-				}
-			}
-		}
-	}
-
-	// functionResponse：name 和 response 都为空时移除
-	if fr, ok := cleaned["functionResponse"].(map[string]any); ok {
-		hasName := toStr(fr["name"]) != ""
-		hasResp := false
-		if resp, ok := fr["response"]; ok && resp != nil {
-			if m, ok := resp.(map[string]any); ok && len(m) > 0 {
-				hasResp = true
-			}
-		}
-		if !hasName && !hasResp {
-			delete(cleaned, "functionResponse")
-		} else if respStr, ok := fr["response"].(string); ok && respStr != "" {
-			fr["response"] = map[string]any{"result": respStr}
-		}
-	}
-
-	// inlineData：data 为空时移除
-	if id, ok := cleaned["inlineData"].(map[string]any); ok {
-		if toStr(id["data"]) == "" {
-			delete(cleaned, "inlineData")
-		}
-	}
-
-	// 支持代码块、代码执行结果透传
-	for _, key := range []string{"executableCode", "codeExecutionResult"} {
-		if v, ok := cleaned[key]; ok && jsonx.Truthy(v) {
-			return cleaned
-		}
-	}
-
-	// 如果只剩 thought/thoughtSignature 等非内容标记，返回 nil
-	for k := range cleaned {
-		switch k {
-		case "thought", "thoughtSignature":
-			continue
-		default:
-			return cleaned
-		}
-	}
-	return nil
 }
 
 // extractTextRecursive 从嵌套结构中递归提取纯文本，防止无限递归（depth>20 截断）。

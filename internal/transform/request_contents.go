@@ -168,7 +168,6 @@ func hasRemotePrefix(url string) bool {
 
 // BuildVertexVariables 由 geminiPayload 构建发往上游的 variables。
 func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config.ConfigProvider) map[string]any {
-	stripGeminiIDs(geminiPayload)
 	vars := map[string]any{}
 	vars["model"] = parseModelName(model)
 
@@ -187,6 +186,7 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 	if c, ok := vars["contents"]; ok {
 		trailingFix := trailingModelFixActive(model, cfg)
 		c = normalizeContents(c)
+		c = stripGeminiIDs(c)
 		c = handleInlineDataCase(c)
 		c = normalizeContents(c)
 		c = HandleBase64InContents(c)
@@ -639,24 +639,30 @@ func modelTurnHasFunctionCall(content map[string]any) bool {
 	return false
 }
 
-func stripGeminiIDs(val any) {
+func stripGeminiIDs(val any) any {
 	switch v := val.(type) {
 	case map[string]any:
+		out := make(map[string]any, len(v))
 		for k, mv := range v {
 			if s, ok := mv.(string); ok && (strings.HasPrefix(s, "gemini-tool-call-") || strings.HasPrefix(s, "tool_call_")) {
 				if len(s) > 11 && strings.Contains(s, "-vp") {
 					idx := strings.LastIndex(s, "-vp")
 					if idx > 0 && len(s)-idx == 11 {
-						v[k] = s[:idx]
+						out[k] = s[:idx]
+						continue
 					}
 				}
-			} else {
-				stripGeminiIDs(mv)
 			}
+			out[k] = stripGeminiIDs(mv)
 		}
+		return out
 	case []any:
-		for _, item := range v {
-			stripGeminiIDs(item)
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = stripGeminiIDs(item)
 		}
+		return out
+	default:
+		return val
 	}
 }

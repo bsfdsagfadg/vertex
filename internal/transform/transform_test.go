@@ -899,9 +899,9 @@ func TestStripGeminiIDs(t *testing.T) {
 		},
 	}
 
-	stripGeminiIDs(payload)
+	stripped := stripGeminiIDs(payload).(map[string]any)
 
-	contents := payload["contents"].([]any)
+	contents := stripped["contents"].([]any)
 	m1 := contents[0].(map[string]any)
 	fc := m1["parts"].([]any)[0].(map[string]any)["functionCall"].(map[string]any)
 	if fc["id"] != "gemini-tool-call-1" {
