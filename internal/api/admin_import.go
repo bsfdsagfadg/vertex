@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/url"
@@ -130,19 +131,67 @@ func parseFlexibleImportedNodeLine(line string) (nodes.Node, bool) {
 	return parseV2RayNNodeLine(line)
 }
 
+func parseSingleImportedNode(raw string) (nodes.Node, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nodes.Node{}, errors.New("节点 URI 不能为空")
+	}
+	if len(raw) > 64*1024 {
+		return nodes.Node{}, errors.New("节点 URI 超过 64 KiB 限制")
+	}
+	if strings.ContainsAny(raw, "\r\n") {
+		return nodes.Node{}, errors.New("单节点导入不接受多行内容；订阅和批量文件请使用订阅管理页")
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" {
+		return nodes.Node{}, errors.New("节点 URI 格式无效")
+	}
+	if strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https") {
+		if (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" {
+			return nodes.Node{}, errors.New("HTTP(S) 地址包含路径或查询参数，疑似订阅链接；请在订阅管理页添加")
+		}
+	}
+
+	node, ok := parseImportedNodeLine(raw)
+	if !ok {
+		return nodes.Node{}, errors.New("不支持的节点协议或 URI 参数无效")
+	}
+	return node, nil
+}
+
 func (adm *AdminHandler) adminImportNodes(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Text    string `json:"text"`
-		Replace bool   `json:"replace"`
+		Text      string `json:"text"`
+		Replace   bool   `json:"replace"`
+		SingleURI bool   `json:"single_uri"`
 	}
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
 	log.Printf("[Admin] [ImportNodes] 收到优选节点文件导入请求, 替换模式: %v", body.Replace)
 
-	newNodes := parseImportedNodes(strings.TrimSpace(body.Text))
+	var newNodes []nodes.Node
+	if body.SingleURI {
+		node, err := parseSingleImportedNode(body.Text)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
+			return
+		}
+		if err := transport.ValidateProxyURI(node.RawURI); err != nil {
+			writeJSON(w, http.StatusBadRequest, adminErr("代理构造失败: "+err.Error()))
+			return
+		}
+		newNodes = []nodes.Node{node}
+	} else {
+		newNodes = parseImportedNodes(strings.TrimSpace(body.Text))
+	}
+	if len(newNodes) == 0 {
+		writeJSON(w, http.StatusBadRequest, adminErr("未识别到受支持的节点配置"))
+		return
+	}
 	log.Printf("[Admin] [ImportNodes] 正在合并导入的新节点数量: %d", len(newNodes))
-	if err := nodes.ImportManualNodes(newNodes, body.Replace); err != nil {
+	if err := adm.importRequestNodes(r.Context(), newNodes, body.Replace); err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr("导入节点失败: "+err.Error()))
 		return
 	}
@@ -168,7 +217,7 @@ func (adm *AdminHandler) adminImportNodesJson(w http.ResponseWriter, r *http.Req
 	}
 
 	log.Printf("[Admin] [ImportNodesJson] 正在合并导入的新节点数量: %d", len(d.Nodes))
-	if err := nodes.ImportManualNodes(d.Nodes, body.Replace); err != nil {
+	if err := adm.importRequestNodes(r.Context(), d.Nodes, body.Replace); err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr("导入旧版节点失败: "+err.Error()))
 		return
 	}

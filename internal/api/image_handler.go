@@ -1,20 +1,20 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"io"
 	"log"
-	"mime"
 	"mime/multipart"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-	"github.com/bsfdsagfadg/vertex/internal/strutil"
-	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
 type ImageHandler struct {
@@ -38,9 +38,18 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 
 	log.Printf("[Server] [ImageGenerations] 收到请求: 模型=%s, 尺寸=%s, 格式=%s", rawModel, size, respFmt)
 
-	model, _, modelOK := resolveConfiguredModel(rawModel, img.cfg)
+	cfg := img.requestConfig(r)
+	model, _, modelOK := resolveConfiguredModel(rawModel, cfg)
 	if !modelOK {
 		oaiModelNotFound(w, rawModel)
+		return
+	}
+	if !transform.IsImageModel(model) {
+		oaiResourceError(w, http.StatusBadRequest, "model_capability_unsupported", "selected model does not advertise image output capability", "model")
+		return
+	}
+	if respFmt != "b64_json" && respFmt != "url" {
+		oaiResourceError(w, http.StatusBadRequest, "unsupported_response_format", "response_format must be b64_json or url", "response_format")
 		return
 	}
 	if prompt == "" {
@@ -53,7 +62,7 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": prompt}}}},
 	}
 	transform.ApplyImageConfig(geminiPayload, body, model)
-	transform.ApplyImageDefaults(geminiPayload, model, img.cfg.DefaultImageSize(), img.cfg.DefaultResponseModalities())
+	transform.ApplyImageDefaults(geminiPayload, model, cfg.DefaultImageSize(), cfg.DefaultResponseModalities())
 
 	images, vErr := img.vc.CompleteChatImage(r.Context(), model, geminiPayload)
 	if vErr != nil {
@@ -63,15 +72,16 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 	}
 
 	data := make([]any, 0, len(images))
-	for _, img := range images {
-		if img.B64JSON == "" {
+	for _, generated := range images {
+		if generated.B64JSON == "" {
 			continue
 		}
-		if respFmt == "url" {
-			data = append(data, map[string]any{"url": "data:image/png;base64," + img.B64JSON})
-		} else {
-			data = append(data, map[string]any{"b64_json": img.B64JSON})
+		item, err := img.imageResultItem(generated.B64JSON, generated.MimeType, respFmt)
+		if err != nil {
+			img.oaiBadRequest(w, err.Error())
+			return
 		}
+		data = append(data, item)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": data})
 }
@@ -107,22 +117,31 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 	}
 
 	rawModel := transform.ResolveImageModel(formValue(r, "model"))
-	model, _, modelOK := resolveConfiguredModel(rawModel, img.cfg)
+	cfg := img.requestConfig(r)
+	model, _, modelOK := resolveConfiguredModel(rawModel, cfg)
 	if !modelOK {
 		oaiModelNotFound(w, rawModel)
+		return
+	}
+	if !transform.IsImageModel(model) || !strings.HasPrefix(model, "gemini") {
+		oaiResourceError(w, http.StatusBadRequest, "model_capability_unsupported", "selected model does not support multimodal image editing", "model")
 		return
 	}
 	prompt := firstNonEmptyStr(formValue(r, "prompt"), "Edit the provided image.")
 	prompt = transform.AppendNegativePrompt(prompt, formValue(r, "negative_prompt"))
 	n := coerceOAIN(formValue(r, "n"))
 	respFmt := firstNonEmptyStr(formValue(r, "response_format"), "b64_json")
+	if respFmt != "b64_json" && respFmt != "url" {
+		img.oaiBadRequest(w, "response_format must be b64_json or url")
+		return
+	}
 
 	log.Printf("[Server] [ImageEdits] 收到请求: 模型=%s, 格式=%s, 图片数=%d", model, respFmt, len(images))
 
 	geminiPayload := transform.BuildImagePayload(model, prompt, images, mask,
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"),
 		formValue(r, "background"), "edit")
-	transform.ApplyImageDefaults(geminiPayload, model, img.cfg.DefaultImageSize(), img.cfg.DefaultResponseModalities())
+	transform.ApplyImageDefaults(geminiPayload, model, cfg.DefaultImageSize(), cfg.DefaultResponseModalities())
 
 	img.runOAIImageRequest(r.Context(), w, model, geminiPayload, n, respFmt)
 }
@@ -149,21 +168,30 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 	}
 
 	rawModel := transform.ResolveImageModel(formValue(r, "model"))
-	model, _, modelOK := resolveConfiguredModel(rawModel, img.cfg)
+	cfg := img.requestConfig(r)
+	model, _, modelOK := resolveConfiguredModel(rawModel, cfg)
 	if !modelOK {
 		oaiModelNotFound(w, rawModel)
+		return
+	}
+	if !transform.IsImageModel(model) || !strings.HasPrefix(model, "gemini") {
+		oaiResourceError(w, http.StatusBadRequest, "model_capability_unsupported", "selected model does not support image variation input", "model")
 		return
 	}
 	prompt := firstNonEmptyStr(formValue(r, "prompt"), "Create a variation of the provided image.")
 	prompt = transform.AppendNegativePrompt(prompt, formValue(r, "negative_prompt"))
 	n := coerceOAIN(formValue(r, "n"))
 	respFmt := firstNonEmptyStr(formValue(r, "response_format"), "b64_json")
+	if respFmt != "b64_json" && respFmt != "url" {
+		img.oaiBadRequest(w, "response_format must be b64_json or url")
+		return
+	}
 
 	log.Printf("[Server] [ImageVariations] 收到请求: 模型=%s, 格式=%s, 图片数=%d", model, respFmt, len(images))
 
 	geminiPayload := transform.BuildImagePayload(model, prompt, images, nil,
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"), "", "variation")
-	transform.ApplyImageDefaults(geminiPayload, model, img.cfg.DefaultImageSize(), img.cfg.DefaultResponseModalities())
+	transform.ApplyImageDefaults(geminiPayload, model, cfg.DefaultImageSize(), cfg.DefaultResponseModalities())
 
 	img.runOAIImageRequest(r.Context(), w, model, geminiPayload, n, respFmt)
 }
@@ -179,19 +207,20 @@ func (img *ImageHandler) runOAIImageRequest(ctx context.Context, w http.Response
 			writeJSON(w, ve.Code, vertexErrorToOAI(ve))
 			return
 		}
-		for _, img := range images {
-			if img.B64JSON == "" {
+		for _, generated := range images {
+			if generated.B64JSON == "" {
 				continue
 			}
+			format := "b64_json"
 			if wantURL {
-				mimeType := img.MimeType
-				if mimeType == "" {
-					mimeType = "image/png"
-				}
-				items = append(items, map[string]any{"url": "data:" + mimeType + ";base64," + img.B64JSON})
-			} else {
-				items = append(items, map[string]any{"b64_json": img.B64JSON})
+				format = "url"
 			}
+			item, err := img.imageResultItem(generated.B64JSON, generated.MimeType, format)
+			if err != nil {
+				img.oaiBadRequest(w, err.Error())
+				return
+			}
+			items = append(items, item)
 		}
 		if len(items) >= n {
 			break
@@ -207,6 +236,27 @@ func (img *ImageHandler) runOAIImageRequest(ctx context.Context, w http.Response
 		items = items[:n]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": items})
+}
+
+func (img *ImageHandler) imageResultItem(encoded, mimeType, responseFormat string) (map[string]any, error) {
+	if responseFormat != "url" {
+		return map[string]any{"b64_json": encoded}, nil
+	}
+	if img.platform == nil {
+		return nil, errors.New("local image URL storage is unavailable")
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, errors.New("upstream image data is invalid base64")
+	}
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	file, err := img.platform.createGeneratedFile("image_output", "openai", data, mimeType, time.Now().Add(time.Hour).Unix())
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"url": "/v1/files/" + file.ID + "/content"}, nil
 }
 
 func (img *ImageHandler) oaiBadRequest(w http.ResponseWriter, message string) {
@@ -256,10 +306,16 @@ func uploadToInlineImage(fh *multipart.FileHeader) (transform.InlineImage, error
 		return transform.InlineImage{}, &badRequestError{msg: "无法读取上传文件 (cannot read upload)"}
 	}
 	defer func() { _ = f.Close() }()
+	reader := bufio.NewReader(f)
+	header, _ := reader.Peek(512)
+	detectedType := http.DetectContentType(header)
+	if !strings.HasPrefix(strings.ToLower(detectedType), "image/") {
+		return transform.InlineImage{}, &badRequestError{msg: "上传内容不是受支持的图片 (uploaded content is not an image)"}
+	}
 
 	var buf strings.Builder
 	enc := base64.NewEncoder(base64.StdEncoding, &buf)
-	written, err := io.Copy(enc, f)
+	written, err := io.Copy(enc, reader)
 	if err != nil {
 		return transform.InlineImage{}, &badRequestError{msg: "无法读取上传文件 (cannot read upload)"}
 	}
@@ -271,15 +327,7 @@ func uploadToInlineImage(fh *multipart.FileHeader) (transform.InlineImage, error
 		}
 		return transform.InlineImage{}, &badRequestError{msg: name + " 内容为空 (empty file)"}
 	}
-	mimeType := fh.Header.Get("Content-Type")
-	if mimeType == "" {
-		if ext := filepath.Ext(fh.Filename); ext != "" {
-			mimeType = mime.TypeByExtension(ext)
-		}
-	}
-	if mimeType == "" {
-		mimeType = "image/png"
-	}
+	mimeType := detectedType
 	return transform.InlineImage{MimeType: mimeType, Data: buf.String()}, nil
 }
 

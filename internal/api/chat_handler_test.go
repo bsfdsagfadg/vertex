@@ -2,11 +2,23 @@ package api
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
+
+func TestSSEWriterDisablesBrowserAndProxyCaching(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writer := newSSEWriter(recorder, "text/event-stream")
+	if !writer.write("data: [DONE]\n\n") {
+		t.Fatal("write failed")
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control=%q, want no-store", got)
+	}
+}
 
 func TestWriteStreamErrorEmitsValidTerminalChoices(t *testing.T) {
 	var packets []map[string]any

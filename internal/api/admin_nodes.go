@@ -23,17 +23,12 @@ const (
 	singleNodeTestTimeoutSec = 15
 )
 
-var (
-	//nolint:gochecknoglobals // 当前唯一批量测速任务的取消函数和代次
-	testAllCancel context.CancelFunc
-	//nolint:gochecknoglobals // guards testAllCancel/testAllGeneration
-	testAllMu sync.Mutex
-	//nolint:gochecknoglobals // prevents an old task from clearing a newer cancel function
-	testAllGeneration uint64
-)
-
-func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, _ *http.Request) {
-	list := nodes.LoadNodes()
+func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, r *http.Request) {
+	list, health, err := adm.listRequestNodes(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("加载节点失败: "+err.Error()))
+		return
+	}
 	var enabledCount, disabledCount int
 	for _, n := range list {
 		if n.Disabled {
@@ -42,10 +37,15 @@ func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, _ *http.Request) {
 			enabledCount++
 		}
 	}
-	sp := nodes.GetStickyPool()
+	var sp *nodes.StickyNodePool
+	if adm.nodePool != nil {
+		sp = adm.nodePool.StickyPool()
+	} else {
+		sp = nodes.GetStickyPool()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"nodes":                 list,
-		"health":                nodes.LoadHealth(),
+		"health":                health,
 		"total":                 len(list),
 		"enabled_count":         enabledCount,
 		"disabled_count":        disabledCount,
@@ -56,7 +56,7 @@ func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (adm *AdminHandler) adminGetTestProgress(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, nodes.GetTestProgress())
+	writeJSON(w, http.StatusOK, adm.requestNodeTestProgress())
 }
 
 func (adm *AdminHandler) adminFetchSub(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +66,11 @@ func (adm *AdminHandler) adminFetchSub(w http.ResponseWriter, r *http.Request) {
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	log.Printf("[Admin] [FetchSub] 开始拉取订阅 URL: %s", body.URL)
+	if err := validateSubscriptionURL(body.URL); err != nil {
+		writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
+		return
+	}
+	log.Printf("[Admin] [FetchSub] 开始拉取订阅 URL: %s", redactSubscriptionURL(body.URL))
 	text, err := adm.fetchSubscriptionText(r.Context(), body.URL)
 	if err != nil {
 		log.Printf("[Admin] [FetchSub] 拉取失败: %v", err)
@@ -75,40 +79,47 @@ func (adm *AdminHandler) adminFetchSub(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newNodes := parseImportedNodes(text)
-	nodes.MergeNodes(newNodes)
+	if err := adm.importRequestNodes(r.Context(), newNodes, false); err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("保存节点失败: "+err.Error()))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(newNodes)})
 }
 
-func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
-	list := nodes.LoadNodes()
+func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, r *http.Request) {
+	list, _, err := adm.listRequestNodes(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("加载节点失败: "+err.Error()))
+		return
+	}
 	enabledNodes := make([]nodes.Node, 0, len(list))
 	for _, node := range list {
 		if !node.Disabled {
 			enabledNodes = append(enabledNodes, node)
 		}
 	}
-	if !nodes.StartTestProgress(len(enabledNodes)) {
+	if !adm.startRequestNodeTest(len(enabledNodes)) {
 		writeJSON(w, http.StatusConflict, adminErr("已有批量测试正在进行中，请先等待其结束或终止"))
 		return
 	}
 
 	dynamicTimeout := batchTestTimeout(len(enabledNodes))
 	ctx, cancel := context.WithTimeout(context.Background(), dynamicTimeout)
-	testAllMu.Lock()
-	testAllGeneration++
-	generation := testAllGeneration
-	testAllCancel = cancel
-	testAllMu.Unlock()
+	adm.nodeTestMu.Lock()
+	adm.nodeTestGeneration++
+	generation := adm.nodeTestGeneration
+	adm.nodeTestCancel = cancel
+	adm.nodeTestMu.Unlock()
 
 	log.Printf("[Admin] [TestAll] 开始触发全局并发测速（基于 recaptchaToken 耗时）")
 	go func() {
 		defer func() {
 			cancel()
-			testAllMu.Lock()
-			if testAllGeneration == generation {
-				testAllCancel = nil
+			adm.nodeTestMu.Lock()
+			if adm.nodeTestGeneration == generation {
+				adm.nodeTestCancel = nil
 			}
-			testAllMu.Unlock()
+			adm.nodeTestMu.Unlock()
 		}()
 		log.Printf("[Admin] [TestAll] 加载待测节点数: %d/%d, 并发上限: %d, 总超时: %v", len(enabledNodes), len(list), batchTestConcurrency, dynamicTimeout)
 
@@ -119,7 +130,7 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 			wg.Add(1)
 			go func(node nodes.Node) {
 				defer wg.Done()
-				if nodes.CheckTestControl() {
+				if adm.checkRequestNodeTestControl() {
 					return
 				}
 				select {
@@ -128,7 +139,7 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 					return
 				}
 				defer func() { <-sem }()
-				if nodes.CheckTestControl() {
+				if adm.checkRequestNodeTestControl() {
 					return
 				}
 
@@ -148,7 +159,7 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 
 				duration := float64(time.Since(start).Milliseconds())
 				testErr, abort := resolveBatchNodeTest(ctx, nodeCtx, testErr)
-				if abort || nodes.CheckTestControl() {
+				if abort || adm.checkRequestNodeTestControl() {
 					return
 				}
 				if testErr != nil {
@@ -157,15 +168,15 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 					log.Printf("[Admin] [TestAll] 节点 %s 测试成功, recaptcha 耗时: %.0fms", node.Name, duration)
 				}
 				success := testErr == nil
-				nodes.RecordTest(node.RawURI, success, duration, errToStr(testErr))
+				adm.recordRequestNodeTest(node.RawURI, success, duration, errToStr(testErr))
 				if !success {
-					nodes.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
+					_, _ = adm.setRequestNodesDisabled(context.Background(), []string{node.RawURI}, true)
 				}
-				nodes.UpdateTestProgress(node.Name, success)
+				adm.updateRequestNodeTest(node.Name, success)
 			}(n)
 		}
 		wg.Wait()
-		nodes.FinishTestProgress()
+		adm.finishRequestNodeTest()
 		log.Printf("[Admin] [TestAll] 全局节点测试全部结束")
 	}()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -199,7 +210,7 @@ func (adm *AdminHandler) adminTestPause(w http.ResponseWriter, r *http.Request) 
 		adm.adminMethodNotAllowed(w)
 		return
 	}
-	nodes.PauseTestProgress()
+	adm.pauseRequestNodeTest()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -208,7 +219,7 @@ func (adm *AdminHandler) adminTestResume(w http.ResponseWriter, r *http.Request)
 		adm.adminMethodNotAllowed(w)
 		return
 	}
-	nodes.ResumeTestProgress()
+	adm.resumeRequestNodeTest()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -217,12 +228,12 @@ func (adm *AdminHandler) adminTestTerminate(w http.ResponseWriter, r *http.Reque
 		adm.adminMethodNotAllowed(w)
 		return
 	}
-	nodes.TerminateTestProgress()
-	testAllMu.Lock()
-	if testAllCancel != nil {
-		testAllCancel()
+	adm.terminateRequestNodeTest()
+	adm.nodeTestMu.Lock()
+	if adm.nodeTestCancel != nil {
+		adm.nodeTestCancel()
 	}
-	testAllMu.Unlock()
+	adm.nodeTestMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -265,14 +276,14 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 
 	disabled := false
 	if body.AutoDisable {
-		nodes.UpdateNodeTestResult(body.RawURI, ok, elapsed, errStr)
+		adm.recordRequestNodeTest(body.RawURI, ok, elapsed, errStr)
 		disabled = !ok
 		if !ok {
-			nodes.BatchUpdateNodesDisabled([]string{body.RawURI}, true)
+			_, _ = adm.setRequestNodesDisabled(r.Context(), []string{body.RawURI}, true)
 		}
 	}
 
-	log.Printf("[Admin] [TestNode] 节点测试 %s: ok=%v elapsed=%.0fms error=%q disabled=%v", nodes.GetNodeName(body.RawURI), ok, elapsed, errStr, disabled)
+	log.Printf("[Admin] [TestNode] 节点测试 %s: ok=%v elapsed=%.0fms error=%q disabled=%v", adm.requestNodeName(body.RawURI), ok, elapsed, errStr, disabled)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         ok,
 		"elapsed_ms": elapsed,
@@ -288,8 +299,9 @@ func (adm *AdminHandler) adminEnableNode(w http.ResponseWriter, r *http.Request)
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	ok := nodes.EnableNode(body.RawURI)
-	log.Printf("[Admin] [EnableNode] 启用节点 %s: %v", nodes.GetNodeName(body.RawURI), ok)
+	count, err := adm.setRequestNodesDisabled(r.Context(), []string{body.RawURI}, false)
+	ok := err == nil && count > 0
+	log.Printf("[Admin] [EnableNode] 启用节点 %s: %v", adm.requestNodeName(body.RawURI), ok)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": ok})
 }
 
@@ -298,16 +310,43 @@ func fetchRecaptchaTokenWithSess(ctx context.Context, sess *transport.Session) e
 	return err
 }
 
-func (adm *AdminHandler) adminDedupNodes(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed_count": nodes.DedupNodes()})
+func (adm *AdminHandler) adminDedupNodes(w http.ResponseWriter, r *http.Request) {
+	if adm.nodePool == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed_count": nodes.DedupNodes()})
+		return
+	}
+	removed, err := adm.nodePool.Dedup(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("节点去重失败: "+err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed_count": removed})
 }
 
-func (adm *AdminHandler) adminPreviewDedupNodes(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, nodes.PreviewDedupNodes())
+func (adm *AdminHandler) adminPreviewDedupNodes(w http.ResponseWriter, r *http.Request) {
+	if adm.nodePool == nil {
+		writeJSON(w, http.StatusOK, nodes.PreviewDedupNodes())
+		return
+	}
+	preview, err := adm.nodePool.PreviewDedup(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("预览去重失败: "+err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
 }
 
-func (adm *AdminHandler) adminDeleteDisabledNodes(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted_count": nodes.DeleteDisabled()})
+func (adm *AdminHandler) adminDeleteDisabledNodes(w http.ResponseWriter, r *http.Request) {
+	if adm.nodePool == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted_count": nodes.DeleteDisabled()})
+		return
+	}
+	count, err := adm.nodePool.DeleteDisabled(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("删除禁用节点失败: "+err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted_count": count})
 }
 
 func (adm *AdminHandler) adminUseNode(w http.ResponseWriter, r *http.Request) {
@@ -318,9 +357,15 @@ func (adm *AdminHandler) adminUseNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.RawURI == "" {
-		_ = config.WriteSettings(map[string]any{"active_node_uri": "", "parallel_pool_enabled": true})
+		if err := adm.writeSettings(map[string]any{"active_node_uri": "", "parallel_pool_enabled": true}); err != nil {
+			writeJSON(w, http.StatusInternalServerError, adminErr("写入节点模式失败: "+err.Error()))
+			return
+		}
 	} else {
-		_ = config.WriteSettings(map[string]any{"active_node_uri": body.RawURI, "parallel_pool_enabled": false})
+		if err := adm.writeSettings(map[string]any{"active_node_uri": body.RawURI, "parallel_pool_enabled": false}); err != nil {
+			writeJSON(w, http.StatusInternalServerError, adminErr("写入节点模式失败: "+err.Error()))
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -333,9 +378,17 @@ func (adm *AdminHandler) adminSortNodesByLatency(w http.ResponseWriter, r *http.
 		return
 	}
 	if body.Desc {
-		nodes.SortNodesByLatencyDesc()
+		if adm.nodePool != nil {
+			adm.nodePool.SetSort(true)
+		} else {
+			nodes.SortNodesByLatencyDesc()
+		}
 	} else {
-		nodes.SortNodesByLatency()
+		if adm.nodePool != nil {
+			adm.nodePool.SetSort(false)
+		} else {
+			nodes.SortNodesByLatency()
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -347,7 +400,10 @@ func (adm *AdminHandler) adminDeleteNode(w http.ResponseWriter, r *http.Request)
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	nodes.DeleteNode(body.RawURI)
+	if _, err := adm.deleteRequestNodes(r.Context(), []string{body.RawURI}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("删除节点失败: "+err.Error()))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -359,7 +415,10 @@ func (adm *AdminHandler) adminBatchDisableNodes(w http.ResponseWriter, r *http.R
 		return
 	}
 	log.Printf("[Admin] [BatchDisable] 批量禁用 %d 个节点", len(body.URIs))
-	nodes.BatchUpdateNodesDisabled(body.URIs, true)
+	if _, err := adm.setRequestNodesDisabled(r.Context(), body.URIs, true); err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("禁用节点失败: "+err.Error()))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -371,7 +430,10 @@ func (adm *AdminHandler) adminBatchEnableNodes(w http.ResponseWriter, r *http.Re
 		return
 	}
 	log.Printf("[Admin] [BatchEnable] 批量启用 %d 个节点", len(body.URIs))
-	nodes.BatchUpdateNodesDisabled(body.URIs, false)
+	if _, err := adm.setRequestNodesDisabled(r.Context(), body.URIs, false); err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("启用节点失败: "+err.Error()))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -383,7 +445,10 @@ func (adm *AdminHandler) adminBatchDeleteNodes(w http.ResponseWriter, r *http.Re
 		return
 	}
 	log.Printf("[Admin] [BatchDelete] 批量删除 %d 个节点", len(body.URIs))
-	nodes.BatchDeleteNodes(body.URIs)
+	if _, err := adm.deleteRequestNodes(r.Context(), body.URIs); err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("删除节点失败: "+err.Error()))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -393,31 +458,62 @@ func (adm *AdminHandler) fetchSubscriptionText(ctx context.Context, rawURL strin
 		return "", errors.New("subscription url is empty")
 	}
 
-	data, err := fetchSubscriptionDataDirect(ctx, rawURL)
-	if err == nil {
-		return strings.TrimSpace(string(data)), nil
-	}
-
-	proxyURI := subscriptionFallbackProxy(adm.cfg)
-	if proxyURI == "" || adm.vc == nil || adm.vc.Net() == nil {
+	proxyURI, direct, err := adm.planSubscriptionRoute(ctx, adm.cfg)
+	if err != nil {
 		return "", err
 	}
-
-	log.Printf("[Admin] [FetchSub] direct fetch failed, retry via proxy: %v", err)
-	data, proxyErr := fetchSubscriptionDataViaProxy(ctx, adm.vc.Net(), rawURL, proxyURI)
-	if proxyErr != nil {
-		return "", fmt.Errorf("direct fetch failed: %v; proxy retry failed: %w", err, proxyErr)
+	var data []byte
+	if direct {
+		data, err = fetchSubscriptionDataDirect(ctx, rawURL)
+	} else {
+		if adm.vc == nil || adm.vc.Net() == nil {
+			return "", errors.New("network client unavailable for global proxy subscription route")
+		}
+		data, err = fetchSubscriptionDataViaProxy(ctx, adm.vc.Net(), rawURL, proxyURI)
+		if err == nil {
+			_ = adm.markGlobalProxySuccess(proxyURI)
+		}
 	}
-
-	log.Printf("[Admin] [FetchSub] proxy retry succeeded")
+	if err != nil {
+		return "", err
+	}
 	return strings.TrimSpace(string(data)), nil
 }
 
-func subscriptionFallbackProxy(cfg config.ConfigProvider) string {
-	if cfg == nil {
-		return ""
+func (adm *AdminHandler) planSubscriptionRoute(ctx context.Context, cfg config.ConfigProvider) (proxyURI string, direct bool, err error) {
+	if cfg == nil || !cfg.GlobalProxyEnabled() {
+		return "", true, nil
 	}
-	return strings.TrimSpace(cfg.ProxyURL())
+	proxyURI, err = adm.selectGlobalProxy(ctx, cfg)
+	if err != nil {
+		return "", false, err
+	}
+	if proxyURI = strings.TrimSpace(proxyURI); proxyURI != "" {
+		return proxyURI, false, nil
+	}
+	if cfg.AllowDirectWithoutGlobalProxy() {
+		return "", true, nil
+	}
+	return "", false, errors.New("no_global_proxy_route")
+}
+
+// planSubscriptionRoute makes direct access an explicit policy decision. When
+// GlobalProxy is enabled, subscription traffic never probes the destination
+// directly before trying the selected first hop.
+func planSubscriptionRoute(cfg config.ConfigProvider) (proxyURI string, direct bool, err error) {
+	if cfg == nil {
+		return "", true, nil
+	}
+	if !cfg.GlobalProxyEnabled() {
+		return "", true, nil
+	}
+	if proxyURI = strings.TrimSpace(config.SelectEntryProxy(cfg)); proxyURI != "" {
+		return proxyURI, false, nil
+	}
+	if cfg.AllowDirectWithoutGlobalProxy() {
+		return "", true, nil
+	}
+	return "", false, errors.New("no_global_proxy_route")
 }
 
 func fetchSubscriptionDataDirect(ctx context.Context, rawURL string) ([]byte, error) {

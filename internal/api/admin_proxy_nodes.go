@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/scheduler"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
 
@@ -42,6 +44,17 @@ type entryProxyProbeSchedule struct {
 	next     time.Time
 }
 
+type globalProxyRouteConflict struct {
+	Name   string `json:"name"`
+	RawURI string `json:"raw_uri"`
+	Reason string `json:"reason"`
+}
+
+type globalProxyAdminView struct {
+	config.ProxyCandidate
+	IncompatibleRequestNodes []globalProxyRouteConflict `json:"incompatible_request_nodes"`
+}
+
 func (s *entryProxyProbeSchedule) due(now time.Time, enabled bool, interval time.Duration) bool {
 	if !enabled {
 		s.interval = 0
@@ -59,12 +72,6 @@ func (s *entryProxyProbeSchedule) due(now time.Time, enabled bool, interval time
 func (s *entryProxyProbeSchedule) completed(now time.Time) {
 	s.next = now.Add(s.interval)
 }
-
-var (
-	entryProxyTestMu         sync.Mutex             //nolint:gochecknoglobals
-	entryProxyTestState      entryProxyTestProgress //nolint:gochecknoglobals
-	entryProxyTestGeneration uint64                 //nolint:gochecknoglobals
-)
 
 func redactProxyURI(rawURI string) string {
 	scheme, remainder, ok := strings.Cut(rawURI, "://")
@@ -88,7 +95,7 @@ func (adm *AdminHandler) adminImportProxyNode(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, adminErr("代理构造失败: "+err.Error()))
 		return
 	}
-	candidate, err := config.AddProxyCandidate(body.RawURI)
+	candidate, err := adm.addGlobalProxy(r.Context(), body.RawURI)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
 		return
@@ -103,7 +110,12 @@ func (adm *AdminHandler) adminEnableProxyNode(w http.ResponseWriter, r *http.Req
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	if !config.HasProxyCandidate(body.RawURI) {
+	exists, err := adm.hasGlobalProxy(r.Context(), body.RawURI)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr(err.Error()))
+		return
+	}
+	if !exists {
 		writeJSON(w, http.StatusBadRequest, adminErr("该 URI 不在候选列表中"))
 		return
 	}
@@ -111,11 +123,11 @@ func (adm *AdminHandler) adminEnableProxyNode(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, adminErr("代理构造失败: "+err.Error()))
 		return
 	}
-	if err := config.SetProxyCandidateEnabled(body.RawURI, true); err != nil {
+	if err := adm.setGlobalProxyEnabled(r.Context(), body.RawURI, true); err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr("启用入口代理失败: "+err.Error()))
 		return
 	}
-	transport.RemoveProxy(body.RawURI)
+	adm.removeProxy(body.RawURI)
 	log.Printf("[Admin] [EnableProxyNode] 已启用入口代理: %s", redactProxyURI(body.RawURI))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -127,18 +139,15 @@ func (adm *AdminHandler) adminDisableProxyNode(w http.ResponseWriter, r *http.Re
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	if strings.TrimSpace(body.RawURI) == "" {
-		body.RawURI = strings.TrimSpace(adm.cfg.ProxyURL())
-	}
 	if body.RawURI == "" {
 		writeJSON(w, http.StatusBadRequest, adminErr("缺少入口代理 URI"))
 		return
 	}
-	if err := config.SetProxyCandidateEnabled(body.RawURI, false); err != nil {
+	if err := adm.setGlobalProxyEnabled(r.Context(), body.RawURI, false); err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr("停用入口代理失败: "+err.Error()))
 		return
 	}
-	transport.RemoveProxy(body.RawURI)
+	adm.removeProxy(body.RawURI)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -157,7 +166,11 @@ func (adm *AdminHandler) adminListProxyNodes(w http.ResponseWriter, r *http.Requ
 	if pageSize > 100 {
 		pageSize = 100
 	}
-	all := config.ListProxyCandidates()
+	all, err := adm.listGlobalProxies(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("加载全局代理失败: "+err.Error()))
+		return
+	}
 	start := (page - 1) * pageSize
 	if start > len(all) {
 		start = len(all)
@@ -166,11 +179,97 @@ func (adm *AdminHandler) adminListProxyNodes(w http.ResponseWriter, r *http.Requ
 	if end > len(all) {
 		end = len(all)
 	}
-	items := all[start:end]
+	items := make([]globalProxyAdminView, 0, end-start)
+	allRawURIs := make([]string, 0, len(all))
+	for _, candidate := range all {
+		allRawURIs = append(allRawURIs, candidate.RawURI)
+	}
+	requestNodes, _, err := adm.listRequestNodes(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("加载请求节点失败: "+err.Error()))
+		return
+	}
+	for _, candidate := range all[start:end] {
+		view := globalProxyAdminView{ProxyCandidate: candidate}
+		for _, requestNode := range requestNodes {
+			identity, err := transport.ProxyIdentity(requestNode.RawURI)
+			if err != nil {
+				continue
+			}
+			reason := ""
+			switch {
+			case identity.SemanticFingerprint == candidate.CanonicalIdentity:
+				reason = "canonical_identity"
+			case identity.EndpointFingerprint == candidate.EndpointFingerprint:
+				reason = "endpoint_fingerprint"
+			}
+			if reason != "" {
+				view.IncompatibleRequestNodes = append(view.IncompatibleRequestNodes, globalProxyRouteConflict{
+					Name: requestNode.Name, RawURI: requestNode.RawURI, Reason: reason,
+				})
+			}
+		}
+		items = append(items, view)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"candidates": items, "page": page, "page_size": pageSize, "total": len(all),
-		"total_pages": (len(all) + pageSize - 1) / pageSize,
+		"global_proxies": items, "candidates": items, "page": page, "page_size": pageSize, "total": len(all),
+		"total_pages": (len(all) + pageSize - 1) / pageSize, "global_proxy_raw_uris": allRawURIs,
 	})
+}
+
+func (adm *AdminHandler) adminPromoteNodeToGlobalProxy(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		RawURI string `json:"raw_uri"`
+		Pinned bool   `json:"pinned"`
+	}
+	if !adm.decodeAdminBody(w, r, &body) {
+		return
+	}
+	var selected *nodes.Node
+	requestNodes, _, err := adm.listRequestNodes(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("加载请求节点失败: "+err.Error()))
+		return
+	}
+	for _, node := range requestNodes {
+		if strings.TrimSpace(node.RawURI) == strings.TrimSpace(body.RawURI) {
+			nodeCopy := node
+			selected = &nodeCopy
+			break
+		}
+	}
+	if selected == nil {
+		writeJSON(w, http.StatusNotFound, adminErr("未找到该请求节点"))
+		return
+	}
+	identity, err := transport.ProxyIdentity(selected.RawURI)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
+		return
+	}
+	candidate, err := adm.upsertGlobalProxy(r.Context(),
+		selected.RawURI, "request_node", identity.SemanticFingerprint, body.Pinned,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "global_proxy": candidate})
+}
+
+func (adm *AdminHandler) adminSetGlobalProxyPinned(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		RawURI string `json:"raw_uri"`
+		Pinned bool   `json:"pinned"`
+	}
+	if !adm.decodeAdminBody(w, r, &body) {
+		return
+	}
+	if err := adm.setGlobalProxyPinned(r.Context(), body.RawURI, body.Pinned); err != nil {
+		writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pinned": body.Pinned})
 }
 
 func (adm *AdminHandler) adminImportProxyNodesBatch(w http.ResponseWriter, r *http.Request) {
@@ -186,13 +285,16 @@ func (adm *AdminHandler) adminImportProxyNodesBatch(w http.ResponseWriter, r *ht
 			invalid = append(invalid, strings.TrimSpace(rawURI))
 			continue
 		}
-		candidate, err := config.AddProxyCandidate(rawURI)
+		candidate, err := adm.addGlobalProxy(r.Context(), rawURI)
 		if err == nil {
 			added = append(added, candidate)
-		} else if config.HasProxyCandidate(rawURI) {
-			existing = append(existing, strings.TrimSpace(rawURI))
 		} else {
-			invalid = append(invalid, strings.TrimSpace(rawURI))
+			alreadyPresent, _ := adm.hasGlobalProxy(r.Context(), rawURI)
+			if alreadyPresent {
+				existing = append(existing, strings.TrimSpace(rawURI))
+			} else {
+				invalid = append(invalid, strings.TrimSpace(rawURI))
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "added": added, "already_present": existing, "invalid": invalid})
@@ -211,7 +313,7 @@ func (adm *AdminHandler) adminSetProxyNodesEnabled(w http.ResponseWriter, r *htt
 	}
 	updated, invalid := make([]string, 0), make([]string, 0)
 	for _, rawURI := range body.URIs {
-		if err := config.SetProxyCandidateEnabled(rawURI, enabled); err != nil {
+		if err := adm.setGlobalProxyEnabled(r.Context(), rawURI, enabled); err != nil {
 			invalid = append(invalid, strings.TrimSpace(rawURI))
 			continue
 		}
@@ -229,24 +331,24 @@ func (adm *AdminHandler) adminDeleteProxyNodesBatch(w http.ResponseWriter, r *ht
 	}
 	deleted, invalid := make([]string, 0), make([]string, 0)
 	for _, rawURI := range body.URIs {
-		if _, err := config.RemoveProxyCandidate(rawURI); err != nil {
+		if _, err := adm.removeGlobalProxy(r.Context(), rawURI); err != nil {
 			invalid = append(invalid, strings.TrimSpace(rawURI))
 			continue
 		}
-		transport.RemoveProxy(rawURI)
+		adm.removeProxy(rawURI)
 		deleted = append(deleted, strings.TrimSpace(rawURI))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": len(invalid) == 0, "deleted": deleted, "invalid": invalid})
 }
 
-func (adm *AdminHandler) adminDeleteDisabledProxyNodes(w http.ResponseWriter, _ *http.Request) {
-	deleted, err := config.RemoveDisabledProxyCandidates()
+func (adm *AdminHandler) adminDeleteDisabledProxyNodes(w http.ResponseWriter, r *http.Request) {
+	deleted, err := adm.removeDisabledGlobalProxies(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr(err.Error()))
 		return
 	}
 	for _, rawURI := range deleted {
-		transport.RemoveProxy(rawURI)
+		adm.removeProxy(rawURI)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted, "deleted_count": len(deleted)})
 }
@@ -258,12 +360,12 @@ func (adm *AdminHandler) adminDeleteProxyNode(w http.ResponseWriter, r *http.Req
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	wasActive, err := config.RemoveProxyCandidate(body.RawURI)
+	wasActive, err := adm.removeGlobalProxy(r.Context(), body.RawURI)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
 		return
 	}
-	transport.RemoveProxy(body.RawURI)
+	adm.removeProxy(body.RawURI)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "was_active": wasActive})
 }
 
@@ -275,7 +377,12 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	if !config.HasProxyCandidate(body.RawURI) {
+	exists, existsErr := adm.hasGlobalProxy(r.Context(), body.RawURI)
+	if existsErr != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr(existsErr.Error()))
+		return
+	}
+	if !exists {
 		writeJSON(w, http.StatusBadRequest, adminErr("该 URI 不在候选列表中"))
 		return
 	}
@@ -294,7 +401,7 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 			errText = "timeout"
 		}
 	}
-	if updateErr := config.UpdateProxyCandidateTest(body.RawURI, err == nil, elapsed, errText); updateErr != nil {
+	if updateErr := adm.updateGlobalProxyTest(r.Context(), body.RawURI, err == nil, elapsed, errText); updateErr != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr(updateErr.Error()))
 		return
 	}
@@ -302,9 +409,9 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 }
 
 func (adm *AdminHandler) adminGetProxyTestProgress(w http.ResponseWriter, _ *http.Request) {
-	entryProxyTestMu.Lock()
-	state := entryProxyTestState
-	entryProxyTestMu.Unlock()
+	adm.proxyTestMu.Lock()
+	state := adm.proxyTestState
+	adm.proxyTestMu.Unlock()
 	writeJSON(w, http.StatusOK, state)
 }
 
@@ -321,7 +428,12 @@ func (adm *AdminHandler) adminBatchTestProxyNodes(w http.ResponseWriter, r *http
 	}
 
 	known := make(map[string]config.ProxyCandidate)
-	for _, candidate := range config.ListProxyCandidates() {
+	all, err := adm.listGlobalProxies(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("加载全局代理失败: "+err.Error()))
+		return
+	}
+	for _, candidate := range all {
 		known[candidate.RawURI] = candidate
 	}
 	selected := make([]config.ProxyCandidate, 0, len(body.URIs))
@@ -343,16 +455,16 @@ func (adm *AdminHandler) adminBatchTestProxyNodes(w http.ResponseWriter, r *http
 		return
 	}
 
-	entryProxyTestMu.Lock()
-	if entryProxyTestState.Running {
-		entryProxyTestMu.Unlock()
+	adm.proxyTestMu.Lock()
+	if adm.proxyTestState.Running {
+		adm.proxyTestMu.Unlock()
 		writeJSON(w, http.StatusConflict, adminErr("已有入口代理批量测试正在进行中"))
 		return
 	}
-	entryProxyTestGeneration++
-	generation := entryProxyTestGeneration
-	entryProxyTestState = entryProxyTestProgress{Running: true, Total: len(selected)} //nolint:exhaustruct
-	entryProxyTestMu.Unlock()
+	adm.proxyTestGeneration++
+	generation := adm.proxyTestGeneration
+	adm.proxyTestState = entryProxyTestProgress{Running: true, Total: len(selected)} //nolint:exhaustruct
+	adm.proxyTestMu.Unlock()
 
 	perItemTimeout := time.Duration(body.TimeoutSeconds * float64(time.Second))
 	rounds := (len(selected) + entryProxyTestConcurrency - 1) / entryProxyTestConcurrency
@@ -374,12 +486,12 @@ func (adm *AdminHandler) runProxyBatchTest(
 ) {
 	defer cancel()
 	defer func() {
-		entryProxyTestMu.Lock()
-		if entryProxyTestGeneration == generation {
-			entryProxyTestState.Running = false
-			entryProxyTestState.CurrentNode = ""
+		adm.proxyTestMu.Lock()
+		if adm.proxyTestGeneration == generation {
+			adm.proxyTestState.Running = false
+			adm.proxyTestState.CurrentNode = ""
 		}
-		entryProxyTestMu.Unlock()
+		adm.proxyTestMu.Unlock()
 	}()
 
 	sem := make(chan struct{}, entryProxyTestConcurrency)
@@ -395,11 +507,11 @@ func (adm *AdminHandler) runProxyBatchTest(
 			}
 			defer func() { <-sem }()
 
-			entryProxyTestMu.Lock()
-			if entryProxyTestGeneration == generation {
-				entryProxyTestState.CurrentNode = candidate.Name
+			adm.proxyTestMu.Lock()
+			if adm.proxyTestGeneration == generation {
+				adm.proxyTestState.CurrentNode = candidate.Name
 			}
-			entryProxyTestMu.Unlock()
+			adm.proxyTestMu.Unlock()
 
 			probeCtx, probeCancel := context.WithTimeout(ctx, perItemTimeout)
 			elapsed, err := probeEntryProxyCandidate(probeCtx, adm.vc.Net(), candidate.RawURI, int(perItemTimeout.Seconds()))
@@ -415,20 +527,20 @@ func (adm *AdminHandler) runProxyBatchTest(
 					errText = "timeout"
 				}
 			}
-			if updateErr := config.UpdateProxyCandidateTest(candidate.RawURI, err == nil, elapsed, errText); updateErr != nil {
+			if updateErr := adm.updateGlobalProxyTest(context.Background(), candidate.RawURI, err == nil, elapsed, errText); updateErr != nil {
 				err = updateErr
 			}
 
-			entryProxyTestMu.Lock()
-			if entryProxyTestGeneration == generation {
-				entryProxyTestState.Done++
+			adm.proxyTestMu.Lock()
+			if adm.proxyTestGeneration == generation {
+				adm.proxyTestState.Done++
 				if err == nil {
-					entryProxyTestState.OKCount++
+					adm.proxyTestState.OKCount++
 				} else {
-					entryProxyTestState.FailCount++
+					adm.proxyTestState.FailCount++
 				}
 			}
-			entryProxyTestMu.Unlock()
+			adm.proxyTestMu.Unlock()
 		}()
 	}
 	wg.Wait()
@@ -459,7 +571,32 @@ func StartEntryProxyProbeLoop(netClient *transport.NetworkClient) func() {
 		return func() {}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	done := StartEntryProxyProbeLoopContext(ctx, netClient)
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// StartEntryProxyProbeLoopContext runs the probe scheduler under the caller's
+// lifecycle and closes the returned channel after the current probe round has
+// joined all candidate goroutines.
+func StartEntryProxyProbeLoopContext(ctx context.Context, netClient *transport.NetworkClient) <-chan struct{} {
+	return startEntryProxyProbeLoopContext(ctx, netClient, config.GetProvider(), nil)
+}
+
+func StartEntryProxyProbeLoopContextV2(ctx context.Context, netClient *transport.NetworkClient, cfg config.ConfigProvider, planner *scheduler.RoutePlanner) <-chan struct{} {
+	return startEntryProxyProbeLoopContext(ctx, netClient, cfg, planner)
+}
+
+func startEntryProxyProbeLoopContext(ctx context.Context, netClient *transport.NetworkClient, cfg config.ConfigProvider, planner *scheduler.RoutePlanner) <-chan struct{} {
+	done := make(chan struct{})
+	if netClient == nil {
+		close(done)
+		return done
+	}
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(entryProxyProbePollInterval)
 		defer ticker.Stop()
 		var schedule entryProxyProbeSchedule
@@ -468,17 +605,37 @@ func StartEntryProxyProbeLoop(netClient *transport.NetworkClient) func() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				cfg := config.GetProvider()
 				interval := time.Duration(cfg.EntryProxyProbeIntervalSeconds()) * time.Second
 				if !schedule.due(time.Now(), cfg.EntryProxyProbeEnabled(), interval) {
 					continue
 				}
-				probeAllEnabledProxyCandidates(ctx, netClient, cfg)
+				if planner != nil {
+					probeAllEnabledProxyCandidatesV2(ctx, netClient, cfg, planner)
+				} else {
+					probeAllEnabledProxyCandidates(ctx, netClient, cfg)
+				}
 				schedule.completed(time.Now())
 			}
 		}
 	}()
-	return cancel
+	return done
+}
+
+func probeAllEnabledProxyCandidatesV2(ctx context.Context, netClient *transport.NetworkClient, cfg config.ConfigProvider, planner *scheduler.RoutePlanner) entryProxyProbeSummary {
+	candidates, err := planner.ListGlobalProxies(ctx)
+	if err != nil {
+		log.Printf("[EntryProxy] 列出全局代理失败: %v", err)
+		return entryProxyProbeSummary{}
+	}
+	return runEntryProxyProbeRoundWithCandidates(ctx, cfg, candidates,
+		func(probeCtx context.Context, rawURI string) (float64, error) {
+			return probeEntryProxyCandidate(probeCtx, netClient, rawURI, int(entryProxyProbeTimeout.Seconds()))
+		},
+		func(updateCtx context.Context, rawURI string, ok bool, elapsed float64, message string) (bool, error) {
+			return planner.UpdateGlobalProxyResult(updateCtx, rawURI, ok, elapsed, message,
+				cfg.EntryProxyProbeCooldownSeconds(), true, cfg.EntryProxyProbeAutoDisableEnabled(), cfg.EntryProxyProbeAutoDisableFailures())
+		},
+	)
 }
 
 func probeAllEnabledProxyCandidates(ctx context.Context, netClient *transport.NetworkClient, cfg config.ConfigProvider) entryProxyProbeSummary {
@@ -492,8 +649,24 @@ func runEntryProxyProbeRound(
 	cfg config.ConfigProvider,
 	probe func(context.Context, string) (float64, error),
 ) entryProxyProbeSummary {
+	all := config.ListProxyCandidates()
+	return runEntryProxyProbeRoundWithCandidates(ctx, cfg, all, probe,
+		func(_ context.Context, rawURI string, ok bool, elapsed float64, message string) (bool, error) {
+			return config.UpdateProxyCandidateProbeResult(rawURI, ok, elapsed, message,
+				cfg.EntryProxyProbeCooldownSeconds(), cfg.EntryProxyProbeAutoDisableEnabled(), cfg.EntryProxyProbeAutoDisableFailures())
+		},
+	)
+}
+
+func runEntryProxyProbeRoundWithCandidates(
+	ctx context.Context,
+	cfg config.ConfigProvider,
+	all []config.ProxyCandidate,
+	probe func(context.Context, string) (float64, error),
+	update func(context.Context, string, bool, float64, string) (bool, error),
+) entryProxyProbeSummary {
 	candidates := make([]config.ProxyCandidate, 0)
-	for _, candidate := range config.ListProxyCandidates() {
+	for _, candidate := range all {
 		if candidate.Disabled || strings.TrimSpace(candidate.RawURI) == "" {
 			continue
 		}
@@ -503,7 +676,6 @@ func runEntryProxyProbeRound(
 	log.Printf("[EntryProxy] 自动拨测开始: %d 个节点测试", len(candidates))
 	debugMode := cfg.DebugMode()
 	cooldownSeconds := cfg.EntryProxyProbeCooldownSeconds()
-	autoDisable := cfg.EntryProxyProbeAutoDisableEnabled()
 	failureLimit := cfg.EntryProxyProbeAutoDisableFailures()
 	var resultMu sync.Mutex
 	summary := entryProxyProbeSummary{Total: len(candidates)}
@@ -520,9 +692,7 @@ func runEntryProxyProbeRound(
 			if err != nil {
 				errText = err.Error()
 			}
-			autoDisabled, updateErr := config.UpdateProxyCandidateProbeResult(
-				rawURI, err == nil, elapsed, errText, cooldownSeconds, autoDisable, failureLimit,
-			)
+			autoDisabled, updateErr := update(probeCtx, rawURI, err == nil, elapsed, errText)
 			if updateErr != nil {
 				log.Printf("[EntryProxy] 更新候选 %s 拨测状态失败: %v", redactProxyURI(rawURI), updateErr)
 			}

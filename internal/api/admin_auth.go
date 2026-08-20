@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -93,22 +94,39 @@ func requireAdmin(r *http.Request) bool {
 }
 
 func StartAdminSessionCleanup(interval time.Duration) {
+	StartAdminSessionCleanupContext(context.Background(), interval)
+}
+
+func StartAdminSessionCleanupContext(ctx context.Context, interval time.Duration) <-chan struct{} {
 	if interval <= 0 {
 		interval = time.Hour
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		t := time.NewTicker(interval)
 		defer t.Stop()
-		for range t.C {
-			if n := cleanupAdminSessions(); n > 0 {
-				log.Printf("[Admin] 已清理 %d 个过期会话 token", n)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if n := cleanupAdminSessions(); n > 0 {
+					log.Printf("[Admin] 已清理 %d 个过期会话 token", n)
+				}
 			}
 		}
 	}()
+	return done
 }
 
-func EnsureAdminPassword() {
-	if strings.TrimSpace(config.Load().AdminPassword) != "" {
+func EnsureAdminPassword() { EnsureAdminPasswordWithProvider(config.GetProvider()) }
+
+func EnsureAdminPasswordWithProvider(provider config.ConfigProvider) {
+	if provider == nil {
+		provider = config.GetProvider()
+	}
+	if strings.TrimSpace(provider.AdminPassword()) != "" {
 		return
 	}
 	b := make([]byte, 9)
@@ -117,7 +135,12 @@ func EnsureAdminPassword() {
 		return
 	}
 	pw := base64.RawURLEncoding.EncodeToString(b)
-	if err := config.WriteSettings(map[string]any{"admin_password": pw}); err != nil {
+	writer, ok := provider.(config.ConfigWriter)
+	if !ok || writer == nil {
+		log.Printf("[Admin] 配置提供器不支持写入管理员密码")
+		return
+	}
+	if err := writer.WriteSettings(map[string]any{"admin_password": pw}); err != nil {
 		log.Printf("[Admin] 写入管理员密码到 config.json 失败：%v", err)
 		return
 	}
@@ -147,7 +170,7 @@ func (adm *AdminHandler) adminLogin(w http.ResponseWriter, r *http.Request) {
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	expected := strings.TrimSpace(config.Load().AdminPassword)
+	expected := strings.TrimSpace(adm.cfg.AdminPassword())
 	if expected == "" {
 		writeJSON(w, http.StatusInternalServerError, adminErr("管理员密码未初始化 (admin password not set)"))
 		return
@@ -206,7 +229,7 @@ func (adm *AdminHandler) adminChangePassword(w http.ResponseWriter, r *http.Requ
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	expected := strings.TrimSpace(config.Load().AdminPassword)
+	expected := strings.TrimSpace(adm.cfg.AdminPassword())
 	if expected == "" {
 		writeJSON(w, http.StatusInternalServerError, adminErr("未设置管理员密码"))
 		return
@@ -220,7 +243,7 @@ func (adm *AdminHandler) adminChangePassword(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, adminErr("新密码不能少于 6 个字符"))
 		return
 	}
-	if err := config.WriteSettings(map[string]any{"admin_password": newPw}); err != nil {
+	if err := adm.writeSettings(map[string]any{"admin_password": newPw}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr("写入新密码失败"))
 		return
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
@@ -23,8 +24,6 @@ func (g *GeminiHandler) handleModelsSubtree(w http.ResponseWriter, r *http.Reque
 	switch {
 	case strings.HasPrefix(r.URL.Path, "/v1beta/models/"):
 		rest = strings.TrimPrefix(r.URL.Path, "/v1beta/models/")
-	case strings.HasPrefix(r.URL.Path, "/v1/models/"):
-		rest = strings.TrimPrefix(r.URL.Path, "/v1/models/")
 	default:
 		oaiError(w, http.StatusNotFound, "not found", "invalid_request_error")
 		return
@@ -47,15 +46,21 @@ func (g *GeminiHandler) handleModelsSubtree(w http.ResponseWriter, r *http.Reque
 			oaiError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
 			return
 		}
-		g.handleModelInfo(w, model)
+		g.handleModelInfo(w, model, g.requestConfig(r))
 	case "generateContent":
 		g.requirePost(w, r, func() { g.handleGeminiGenerate(w, r, model) })
 	case "streamGenerateContent":
 		g.requirePost(w, r, func() { g.handleGeminiStreamGenerate(w, r, model) })
 	case "countTokens":
 		g.requirePost(w, r, func() { g.handleCountTokens(w, r, model) })
+	case "batchGenerateContent":
+		if g.platform == nil {
+			writeUnsupportedEndpoint(w, EndpointSpec{Dialect: "gemini", Method: r.Method, Path: "/v1beta/models/{model}:batchGenerateContent", State: EndpointUnsupported})
+			return
+		}
+		g.requirePost(w, r, func() { g.platform.handleGeminiBatchGenerate(w, r, model) })
 	default:
-		oaiError(w, http.StatusNotFound, "未知方法 "+method+" (unknown method)", "invalid_request_error")
+		writeUnsupportedEndpoint(w, EndpointSpec{Dialect: "gemini", Method: r.Method, Path: "/v1beta/models/{model}:" + method, State: EndpointUnsupported})
 	}
 }
 
@@ -84,7 +89,8 @@ func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (
 }
 
 func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, model string) {
-	actualModel, _, modelOK := resolveConfiguredModel(model, g.cfg)
+	cfg := g.requestConfig(r)
+	actualModel, _, modelOK := resolveConfiguredModel(model, cfg)
 	if !modelOK {
 		geminiModelNotFound(w, model)
 		return
@@ -96,8 +102,18 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {
 		body = reqObj
 	}
+	if g.platform != nil {
+		if err := g.platform.expandLocalResources(r.Context(), body); err != nil {
+			geminiResourceError(w, http.StatusConflict, "FAILED_PRECONDITION", err.Error())
+			return
+		}
+	}
+	transform.MarkProtocol(body, "gemini")
+	if !applyRequestModelPolicy(w, body, actualModel, cfg.GeminiParameterPolicy(), "gemini") {
+		return
+	}
 	transform.ApplyImageConfig(body, body, actualModel)
-	transform.ApplyImageDefaults(body, actualModel, g.cfg.DefaultImageSize(), g.cfg.DefaultResponseModalities())
+	transform.ApplyImageDefaults(body, actualModel, cfg.DefaultImageSize(), cfg.DefaultResponseModalities())
 	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
 
 	resp, vErr := g.vc.CompleteChat(r.Context(), actualModel, body)
@@ -117,7 +133,8 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 }
 
 func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *http.Request, model string) {
-	actualModel, useFake, modelOK := resolveConfiguredModel(model, g.cfg)
+	cfg := g.requestConfig(r)
+	actualModel, useFake, modelOK := resolveConfiguredModel(model, cfg)
 	if !modelOK {
 		geminiModelNotFound(w, model)
 		return
@@ -129,13 +146,24 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {
 		body = reqObj
 	}
+	if g.platform != nil {
+		if err := g.platform.expandLocalResources(r.Context(), body); err != nil {
+			geminiResourceError(w, http.StatusConflict, "FAILED_PRECONDITION", err.Error())
+			return
+		}
+	}
+	transform.MarkProtocol(body, "gemini")
+	if !applyRequestModelPolicy(w, body, actualModel, cfg.GeminiParameterPolicy(), "gemini") {
+		return
+	}
 	transform.ApplyImageConfig(body, body, actualModel)
-	transform.ApplyImageDefaults(body, actualModel, g.cfg.DefaultImageSize(), g.cfg.DefaultResponseModalities())
+	transform.ApplyImageDefaults(body, actualModel, cfg.DefaultImageSize(), cfg.DefaultResponseModalities())
 	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 假流式=%v", model, actualModel, useFake)
 
 	sw := newSSEWriter(w, "text/event-stream")
 
 	if useFake {
+		w.Header().Set("X-VProxy-Stream-Mode", "simulated")
 		g.geminiFakeStream(r.Context(), w, sw, actualModel, body)
 		return
 	}
@@ -230,6 +258,7 @@ func (g *GeminiHandler) geminiFakeStream(ctx context.Context, w http.ResponseWri
 	// silently drops tool calls (and their IDs) for models using this mode.
 	if candidates, ok := resp["candidates"].([]any); ok && len(candidates) > 0 {
 		suffix := generateVPSuffix()
+		emitted := false
 		for candidateIndex, rawCandidate := range candidates {
 			candidate, ok := rawCandidate.(map[string]any)
 			if !ok {
@@ -250,13 +279,19 @@ func (g *GeminiHandler) geminiFakeStream(ctx context.Context, w http.ResponseWri
 				if !sw.write(g.geminiSSE(chunk)) {
 					return
 				}
+				emitted = true
 			}
 		}
-		return
+		if emitted {
+			return
+		}
 	}
 
 	text := geminiResponseText(resp)
 	chunks := splitIntoRuneChunks(text)
+	if len(chunks) == 0 {
+		chunks = []string{""}
+	}
 	for i, piece := range chunks {
 		cand := map[string]any{"index": 0, "content": map[string]any{"role": "model", "parts": []any{map[string]any{"text": piece}}}}
 		if i == len(chunks)-1 {
@@ -269,7 +304,7 @@ func (g *GeminiHandler) geminiFakeStream(ctx context.Context, w http.ResponseWri
 	}
 }
 func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request, model string) {
-	actualModel, _, modelOK := resolveConfiguredModel(model, g.cfg)
+	actualModel, _, modelOK := resolveConfiguredModel(model, g.requestConfig(r))
 	if !modelOK {
 		geminiModelNotFound(w, model)
 		return
@@ -282,21 +317,38 @@ func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request
 
 	var contents []any
 	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {
+		if g.platform != nil {
+			if err := g.platform.expandLocalResources(r.Context(), reqObj); err != nil {
+				geminiResourceError(w, http.StatusConflict, "FAILED_PRECONDITION", err.Error())
+				return
+			}
+		}
 		contents, _ = reqObj["contents"].([]any)
 	} else {
+		if g.platform != nil {
+			if err := g.platform.expandLocalResources(r.Context(), body); err != nil {
+				geminiResourceError(w, http.StatusConflict, "FAILED_PRECONDITION", err.Error())
+				return
+			}
+		}
 		contents, _ = body["contents"].([]any)
 	}
 	if contents == nil {
 		contents = []any{}
 	}
 
-	total := g.vc.CountTokens(r.Context(), actualModel, contents)
+	total, countErr := g.vc.CountTokens(r.Context(), actualModel, contents)
+	if countErr != nil {
+		ve := toVertexError(countErr)
+		writeJSON(w, ve.Code, vertexErrorToGemini(ve))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"totalTokens": total})
 }
 
-func (g *GeminiHandler) handleModelInfo(w http.ResponseWriter, modelName string) {
+func (g *GeminiHandler) handleModelInfo(w http.ResponseWriter, modelName string, cfg config.ConfigProvider) {
 	name := strings.TrimPrefix(modelName, "models/")
-	if _, _, ok := resolveConfiguredModel(name, g.cfg); !ok {
+	if _, _, ok := resolveConfiguredModel(name, cfg); !ok {
 		geminiModelNotFound(w, modelName)
 		return
 	}
@@ -341,15 +393,12 @@ func cleanGeminiFinishReason(data map[string]any) string {
 }
 
 func vertexErrorToGemini(e *vertex.VertexError) map[string]any {
-	msg := vertex.FriendlyErrorMessage(e)
-	if e.Message != "" {
-		msg += " | Raw: " + e.Message
-	}
-	if e.UpstreamResponse != "" {
-		msg += " | Upstream: " + e.UpstreamResponse
+	msg := e.PublicText
+	if msg == "" {
+		msg = vertex.FriendlyErrorMessage(e)
 	}
 	return map[string]any{"error": map[string]any{
-		"code": e.Code, "message": msg, "status": geminiStatusOf(e),
+		"code": e.Code, "message": msg, "status": geminiStatusOf(e), "details": []any{},
 	}}
 }
 

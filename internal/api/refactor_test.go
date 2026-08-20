@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bsfdsagfadg/vertex/internal/buildinfo"
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/db"
 	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
@@ -99,7 +100,12 @@ func newTestServer(t *testing.T) *testFixture {
 	keys.LoadKeys()
 
 	// ── HTTP server ──
-	srv := NewServer(vc, keys, config.StaticProvider(cfg))
+	srv := NewServer(vc, keys, config.StaticProvider(cfg), buildinfo.BuildInfo{
+		Version: "2.0.0-test", Source: "local",
+	})
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
 	t.Cleanup(srv.Close)
 	ts := httptest.NewServer(srv.Handler())
 
@@ -122,7 +128,6 @@ func newTestServer(t *testing.T) *testFixture {
 func geminiNonStreamingResponse() string {
 	return `{"candidates":[{"content":{"parts":[{"text":"Hello! How can I help you today?"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":20,"totalTokenCount":30}}`
 }
-
 
 // ──────────────────────────────────────────────
 // 集成测试
@@ -158,6 +163,26 @@ func TestRefactor(t *testing.T) {
 		}
 		if _, ok := body["timestamp"]; !ok {
 			t.Error("missing timestamp")
+		}
+	})
+
+	t.Run("build_info_without_auth", func(t *testing.T) {
+		fx := newTestServer(t)
+
+		resp, err := http.Get(fx.server.URL + "/api/meta/build")
+		if err != nil {
+			t.Fatalf("GET /api/meta/build: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d, want 200", resp.StatusCode)
+		}
+		var body buildinfo.BuildInfo
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if body.Version != "2.0.0-test" || body.Source != "local" {
+			t.Fatalf("unexpected build info: %+v", body)
 		}
 	})
 

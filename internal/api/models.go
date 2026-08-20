@@ -1,10 +1,13 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	coremodel "github.com/bsfdsagfadg/vertex/internal/core/model"
+	"github.com/bsfdsagfadg/vertex/internal/transform"
 )
 
 // 本文件实现模型清单端点所依赖的工具函数。
@@ -19,18 +22,51 @@ func stripFakePrefix(model string, fakePrefixes []string) (string, bool) {
 	return model, false
 }
 
-// resolveConfiguredModel 统一处理假流式前缀、别名、模型启用和局部能力。
+// resolveConfiguredModel resolves aliases and the model's explicit simulated-
+// stream policy. Protocol behavior is never encoded in a synthetic model name.
 func resolveConfiguredModel(rawModel string, cfg config.ConfigProvider) (actualModel string, useFake bool, ok bool) {
-	baseModel, requestedFake := stripFakePrefix(strings.TrimSpace(rawModel), cfg.FakePrefixes())
-	actualModel = cfg.ResolveModelName(baseModel)
+	requestedModel, prefixed := stripFakePrefix(strings.TrimSpace(rawModel), cfg.FakePrefixes())
+	actualModel = cfg.ResolveModelName(requestedModel)
 	entry, exists := cfg.LookupModel(actualModel)
 	if !exists || !entry.Enabled {
-		return actualModel, requestedFake, false
+		return actualModel, false, false
 	}
-	if requestedFake && (!cfg.FakeStreamEnabled() || !entry.FakeStreamEnabled) {
+	if prefixed && (!cfg.FakeStreamEnabled() || !entry.FakeStreamEnabled) {
 		return actualModel, true, false
 	}
-	return actualModel, requestedFake, true
+	return actualModel, prefixed, true
+}
+
+func applyRequestModelPolicy(w http.ResponseWriter, payload map[string]any, modelID, configuredPolicy, dialect string) bool {
+	fallback := coremodel.PolicyAdaptive
+	if dialect == "gemini" {
+		fallback = coremodel.PolicyPassthrough
+	}
+	diagnostics, err := transform.ApplyModelPolicy(payload, modelID, coremodel.ParsePolicy(configuredPolicy, fallback))
+	if err != nil {
+		var policyErr *transform.PolicyError
+		if errors.As(err, &policyErr) {
+			if dialect == "gemini" {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
+					"code": http.StatusBadRequest, "message": policyErr.Message, "status": "INVALID_ARGUMENT", "details": []any{},
+				}})
+			} else {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
+					"message": policyErr.Message, "type": "invalid_request_error", "param": policyErr.Param, "code": policyErr.Code,
+				}})
+			}
+			return false
+		}
+		return false
+	}
+	if len(diagnostics) > 0 {
+		codes := make([]string, 0, len(diagnostics))
+		for _, diagnostic := range diagnostics {
+			codes = append(codes, diagnostic.Code+":"+diagnostic.Param)
+		}
+		w.Header().Set("X-VProxy-Transform-Warnings", strings.Join(codes, ","))
+	}
+	return true
 }
 
 func oaiModelNotFound(w http.ResponseWriter, model string) {

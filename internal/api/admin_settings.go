@@ -10,12 +10,19 @@ import (
 var adminAllowedSettings = map[string]bool{
 	"max_retries": true, "max_spill_mb": true,
 	"max_request_mb": true, "max_n": true, "aggregate_stream": true,
-	"fake_stream_enabled": true,
-	"drop_max_tokens":     true, "proxy_url": true,
-	"request_timeout":          true,
-	"race_timeout":             true,
-	"model_turn_guard_enabled": true,
-	"parallel_pool_enabled":    true, "parallel_pool_size": true,
+	"fake_stream_enabled":               true,
+	"drop_max_tokens":                   true,
+	"global_proxy_enabled":              true,
+	"global_proxy_required":             true,
+	"global_proxy_selection":            true,
+	"allow_direct_without_global_proxy": true,
+	"request_timeout":                   true,
+	"race_timeout":                      true,
+	"model_turn_guard_enabled":          true,
+	"openai_parameter_policy":           true,
+	"gemini_parameter_policy":           true,
+	"tool_schema_policy":                true,
+	"parallel_pool_enabled":             true, "parallel_pool_size": true,
 	"parallel_pool_delay_dynamic":             true,
 	"entry_proxy_probe_enabled":               true,
 	"entry_proxy_probe_interval_seconds":      true,
@@ -37,7 +44,12 @@ var adminAllowedSettings = map[string]bool{
 	"default_response_modalities":             true,
 }
 
-func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request) {
+func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, r *http.Request) {
+	globalProxies, err := adm.listGlobalProxies(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("加载全局代理失败: "+err.Error()))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"settings": map[string]any{
 		"max_retries":              adm.cfg.MaxRetries(),
 		"max_spill_mb":             adm.cfg.MaxSpillMB(),
@@ -49,8 +61,15 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		"request_timeout":          adm.cfg.RequestTimeout(),
 		"race_timeout":             adm.cfg.RaceTimeout(),
 		"model_turn_guard_enabled": adm.cfg.ModelTurnGuardEnabled(),
-		"proxy_url":                adm.cfg.ProxyURL(), "parallel_pool_enabled": adm.cfg.ParallelPoolEnabled(), "parallel_pool_size": adm.cfg.ParallelPoolSize(), "active_node_uri": adm.cfg.ActiveNodeURI(),
-		"proxy_url_candidates":                    config.ListProxyCandidates(),
+		"openai_parameter_policy":  adm.cfg.OpenAIParameterPolicy(),
+		"gemini_parameter_policy":  adm.cfg.GeminiParameterPolicy(),
+		"tool_schema_policy":       adm.cfg.ToolSchemaPolicy(),
+		"parallel_pool_enabled":    adm.cfg.ParallelPoolEnabled(), "parallel_pool_size": adm.cfg.ParallelPoolSize(), "active_node_uri": adm.cfg.ActiveNodeURI(),
+		"global_proxy_enabled":                    adm.cfg.GlobalProxyEnabled(),
+		"global_proxy_required":                   adm.cfg.GlobalProxyRequired(),
+		"global_proxy_selection":                  adm.cfg.GlobalProxySelection(),
+		"allow_direct_without_global_proxy":       adm.cfg.AllowDirectWithoutGlobalProxy(),
+		"proxy_url_candidates":                    globalProxies,
 		"parallel_pool_delay_dynamic":             adm.cfg.ParallelPoolDelayDynamic(),
 		"parallel_pool_delay_ms":                  adm.cfg.ParallelPoolDelayMs(),
 		"entry_proxy_probe_enabled":               adm.cfg.EntryProxyProbeEnabled(),
@@ -135,7 +154,7 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 		}
 		updates[k] = v
 	}
-	if err := config.WriteSettings(updates); err != nil {
+	if err := adm.writeSettings(updates); err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr("写入配置失败 (failed to write config)"))
 		return
 	}

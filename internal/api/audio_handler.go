@@ -4,10 +4,15 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"log"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
+
+	coremodel "github.com/bsfdsagfadg/vertex/internal/core/model"
 )
 
 type AudioHandler struct {
@@ -41,12 +46,8 @@ type ttsFormat struct {
 
 //nolint:gochecknoglobals // Audio format formats
 var ttsFormatInfo = map[string]ttsFormat{
-	"mp3":  {"audio/wav", true},
-	"wav":  {"audio/wav", true},
-	"pcm":  {"audio/L16", false},
-	"opus": {"audio/wav", true},
-	"aac":  {"audio/wav", true},
-	"flac": {"audio/wav", true},
+	"wav": {"audio/wav", true},
+	"pcm": {"audio/L16", false},
 }
 
 func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +67,7 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 	if rawModel == "" {
 		rawModel = ttsDefaultModel
 	}
-	actualModel, _, modelOK := resolveConfiguredModel(rawModel, a.cfg)
+	actualModel, _, modelOK := resolveConfiguredModel(rawModel, a.requestConfig(r))
 	if !modelOK || !strings.HasPrefix(actualModel, "gemini") {
 		oaiModelNotFound(w, rawModel)
 		return
@@ -80,13 +81,14 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 	}
 
 	voice := ttsResolveVoice(body["voice"])
-	respFmt := strings.ToLower(firstNonEmptyStr(getStr(body, "response_format", ""), "mp3"))
+	respFmt := strings.ToLower(firstNonEmptyStr(getStr(body, "response_format", ""), "wav"))
 
 	log.Printf("[Server] [AudioSpeech] 收到请求: 模型=%s, 语音=%s, 格式=%s", actualModel, voice, respFmt)
 
 	fmtInfo, ok := ttsFormatInfo[respFmt]
 	if !ok {
-		fmtInfo = ttsFormat{"audio/wav", true}
+		oaiResourceError(w, http.StatusBadRequest, "unsupported_audio_format", "anonymous upstream returns PCM audio; only wav and pcm are supported", "response_format")
+		return
 	}
 
 	geminiPayload := ttsBuildGeminiPayload(text, voice, body["speed"])
@@ -119,6 +121,109 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", fmtInfo.contentType)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
+}
+
+func (a *AudioHandler) handleAudioTranscription(w http.ResponseWriter, r *http.Request) {
+	a.handleAudioToText(w, r, false)
+}
+
+func (a *AudioHandler) handleAudioTranslation(w http.ResponseWriter, r *http.Request) {
+	a.handleAudioToText(w, r, true)
+}
+
+func (a *AudioHandler) handleAudioToText(w http.ResponseWriter, r *http.Request, translate bool) {
+	if r.Method != http.MethodPost {
+		oaiError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
+		return
+	}
+	if err := r.ParseMultipartForm(multipartMemoryLimit); err != nil {
+		oaiResourceError(w, http.StatusBadRequest, "invalid_multipart", "audio request must be valid multipart form data", nil)
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	uploads := formUploads(r, "file")
+	if len(uploads) != 1 {
+		oaiResourceError(w, http.StatusBadRequest, "missing_required_parameter", "exactly one audio file is required", "file")
+		return
+	}
+	upload := uploads[0]
+	source, err := upload.Open()
+	if err != nil {
+		oaiResourceError(w, http.StatusBadRequest, "invalid_file", "cannot read uploaded audio", "file")
+		return
+	}
+	defer source.Close()
+	maxBytes := int64(a.requestConfig(r).MaxRequestMB()) << 20
+	data, err := io.ReadAll(io.LimitReader(source, maxBytes+1))
+	if err != nil || len(data) == 0 || int64(len(data)) > maxBytes {
+		oaiResourceError(w, http.StatusBadRequest, "invalid_file", "audio file is empty, unreadable, or too large", "file")
+		return
+	}
+	mimeType := strings.TrimSpace(upload.Header.Get("Content-Type"))
+	if mimeType == "" || mimeType == "application/octet-stream" {
+		mimeType = mime.TypeByExtension(filepath.Ext(upload.Filename))
+	}
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data[:min(len(data), 512)])
+	}
+	detectedType := http.DetectContentType(data[:min(len(data), 512)])
+	if !strings.HasPrefix(strings.ToLower(detectedType), "audio/") && detectedType != "video/mp4" && detectedType != "video/webm" {
+		oaiResourceError(w, http.StatusBadRequest, "invalid_file_type", "uploaded file must contain supported audio", "file")
+		return
+	}
+	mimeType = detectedType
+	rawModel := strings.TrimSpace(formValue(r, "model"))
+	if rawModel == "" {
+		rawModel = "gemini-3.6-flash"
+	}
+	model, _, ok := resolveConfiguredModel(rawModel, a.requestConfig(r))
+	if !ok {
+		oaiModelNotFound(w, rawModel)
+		return
+	}
+	profile := coremodel.Resolve(model)
+	if !profile.InputModalities["audio"] {
+		oaiResourceError(w, http.StatusBadRequest, "model_capability_unsupported", "selected model does not advertise audio input capability", "model")
+		return
+	}
+	prompt := "Transcribe the attached audio faithfully. Return only the transcript text."
+	if language := strings.TrimSpace(formValue(r, "language")); language != "" {
+		prompt += " The spoken language hint is " + language + "."
+	}
+	if extra := strings.TrimSpace(formValue(r, "prompt")); extra != "" {
+		prompt += " Additional context: " + extra
+	}
+	if translate {
+		prompt = "Translate the speech in the attached audio into English. Return only the translated text."
+	}
+	payload := map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{
+		map[string]any{"inlineData": map[string]any{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(data)}},
+		map[string]any{"text": prompt},
+	}}}}
+	response, callErr := a.vc.CompleteChat(r.Context(), model, payload)
+	if callErr != nil {
+		vertexErr := toVertexError(callErr)
+		writeJSON(w, vertexErr.Code, vertexErrorToOAI(vertexErr))
+		return
+	}
+	text := geminiResponseText(response)
+	if strings.TrimSpace(text) == "" {
+		oaiResourceError(w, http.StatusBadGateway, "empty_response", "anonymous model returned no transcript", nil)
+		return
+	}
+	switch strings.ToLower(firstNonEmptyStr(formValue(r, "response_format"), "json")) {
+	case "text":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(text))
+	case "json":
+		writeJSON(w, http.StatusOK, map[string]any{"text": text})
+	case "verbose_json":
+		writeJSON(w, http.StatusOK, map[string]any{"task": map[bool]string{true: "translate", false: "transcribe"}[translate], "language": formValue(r, "language"), "duration": 0, "text": text, "segments": []any{}})
+	default:
+		oaiResourceError(w, http.StatusBadRequest, "unsupported_response_format", "supported response formats are json, text, and verbose_json", "response_format")
+	}
 }
 
 func ttsResolveVoice(voice any) string {

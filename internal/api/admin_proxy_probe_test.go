@@ -11,8 +11,21 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/db"
+	"github.com/bsfdsagfadg/vertex/internal/repository"
 )
+
+func setupEntryProxyProbeTest(t *testing.T, name string) {
+	t.Helper()
+	repo, err := repository.Open(filepath.Join(t.TempDir(), name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.SetRepository(repo)
+	t.Cleanup(func() {
+		config.SetRepository(nil)
+		_ = repo.Close()
+	})
+}
 
 func TestEntryProxyProbeScheduleUsesUpdatedInterval(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
@@ -39,11 +52,7 @@ func TestEntryProxyProbeScheduleUsesUpdatedInterval(t *testing.T) {
 }
 
 func TestEntryProxyProbeRoundLogsFailuresAndSummary(t *testing.T) {
-	db.CloseDB()
-	if err := db.InitDB(filepath.Join(t.TempDir(), "entry-probe.db")); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(db.CloseDB)
+	setupEntryProxyProbeTest(t, "entry-probe.db")
 
 	successURI := "socks5://127.0.0.1:1280#success"
 	failureURI := "socks5://127.0.0.1:1281#failure"
@@ -93,11 +102,7 @@ func TestEntryProxyProbeRoundLogsFailuresAndSummary(t *testing.T) {
 }
 
 func TestEntryProxyProbeRoundLogsSuccessInDebugMode(t *testing.T) {
-	db.CloseDB()
-	if err := db.InitDB(filepath.Join(t.TempDir(), "entry-probe-debug.db")); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(db.CloseDB)
+	setupEntryProxyProbeTest(t, "entry-probe-debug.db")
 	uri := "socks5://127.0.0.1:1282#debug"
 	if _, err := config.AddProxyCandidate(uri); err != nil {
 		t.Fatal(err)
@@ -118,11 +123,7 @@ func TestEntryProxyProbeRoundLogsSuccessInDebugMode(t *testing.T) {
 }
 
 func TestEntryProxyProbeRoundReportsAutoDisableSeparatelyFromCooldown(t *testing.T) {
-	db.CloseDB()
-	if err := db.InitDB(filepath.Join(t.TempDir(), "entry-probe-disable.db")); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(db.CloseDB)
+	setupEntryProxyProbeTest(t, "entry-probe-disable.db")
 	uri := "socks5://127.0.0.1:1283#disable"
 	if _, err := config.AddProxyCandidate(uri); err != nil {
 		t.Fatal(err)

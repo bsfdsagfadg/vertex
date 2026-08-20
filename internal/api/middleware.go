@@ -85,8 +85,15 @@ func (m *middleware) withBodyLimit(next http.Handler) http.Handler {
 	})
 }
 
+func (m *middleware) withConfigSnapshot(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := config.WithSnapshot(r.Context(), m.cfg)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 func (m *middleware) withMetrics(next http.Handler) http.Handler {
-	skip := map[string]bool{"/": true, "/health": true}
+	skip := map[string]bool{"/": true, "/health": true, "/api/meta/build": true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := strutil.ReqID()
 		ctx := context.WithValue(r.Context(), vertex.RequestIDKey{}, reqID)
@@ -107,7 +114,7 @@ func (m *middleware) withMetrics(next http.Handler) http.Handler {
 }
 
 func (m *middleware) withAPIKey(next http.Handler) http.Handler {
-	excluded := map[string]bool{"/": true, "/health": true, "/favicon.ico": true}
+	excluded := map[string]bool{"/": true, "/health": true, "/api/meta/build": true, "/favicon.ico": true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if excluded[r.URL.Path] || isAdminPath(r.URL.Path) {
 			next.ServeHTTP(w, r)

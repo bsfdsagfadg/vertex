@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/strutil"
+	"github.com/bsfdsagfadg/vertex/internal/toolstate"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
@@ -38,6 +40,16 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	if body == nil {
 		body = make(map[string]any)
 	}
+	cfg := c.requestConfig(r)
+	if err := transform.ValidateOpenAIChatFields(body); err != nil {
+		var policyErr *transform.PolicyError
+		if errors.As(err, &policyErr) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
+				"message": policyErr.Message, "type": "invalid_request_error", "param": policyErr.Param, "code": policyErr.Code,
+			}})
+			return
+		}
+	}
 
 	rawModel, _ := body["model"].(string)
 	if strings.TrimSpace(rawModel) == "" {
@@ -48,7 +60,7 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	actualModel, useFake, modelOK := resolveConfiguredModel(rawModel, c.cfg)
+	actualModel, useFake, modelOK := resolveConfiguredModel(rawModel, cfg)
 	if !modelOK {
 		oaiModelNotFound(w, rawModel)
 		return
@@ -57,15 +69,46 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 
 	stream, _ := body["stream"].(bool)
-	aggregateStream := stream && c.cfg.AggregateStream()
+	store, _ := body["store"].(bool)
+	if stream && store {
+		oaiResourceError(w, http.StatusBadRequest, "unsupported_parameter", "stored chat completions require stream=false so the complete terminal result can be persisted", "store")
+		return
+	}
+	includeUsage := false
+	if streamOptions, ok := body["stream_options"].(map[string]any); ok {
+		includeUsage, _ = streamOptions["include_usage"].(bool)
+	}
+	aggregateStream := stream && cfg.AggregateStream()
 
-	model, geminiPayload, convErr := c.reqConv.Convert(body, c.cfg)
+	model, geminiPayload, convErr := c.reqConv.Convert(body, cfg)
 	if convErr != nil {
+		var policyErr *transform.PolicyError
+		if errors.As(convErr, &policyErr) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
+				"message": policyErr.Message, "type": "invalid_request_error", "param": policyErr.Param, "code": policyErr.Code,
+			}})
+			return
+		}
 		oaiError(w, http.StatusBadRequest, "请求参数有误: "+convErr.Error()+" (invalid argument)", "invalid_request_error")
 		return
 	}
+	if c.platform != nil {
+		if err := c.platform.expandLocalResources(r.Context(), geminiPayload); err != nil {
+			oaiResourceError(w, http.StatusConflict, "state_not_available", err.Error(), nil)
+			return
+		}
+	}
+	if c.toolStates != nil {
+		if err := c.toolStates.RestoreOpenAIChat(r.Context(), geminiPayload); err != nil {
+			c.writeToolStateError(w, err)
+			return
+		}
+	}
+	if !applyRequestModelPolicy(w, geminiPayload, actualModel, cfg.OpenAIParameterPolicy(), "openai") {
+		return
+	}
 
-	n, nErr := resolveN(body["n"], c.cfg.MaxN())
+	n, nErr := resolveN(body["n"], cfg.MaxN())
 	if nErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": nErr, "type": "invalid_request_error", "code": 400, "param": "n",
@@ -83,19 +126,21 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	log.Printf("[Server] [ChatCompletions] 收到请求: 模型=%s, 真模型=%s, 流式=%v, n=%d", rawModel, actualModel, stream, n)
 
 	transform.ApplyImageConfig(geminiPayload, body, actualModel)
-	transform.ApplyImageDefaults(geminiPayload, actualModel, c.cfg.DefaultImageSize(), c.cfg.DefaultResponseModalities())
+	transform.ApplyImageDefaults(geminiPayload, actualModel, cfg.DefaultImageSize(), cfg.DefaultResponseModalities())
 
 	if aggregateStream {
-		c.oaiAggregateStream(r.Context(), w, model, geminiPayload)
+		w.Header().Set("X-VProxy-Stream-Mode", "simulated")
+		c.oaiAggregateStream(r.Context(), w, model, geminiPayload, includeUsage)
 		return
 	}
 	if stream && useFake {
-		c.oaiFakeStream(r.Context(), w, model, geminiPayload)
+		w.Header().Set("X-VProxy-Stream-Mode", "simulated")
+		c.oaiFakeStream(r.Context(), w, model, geminiPayload, includeUsage)
 		return
 	}
 
 	if stream {
-		c.streamChatCompletions(r.Context(), w, model, geminiPayload)
+		c.streamChatCompletions(r.Context(), w, model, geminiPayload, includeUsage)
 		return
 	}
 
@@ -111,11 +156,24 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			writeJSON(w, ve.Code, vertexErrorToOAI(ve))
 			return
 		}
-		toolCallIDAssigner := transform.NewFunctionCallIDAssigner()
 		for _, response := range responses {
-			toolCallIDAssigner.Ensure(response)
+			transform.AssignExternalFunctionCallIDs(response)
 		}
-		writeJSON(w, http.StatusOK, c.respConv.AggregateN(responses, model))
+		oaiResp := c.respConv.AggregateN(responses, model)
+		responseID, _ := oaiResp["id"].(string)
+		for _, response := range responses {
+			if err := c.captureToolState(r.Context(), response, responseID); err != nil {
+				c.writeToolStateError(w, err)
+				return
+			}
+		}
+		if store {
+			if err := c.persistStoredCompletion(r.Context(), body, oaiResp, model); err != nil {
+				oaiResourceError(w, http.StatusInternalServerError, "resource_store_error", "stored chat completion could not be persisted", nil)
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, oaiResp)
 		return
 	}
 
@@ -131,12 +189,43 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	transform.EnsureFunctionCallIDs(geminiResp)
+	transform.AssignExternalFunctionCallIDs(geminiResp)
 	oaiResp := c.respConv.ToOAI(geminiResp, model)
+	responseID, _ := oaiResp["id"].(string)
+	if err := c.captureToolState(r.Context(), geminiResp, responseID); err != nil {
+		c.writeToolStateError(w, err)
+		return
+	}
+	if store {
+		if err := c.persistStoredCompletion(r.Context(), body, oaiResp, model); err != nil {
+			oaiResourceError(w, http.StatusInternalServerError, "resource_store_error", "stored chat completion could not be persisted", nil)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, oaiResp)
 }
 
-func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
+func (c *ChatHandler) captureToolState(ctx context.Context, response map[string]any, responseID string) error {
+	if c.toolStates == nil {
+		return nil
+	}
+	return c.toolStates.CaptureResponse(ctx, response, responseID, "", "chat.completions")
+}
+
+func (c *ChatHandler) writeToolStateError(w http.ResponseWriter, err error) {
+	var protocolErr *toolstate.ProtocolError
+	if errors.As(err, &protocolErr) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{
+			"message": protocolErr.Message, "type": "invalid_request_error", "param": protocolErr.Param, "code": protocolErr.Code,
+		}})
+		return
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{
+		"message": "tool state persistence failed", "type": "server_error", "param": nil, "code": "tool_state_store_error",
+	}})
+}
+
+func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any, includeUsage bool) {
 	requestID := strutil.ReqID()
 
 	sw := newSSEWriter(w, "text/event-stream")
@@ -145,7 +234,9 @@ func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.Response
 	hasFinish := false
 	gotContent := false
 	streamErrWritten := false
+	disconnected := false
 	startTime := time.Now()
+	createdAt := startTime.Unix()
 	toolCallTracker := transform.NewStreamToolCallTracker()
 
 	c.vc.StreamChat(ctx, model, geminiPayload, func(ch vertex.StreamChunk) bool {
@@ -163,58 +254,94 @@ func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.Response
 					writeJSON(w, ve.Code, vertexErrorToOAI(ve))
 				}
 			} else {
-				c.writeStreamError(sw.write, ch.Err, requestID, model)
+				c.writeStreamError(sw.write, ch.Err, requestID, model, createdAt)
 			}
 			streamErrWritten = true
 			return false
 		}
-		events := c.respConv.StreamToSSE(ch.Data, model, requestID, isFirst, toolCallTracker)
+		if streamChunkHasFinish(ch.Data) {
+			hasFinish = true
+		}
+		events := transform.ConvertRealtimeChunkWithUsageAt(ch.Data, model, requestID, createdAt, isFirst, includeUsage, toolCallTracker)
 		isFirst = false
 		for _, ev := range events {
-			if strings.Contains(ev, `"finish_reason"`) && !strings.Contains(ev, `"finish_reason":null`) {
-				hasFinish = true
-			}
 			if strings.Contains(ev, `"content":`) || strings.Contains(ev, `"tool_calls":`) || strings.Contains(ev, `"reasoning_content":`) {
 				gotContent = true
 			}
 			if !sw.write(ev) {
 				log.Printf("[Server] [Stream] 请求ID=%s 客户端已主动断开连接", requestID)
+				disconnected = true
 				return false
 			}
 		}
 		return true
 	})
+	if disconnected {
+		return
+	}
+	if !streamErrWritten {
+		captureErr := toolCallTracker.CaptureError()
+		if captureErr == nil {
+			captureErr = c.captureToolState(ctx, toolCallTracker.CapturedResponse(), "chatcmpl-"+requestID)
+		}
+		if captureErr != nil {
+			c.writeToolStateStreamError(sw.write, captureErr, requestID, model, createdAt)
+			streamErrWritten = true
+		}
+	}
 
 	if streamErrWritten {
 		return
 	}
-	if !gotContent {
+	if !gotContent && !hasFinish {
 		ee := vertex.NewEmptyResponseError("Upstream returned empty response (no content)")
 		if !sw.hasWritten() {
 			writeJSON(w, ee.Code, vertexErrorToOAI(ee))
 		} else {
-			c.writeStreamError(sw.write, ee, requestID, model)
+			c.writeStreamError(sw.write, ee, requestID, model, createdAt)
 		}
 		return
 	}
 	if !hasFinish {
-		base := streamChunkBase(model, requestID)
+		base := streamChunkBaseAt(model, requestID, createdAt)
 		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "length"}}
 		sw.write(sseEvent(base))
 	}
 	sw.write("data: [DONE]\n\n")
 }
 
-func (c *ChatHandler) writeStreamError(write func(string) bool, e *vertex.VertexError, requestID, model string) {
+func (c *ChatHandler) writeToolStateStreamError(write func(string) bool, err error, requestID, model string, createdAt ...int64) {
+	code := "tool_state_store_error"
+	message := "tool state persistence failed"
+	param := any(nil)
+	var protocolErr *toolstate.ProtocolError
+	if errors.As(err, &protocolErr) {
+		code = protocolErr.Code
+		message = protocolErr.Message
+		param = protocolErr.Param
+	}
+	base := streamChunkBase(model, requestID)
+	if len(createdAt) > 0 {
+		base["created"] = createdAt[0]
+	}
+	base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "error"}}
+	base["error"] = map[string]any{"message": message, "type": "server_error", "param": param, "code": code}
+	_ = write(sseEvent(base))
+	_ = write("data: [DONE]\n\n")
+}
+
+func (c *ChatHandler) writeStreamError(write func(string) bool, e *vertex.VertexError, requestID, model string, createdAt ...int64) {
+	base := streamChunkBase(model, requestID)
+	if len(createdAt) > 0 {
+		base["created"] = createdAt[0]
+	}
 	if isSafetyBlock(e) {
-		base := streamChunkBase(model, requestID)
 		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "content_filter"}}
 		_ = write(sseEvent(base))
 	} else {
 		// SSE headers are already committed once a stream has emitted content.
 		// Keep the terminal packet valid for OpenAI clients by including choices
 		// with finish_reason=error alongside the normal error object.
-		base := streamChunkBase(model, requestID)
 		base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "error"}}
 		base["error"] = vertexErrorToOAI(e)["error"]
 		_ = write(sseEvent(base))
@@ -222,7 +349,19 @@ func (c *ChatHandler) writeStreamError(write func(string) bool, e *vertex.Vertex
 	_ = write("data: [DONE]\n\n")
 }
 
-func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
+func streamChunkHasFinish(chunk map[string]any) bool {
+	candidates, _ := chunk["candidates"].([]any)
+	for _, raw := range candidates {
+		candidate, _ := raw.(map[string]any)
+		finish, _ := candidate["finishReason"].(string)
+		if finish != "" && finish != transform.FinishReasonUnspecified {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any, includeUsage bool) {
 	requestID := strutil.ReqID()
 	sw := newSSEWriter(w, "text/event-stream")
 
@@ -242,14 +381,19 @@ func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 
-	transform.EnsureFunctionCallIDs(resp)
+	transform.AssignExternalFunctionCallIDs(resp)
 	oai := c.respConv.ToOAI(resp, model)
+	responseID, _ := oai["id"].(string)
+	if err := c.captureToolState(ctx, resp, responseID); err != nil {
+		c.writeToolStateError(w, err)
+		return
+	}
 	contentText := firstChoiceContent(oai)
 	toolCalls := firstChoiceToolCalls(oai)
 
 	createdTS := time.Now().Unix()
 	chunks := splitIntoRuneChunks(contentText)
-	if len(chunks) == 0 && len(toolCalls) > 0 {
+	if len(chunks) == 0 {
 		chunks = []string{""}
 	}
 	for i, piece := range chunks {
@@ -291,10 +435,21 @@ func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, 
 			return
 		}
 	}
+	if includeUsage {
+		if usage, ok := oai["usage"].(map[string]any); ok && len(usage) > 0 {
+			base := streamChunkBase(model, requestID)
+			base["created"] = createdTS
+			base["choices"] = []any{}
+			base["usage"] = usage
+			if !sw.write(sseEvent(base)) {
+				return
+			}
+		}
+	}
 	_ = sw.write("data: [DONE]\n\n")
 }
 
-func (c *ChatHandler) oaiAggregateStream(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
+func (c *ChatHandler) oaiAggregateStream(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any, includeUsage bool) {
 	requestID := strutil.ReqID()
 	sw := newSSEWriter(w, "text/event-stream")
 
@@ -313,8 +468,13 @@ func (c *ChatHandler) oaiAggregateStream(ctx context.Context, w http.ResponseWri
 		c.writeStreamError(sw.write, ve, requestID, model)
 		return
 	}
-	transform.EnsureFunctionCallIDs(resp)
+	transform.AssignExternalFunctionCallIDs(resp)
 	oai := c.respConv.ToOAI(resp, model)
+	responseID, _ := oai["id"].(string)
+	if err := c.captureToolState(ctx, resp, responseID); err != nil {
+		c.writeToolStateError(w, err)
+		return
+	}
 	contentText := firstChoiceContent(oai)
 	toolCalls := firstChoiceToolCalls(oai)
 
@@ -352,6 +512,15 @@ func (c *ChatHandler) oaiAggregateStream(ctx context.Context, w http.ResponseWri
 	}
 	baseEnd["choices"] = []any{choiceEnd}
 	sw.write(sseEvent(baseEnd))
+	if includeUsage {
+		if usage, ok := oai["usage"].(map[string]any); ok && len(usage) > 0 {
+			usageEvent := streamChunkBase(model, requestID)
+			usageEvent["created"] = createdTS
+			usageEvent["choices"] = []any{}
+			usageEvent["usage"] = usage
+			sw.write(sseEvent(usageEvent))
+		}
+	}
 	_ = sw.write("data: [DONE]\n\n")
 }
 

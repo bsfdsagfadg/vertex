@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -12,7 +13,6 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/admin"
-	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/subscriptions"
 )
 
@@ -21,8 +21,13 @@ type AdminHandler struct {
 	subscriptionService *subscriptions.Service
 	routesOnce          sync.Once
 	router              http.Handler
+	nodeTestMu          sync.Mutex
+	nodeTestCancel      context.CancelFunc
+	nodeTestGeneration  uint64
+	proxyTestMu         sync.Mutex
+	proxyTestState      entryProxyTestProgress
+	proxyTestGeneration uint64
 }
-
 
 func (adm *AdminHandler) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/admin" {
@@ -39,7 +44,14 @@ func (adm *AdminHandler) handleAdminPage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.Header().Set("Content-Type", contentTypeFor(name))
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	if strings.HasSuffix(name, ".html") || strings.HasSuffix(name, ".css") || strings.HasSuffix(name, ".js") {
+		// Embedded assets change only when the binary changes. They deliberately
+		// share stable URLs, so caching them would keep the previous frontend
+		// alive after an upgrade until users perform a hard refresh.
+		w.Header().Set("Cache-Control", "no-store")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+	}
 	_, _ = w.Write(data)
 }
 
@@ -98,7 +110,7 @@ func (adm *AdminHandler) adminUploadBg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bgURL := "url('/assets/" + filename + "')"
-	err = config.WriteSettings(map[string]any{"background_image": bgURL})
+	err = adm.writeSettings(map[string]any{"background_image": bgURL})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr("更新配置失败 (save config error)"))
 		return

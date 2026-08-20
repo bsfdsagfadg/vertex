@@ -48,7 +48,7 @@ func (sw *sseWriter) ensureHeader() {
 		ct = "text/event-stream"
 	}
 	sw.w.Header().Set("Content-Type", ct)
-	sw.w.Header().Set("Cache-Control", "no-cache")
+	sw.w.Header().Set("Cache-Control", "no-store")
 	sw.w.Header().Set("Connection", "keep-alive")
 	sw.w.Header().Set("X-Accel-Buffering", "no")
 	sw.w.WriteHeader(http.StatusOK)

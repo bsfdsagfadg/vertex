@@ -244,14 +244,14 @@ proxies:
 	}
 }
 
-func TestSubscriptionFallbackProxyIgnoresActiveNode(t *testing.T) {
+func TestSubscriptionRouteDoesNotUseLegacyProxyURLWhenGlobalProxyDisabled(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ActiveNodeURI = "clash://active-node"
 	cfg.ProxyURL = "  http://127.0.0.1:7897  "
 
-	got := subscriptionFallbackProxy(config.StaticProvider(cfg))
-	if got != "http://127.0.0.1:7897" {
-		t.Fatalf("expected global proxy_url, got %q", got)
+	got, direct, err := planSubscriptionRoute(config.StaticProvider(cfg))
+	if err != nil || !direct || got != "" {
+		t.Fatalf("legacy proxy_url unexpectedly affected direct subscription route: proxy=%q direct=%v err=%v", got, direct, err)
 	}
 }
 

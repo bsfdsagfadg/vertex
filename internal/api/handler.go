@@ -11,14 +11,47 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
+	"github.com/bsfdsagfadg/vertex/internal/repository"
+	runtimeroute "github.com/bsfdsagfadg/vertex/internal/runtime/route"
+	"github.com/bsfdsagfadg/vertex/internal/scheduler"
 	"github.com/bsfdsagfadg/vertex/internal/strutil"
+	"github.com/bsfdsagfadg/vertex/internal/toolstate"
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
 type handler struct {
-	vc   *vertex.VertexAIClient
-	keys *APIKeyManager
-	cfg  config.ConfigProvider
+	vc           *vertex.VertexAIClient
+	keys         *APIKeyManager
+	cfg          config.ConfigProvider
+	toolStates   *toolstate.Service
+	repository   *repository.SQLite
+	platform     *PlatformHandler
+	proxyManager *transport.ProxyManager
+	nodePool     *runtimeroute.NodePool
+	routePlanner *scheduler.RoutePlanner
+}
+
+func (h *handler) writeSettings(values map[string]any) error {
+	if writer, ok := h.cfg.(config.ConfigWriter); ok && writer != nil {
+		return writer.WriteSettings(values)
+	}
+	// Compatibility for tests and legacy callers that construct a handler with
+	// an immutable provider. V2 Normal injects dynamicConfig, which implements
+	// ConfigWriter and therefore does not take this branch.
+	return config.WriteSettings(values)
+}
+
+func (h *handler) removeProxy(uri string) {
+	if h.proxyManager != nil {
+		h.proxyManager.RemoveProxy(uri)
+		return
+	}
+	transport.RemoveProxy(uri)
+}
+
+func (h *handler) requestConfig(r *http.Request) config.ConfigProvider {
+	return config.FromContext(r.Context(), h.cfg)
 }
 
 func (h *handler) decodeAdminBody(w http.ResponseWriter, r *http.Request, dst any) bool {
@@ -72,10 +105,14 @@ func sseEvent(obj map[string]any) string {
 }
 
 func streamChunkBase(model, requestID string) map[string]any {
+	return streamChunkBaseAt(model, requestID, time.Now().Unix())
+}
+
+func streamChunkBaseAt(model, requestID string, created int64) map[string]any {
 	return map[string]any{
 		"id":      "chatcmpl-" + requestID,
 		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
+		"created": created,
 		"model":   model,
 	}
 }
@@ -92,7 +129,6 @@ func newSSEWriter(w http.ResponseWriter, contentType string) *sseWriter {
 	return sw
 }
 
-
 func vertexErrorToOAI(e *vertex.VertexError) map[string]any {
 	var errType string
 	switch e.Kind {
@@ -107,11 +143,27 @@ func vertexErrorToOAI(e *vertex.VertexError) map[string]any {
 	default:
 		errType = "server_error"
 	}
+	message := e.PublicText
+	if message == "" {
+		message = vertex.FriendlyErrorMessage(e)
+	}
+	code := any(e.Code)
+	if e.StableCode != "" {
+		code = e.StableCode
+	}
 	return map[string]any{"error": map[string]any{
-		"message": withUpstreamDetail(vertex.FriendlyErrorMessage(e), e),
+		"message": message,
 		"type":    errType,
-		"code":    e.Code,
+		"param":   nilIfEmpty(e.Param),
+		"code":    code,
 	}}
+}
+
+func nilIfEmpty(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func withUpstreamDetail(friendly string, e *vertex.VertexError) string {
@@ -197,7 +249,6 @@ func resolveN(raw any, maxN int) (int, string) {
 	}
 	return n, ""
 }
-
 
 func adminErr(msg string) map[string]any {
 	return map[string]any{"error": map[string]any{"message": msg}}

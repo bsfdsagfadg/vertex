@@ -30,6 +30,14 @@ func (adm *AdminHandler) buildAdminRoutes() http.Handler {
 					adm.adminUnauthorized(w)
 					return
 				}
+				// Cookie-authenticated state changes must originate from this
+				// instance. Bearer-authenticated automation is allowed without an
+				// Origin header, while browser requests are checked by host/scheme.
+				if req.Method != http.MethodGet && req.Method != http.MethodHead &&
+					req.Method != http.MethodOptions && !sameOriginRequest(req) {
+					writeJSON(w, http.StatusForbidden, adminErr("管理操作来源校验失败 (CSRF protection)"))
+					return
+				}
 				next.ServeHTTP(w, req)
 			})
 		})
@@ -80,8 +88,7 @@ func (adm *AdminHandler) buildAdminRoutes() http.Handler {
 			sr.Post("/custom_ua/delete", adm.adminDeleteCustomUA)
 		})
 
-		// Proxy Nodes
-		protected.Route("/proxy-nodes", func(pr chi.Router) {
+		mountGlobalProxyRoutes := func(pr chi.Router) {
 			pr.Get("/", adm.adminListProxyNodes)
 			pr.Delete("/", adm.adminDeleteProxyNode)
 			pr.Post("/import", adm.adminImportProxyNode)
@@ -99,7 +106,13 @@ func (adm *AdminHandler) buildAdminRoutes() http.Handler {
 			pr.Post("/test", adm.adminTestProxyNode)
 			pr.Post("/test-batch", adm.adminBatchTestProxyNodes)
 			pr.Get("/test-progress", adm.adminGetProxyTestProgress)
-		})
+			pr.Post("/promote-request-node", adm.adminPromoteNodeToGlobalProxy)
+			pr.Post("/pin", adm.adminSetGlobalProxyPinned)
+		}
+		// GlobalProxy is the V2 resource name. /proxy-nodes remains a V1
+		// compatibility alias until the one-time cutover is complete.
+		protected.Route("/global-proxies", mountGlobalProxyRoutes)
+		protected.Route("/proxy-nodes", mountGlobalProxyRoutes)
 
 		// Backgrounds
 		protected.Post("/upload-bg", adm.adminUploadBg)

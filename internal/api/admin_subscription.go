@@ -26,11 +26,21 @@ var fallbackUAs = []string{
 const maxSubscriptionResponseBytes = 10 * 1024 * 1024
 
 func (adm *AdminHandler) adminListSubscriptions(w http.ResponseWriter, _ *http.Request) {
-	err := config.LoadSubscriptions()
+	var (
+		conf config.SubscriptionConfig
+		err  error
+	)
+	if adm.subscriptionService != nil {
+		conf, err = adm.subscriptionService.List(context.Background())
+	} else {
+		err = config.LoadSubscriptions()
+		conf = config.GetSubscriptionConfig()
+	}
 	if err != nil {
 		log.Printf("[Admin] [ListSubscriptions] 无法加载订阅配置: %v", err)
+		writeJSON(w, http.StatusInternalServerError, adminErr("加载订阅失败: "+err.Error()))
+		return
 	}
-	conf := config.GetSubscriptionConfig()
 	updatingIDs := []string{}
 	if adm.subscriptionService != nil {
 		updatingIDs = adm.subscriptionService.RunningIDs()
@@ -51,6 +61,10 @@ func (adm *AdminHandler) adminSaveSubscription(w http.ResponseWriter, r *http.Re
 	sub.URL = strings.TrimSpace(sub.URL)
 	if sub.Name == "" || sub.URL == "" {
 		writeJSON(w, http.StatusBadRequest, adminErr("订阅名称和链接不能为空"))
+		return
+	}
+	if err := validateSubscriptionURL(sub.URL); err != nil {
+		writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
 		return
 	}
 	if sub.ID == "" {
@@ -131,7 +145,14 @@ func (adm *AdminHandler) adminSaveCustomUA(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if cua.ID == "" && strings.TrimSpace(req.OriginalName) != "" {
-		if existing, ok := config.FindCustomUAByName(req.OriginalName); ok {
+		var existing config.CustomUA
+		var ok bool
+		if adm.subscriptionService != nil {
+			existing, ok, _ = adm.subscriptionService.FindCustomUAByName(r.Context(), req.OriginalName)
+		} else {
+			existing, ok = config.FindCustomUAByName(req.OriginalName)
+		}
+		if ok {
 			cua.ID = existing.ID
 		}
 	}
@@ -168,7 +189,14 @@ func (adm *AdminHandler) adminDeleteCustomUA(w http.ResponseWriter, r *http.Requ
 
 	id := strings.TrimSpace(req.ID)
 	if id == "" {
-		if existing, ok := config.FindCustomUAByName(req.Name); ok {
+		var existing config.CustomUA
+		var ok bool
+		if adm.subscriptionService != nil {
+			existing, ok, _ = adm.subscriptionService.FindCustomUAByName(r.Context(), req.Name)
+		} else {
+			existing, ok = config.FindCustomUAByName(req.Name)
+		}
+		if ok {
 			id = existing.ID
 		}
 	}
@@ -206,7 +234,11 @@ func (adm *AdminHandler) adminUpdateSubscriptions(w http.ResponseWriter, r *http
 		return
 	}
 	if req.ID == "" {
-		conf := config.GetSubscriptionConfig()
+		conf, err := adm.subscriptionService.List(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, adminErr("加载订阅失败: "+err.Error()))
+			return
+		}
 		targetIDs := make([]string, 0, len(conf.Subscriptions))
 		for _, sub := range conf.Subscriptions {
 			targetIDs = append(targetIDs, sub.ID)
@@ -219,7 +251,10 @@ func (adm *AdminHandler) adminUpdateSubscriptions(w http.ResponseWriter, r *http
 		})
 		return
 	}
-	if _, ok := config.GetSubscription(req.ID); !ok {
+	if _, ok, err := adm.subscriptionService.Get(r.Context(), req.ID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("加载订阅失败: "+err.Error()))
+		return
+	} else if !ok {
 		writeJSON(w, http.StatusNotFound, adminErr("订阅不存在"))
 		return
 	}
@@ -270,6 +305,21 @@ func (adm *AdminHandler) fetchSubWithFallback(ctx context.Context, rawURL, prima
 }
 
 func (adm *AdminHandler) fetchSubDataWithUA(ctx context.Context, rawURL, ua string) ([]byte, error) {
+	proxyURI, direct, err := adm.planSubscriptionRoute(ctx, adm.cfg)
+	if err != nil {
+		return nil, err
+	}
+	if !direct {
+		if adm.vc == nil || adm.vc.Net() == nil {
+			return nil, fmt.Errorf("network client unavailable for global proxy subscription route")
+		}
+		data, fetchErr := adm.fetchSubscriptionDataViaProxyWithUA(ctx, adm.vc.Net(), rawURL, proxyURI, ua)
+		if fetchErr == nil {
+			_ = adm.markGlobalProxySuccess(proxyURI)
+		}
+		return data, fetchErr
+	}
+
 	client := netx.NewHTTPClient(30 * time.Second)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -280,11 +330,6 @@ func (adm *AdminHandler) fetchSubDataWithUA(ctx context.Context, rawURL, ua stri
 
 	resp, err := client.Do(req)
 	if err != nil {
-		// try via proxy
-		proxyURI := subscriptionFallbackProxy(adm.cfg)
-		if proxyURI != "" && adm.vc != nil && adm.vc.Net() != nil {
-			return adm.fetchSubscriptionDataViaProxyWithUA(ctx, adm.vc.Net(), rawURL, proxyURI, ua)
-		}
 		return nil, fmt.Errorf("error: %w", err)
 	}
 	defer resp.Body.Close()
