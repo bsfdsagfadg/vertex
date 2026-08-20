@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"strings"
+
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 // ImageData 是一张抽出的图片（base64 + mime）。
@@ -162,16 +164,7 @@ func firstCandidateParts(result map[string]any) []any {
 	return parts
 }
 
-// decodeBase64Loose 容错解码 base64：先 standard、失败再 URL-safe、再补 padding，保持宽松性
-// （上游偶有 URL-safe / 缺 padding 的段）。
+// decodeBase64Loose 容错解码 base64（委托至 strutil.DecodeBase64Loose 统一维护）。
 func decodeBase64Loose(s string) ([]byte, error) {
-	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
-		return b, nil
-	}
-	// URL-safe 字符替换 + 补 padding
-	t := strings.ReplaceAll(strings.ReplaceAll(s, "-", "+"), "_", "/")
-	if pad := len(t) % 4; pad != 0 {
-		t += strings.Repeat("=", 4-pad)
-	}
-	return base64.StdEncoding.DecodeString(t) //nolint:wrapcheck
+	return strutil.DecodeBase64Loose(s)
 }

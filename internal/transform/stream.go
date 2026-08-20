@@ -106,13 +106,18 @@ func reqID() string {
 	return strutil.ReqID()
 }
 
-// sseLine 把对象序列化成一条 SSE 数据行。
+// sseLine 把对象序列化成一条 SSE 数据行（预分配容量减少拼接拷贝）。
 func sseLine(obj map[string]any) string {
 	data, err := jsonx.Marshal(obj)
 	if err != nil {
 		return "data: {}\n\n"
 	}
-	return "data: " + string(data) + "\n\n"
+	var b strings.Builder
+	b.Grow(len("data: ") + len(data) + len("\n\n"))
+	b.WriteString("data: ")
+	b.Write(data)
+	b.WriteString("\n\n")
+	return b.String()
 }
 
 // ConvertRealtimeChunk 把单个 Gemini 增量 dict 转为 OAI SSE 事件字符串列表。

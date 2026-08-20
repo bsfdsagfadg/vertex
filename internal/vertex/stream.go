@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/spool"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
@@ -627,7 +628,7 @@ func processStreamingObject(obj map[string]any, emit func(map[string]any) bool, 
 				case []any:
 					outerMeta := map[string]any{}
 					for _, key := range []string{"usageMetadata", "modelVersion", "responseId", "promptFeedback"} {
-						if v, ok := data[key]; ok && isTruthyAny(v) {
+						if v, ok := data[key]; ok && jsonx.Truthy(v) {
 							outerMeta[key] = v
 						}
 					}
@@ -843,7 +844,7 @@ func extractChunk(data map[string]any) map[string]any {
 	}
 
 	for _, key := range []string{"usageMetadata", "modelVersion", "responseId", "promptFeedback", "createTime"} {
-		if v, ok := data[key]; ok && isTruthyAny(v) {
+		if v, ok := data[key]; ok && jsonx.Truthy(v) {
 			chunk[key] = v
 		}
 	}
@@ -944,7 +945,7 @@ func cleanPart(part map[string]any) map[string]any {
 
 	// 支持代码块、代码执行结果透传
 	for _, key := range []string{"executableCode", "codeExecutionResult"} {
-		if v, ok := cleaned[key]; ok && isTruthyAny(v) {
+		if v, ok := cleaned[key]; ok && jsonx.Truthy(v) {
 			return cleaned
 		}
 	}

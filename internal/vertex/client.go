@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
@@ -256,19 +257,19 @@ func collectChunksToParseResult(chunks []map[string]any) *ParseResult {
 					candidatesMap[index] = collector
 				}
 
-				if value := candidate["finishReason"]; isTruthyAny(value) {
+				if value := candidate["finishReason"]; jsonx.Truthy(value) {
 					collector.finishReason = toStr(value)
 				}
 				if value, exists := candidate["finishMessage"]; exists {
 					collector.finishMessage = value
 				}
-				if value := candidate["safetyRatings"]; isTruthyAny(value) {
+				if value := candidate["safetyRatings"]; jsonx.Truthy(value) {
 					collector.safetyRatings = value
 				}
-				if value := candidate["citationMetadata"]; isTruthyAny(value) {
+				if value := candidate["citationMetadata"]; jsonx.Truthy(value) {
 					collector.citationMetadata = value
 				}
-				if value := candidate["groundingMetadata"]; isTruthyAny(value) {
+				if value := candidate["groundingMetadata"]; jsonx.Truthy(value) {
 					collector.groundingMetadata = value
 				}
 				if value, exists := candidate["tokenCount"]; exists {

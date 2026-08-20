@@ -1,8 +1,5 @@
 package vertex
 
-import (
-	"github.com/bsfdsagfadg/vertex/internal/jsonx"
-)
 
 // ParseResult 是 batchGraphql 响应的解析结果（解析状态）。
 type ParseResult struct { //nolint:govet
@@ -30,9 +27,6 @@ type ParseResult struct { //nolint:govet
 }
 
 // ---- 小工具 ----
-
-// isTruthyAny 委托 jsonx.Truthy（统一真值语义，见 jsonx.Truthy）。
-func isTruthyAny(v any) bool { return jsonx.Truthy(v) }
 
 
 func toAnySlice(ms []map[string]any) []any {

@@ -1,6 +1,5 @@
 package api
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -20,21 +19,7 @@ func errToStr(err error) string {
 
 
 func decodeSubBase64(s string) ([]byte, error) {
-	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, "\r", "")
-	s = strings.ReplaceAll(s, "\n", "")
-	s = strings.ReplaceAll(s, " ", "")
-	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
-		return b, nil
-	}
-	if b, err := base64.URLEncoding.DecodeString(s); err == nil {
-		return b, nil
-	}
-	t := strings.ReplaceAll(strings.ReplaceAll(s, "-", "+"), "_", "/")
-	if pad := len(t) % 4; pad != 0 {
-		t += strings.Repeat("=", 4-pad)
-	}
-	return base64.StdEncoding.DecodeString(t)
+	return strutil.DecodeBase64Loose(s)
 }
 
 func parseInlineYamlAttrs(s string) map[string]string {
@@ -163,37 +148,7 @@ func buildProxyURI(scheme, credential, server, port, name string, query url.Valu
 }
 
 func intValue(v any) int {
-	switch x := v.(type) {
-	case int:
-		return x
-	case int8:
-		return int(x)
-	case int16:
-		return int(x)
-	case int32:
-		return int(x)
-	case int64:
-		return int(x)
-	case uint:
-		return int(x)
-	case uint8:
-		return int(x)
-	case uint16:
-		return int(x)
-	case uint32:
-		return int(x)
-	case uint64:
-		return int(x)
-	case float32:
-		return int(x)
-	case float64:
-		return int(x)
-	case string:
-		n, _ := strconv.Atoi(strings.TrimSpace(x))
-		return n
-	default:
-		return 0
-	}
+	return strutil.ToInt(v, 0)
 }
 
 func boolValue(v any) bool {
@@ -201,7 +156,7 @@ func boolValue(v any) bool {
 	case bool:
 		return x
 	case string:
-		return isTruthy(x)
+		return strutil.IsTruthyStr(x)
 	default:
 		return false
 	}
@@ -322,14 +277,7 @@ func importedAllowInsecure(v any) bool {
 }
 
 func valueToString(v any) string {
-	switch x := v.(type) {
-	case string:
-		return x
-	case nil:
-		return ""
-	default:
-		return fmt.Sprintf("%v", x)
-	}
+	return strutil.ToString(v)
 }
 
 func normalizeYAMLValue(value any) any {

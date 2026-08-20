@@ -6,23 +6,15 @@ import (
 	"strings"
 
 	"github.com/samber/lo"
+
+	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 const skipThoughtSentinel = "skip_thought_signature_validator"
 
-// NormalizeBase64 规范化 base64：剥离 data URI 前缀、URL-safe 字符还原、补 padding。
+// NormalizeBase64 规范化 base64（委托至 strutil.NormalizeBase64 统一维护）。
 func NormalizeBase64(data string) string {
-	value := strings.TrimSpace(data)
-	if strings.Contains(value, ",") && strings.HasPrefix(value, "data:") {
-		if idx := strings.Index(value, ","); idx >= 0 {
-			value = value[idx+1:]
-		}
-	}
-	value = strings.NewReplacer("-", "+", "_", "/").Replace(value)
-	if pad := len(value) % 4; pad != 0 {
-		value += strings.Repeat("=", 4-pad)
-	}
-	return value
+	return strutil.NormalizeBase64(data)
 }
 
 // FcNameTracker 按出现顺序追踪 functionCall 名称。

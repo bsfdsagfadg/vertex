@@ -17,23 +17,47 @@ var (
 	idCounter uint64 //nolint:gochecknoglobals // Atomic counter for fallback ID generation
 )
 
+// NormalizeBase64 strips data URI prefix (if any), trims whitespace, normalizes URL-safe chars (-_) to standard (+/), and appends '=' padding.
+func NormalizeBase64(data string) string {
+	value := strings.TrimSpace(data)
+	if strings.Contains(value, ",") && strings.HasPrefix(value, "data:") {
+		if idx := strings.Index(value, ","); idx >= 0 {
+			value = value[idx+1:]
+		}
+	}
+	value = strings.NewReplacer("-", "+", "_", "/", "\r", "", "\n", "", " ", "").Replace(value)
+	if pad := len(value) % 4; pad != 0 {
+		value += strings.Repeat("=", 4-pad)
+	}
+	return value
+}
+
 // PadB64 normalizes base64url characters (- and _) to standard (+ and /)
 // and appends '=' padding until the length is a multiple of 4.
 func PadB64(s string) string {
-	s = strings.ReplaceAll(strings.ReplaceAll(s, "-", "+"), "_", "/")
-	if pad := len(s) % 4; pad != 0 {
-		s += strings.Repeat("=", 4-pad)
-	}
-	return s
+	return NormalizeBase64(s)
 }
 
-// DecodeB64 decodes a base64 string after normalizing and padding.
-func DecodeB64(s string) ([]byte, error) {
-	b, err := base64.StdEncoding.DecodeString(PadB64(s))
+// DecodeBase64Loose loosely decodes a base64 string, trying standard, URL-safe, and padded representations.
+func DecodeBase64Loose(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	if b, err := base64.URLEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	norm := NormalizeBase64(s)
+	b, err := base64.StdEncoding.DecodeString(norm)
 	if err != nil {
 		return nil, fmt.Errorf("decode base64: %w", err)
 	}
 	return b, nil
+}
+
+// DecodeB64 decodes a base64 string after normalizing and padding.
+func DecodeB64(s string) ([]byte, error) {
+	return DecodeBase64Loose(s)
 }
 
 // FirstNonEmpty returns the first non-empty trimmed string from the given values.

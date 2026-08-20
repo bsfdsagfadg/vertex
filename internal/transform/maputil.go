@@ -83,7 +83,7 @@ func deepCopyAny(v any) any {
 // firstTruthyString 返回参数里第一个非空字符串。
 func firstTruthyString(vals ...any) string {
 	for _, v := range vals {
-		if s, ok := v.(string); ok && s != "" {
+		if s := strutil.ToStr(v); s != "" {
 			return s
 		}
 	}
