@@ -63,20 +63,42 @@ func validateSubscriptionURLResolved(ctx context.Context, raw string) error {
 		return err
 	}
 	u, _ := url.Parse(strings.TrimSpace(raw))
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", u.Hostname())
+	_, err := lookupPublicSubscriptionIPs(ctx, u.Hostname())
 	if err != nil {
 		return fmt.Errorf("订阅链接主机解析失败: %w", err)
-	}
-	for _, ip := range ips {
-		if blockedSubscriptionIP(ip) {
-			return errors.New("订阅链接目标地址被禁止")
-		}
 	}
 	return nil
 }
 
 func newSubscriptionHTTPClient(timeout time.Duration) *http.Client {
 	client := netx.NewHTTPClient(timeout)
+	if base, ok := client.Transport.(*http.Transport); ok {
+		transport := base.Clone()
+		originalDial := transport.DialContext
+		if originalDial == nil {
+			originalDial = (&net.Dialer{Timeout: timeout}).DialContext
+		}
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := lookupPublicSubscriptionIPs(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			var lastErr error
+			for _, ip := range ips {
+				conn, dialErr := originalDial(ctx, network, net.JoinHostPort(ip.String(), port))
+				if dialErr == nil {
+					return conn, nil
+				}
+				lastErr = dialErr
+			}
+			return nil, lastErr
+		}
+		client.Transport = transport
+	}
 	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
 		if err := validateSubscriptionURLResolved(req.Context(), req.URL.String()); err != nil {
 			return err
@@ -84,4 +106,20 @@ func newSubscriptionHTTPClient(timeout time.Duration) *http.Client {
 		return nil
 	}
 	return client
+}
+
+func lookupPublicSubscriptionIPs(ctx context.Context, host string) ([]net.IP, error) {
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		return nil, errors.New("订阅链接主机没有可用地址")
+	}
+	for _, ip := range ips {
+		if blockedSubscriptionIP(ip) {
+			return nil, errors.New("订阅链接目标地址被禁止")
+		}
+	}
+	return ips, nil
 }
