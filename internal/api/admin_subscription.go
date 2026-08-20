@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/netx"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
@@ -267,6 +266,9 @@ func (adm *AdminHandler) adminUpdateSubscriptions(w http.ResponseWriter, r *http
 }
 
 func (adm *AdminHandler) fetchSubWithFallback(ctx context.Context, rawURL, primaryUA string) (string, error) {
+	if err := validateSubscriptionURL(rawURL); err != nil {
+		return "", err
+	}
 	uasToTry := []string{primaryUA}
 	if primaryUA == "" || primaryUA == "Chrome" {
 		uasToTry[0] = subscriptionFetchUserAgent
@@ -320,7 +322,10 @@ func (adm *AdminHandler) fetchSubDataWithUA(ctx context.Context, rawURL, ua stri
 		return data, fetchErr
 	}
 
-	client := netx.NewHTTPClient(30 * time.Second)
+	if err := validateSubscriptionURLResolved(ctx, rawURL); err != nil {
+		return nil, err
+	}
+	client := newSubscriptionHTTPClient(30 * time.Second)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)

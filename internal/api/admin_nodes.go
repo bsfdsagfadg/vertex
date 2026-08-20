@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/netx"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
@@ -457,6 +456,9 @@ func (adm *AdminHandler) fetchSubscriptionText(ctx context.Context, rawURL strin
 	if rawURL == "" {
 		return "", errors.New("subscription url is empty")
 	}
+	if err := validateSubscriptionURL(rawURL); err != nil {
+		return "", err
+	}
 
 	proxyURI, direct, err := adm.planSubscriptionRoute(ctx, adm.cfg)
 	if err != nil {
@@ -517,7 +519,10 @@ func planSubscriptionRoute(cfg config.ConfigProvider) (proxyURI string, direct b
 }
 
 func fetchSubscriptionDataDirect(ctx context.Context, rawURL string) ([]byte, error) {
-	client := netx.NewHTTPClient(30 * time.Second)
+	if err := validateSubscriptionURLResolved(ctx, rawURL); err != nil {
+		return nil, err
+	}
+	client := newSubscriptionHTTPClient(30 * time.Second)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)

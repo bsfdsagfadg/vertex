@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -15,7 +14,7 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/config"
 )
 
-func TestFetchSubWithFallbackDeduplicatesUserAgents(t *testing.T) {
+func TestFetchSubWithFallbackRejectsPrivateDestination(t *testing.T) {
 	var mu sync.Mutex
 	var received []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -28,13 +27,12 @@ func TestFetchSubWithFallbackDeduplicatesUserAgents(t *testing.T) {
 
 	adm := &AdminHandler{handler: handler{cfg: config.StaticProvider(config.DefaultConfig())}}
 	if _, err := adm.fetchSubWithFallback(context.Background(), server.URL, "Clash.Meta"); err == nil {
-		t.Fatal("all failed fallback requests should return an error")
+		t.Fatal("private subscription destinations must be rejected")
 	}
-	want := []string{"Clash.Meta", "clash-verge/v2.5.2", "v2rayNG/1.8.5"}
 	mu.Lock()
 	defer mu.Unlock()
-	if !reflect.DeepEqual(received, want) {
-		t.Fatalf("unexpected fallback order: got %v want %v", received, want)
+	if len(received) != 0 {
+		t.Fatalf("private destination was contacted: %v", received)
 	}
 }
 
