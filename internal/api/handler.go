@@ -11,14 +11,23 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
+	"github.com/bsfdsagfadg/vertex/internal/logger"
+	"github.com/bsfdsagfadg/vertex/internal/repository"
 	"github.com/bsfdsagfadg/vertex/internal/strutil"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
 type handler struct {
-	vc   *vertex.VertexAIClient
-	keys *APIKeyManager
-	cfg  config.ConfigProvider
+	vc          *vertex.VertexAIClient
+	keys        *APIKeyManager
+	cfg         config.ConfigProvider
+	cfgWriter   config.ConfigWriter
+	nodeRepo    repository.NodeRepository
+	healthRepo  repository.HealthRepository
+	subRepo     repository.SubscriptionRepository
+	entryRepo   repository.EntryProxyRepository
+	taskManager *TaskManager
+	logger      *logger.DailyLogger
 }
 
 func (h *handler) decodeAdminBody(w http.ResponseWriter, r *http.Request, dst any) bool {

@@ -1,116 +1,237 @@
 package transform
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/domain"
 	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
 
 // assistantImageMarkdownRe 匹配 assistant 文本里嵌的 markdown data-URI 图片。
 var assistantImageMarkdownRe = regexp.MustCompile(`!\[[^\]]*\]\((data:[^()\s;,]+;base64,[A-Za-z0-9+/=_\-]+)\)`)
 
-// convertUserContent 把 OpenAI user message content 转为 Gemini parts。
-func convertUserContent(content any) []any {
+// convertUserContentTyped 把 OpenAI user message content 转为强类型 Gemini Part 切片。
+func convertUserContentTyped(content any) []domain.Part {
 	if content == nil {
 		return nil
 	}
+
 	if s, ok := content.(string); ok {
-		return []any{map[string]any{"text": s}}
-	}
-	list, ok := content.([]any)
-	if !ok {
-		return nil
+		if s == "" {
+			return nil
+		}
+		return []domain.Part{{Text: s}}
 	}
 
-	var parts []any
-	for _, itemRaw := range list {
-		if s, ok := itemRaw.(string); ok {
-			parts = append(parts, map[string]any{"text": s})
-			continue
-		}
-		item, ok := itemRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-		t, _ := item["type"].(string)
-		switch t {
-		case "text":
-			parts = append(parts, map[string]any{"text": item["text"]})
+	var parts []domain.Part
 
-		case "image_url":
-			url := imageURLString(item["image_url"])
-			if strings.HasPrefix(url, "data:") {
-				if mime, b64 := parseDataURI(url); mime != "" && b64 != "" {
-					parts = append(parts, inlineDataPart(mime, b64))
+	switch list := content.(type) {
+	case []domain.MessageContentPart:
+		for _, item := range list {
+			switch item.Type {
+			case "text", "input_text":
+				if item.Text != "" {
+					parts = append(parts, domain.Part{Text: item.Text})
 				}
-			} else if hasRemotePrefix(url) {
-				parts = append(parts, map[string]any{"fileData": map[string]any{
-					"mimeType": guessMIMEFromURL(url), "fileUri": url,
-				}})
-			}
-
-		case "video_url", "input_video":
-			url := holderURLString(item[t])
-			if strings.HasPrefix(url, "data:") {
-				if mime, b64 := parseDataURI(url); b64 != "" {
-					if mime == "" || !strings.HasPrefix(mime, "video/") {
-						mime = "video/mp4"
+			case "image_url":
+				if item.ImageURL != nil {
+					url := item.ImageURL.URL
+					if strings.HasPrefix(url, "data:") {
+						if mime, b64 := parseDataURI(url); mime != "" && b64 != "" {
+							parts = append(parts, domain.Part{
+								InlineData: &domain.Blob{
+									MimeType: mime,
+									Data:     NormalizeBase64(b64),
+								},
+							})
+						}
+					} else if hasRemotePrefix(url) {
+						parts = append(parts, domain.Part{
+							FileData: &domain.FileData{
+								MimeType: guessMIMEFromURL(url),
+								FileURI:  url,
+							},
+						})
 					}
-					parts = append(parts, inlineDataPart(mime, b64))
+				}
+			case "input_audio":
+				if item.InputAudio != nil && item.InputAudio.Data != "" {
+					mime := audioFormatMIME[strings.ToLower(item.InputAudio.Format)]
+					if mime == "" {
+						mime = "audio/wav"
+					}
+					parts = append(parts, domain.Part{
+						InlineData: &domain.Blob{
+							MimeType: mime,
+							Data:     NormalizeBase64(item.InputAudio.Data),
+						},
+					})
 				}
 			}
+		}
 
-		case "input_audio":
-			mime, b64 := parseInputAudio(item["input_audio"])
-			if b64 != "" {
-				if mime == "" || !strings.HasPrefix(mime, "audio/") {
-					mime = "audio/wav"
+	case []any:
+		for _, itemRaw := range list {
+			if s, ok := itemRaw.(string); ok {
+				if s != "" {
+					parts = append(parts, domain.Part{Text: s})
 				}
-				parts = append(parts, inlineDataPart(mime, b64))
+				continue
+			}
+			item, ok := itemRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			t, _ := item["type"].(string)
+			switch t {
+			case "text", "input_text":
+				txt := toString(item["text"])
+				if txt != "" {
+					parts = append(parts, domain.Part{Text: txt})
+				}
+
+			case "image_url", "input_image":
+				url := imageURLString(firstNonEmpty(item["image_url"], item["input_image"]))
+				if strings.HasPrefix(url, "data:") {
+					if mime, b64 := parseDataURI(url); mime != "" && b64 != "" {
+						parts = append(parts, domain.Part{
+							InlineData: &domain.Blob{
+								MimeType: mime,
+								Data:     NormalizeBase64(b64),
+							},
+						})
+					}
+				} else if hasRemotePrefix(url) {
+					parts = append(parts, domain.Part{
+						FileData: &domain.FileData{
+							MimeType: guessMIMEFromURL(url),
+							FileURI:  url,
+						},
+					})
+				}
+
+			case "video_url", "input_video":
+				url := holderURLString(item[t])
+				if strings.HasPrefix(url, "data:") {
+					if mime, b64 := parseDataURI(url); b64 != "" {
+						if mime == "" || !strings.HasPrefix(mime, "video/") {
+							mime = "video/mp4"
+						}
+						parts = append(parts, domain.Part{
+							InlineData: &domain.Blob{
+								MimeType: mime,
+								Data:     NormalizeBase64(b64),
+							},
+						})
+					}
+				}
+
+			case "input_audio":
+				mime, b64 := parseInputAudio(item["input_audio"])
+				if b64 != "" {
+					if mime == "" || !strings.HasPrefix(mime, "audio/") {
+						mime = "audio/wav"
+					}
+					parts = append(parts, domain.Part{
+						InlineData: &domain.Blob{
+							MimeType: mime,
+							Data:     NormalizeBase64(b64),
+						},
+					})
+				}
 			}
 		}
 	}
+
 	return parts
 }
 
-// splitAssistantContent 把 assistant 文本切成 text / inlineData 混合 parts。
-func splitAssistantContent(content any) []any {
+// convertUserContent 兼容旧签名（返回 []any）。
+func convertUserContent(content any) []any {
+	parts := convertUserContentTyped(content)
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]any, len(parts))
+	for i, p := range parts {
+		m := make(map[string]any)
+		if p.Text != "" {
+			m["text"] = p.Text
+		}
+		if p.InlineData != nil {
+			m["inlineData"] = map[string]any{
+				"mimeType": p.InlineData.MimeType,
+				"data":     p.InlineData.Data,
+			}
+		}
+		if p.FileData != nil {
+			m["fileData"] = map[string]any{
+				"mimeType": p.FileData.MimeType,
+				"fileUri":  p.FileData.FileURI,
+			}
+		}
+		out[i] = m
+	}
+	return out
+}
+
+// splitAssistantContentTyped 把 assistant 文本切成 text / inlineData 混合 parts。
+func splitAssistantContentTyped(content any) []domain.Part {
 	s, ok := content.(string)
 	if !ok {
-		return []any{map[string]any{"text": content}}
+		return []domain.Part{{Text: toString(content)}}
 	}
 	locs := assistantImageMarkdownRe.FindAllStringSubmatchIndex(s, -1)
 	if len(locs) == 0 {
-		return []any{map[string]any{"text": s}}
+		return []domain.Part{{Text: s}}
 	}
-	var parts []any
+	var parts []domain.Part
 	last := 0
 	for _, m := range locs {
 		if pre := strings.TrimSpace(s[last:m[0]]); pre != "" {
-			parts = append(parts, map[string]any{"text": pre})
+			parts = append(parts, domain.Part{Text: pre})
 		}
 		if mime, b64 := parseDataURI(s[m[2]:m[3]]); mime != "" && b64 != "" {
-			parts = append(parts, inlineDataPart(mime, b64))
+			parts = append(parts, domain.Part{
+				InlineData: &domain.Blob{
+					MimeType: mime,
+					Data:     NormalizeBase64(b64),
+				},
+			})
 		}
 		last = m[1]
 	}
 	if post := strings.TrimSpace(s[last:]); post != "" {
-		parts = append(parts, map[string]any{"text": post})
+		parts = append(parts, domain.Part{Text: post})
 	}
 	if len(parts) == 0 {
-		parts = append(parts, map[string]any{"text": ""})
+		parts = append(parts, domain.Part{Text: ""})
 	}
 	return parts
 }
 
-// inlineDataPart 构造 inlineData part，data 经 NormalizeBase64 规范化。
-func inlineDataPart(mime, b64 string) map[string]any {
-	return map[string]any{"inlineData": map[string]any{
-		"mimeType": mime, "data": NormalizeBase64(b64),
-	}}
+// splitAssistantContent 兼容旧签名（返回 []any）。
+func splitAssistantContent(content any) []any {
+	parts := splitAssistantContentTyped(content)
+	out := make([]any, len(parts))
+	for i, p := range parts {
+		if p.InlineData != nil {
+			out[i] = map[string]any{
+				"inlineData": map[string]any{
+					"mimeType": p.InlineData.MimeType,
+					"data":     p.InlineData.Data,
+				},
+			}
+		} else {
+			out[i] = map[string]any{"text": p.Text}
+		}
+	}
+	return out
 }
+
 
 // imageURLString 从 image_url 字段取出 url 字符串（兼容 {url} 与字符串两种形态）。
 func imageURLString(v any) string {
@@ -166,16 +287,46 @@ func hasRemotePrefix(url string) bool {
 		strings.HasPrefix(url, "gs://")
 }
 
-// BuildVertexVariables 由 geminiPayload 构建发往上游的 variables。
-func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config.ConfigProvider) map[string]any {
+// BuildVertexVariables 由 geminiPayload 构建发往上游 Vertex AI 的 GraphQL variables 字典。
+func BuildVertexVariables(model string, geminiPayload any, cfg config.ConfigProvider) map[string]any {
+	var payloadMap map[string]any
+
+	switch p := geminiPayload.(type) {
+	case map[string]any:
+		payloadMap = p
+	case *domain.GenerateContentRequest:
+		m, err := GenerateContentRequestToMap(p)
+		if err == nil {
+			payloadMap = m
+		} else {
+			payloadMap = map[string]any{}
+		}
+	case domain.GenerateContentRequest:
+		m, err := GenerateContentRequestToMap(&p)
+		if err == nil {
+			payloadMap = m
+		} else {
+			payloadMap = map[string]any{}
+		}
+	default:
+		// 尝试通过 JSON 转换
+		data, err := json.Marshal(geminiPayload)
+		if err == nil {
+			_ = json.Unmarshal(data, &payloadMap)
+		}
+		if payloadMap == nil {
+			payloadMap = map[string]any{}
+		}
+	}
+
 	vars := map[string]any{}
 	vars["model"] = parseModelName(model)
 
 	for _, field := range supportedVarFields {
-		if v, ok := geminiPayload[field]; ok {
+		if v, ok := payloadMap[field]; ok {
 			vars[field] = v
 		} else {
-			if v, ok := geminiPayload[strutil.CamelToSnake(field)]; ok {
+			if v, ok := payloadMap[strutil.CamelToSnake(field)]; ok {
 				vars[field] = v
 			}
 		}
@@ -211,7 +362,7 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 		vars["toolConfig"] = convertToolsFormat(tc)
 	}
 
-	if genCfg := buildGenerationConfig(geminiPayload); len(genCfg) > 0 {
+	if genCfg := buildGenerationConfig(payloadMap); len(genCfg) > 0 {
 		dropUnsupportedPenaltyConfig(model, cfg, genCfg)
 		if len(genCfg) > 0 {
 			vars["generationConfig"] = genCfg
@@ -219,7 +370,7 @@ func BuildVertexVariables(model string, geminiPayload map[string]any, cfg config
 	}
 
 	if _, ok := vars["safetySettings"]; !ok {
-		if _, ok2 := geminiPayload["safety_settings"]; !ok2 {
+		if _, ok2 := payloadMap["safety_settings"]; !ok2 {
 			vars["safetySettings"] = buildSafetySettings(cfg)
 		}
 	}
@@ -598,7 +749,6 @@ func trailingModelFixActive(model string, cfg config.ConfigProvider) bool {
 }
 
 // endsWithModelTurn 判断对话是否以未闭合的 model 回合结尾。
-// 工具响应本身是合法的 user/function 内容，不能靠追加占位 user 回合掩盖。
 func endsWithModelTurn(content map[string]any) bool {
 	role, _ := content["role"].(string)
 	return strings.EqualFold(role, "model") || strings.EqualFold(role, "assistant")
@@ -613,9 +763,6 @@ func appendTrailingUserTurn(contents any) any {
 	if !ok || !endsWithModelTurn(last) {
 		return contents
 	}
-	// A model functionCall is not an incomplete text turn. It must be followed
-	// by the caller's functionResponse; appending a synthetic user turn here
-	// breaks the tool-call pairing and can trigger upstream tool_call_id errors.
 	if modelTurnHasFunctionCall(last) {
 		return contents
 	}
@@ -637,32 +784,4 @@ func modelTurnHasFunctionCall(content map[string]any) bool {
 		}
 	}
 	return false
-}
-
-func stripGeminiIDs(val any) any {
-	switch v := val.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(v))
-		for k, mv := range v {
-			if s, ok := mv.(string); ok && (strings.HasPrefix(s, "gemini-tool-call-") || strings.HasPrefix(s, "tool_call_")) {
-				if len(s) > 11 && strings.Contains(s, "-vp") {
-					idx := strings.LastIndex(s, "-vp")
-					if idx > 0 && len(s)-idx == 11 {
-						out[k] = s[:idx]
-						continue
-					}
-				}
-			}
-			out[k] = stripGeminiIDs(mv)
-		}
-		return out
-	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			out[i] = stripGeminiIDs(item)
-		}
-		return out
-	default:
-		return val
-	}
 }

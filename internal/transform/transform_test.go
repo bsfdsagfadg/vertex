@@ -28,7 +28,7 @@ func TestConvertChatRequest_PlainText(t *testing.T) {
 		"temperature": 0.7,
 		"max_tokens":  float64(100),
 	}
-	model, payload, err := ConvertChatRequest(body, cfg)
+	model, payload, err := ConvertChatRequestMap(body, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestConvertChatRequest_PlainText(t *testing.T) {
 }
 
 func TestConvertChatRequest_EmptyMessages(t *testing.T) {
-	_, _, err := ConvertChatRequest(map[string]any{"model": "m", "messages": []any{}}, config.StaticProvider(config.DefaultConfig()))
+	_, _, err := ConvertChatRequestMap(map[string]any{"model": "m", "messages": []any{}}, config.StaticProvider(config.DefaultConfig()))
 	if err == nil {
 		t.Error("expected error for empty messages")
 	}
@@ -75,7 +75,7 @@ func TestConvertChatRequest_MaxTokensInvalid(t *testing.T) {
 		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
 		"max_tokens": float64(0),
 	}
-	if _, _, err := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig())); err == nil {
+	if _, _, err := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig())); err == nil {
 		t.Error("expected error for max_tokens=0")
 	}
 }
@@ -216,7 +216,7 @@ func TestConvertChatRequest_Full(t *testing.T) {
 		"stream":   false,
 	}
 
-	model, geminiPayload, err := ConvertChatRequest(body, cfg)
+	model, geminiPayload, err := ConvertChatRequestMap(body, cfg)
 	if err != nil {
 		t.Fatalf("ConvertChatRequest failed: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestConvertChatRequest_WithTools(t *testing.T) {
 		}},
 	}
 
-	model, geminiPayload, err := ConvertChatRequest(body, cfg)
+	model, geminiPayload, err := ConvertChatRequestMap(body, cfg)
 	if err != nil {
 		t.Fatalf("ConvertChatRequest failed: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestConvertChatRequest_SystemInstruction(t *testing.T) {
 		"messages": []any{map[string]any{"role": "system", "content": "Be helpful."}},
 	}
 
-	_, geminiPayload, err := ConvertChatRequest(body, cfg)
+	_, geminiPayload, err := ConvertChatRequestMap(body, cfg)
 	if err != nil {
 		t.Fatalf("ConvertChatRequest failed: %v", err)
 	}
@@ -487,7 +487,7 @@ func TestConvertChatRequestGemini36TurnGuard(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelTurnGuardEnabled = true
 
-	_, payload, err := ConvertChatRequest(map[string]any{
+	_, payload, err := ConvertChatRequestMap(map[string]any{
 		"model": "gemini-3.6-flash",
 		"messages": []any{
 			map[string]any{"role": "user", "content": "继续回答"},
@@ -654,7 +654,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 		"model":    "gemini-2.5-flash",
 		"messages": []any{map[string]any{"role": "user", "content": "Hello"}},
 	}
-	model, geminiPayload, err := ConvertChatRequest(body, cfg)
+	model, geminiPayload, err := ConvertChatRequestMap(body, cfg)
 	if err != nil {
 		t.Fatalf("ConvertChatRequest: %v", err)
 	}

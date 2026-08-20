@@ -1,39 +1,9 @@
 package transform
 
 import (
-	"encoding/json"
 	"strings"
 )
 
-// oaiToolCall 是从 OpenAI tool_call 提取出的归一结果。
-type oaiToolCall struct { //nolint:govet
-	id   string
-	name string
-	args any
-}
-
-// extractOAIToolCall 健壮解析 OpenAI tool_call。
-func extractOAIToolCall(tc any) *oaiToolCall {
-	m, ok := tc.(map[string]any)
-	if !ok {
-		return nil
-	}
-	id := firstTruthyString(m["id"], m["tool_call_id"], m["call_id"])
-
-	var name string
-	var args any
-	if fn, ok := m["function"].(map[string]any); ok {
-		name = firstTruthyString(fn["name"], m["name"])
-		args = firstPresent(fn, "arguments", m, "arguments", "args")
-	} else {
-		name = firstTruthyString(m["name"], m["function_name"])
-		args = firstPresentIn(m, "arguments", "args")
-	}
-	if name == "" {
-		return nil
-	}
-	return &oaiToolCall{id: id, name: name, args: coerceFunctionArgs(args)}
-}
 
 // extractOAIFunctionTool 从 tools 项提取 function 声明。
 func extractOAIFunctionTool(tool any) map[string]any {
@@ -71,44 +41,6 @@ func extractOAIFunctionTool(tool any) map[string]any {
 	return nil
 }
 
-// coerceFunctionArgs 把 tool_call.arguments 规范成 dict/对象。
-func coerceFunctionArgs(args any) any {
-	if s, ok := args.(string); ok {
-		var parsed any
-		if err := json.Unmarshal([]byte(s), &parsed); err == nil {
-			return parsed
-		}
-		return map[string]any{"raw": s}
-	}
-	if args == nil {
-		return map[string]any{}
-	}
-	return args
-}
-
-// firstPresent 在两个 map 里依次查 keys，返回第一个存在的值。
-func firstPresent(m1 map[string]any, k1 string, m2 map[string]any, k2, k3 string) any {
-	if v, ok := m1[k1]; ok {
-		return v
-	}
-	if v, ok := m2[k2]; ok {
-		return v
-	}
-	if v, ok := m2[k3]; ok {
-		return v
-	}
-	return map[string]any{}
-}
-
-// firstPresentIn 在一个 map 里依次查 keys，返回第一个存在的值。
-func firstPresentIn(m map[string]any, keys ...string) any {
-	for _, k := range keys {
-		if v, ok := m[k]; ok {
-			return v
-		}
-	}
-	return map[string]any{}
-}
 
 
 func isAllDigits(s string) bool {

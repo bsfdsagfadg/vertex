@@ -139,7 +139,7 @@ func TestConvertChatRequest_Tools(t *testing.T) {
 		}},
 		"tool_choice": "required",
 	}
-	_, payload, err := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
+	_, payload, err := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestConvertChatRequest_ToolChoiceRequiredNoTools(t *testing.T) {
 		"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
 		"tool_choice": "required",
 	}
-	if _, _, err := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig())); err == nil {
+	if _, _, err := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig())); err == nil {
 		t.Error("required 无工具应报错")
 	}
 }
@@ -183,7 +183,7 @@ func TestConvertChatRequest_ToolChoiceUnknownFunc(t *testing.T) {
 		"tools":       []any{map[string]any{"type": "function", "function": map[string]any{"name": "a"}}},
 		"tool_choice": map[string]any{"type": "function", "function": map[string]any{"name": "b"}},
 	}
-	if _, _, err := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig())); err == nil {
+	if _, _, err := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig())); err == nil {
 		t.Error("引用未声明函数应报错")
 	}
 }
@@ -196,7 +196,7 @@ func TestConvertChatRequest_LegacyFunctions(t *testing.T) {
 		"functions":     []any{map[string]any{"name": "f1", "description": "d"}},
 		"function_call": "auto",
 	}
-	_, payload, err := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
+	_, payload, err := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestToolCallRoundTrip_IDAnchor(t *testing.T) {
 			map[string]any{"role": "tool", "tool_call_id": "call_BJ", "content": `{"temp":"5C"}`},
 		},
 	}
-	model, gemini, err := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
+	model, gemini, err := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestToolCallNameResolution_PositionalFallback(t *testing.T) {
 			map[string]any{"role": "tool", "content": "r2"},
 		},
 	}
-	model, gemini, _ := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
+	model, gemini, _ := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig()))
 	vars := BuildVertexVariables(model, gemini, config.StaticProvider(config.DefaultConfig()))
 	var names []string
 	for _, c := range vars["contents"].([]any) {
@@ -327,7 +327,7 @@ func TestEmptyToolCallGuard(t *testing.T) {
 			}},
 		},
 	}
-	_, gemini, _ := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
+	_, gemini, _ := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig()))
 	contents := gemini["contents"].([]any)
 	for _, c := range contents {
 		if cm := c.(map[string]any); cm["role"] == "model" {
@@ -348,7 +348,7 @@ func TestReasoningEffort(t *testing.T) {
 			"messages":         []any{map[string]any{"role": "user", "content": "hi"}},
 			"reasoning_effort": effort,
 		}
-		_, payload, err := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
+		_, payload, err := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -371,7 +371,7 @@ func TestMediaResolution(t *testing.T) {
 			"messages":         []any{map[string]any{"role": "user", "content": "hi"}},
 			"media_resolution": in,
 		}
-		_, payload, _ := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
+		_, payload, _ := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig()))
 		gc := payload["generationConfig"].(map[string]any)
 		if gc["mediaResolution"] != want {
 			t.Errorf("media_resolution=%q → %v, want %v", in, gc["mediaResolution"], want)
@@ -383,7 +383,7 @@ func TestMediaResolution(t *testing.T) {
 		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
 		"extra_body": map[string]any{"media_resolution": "low"},
 	}
-	_, payload, _ := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
+	_, payload, _ := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig()))
 	if payload["generationConfig"].(map[string]any)["mediaResolution"] != "MEDIA_RESOLUTION_LOW" {
 		t.Error("extra_body.media_resolution 未生效")
 	}
@@ -402,7 +402,7 @@ func TestLogprobsAndSampling(t *testing.T) {
 		"presence_penalty":  0.1,
 		"frequency_penalty": 0.2,
 	}
-	_, payload, _ := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
+	_, payload, _ := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig()))
 	gc := payload["generationConfig"].(map[string]any)
 	checks := map[string]any{
 		"temperature": 0.5, "topP": 0.9, "topK": float64(40), "seed": float64(123),
@@ -436,7 +436,7 @@ func TestParallelToolCalls_GracefullyAccepted(t *testing.T) {
 		"messages":            []any{map[string]any{"role": "user", "content": "hi"}},
 		"parallel_tool_calls": false,
 	}
-	if _, _, err := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig())); err != nil {
+	if _, _, err := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig())); err != nil {
 		t.Errorf("parallel_tool_calls 不应报错: %v", err)
 	}
 }
@@ -448,7 +448,7 @@ func TestSafetySettingsPassthrough(t *testing.T) {
 		"messages":        []any{map[string]any{"role": "user", "content": "hi"}},
 		"safety_settings": custom,
 	}
-	model, gemini, _ := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
+	model, gemini, _ := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig()))
 	vars := BuildVertexVariables(model, gemini, config.StaticProvider(config.DefaultConfig()))
 	ss := vars["safetySettings"].([]any)
 	if len(ss) != 1 || ss[0].(map[string]any)["threshold"] != "BLOCK_LOW_AND_ABOVE" {
@@ -701,7 +701,7 @@ func TestConvertToolsFormat_NativeParameters(t *testing.T) {
 			},
 		}}},
 	}
-	model, gemini, _ := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
+	model, gemini, _ := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig()))
 	vars := BuildVertexVariables(model, gemini, config.StaticProvider(config.DefaultConfig()))
 	tools := vars["tools"].([]any)
 	decl := tools[0].(map[string]any)["functionDeclarations"].([]any)[0].(map[string]any)
@@ -731,7 +731,7 @@ func TestParallelToolResponses_Coalesced(t *testing.T) {
 			map[string]any{"role": "tool", "tool_call_id": "a", "content": "ra"},
 		},
 	}
-	model, gemini, _ := ConvertChatRequest(body, config.StaticProvider(config.DefaultConfig()))
+	model, gemini, _ := ConvertChatRequestMap(body, config.StaticProvider(config.DefaultConfig()))
 	vars := BuildVertexVariables(model, gemini, config.StaticProvider(config.DefaultConfig()))
 	var funcContents int
 	var funcResponseParts int

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/domain"
 )
 
 // safetyCategories 是默认安全设置覆盖的 6 个类别（缺省全 BLOCK_NONE）。
@@ -26,249 +27,229 @@ var supportedVarFields = []string{ //nolint:gochecknoglobals
 	"cachedContent", "serviceTier", "store",
 }
 
-// ConvertChatRequest 将 OpenAI ChatCompletion 请求体转为 (model, geminiPayload)。
-func ConvertChatRequest(body map[string]any, cfg config.ConfigProvider) (string, map[string]any, error) {
-	model, _ := body["model"].(string)
-
-	if cfg.DebugMode() {
-		geminiPayloadStr, _ := json.Marshal(body)
-		log.Printf("[DEBUG] Payload 打印: ConvertChatRequest 转换前 payload: %s", string(geminiPayloadStr))
-	}
-
-	messagesRaw, ok := body["messages"].([]any)
-	if !ok || len(messagesRaw) == 0 {
+// ConvertChatRequest 将 OpenAI ChatCompletionRequest 强类型请求体转为 (model, *domain.GenerateContentRequest)。
+func ConvertChatRequest(req *domain.ChatCompletionRequest, cfg config.ConfigProvider) (string, *domain.GenerateContentRequest, error) {
+	if req == nil || len(req.Messages) == 0 {
 		return "", nil, fmt.Errorf("messages 不能为空 (messages must be a non-empty array)")
 	}
 
-	contents := []any{}
-	var systemParts []any
-	toolIDToName := map[string]string{}
+	model := parseModelName(req.Model)
 
-	for _, msgRaw := range messagesRaw {
-		msg, ok := msgRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-		role, _ := msg["role"].(string)
-		content := msg["content"]
+	if cfg != nil && cfg.DebugMode() {
+		reqBytes, _ := json.Marshal(req)
+		log.Printf("[DEBUG] Payload 打印: ConvertChatRequest 转换前 payload: %s", string(reqBytes))
+	}
+
+	coord := NewToolCallCoordinator()
+	var contents []domain.Content
+	var systemParts []domain.Part
+
+	for _, msg := range req.Messages {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		content := msg.Content
 
 		switch role {
 		case "system", "developer":
-			switch c := content.(type) {
-			case string:
-				systemParts = append(systemParts, map[string]any{"text": c})
-			case []any:
-				for _, item := range c {
-					if im, ok := item.(map[string]any); ok {
-						if t, _ := im["type"].(string); t == "text" || t == "input_text" {
-							systemParts = append(systemParts, map[string]any{"text": im["text"]})
-						}
-					} else if s, ok := item.(string); ok {
-						systemParts = append(systemParts, map[string]any{"text": s})
-					}
-				}
-			}
+			parts := extractSystemParts(content)
+			systemParts = append(systemParts, parts...)
+
 		case "user":
-			parts := convertUserContent(content)
+			parts := convertUserContentTyped(content)
 			if len(parts) > 0 {
-				contents = append(contents, map[string]any{"role": "user", "parts": parts})
+				contents = append(contents, domain.Content{
+					Role:  "user",
+					Parts: parts,
+				})
 			}
+
 		case "assistant":
-			var parts []any
+			var parts []domain.Part
 			if isTruthy(content) {
-				parts = append(parts, splitAssistantContent(content)...)
+				parts = append(parts, splitAssistantContentTyped(content)...)
 			}
-			if toolCalls, ok := msg["tool_calls"].([]any); ok {
-				for _, tc := range toolCalls {
-					parsed := extractOAIToolCall(tc)
-					if parsed == nil {
-						continue
-					}
-					if parsed.id != "" {
-						toolIDToName[parsed.id] = parsed.name
-					}
-					fc := map[string]any{"name": parsed.name, "args": parsed.args}
-					if parsed.id != "" {
-						fc["id"] = parsed.id
-					}
-					parts = append(parts, map[string]any{"functionCall": fc})
-				}
+			if len(msg.ToolCalls) > 0 {
+				toolParts := coord.RegisterAssistantToolCalls(msg.ToolCalls)
+				parts = append(parts, toolParts...)
 			}
 			if len(parts) > 0 {
-				contents = append(contents, map[string]any{"role": "model", "parts": parts})
+				contents = append(contents, domain.Content{
+					Role:  "model",
+					Parts: parts,
+				})
 			}
+
 		case "tool":
-			tcID, _ := msg["tool_call_id"].(string)
-			name := firstTruthyString(msg["name"], toolIDToName[tcID])
-			fr := map[string]any{"response": coerceFunctionResponse(msg["content"])}
-			if name != "" {
-				fr["name"] = name
-			}
-			if tcID != "" {
-				fr["id"] = tcID
-			}
-			contents = appendFunctionResponse(contents, map[string]any{"functionResponse": fr})
+			part := coord.PairToolResponse(msg.ToolCallID, msg.Name, content)
+			contents = appendFunctionResponseTyped(contents, part)
+
 		case "function":
-			name := firstTruthyString(msg["name"])
-			if name == "" {
-				name = "unknown"
-			}
-			contents = appendFunctionResponse(contents, map[string]any{"functionResponse": map[string]any{
-				"name": name, "response": coerceFunctionResponse(msg["content"]),
-			}})
+			part := coord.PairFunctionResponse(msg.Name, content)
+			contents = appendFunctionResponseTyped(contents, part)
 		}
 	}
-	geminiPayload := map[string]any{"contents": contents}
-	if len(systemParts) > 0 {
-		geminiPayload["systemInstruction"] = map[string]any{"parts": systemParts}
+
+	genReq := &domain.GenerateContentRequest{
+		Contents: contents,
 	}
 
-	declaredToolNames, err := convertTools(body, geminiPayload)
+	if len(systemParts) > 0 {
+		genReq.SystemInstruction = &domain.Content{
+			Parts: systemParts,
+		}
+	}
+
+	// 工具声明转换
+	var legacyFunctions []any
+	if req.ExtraBody != nil {
+		if fns, ok := req.ExtraBody["functions"].([]any); ok {
+			legacyFunctions = fns
+		}
+	}
+	tools, err := coord.ConvertTools(req.Tools, legacyFunctions)
 	if err != nil {
 		return "", nil, err
 	}
+	if len(tools) > 0 {
+		genReq.Tools = tools
+	}
 
-	if err := convertToolChoice(body, geminiPayload, declaredToolNames); err != nil {
+	// ToolChoice 转换
+	toolChoice := req.ToolChoice
+	if toolChoice == nil && req.ExtraBody != nil {
+		toolChoice = req.ExtraBody["function_call"]
+	}
+	toolConfig, err := coord.ConvertToolChoice(toolChoice)
+	if err != nil {
 		return "", nil, err
 	}
-
-	genCfg := map[string]any{}
-	for _, m := range []struct{ oai, gem string }{
-		{"temperature", "temperature"},
-		{"top_p", "topP"},
-		{"top_k", "topK"},
-		{"presence_penalty", "presencePenalty"},
-		{"frequency_penalty", "frequencyPenalty"},
-		{"seed", "seed"},
-	} {
-		if v, ok := body[m.oai]; ok && v != nil {
-			genCfg[m.gem] = v
-		}
+	if toolConfig != nil {
+		genReq.ToolConfig = toolConfig
 	}
 
-	if v, ok := body["logprobs"]; ok && v != nil {
-		genCfg["responseLogprobs"] = isTruthy(v)
+	// GenerationConfig 转换
+	genCfg, err := buildGenerationConfigTyped(req, cfg)
+	if err != nil {
+		return "", nil, err
 	}
-	if v, ok := body["top_logprobs"]; ok && v != nil {
-		genCfg["logprobs"] = v
-	}
-
-	var maxTokens any
-	if v, ok := body["max_tokens"]; ok && v != nil {
-		maxTokens = v
-	} else if v, ok := body["max_completion_tokens"]; ok && v != nil {
-		maxTokens = v
-	}
-	if maxTokens != nil {
-		f, ok := maxTokens.(float64)
-		if !ok || f < 1 {
-			return "", nil, fmt.Errorf("max_tokens must be an integer >= 1")
-		}
-		if !cfg.DropMaxTokens() {
-			genCfg["maxOutputTokens"] = maxTokens
-		}
+	if genCfg != nil {
+		genReq.GenerationConfig = genCfg
 	}
 
-	if stop, ok := body["stop"]; ok && stop != nil {
-		switch s := stop.(type) {
-		case string:
-			genCfg["stopSequences"] = []any{s}
-		case []any:
-			genCfg["stopSequences"] = s
-		}
+	// SafetySettings
+	if len(req.SafetySettings) > 0 {
+		genReq.SafetySettings = req.SafetySettings
 	}
 
-	if rf, ok := body["response_format"].(map[string]any); ok {
-		if t, _ := rf["type"].(string); t == "json_object" || t == "json_schema" {
-			genCfg["responseMimeType"] = "application/json"
-			if t == "json_schema" {
-				if js, ok := rf["json_schema"].(map[string]any); ok {
-					if sch, ok := js["schema"].(map[string]any); ok {
-						genCfg["responseSchema"] = sch
-					}
-				}
-			}
-		}
-	}
-
-	if sl, ok := body["safety_settings"].([]any); ok {
-		geminiPayload["safetySettings"] = sl
-	} else if sl, ok := body["safetySettings"].([]any); ok {
-		geminiPayload["safetySettings"] = sl
-	}
-
-	if len(genCfg) > 0 {
-		geminiPayload["generationConfig"] = genCfg
-	}
-
-	mrRaw := firstPresentRaw(body, "media_resolution", "mediaResolution")
-	if mrRaw == nil {
-		if extra, ok := body["extra_body"].(map[string]any); ok {
-			mrRaw = firstPresentRaw(extra, "media_resolution", "mediaResolution")
-		}
-	}
-	if mrRaw != nil {
-		if mr := normalizeMediaResolution(mrRaw); mr != "" {
-			ensureGenCfg(geminiPayload)["mediaResolution"] = mr
-		}
-	}
-
-	if re, ok := body["reasoning_effort"].(string); ok {
-		if level, ok := reasoningEffortToThinkingLevel[strings.ToLower(strings.TrimSpace(re))]; ok {
-			gc := ensureGenCfg(geminiPayload)
-			tc, ok := gc["thinkingConfig"].(map[string]any)
-			if !ok {
-				tc = map[string]any{}
-				gc["thinkingConfig"] = tc
-			}
-			tc["thinkingLevel"] = level
-		}
-	}
-
-	if thinking, ok := body["thinking"].(map[string]any); ok {
-		if tt, _ := thinking["type"].(string); tt == "enabled" || tt == "disabled" {
-			tc := map[string]any{"thinkingLevel": "MEDIUM"}
-			if tt == "disabled" {
-				tc["thinkingLevel"] = "NONE"
-			}
-			if budget, ok := thinking["budget_tokens"]; ok && budget != nil {
-				tc["thinkingBudget"] = budget
-			}
-			ensureGenCfg(geminiPayload)["thinkingConfig"] = tc
-		}
-	}
-
-	return model, geminiPayload, nil
+	return model, genReq, nil
 }
 
-// appendFunctionResponse 把一个 functionResponse part 追加进 contents。
-func appendFunctionResponse(contents []any, part map[string]any) []any {
+// MapToChatCompletionRequest 将 map[string]any 转为 *domain.ChatCompletionRequest。
+func MapToChatCompletionRequest(body map[string]any) (*domain.ChatCompletionRequest, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request body failed: %w", err)
+	}
+
+	var req domain.ChatCompletionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("unmarshal request to ChatCompletionRequest failed: %w", err)
+	}
+
+	// 兼容顶层 functions 和 function_call 注入 ExtraBody
+	if fns, ok := body["functions"]; ok && fns != nil {
+		if req.ExtraBody == nil {
+			req.ExtraBody = make(map[string]any)
+		}
+		req.ExtraBody["functions"] = fns
+	}
+	if fc, ok := body["function_call"]; ok && fc != nil {
+		if req.ExtraBody == nil {
+			req.ExtraBody = make(map[string]any)
+		}
+		req.ExtraBody["function_call"] = fc
+	}
+
+	return &req, nil
+}
+
+// GenerateContentRequestToMap 将 *domain.GenerateContentRequest 序列化为 map[string]any。
+func GenerateContentRequestToMap(genReq *domain.GenerateContentRequest) (map[string]any, error) {
+	if genReq == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(genReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal GenerateContentRequest failed: %w", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("unmarshal to map failed: %w", err)
+	}
+	return out, nil
+}
+
+// ConvertChatRequestMap 为接受 map[string]any 的入口提供适配封装。
+func ConvertChatRequestMap(body map[string]any, cfg config.ConfigProvider) (string, map[string]any, error) {
+	req, err := MapToChatCompletionRequest(body)
+	if err != nil {
+		return "", nil, err
+	}
+	model, genReq, err := ConvertChatRequest(req, cfg)
+	if err != nil {
+		return "", nil, err
+	}
+	payloadMap, err := GenerateContentRequestToMap(genReq)
+	if err != nil {
+		return "", nil, err
+	}
+	return model, payloadMap, nil
+}
+
+// ConvertChatRequestBody 是 ConvertChatRequestMap 的别名。
+func ConvertChatRequestBody(body map[string]any, cfg config.ConfigProvider) (string, map[string]any, error) {
+	return ConvertChatRequestMap(body, cfg)
+}
+
+func extractSystemParts(content any) []domain.Part {
+	var parts []domain.Part
+	switch c := content.(type) {
+	case string:
+		if c != "" {
+			parts = append(parts, domain.Part{Text: c})
+		}
+	case []any:
+		for _, item := range c {
+			if im, ok := item.(map[string]any); ok {
+				if t, _ := im["type"].(string); t == "text" || t == "input_text" {
+					parts = append(parts, domain.Part{Text: toString(im["text"])})
+				}
+			} else if s, ok := item.(string); ok {
+				parts = append(parts, domain.Part{Text: s})
+			}
+		}
+	case []domain.MessageContentPart:
+		for _, p := range c {
+			if p.Type == "text" || p.Type == "input_text" {
+				parts = append(parts, domain.Part{Text: p.Text})
+			}
+		}
+	}
+	return parts
+}
+
+func appendFunctionResponseTyped(contents []domain.Content, part domain.Part) []domain.Content {
 	if n := len(contents); n > 0 {
-		if last, ok := contents[n-1].(map[string]any); ok && last["role"] == "function" {
-			parts, _ := last["parts"].([]any)
-			last["parts"] = append(parts, part)
+		if contents[n-1].Role == "function" {
+			contents[n-1].Parts = append(contents[n-1].Parts, part)
 			return contents
 		}
 	}
-	return append(contents, map[string]any{"role": "function", "parts": []any{part}})
+	return append(contents, domain.Content{
+		Role:  "function",
+		Parts: []domain.Part{part},
+	})
 }
 
-// coerceFunctionResponse 把 tool/function 角色的 content 规范成 Gemini functionResponse.response。
-func coerceFunctionResponse(raw any) map[string]any {
-	obj := raw
-	if s, ok := raw.(string); ok {
-		var parsed any
-		if err := json.Unmarshal([]byte(s), &parsed); err == nil {
-			obj = parsed
-		} else {
-			obj = map[string]any{"result": s}
-		}
-	}
-	if m, ok := obj.(map[string]any); ok {
-		return m
-	}
-	return map[string]any{"result": obj}
-}
 // parseModelName 解析模型名：经 models.json 的 alias_map 重映射。
 func parseModelName(model string) string {
 	return config.ResolveModelName(model)

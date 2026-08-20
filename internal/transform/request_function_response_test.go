@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/domain"
 )
 
 // A tool result followed by ordinary user text must remain separate contents.
@@ -11,7 +12,7 @@ import (
 // a 400 and is the smallest regression fixture for the historical tool loop.
 func TestConvertChatRequestKeepsMixedFunctionResponseHistorySeparate(t *testing.T) {
 	cfg := config.StaticProvider(config.DefaultConfig())
-	_, payload, err := ConvertChatRequest(map[string]any{
+	_, payload, err := ConvertChatRequestMap(map[string]any{
 		"model": "gemini-3.1-flash",
 		"messages": []any{
 			map[string]any{"role": "assistant", "tool_calls": []any{
@@ -32,5 +33,44 @@ func TestConvertChatRequestKeepsMixedFunctionResponseHistorySeparate(t *testing.
 	}
 	if contents[1].(map[string]any)["role"] != "function" || contents[2].(map[string]any)["role"] != "user" {
 		t.Fatalf("mixed function response history was merged: %#v", contents)
+	}
+
+	// Typed equivalent verification
+	req := &domain.ChatCompletionRequest{
+		Model: "gemini-3.1-flash",
+		Messages: []domain.ChatMessage{
+			{
+				Role: "assistant",
+				ToolCalls: []domain.ToolCall{
+					{
+						ID:   "call-1",
+						Type: "function",
+						Function: domain.FunctionCall{
+							Name:      "lookup",
+							Arguments: "{}",
+						},
+					},
+				},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: "call-1",
+				Content:    `{"ok":true}`,
+			},
+			{
+				Role:    "user",
+				Content: "continue",
+			},
+		},
+	}
+	_, genReq, err := ConvertChatRequest(req, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(genReq.Contents) != 3 {
+		t.Fatalf("genReq.Contents len=%d, want 3", len(genReq.Contents))
+	}
+	if genReq.Contents[1].Role != "function" || genReq.Contents[2].Role != "user" {
+		t.Fatalf("typed contents order mismatch: %#v", genReq.Contents)
 	}
 }

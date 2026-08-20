@@ -1,7 +1,6 @@
 package vertex
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -455,129 +453,6 @@ func classifyUpstreamHTTPError(statusCode int, body string) *VertexError {
 	return raiseForStatus(statusCode, "", "Upstream Error: "+body, nil, body)
 }
 
-// scanStream 跨 chunk 增量扫描花括号配对，逐个完整 JSON 对象回调 onObject（O(n)）。
-//
-// M27 增量扫描：
-// 跨网络 chunk 维护 scanPos/braceCount/inString/escape 状态，下个 chunk 从上次扫到的位置
-// 续扫，而非每来一个 chunk 都从 startIdx 重扫整个 buffer（旧逻辑 O(n²）。逐字节逻辑等价。
-//
-// onObject 返回 (stop, err)：stop=true（命中真实 finishReason / 客户端断开）即正常结束扫描；
-// err 非 nil 即中断并上抛（上游错误）。
-var scanBufPool = sync.Pool{ //nolint:gochecknoglobals
-	New: func() any {
-		buf := make([]byte, 16*1024)
-		return &buf
-	},
-}
-
-func scanStream(body io.Reader, onObject func(map[string]any) (bool, error)) error {
-	reader := bufio.NewReader(body)
-	readBufPtr := scanBufPool.Get().(*[]byte)
-	defer scanBufPool.Put(readBufPtr)
-	readBuf := *readBufPtr
-
-	var buffer []byte
-	scanPos := 0  // 已扫到的位置（buffer 内），下个网络 chunk 从这里续扫。
-	startIdx := 0 // 当前对象的起始 '{' 位置。
-	braceCount := 0
-	inString := false
-	escape := false
-
-	const maxBufferSize = 4 * 1024 * 1024
-
-	for {
-		n, readErr := reader.Read(readBuf)
-		if n > 0 {
-			buffer = append(buffer, readBuf[:n]...)
-
-			if len(buffer) > maxBufferSize && braceCount == 0 {
-				log.Printf("[DEBUG-scan] buffer exceeded %d bytes, resetting from scanPos=%d", maxBufferSize, scanPos)
-				buffer = buffer[scanPos:]
-				scanPos = 0
-				startIdx = 0
-			}
-
-			for {
-				if scanPos == 0 {
-					// 找下一个对象的起始 '{'。
-					startIdx = bytes.IndexByte(buffer, '{')
-					if startIdx == -1 {
-						buffer = buffer[:0]
-						break
-					}
-					scanPos = startIdx
-					braceCount = 0
-					inString = false
-					escape = false
-				}
-
-				endIdx := -1
-				for i := scanPos; i < len(buffer); i++ {
-					ch := buffer[i]
-					if escape {
-						escape = false
-						continue
-					}
-					if ch == '\\' {
-						escape = true
-						continue
-					}
-					if ch == '"' {
-						inString = !inString
-						continue
-					}
-					if !inString {
-						if ch == '{' {
-							braceCount++
-						} else if ch == '}' {
-							braceCount--
-							if braceCount == 0 {
-								endIdx = i
-								break
-							}
-						}
-					}
-				}
-
-				if endIdx != -1 {
-					jsonStr := buffer[startIdx : endIdx+1]
-					obj := parseJSONObject(jsonStr)
-
-					// In-place compaction to avoid memory allocation and copying overhead on every chunk
-					copy(buffer, buffer[endIdx+1:])
-					buffer = buffer[:len(buffer)-(endIdx+1)]
-					scanPos = 0
-
-					if obj != nil {
-						stop, err := onObject(obj)
-						if err != nil {
-							return err
-						}
-						if stop {
-							return nil
-						}
-					}
-				} else {
-					// 未扫到完整对象：记下已扫位置，下个 chunk 续扫，不重扫前缀。
-					scanPos = len(buffer)
-					break
-				}
-			}
-		}
-
-		if readErr != nil {
-			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
-				return fmt.Errorf("error: %w", readErr)
-
-			}
-			if errors.Is(readErr, io.EOF) {
-				// 只有明确 EOF 才表示上游正常关闭；空响应由上层按 got_content 判定。
-				return nil
-			}
-			return fmt.Errorf("read upstream stream: %w", readErr)
-		}
-	}
-}
 
 // parseJSONObject 把单个 JSON 对象字符串解析为 map，失败返回 nil（解析失败跳过）。
 func parseJSONObject(b []byte) map[string]any {

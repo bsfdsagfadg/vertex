@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/config"
@@ -12,7 +11,7 @@ import (
 )
 
 // RunRace runs a hedged race across candidate nodes.
-// It coordinates candidate launching, hedge scheduling, and result adjudication.
+// It coordinates candidate scheduling, launching, and result adjudication.
 func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 	run func(ctx context.Context, proxyURI string) (T, error),
 	opts ...RaceOption[T],
@@ -22,38 +21,14 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 		o(&rc)
 	}
 
-	stickyPool := nodes.GetStickyPool()
-	raceTimeout := cfg.RaceTimeout()
-
-	// 换批预算：关单节点重试时，重试由"换一批新节点"完成（最多 MaxRetries 批）。
-	roundBudget := 0
-	if cfg.ParallelPoolEnabled() && !cfg.ParallelPoolRetryEnabled() {
-		roundBudget = cfg.MaxRetries()
-	}
-
-	usedURIs := make(map[string]bool)
-	var zero T
-
-	selectFreshCands := func() []nodes.Node {
-		cands := nodes.SelectForParallel(cfg.ParallelPoolSize(), cfg.ParallelNodeTopK(), cfg.DebugMode(), cfg.StickyNodePriority())
-		fresh := make([]nodes.Node, 0, len(cands))
-		for _, c := range cands {
-			if !usedURIs[c.RawURI] {
-				fresh = append(fresh, c)
-			}
-		}
-		return fresh
-	}
-
-	cands := selectFreshCands()
-	if !cfg.ParallelPoolEnabled() || len(cands) == 0 {
-		proxy := cfg.ActiveNodeURI()
-		if proxy == "" {
-			proxy = cfg.ProxyURL()
-		}
+	scheduler := NewCandidateScheduler(cfg)
+	cands, parallel := scheduler.SelectInitialCandidates()
+	if !parallel || len(cands) == 0 {
+		proxy := scheduler.FallbackProxy()
 		log.Printf("[Vertex] [RunParallel] 降级为单节点运行: %s", nodes.GetNodeName(proxy))
 		return run(ctx, proxy)
 	}
+
 	if cfg.DebugMode() {
 		log.Printf("[Vertex] [RunParallel] 开启对冲延迟竞速, %d 个节点参与", len(cands))
 		for _, c := range cands {
@@ -63,33 +38,34 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 
 	cli.UpdateReqState(RequestIDFromContext(ctx), "⚡ 并发竞速", "\033[33m", fmt.Sprintf("并行节点: %d", len(cands)))
 
-	ctxRace, cancel := context.WithCancel(ctx) //nolint:govet // cancel called on error paths; win path relies on parent ctx
+	ctxRace, cancelRace := context.WithCancel(ctx)
 	var returnedOnWinPath bool
 	defer func() {
 		if !returnedOnWinPath || !rc.noCancelOnSuccess {
-			cancel()
+			cancelRace()
 		}
 	}()
 
-	recorder := newResultRecorder[T](stickyPool)
-	var failedErrors []error
+	stickyPool := nodes.GetStickyPool()
+	arbiter := NewResultArbiter[T](rc, stickyPool)
+	raceTimeout := cfg.RaceTimeout()
+	var zero T
 
-	for round := 0; ; round++ {
+	for {
+		scheduler.PrepareRound(cands)
 		resCh := make(chan raceResult[T], len(cands))
-		launcher := newCandidateLauncher[T](ctxRace, raceTimeout, run)
-		scheduler := newHedgeScheduler(cfg, cands)
+		launcher := NewCandidateLauncher[T](ctxRace, raceTimeout, run)
 
 		launchNext := func() bool {
-			if !scheduler.HasMore() {
+			cand, ok := scheduler.NextCandidate()
+			if !ok {
 				return false
 			}
-			candidate := cands[scheduler.NextIndex()]
-			usedURIs[candidate.RawURI] = true
-			launcher.Launch(candidate, round, resCh)
+			launcher.Launch(cand, scheduler.CurrentRound(), resCh)
 			return true
 		}
-		launchNext()
 
+		launchNext()
 		if !scheduler.HasMore() {
 			scheduler.StopTimer()
 		}
@@ -99,13 +75,16 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 			select {
 			case <-ctx.Done():
 				scheduler.StopTimer()
-				cancel()
+				launcher.CancelAll()
+				cancelRace()
 				return zero, ctx.Err()
 
 			case <-scheduler.TimerChan():
 				if scheduler.HasMore() {
 					if cfg.DebugMode() {
-						log.Printf("[Racing] 对冲延迟唤醒，启动备份节点: %s", cands[scheduler.nextIdx].Name)
+						if next, ok := scheduler.PeekNextCandidate(); ok {
+							log.Printf("[Racing] 对冲延迟唤醒，启动备份节点: %s", next.Name)
+						}
 					}
 					launchNext()
 					scheduler.ResetTimer()
@@ -113,84 +92,57 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 
 			case res := <-resCh:
 				launcher.DecrementActive()
+
 				// 父请求取消拥有最高归属优先级。即使候选取消结果与 ctx.Done
 				// 同时就绪，也不能把客户端断开误报成节点失败或 all nodes failed。
 				if parentErr := ctx.Err(); parentErr != nil {
 					scheduler.StopTimer()
-					cancel()
+					launcher.CancelAll()
+					cancelRace()
 					return zero, parentErr
 				}
+
 				name := nodes.GetNodeName(res.uri)
 
 				if res.err == nil {
-					// 判定是否可立即胜出。
-					if rc.isWinningResult == nil || rc.isWinningResult(res.val) {
+					if arbiter.IsWinning(res.val) {
 						scheduler.StopTimer()
 						log.Printf("[Racing] 竞速胜出节点: %s", name)
 						cli.UpdateReqWinner(RequestIDFromContext(ctx), name)
 						cli.UpdateReqState(RequestIDFromContext(ctx), "🟢 数据传输", "\033[32m", "已建立连接")
-						nodes.RecordTest(res.uri, true, 50, "")
-						stickyPool.Add(res.uri)
 
+						arbiter.RecordWinner(res.uri)
 						returnedOnWinPath = true
 						launcher.CancelAllExcept(res.uri)
 
-						collectTimeout := time.Duration(min(30, 5+cfg.ParallelPoolSize())) * time.Second
-						go func() {
-							collectCtx, collectCancel := context.WithTimeout(context.Background(), collectTimeout)
-							defer collectCancel()
-							if launcher.ActiveCount() == 0 {
-								if !rc.noCancelOnSuccess {
-									cancel()
-								}
-								return
-							}
-							for {
-								select {
-								case bgRes := <-resCh:
-									launcher.DecrementActive()
-									recorder.Record(bgRes)
-									if launcher.ActiveCount() == 0 {
-										if !rc.noCancelOnSuccess {
-											cancel()
-										}
-										return
-									}
-								case <-collectCtx.Done():
-									if !rc.noCancelOnSuccess {
-										cancel()
-									}
-									return
-								}
-							}
-						}()
-
+						arbiter.DrainBackgroundResults(launcher, resCh, cancelRace, cfg.ParallelPoolSize())
 						return res.val, nil
 					}
 
-					// 非胜出成功结果：收集（CompleteChat 非 STOP 结果），继续等其余候选。
+					// 非胜出成功结果（如 CompleteChat 的非 STOP 结果）：收集并继续等待
 					launcher.CancelCandidate(res.uri)
-					rc.collectedResults = append(rc.collectedResults, res)
-					nodes.RecordTest(res.uri, true, 50, "")
-					stickyPool.Add(res.uri)
+					arbiter.RecordNonWinning(res)
 				} else {
 					launcher.CancelCandidate(res.uri)
-					recorder.Record(res)
+					arbiter.RecordFailure(res)
 					ve := asVertexError(res.err)
-					failedErrors = append(failedErrors, res.err)
 
 					if ve != nil && ve.IsGlobalHardError() {
 						if cfg.DebugMode() {
 							log.Printf("[Racing] 节点 %s 返回请求级错误(%s)，终止竞速: %s", name, ve.Kind, ve.Message)
 						}
-						cancel()
+						scheduler.StopTimer()
+						launcher.CancelAll()
+						cancelRace()
 						return zero, res.err
 					}
 				}
 
 				if launcher.ActiveCount() == 0 && scheduler.HasMore() {
 					if cfg.DebugMode() {
-						log.Printf("[Racing] 已启动候选全部结束，立即接力节点: %s", cands[scheduler.nextIdx].Name)
+						if next, ok := scheduler.PeekNextCandidate(); ok {
+							log.Printf("[Racing] 已启动候选全部结束，立即接力节点: %s", next.Name)
+						}
 					}
 					launchNext()
 					scheduler.ResetTimer()
@@ -200,47 +152,28 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 				if launcher.ActiveCount() == 0 && !scheduler.HasMore() {
 					scheduler.StopTimer()
 					if parentErr := ctx.Err(); parentErr != nil {
-						cancel()
+						launcher.CancelAll()
+						cancelRace()
 						return zero, parentErr
 					}
+
 					// 本轮全部结束：优先收敛收集到的非胜出成功结果。
-					if len(rc.collectedResults) > 0 {
-						cancel()
-						if rc.finalizeCollected != nil {
-							return rc.finalizeCollected(rc.collectedResults)
-						}
-						return rc.collectedResults[0].val, nil
+					if arbiter.HasCollected() {
+						cancelRace()
+						return arbiter.FinalizeCollected()
 					}
 
 					// 本轮全部失败且无成功：换一批从未用过的节点再试（关单节点重试模式）。
-					if roundBudget > 0 {
-						next := selectFreshCands()
-						if len(next) == 0 {
-							if cfg.DebugMode() {
-								log.Printf("[Racing] 新鲜节点已耗尽，清空防重过滤，允许节点跨轮次重试复用...")
-							}
-							usedURIs = make(map[string]bool)
-							next = selectFreshCands()
-						}
-						if len(next) == 0 {
-							cancel()
-							if len(failedErrors) > 0 {
-								return zero, pickBestError(failedErrors)
-							}
-							return zero, fmt.Errorf("all nodes failed")
-						}
-						roundBudget--
-						cands = next
+					if nextCands, hasRound := scheduler.NextRound(); hasRound {
+						cands = nextCands
 						if cfg.DebugMode() {
-							log.Printf("[Racing] 本轮 %d 个节点全部失败，换批重试（剩余轮次 %d）", len(cands), roundBudget)
+							log.Printf("[Racing] 本轮节点全部失败，换批重试（剩余轮次 %d）", scheduler.RoundBudget())
 						}
 						break InnerLoop // 进入下一轮
 					}
-					cancel()
-					if len(failedErrors) > 0 {
-						return zero, pickBestError(failedErrors)
-					}
-					return zero, fmt.Errorf("all nodes failed")
+
+					cancelRace()
+					return zero, arbiter.PickBestError()
 				}
 			}
 		}

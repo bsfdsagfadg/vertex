@@ -1,7 +1,6 @@
 package transform
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/strutil"
@@ -12,89 +11,6 @@ var toolKeys = map[string]bool{ //nolint:gochecknoglobals
 	"functionDeclarations": true, "googleSearch": true, "googleSearchRetrieval": true,
 	"codeExecution": true, "retrieval": true, "urlContext": true,
 	"computerUse": true, "mcpServer": true, "fileSearch": true, "googleMaps": true,
-}
-
-// convertTools 把 OpenAI tools（或 legacy functions）转为 functionDeclarations，写入
-// geminiPayload["tools"]。返回已声明的工具名集合（供 tool_choice 校验）。
-func convertTools(body, geminiPayload map[string]any) (map[string]bool, error) {
-	oaiTools, _ := body["tools"].([]any)
-	// 兼容已废弃的顶层 functions 字段（无 tools 时回退）。
-	if len(oaiTools) == 0 {
-		if fns, ok := body["functions"].([]any); ok {
-			for _, f := range fns {
-				oaiTools = append(oaiTools, map[string]any{"type": "function", "function": f})
-			}
-		}
-	}
-	declared := map[string]bool{}
-	if len(oaiTools) == 0 {
-		return declared, nil
-	}
-
-	var funcDecls []any
-	for _, t := range oaiTools {
-		f := extractOAIFunctionTool(t)
-		if f == nil {
-			continue
-		}
-		decl := map[string]any{"name": f["name"]}
-		declared[toString(f["name"])] = true
-		if isTruthy(f["description"]) {
-			decl["description"] = f["description"]
-		}
-		if params, ok := f["parameters"].(map[string]any); ok && len(params) > 0 {
-			// 对 parameters 递归白名单清洗，剔除 Gemini 不支持的 schema 字段。
-			decl["parameters"] = cleanFunctionParameters(deepCopyAny(params))
-		} else {
-			// 缺省 parameters 时补默认空对象 schema，满足 Gemini functionDeclarations 要求。
-			decl["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}
-		}
-		funcDecls = append(funcDecls, decl)
-	}
-	if len(funcDecls) > 0 {
-		geminiPayload["tools"] = []any{map[string]any{"functionDeclarations": funcDecls}}
-	}
-	return declared, nil
-}
-
-// convertToolChoice 把 tool_choice（或 legacy function_call）转为 toolConfig。
-func convertToolChoice(body, geminiPayload map[string]any, declared map[string]bool) error {
-	tc := firstPresentRaw(body, "tool_choice", "function_call")
-	if tc == nil || !isTruthy(tc) {
-		return nil
-	}
-	switch v := tc.(type) {
-	case string:
-		switch v {
-		case "none":
-			geminiPayload["toolConfig"] = map[string]any{"functionCallingConfig": map[string]any{"mode": "NONE"}}
-		case "auto":
-			geminiPayload["toolConfig"] = map[string]any{"functionCallingConfig": map[string]any{"mode": "AUTO"}}
-		case "required":
-			if len(declared) == 0 {
-				return fmt.Errorf("tool_choice='required' requires at least one tool")
-			}
-			geminiPayload["toolConfig"] = map[string]any{"functionCallingConfig": map[string]any{"mode": "ANY"}}
-		}
-	case map[string]any:
-		var fnName string
-		if v["type"] == "function" {
-			if fn, ok := v["function"].(map[string]any); ok {
-				fnName, _ = fn["name"].(string)
-			}
-		} else if n, ok := v["name"].(string); ok {
-			fnName = n
-		}
-		if fnName != "" {
-			if len(declared) > 0 && !declared[fnName] {
-				return fmt.Errorf("tool_choice references unknown function: %s", fnName)
-			}
-			geminiPayload["toolConfig"] = map[string]any{"functionCallingConfig": map[string]any{
-				"mode": "ANY", "allowedFunctionNames": []any{fnName},
-			}}
-		}
-	}
-	return nil
 }
 
 // normalizeToolsFormat 把 tools 归一为 Vertex AI 期望的 List[Tool]：
@@ -168,7 +84,7 @@ func convertToolsFormat(data any) any {
 					out["name"] = v
 				}
 			case "parameters", "parametersJsonSchema", "parameters_json_schema":
-				out["parameters"] = toNativeSchema(v)
+				out["parameters"] = ToNativeSchema(v)
 			default:
 				camelKey := k
 				if strings.Contains(k, "_") {

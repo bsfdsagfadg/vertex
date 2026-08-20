@@ -302,6 +302,19 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 }
 
 func (adm *AdminHandler) adminGetProxyTestProgress(w http.ResponseWriter, _ *http.Request) {
+	if adm.taskManager != nil {
+		if task, ok := adm.taskManager.GetActiveTaskByType("proxy_batch_test"); ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"running":      task.State == TaskStateRunning || task.State == TaskStatePaused,
+				"total":        task.Progress.Total,
+				"done":         task.Progress.Done,
+				"ok_count":     task.Progress.OkCount,
+				"fail_count":   task.Progress.FailCount,
+				"current_node": task.Progress.CurrentNode,
+			})
+			return
+		}
+	}
 	entryProxyTestMu.Lock()
 	state := entryProxyTestState
 	entryProxyTestMu.Unlock()
@@ -342,7 +355,6 @@ func (adm *AdminHandler) adminBatchTestProxyNodes(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusBadRequest, adminErr("没有有效的入口代理可测试"))
 		return
 	}
-
 	entryProxyTestMu.Lock()
 	if entryProxyTestState.Running {
 		entryProxyTestMu.Unlock()
@@ -361,10 +373,98 @@ func (adm *AdminHandler) adminBatchTestProxyNodes(w http.ResponseWriter, r *http
 		totalTimeout = 5 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), totalTimeout)
+
+	if adm.taskManager != nil {
+		_, err := adm.taskManager.StartTask(ctx, "proxy_batch_test", len(selected), func(tc *TaskControl) error {
+			defer cancel()
+			defer func() {
+				entryProxyTestMu.Lock()
+				if entryProxyTestGeneration == generation {
+					entryProxyTestState.Running = false
+					entryProxyTestState.CurrentNode = ""
+				}
+				entryProxyTestMu.Unlock()
+			}()
+
+			sem := make(chan struct{}, entryProxyTestConcurrency)
+			var wg sync.WaitGroup
+			for _, candidate := range selected {
+				wg.Add(1)
+				go func(c config.ProxyCandidate) {
+					defer wg.Done()
+					if tc.CheckControl() {
+						return
+					}
+					select {
+					case sem <- struct{}{}:
+					case <-tc.Context().Done():
+						return
+					}
+					defer func() { <-sem }()
+					if tc.CheckControl() {
+						return
+					}
+
+					entryProxyTestMu.Lock()
+					if entryProxyTestGeneration == generation {
+						entryProxyTestState.CurrentNode = c.Name
+					}
+					entryProxyTestMu.Unlock()
+					tc.SetCurrentNode(c.Name)
+
+					probeCtx, probeCancel := context.WithTimeout(tc.Context(), perItemTimeout)
+					elapsed, err := probeEntryProxyCandidate(probeCtx, adm.vc.Net(), c.RawURI, int(perItemTimeout.Seconds()))
+					probeCtxErr := probeCtx.Err()
+					probeCancel()
+					if tc.Context().Err() != nil {
+						return
+					}
+					errText := ""
+					if err != nil {
+						errText = err.Error()
+						if probeCtxErr != nil {
+							errText = "timeout"
+						}
+					}
+					if updateErr := config.UpdateProxyCandidateTest(c.RawURI, err == nil, elapsed, errText); updateErr != nil {
+						err = updateErr
+					}
+
+					success := err == nil
+					tc.UpdateProgress(c.Name, success)
+
+					entryProxyTestMu.Lock()
+					if entryProxyTestGeneration == generation {
+						entryProxyTestState.Done++
+						if success {
+							entryProxyTestState.OKCount++
+						} else {
+							entryProxyTestState.FailCount++
+						}
+					}
+					entryProxyTestMu.Unlock()
+				}(candidate)
+			}
+			wg.Wait()
+			return nil
+		})
+		if err != nil {
+			cancel()
+			entryProxyTestMu.Lock()
+			if entryProxyTestGeneration == generation {
+				entryProxyTestState.Running = false
+			}
+			entryProxyTestMu.Unlock()
+			writeJSON(w, http.StatusConflict, adminErr("已有入口代理批量测试正在进行中"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "total": len(selected)})
+		return
+	}
+
 	go adm.runProxyBatchTest(ctx, cancel, generation, selected, perItemTimeout)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "total": len(selected)})
 }
-
 func (adm *AdminHandler) runProxyBatchTest(
 	ctx context.Context,
 	cancel context.CancelFunc,

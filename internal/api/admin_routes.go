@@ -1,7 +1,6 @@
 package api
 
 import (
-	"log"
 	"net/http"
 	"strings"
 
@@ -126,9 +125,11 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 	if path == "" {
 		path = "/"
 	}
-	log.Printf("[Server] [AdminAPI] 收到请求: %s %s", r.Method, path)
-
-	r2 := r.Clone(r.Context())
-	r2.URL.Path = path
-	adm.Routes().ServeHTTP(w, r2)
+	if path != r.URL.Path {
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = path
+		adm.Routes().ServeHTTP(w, r2)
+		return
+	}
+	adm.Routes().ServeHTTP(w, r)
 }

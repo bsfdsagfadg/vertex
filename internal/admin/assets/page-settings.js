@@ -1,3 +1,7 @@
+// ==========================================
+// Vertex AI Proxy Admin - Settings Page
+// ==========================================
+
 const SETTINGS_FIELDS = [
   // 🚀 Group: pool (并发与 Token 池管理)
   { k: 'parallel_pool_enabled', label: '并发请求池', type: 'bool', group: 'pool', desc: '同时请求多个健康节点，首包到达即采纳，降低延迟' },
@@ -27,29 +31,33 @@ const SETTINGS_FIELDS = [
   { k: 'drop_max_tokens', label: '移除 maxOutputTokens', type: 'bool', group: 'security', desc: '移除输出 token 上限，让模型自由输出' },
 ];
 
-let curSettings = {};
 async function loadSettings() {
-  const d = await API.settings.get(); curSettings = d.settings || d;
+  const d = await API.settings.get();
+  AppState.curSettings = d.settings || d;
 
   const gpEl = $('#globalProxy');
-  if (gpEl && curSettings.proxy_url !== undefined) {
-    gpEl.value = curSettings.proxy_url;
+  if (gpEl && AppState.curSettings.proxy_url !== undefined) {
+    gpEl.value = AppState.curSettings.proxy_url;
   }
 
   const fld = (f) => {
-    const v = curSettings[f.k];
-    if (f.type === 'bool') return `<div class="field bool"><div class="min-w-0"><label for="set_${f.k}">${f.label}</label>${f.desc ? `<div class="desc mt-4px">${f.desc}</div>` : ''}</div><label class="toggle"><input type="checkbox" id="set_${f.k}" ${v ? 'checked' : ''}><span class="track"></span></label></div>`;
+    const v = AppState.curSettings[f.k];
+    if (f.type === 'bool') {
+      return `<div class="field bool"><div class="min-w-0"><label for="set_${esc(f.k)}">${esc(f.label)}</label>${f.desc ? `<div class="desc mt-4px">${esc(f.desc)}</div>` : ''}</div><label class="toggle"><input type="checkbox" id="set_${esc(f.k)}" ${v ? 'checked' : ''}><span class="track"></span></label></div>`;
+    }
     let input;
-    if (f.type === 'select') input = `<select id="set_${f.k}">${f.opts.map(o => `<option ${o === v ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
-    else input = `<input type="${f.type}" id="set_${f.k}" value="${v ?? ''}" ${f.max !== undefined ? `max="${f.max}" oninput="if(this.value!=='' && parseInt(this.value)>${f.max}) this.value='${f.max}'"` : ''} ${f.min !== undefined ? `min="${f.min}"` : ''}>`;
-    return `<div class="field"><label for="set_${f.k}">${f.label}</label>${input}${f.desc ? `<div class="desc">${f.desc}</div>` : ''}</div>`;
+    if (f.type === 'select') {
+      input = `<select id="set_${esc(f.k)}">${f.opts.map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+    } else {
+      input = `<input type="${esc(f.type)}" id="set_${esc(f.k)}" value="${esc(v ?? '')}" ${f.max !== undefined ? `max="${f.max}" oninput="if(this.value!=='' && parseInt(this.value, 10)>${f.max}) this.value='${f.max}'"` : ''} ${f.min !== undefined ? `min="${f.min}"` : ''}>`;
+    }
+    return `<div class="field"><label for="set_${esc(f.k)}">${esc(f.label)}</label>${input}${f.desc ? `<div class="desc">${esc(f.desc)}</div>` : ''}</div>`;
   };
 
-  // 【核心修改：定义视觉功能分组】
   const groups = {
     pool: { title: '🚀 并发与 Token 池管理', fields: [] },
     core: { title: '🛠 核心控制与基础参数', fields: [] },
-    security: { title: '🛡 安全增强与模型策略', fields: [] }
+    security: { title: '🛡 安全增强与模型策略', fields: [] },
   };
 
   SETTINGS_FIELDS.forEach(f => {
@@ -77,24 +85,27 @@ async function loadSettings() {
     }
 
     sectionsHtml += `
-      <div class="settings-section-title">${g.title}</div>
+      <div class="settings-section-title">${esc(g.title)}</div>
       ${numFields.length ? `<div class="grid grid-2">${numFields.map(fld).join('')}</div>` : ''}
       ${boolFields.length ? `<div class="grid grid-2" style="margin-top:10px;">${boolFields.map(fld).join('')}</div>` : ''}
       ${extraHtml}
     `;
   }
 
-  $('#settingsForm').innerHTML =
-    sectionsHtml +
-    '<button class="btn mt-14px" onclick="saveSettings()">保存设置</button>';
+  const formEl = $('#settingsForm');
+  if (formEl) {
+    formEl.innerHTML =
+      sectionsHtml +
+      '<button class="btn mt-14px" onclick="saveSettings()">保存设置</button>';
 
-  $('#settingsForm').addEventListener('input', () => window.hasUnsavedSettings = true);
-  $('#settingsForm').addEventListener('change', () => window.hasUnsavedSettings = true);
-  window.hasUnsavedSettings = false;
+    formEl.addEventListener('input', () => AppState.markDirty(true));
+    formEl.addEventListener('change', () => AppState.markDirty(true));
+  }
+  AppState.markDirty(false);
 
   if (!window._hasSettingsUnloadListener) {
     window.addEventListener('beforeunload', (e) => {
-      if (window.hasUnsavedSettings) {
+      if (AppState.hasUnsavedSettings) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -143,9 +154,9 @@ async function loadSettings() {
   const probeAutoDisableEl = $('#set_entry_proxy_probe_auto_disable_enabled');
   const probeFailureLimitEl = $('#set_entry_proxy_probe_auto_disable_failures');
   if (probeEnabledEl && probeIntervalEl && probeCooldownEl && probeAutoDisableEl && probeFailureLimitEl) {
-    const setFieldDisabled = (el, disabled) => {
-      el.disabled = disabled;
-      const container = el.closest('.field');
+    const setFieldDisabled = (element, disabled) => {
+      element.disabled = disabled;
+      const container = element.closest('.field');
       if (container) {
         container.style.opacity = disabled ? '0.5' : '1';
         container.style.pointerEvents = disabled ? 'none' : '';
@@ -167,18 +178,19 @@ async function loadSettings() {
 async function saveSettings() {
   const out = {};
   for (const f of SETTINGS_FIELDS) {
-    const el = $('#set_' + f.k);
-    if (!el) continue;
-    if (f.type === 'bool') out[f.k] = el.checked;
-    else if (f.type === 'number') out[f.k] = parseInt(el.value || '0', 10);
-    else out[f.k] = el.value;
+    const element = $('#set_' + f.k);
+    if (!element) continue;
+    if (f.type === 'bool') out[f.k] = element.checked;
+    else if (f.type === 'number') out[f.k] = parseInt(element.value || '0', 10);
+    else out[f.k] = element.value;
   }
   if (!out['parallel_pool_enabled']) {
     out['sticky_node_priority'] = false;
     out['parallel_pool_retry_enabled'] = false;
   }
-  await API.settings.put(out); toast('设置已保存');
-  window.hasUnsavedSettings = false;
+  await API.settings.put(out);
+  toast('设置已保存');
+  AppState.markDirty(false);
   await loadSettings();
 }
 

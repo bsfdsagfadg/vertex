@@ -11,8 +11,8 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/repository"
 )
-
 var (
 	ErrAlreadyRunning  = errors.New("subscription update already running")
 	ErrServiceStopping = errors.New("subscription service is stopping")
@@ -22,7 +22,9 @@ var (
 type FetchFunc func(ctx context.Context, rawURL, userAgent string) ([]nodes.Node, error)
 
 type Service struct {
-	fetch FetchFunc
+	subRepo  repository.SubscriptionRepository
+	nodeRepo repository.NodeRepository
+	fetch    FetchFunc
 
 	mutationMu sync.Mutex
 	runningMu  sync.Mutex
@@ -36,10 +38,27 @@ type Service struct {
 	wg          sync.WaitGroup
 }
 
-func New(fetch FetchFunc) *Service {
-	return &Service{fetch: fetch, running: make(map[string]struct{})}
+type ServiceOption func(*Service)
+
+func WithSubRepo(r repository.SubscriptionRepository) ServiceOption {
+	return func(s *Service) {
+		s.subRepo = r
+	}
 }
 
+func WithNodeRepo(r repository.NodeRepository) ServiceOption {
+	return func(s *Service) {
+		s.nodeRepo = r
+	}
+}
+
+func New(fetch FetchFunc, opts ...ServiceOption) *Service {
+	s := &Service{fetch: fetch, running: make(map[string]struct{})}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
 func (s *Service) Start(parent context.Context) error {
 	if err := config.LoadSubscriptions(); err != nil {
 		return err

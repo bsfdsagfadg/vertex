@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"gopkg.in/yaml.v3"
 )
 
@@ -933,35 +934,10 @@ func parseClashYAMLToNodes(yamlText string) []nodes.Node {
 		return nil
 	}
 
-	if imported := parseStructuredClashYAMLNodes(yamlText); len(imported) > 0 {
-		return imported
-	}
-	return parseInlineClashYAMLNodes(yamlText)
-}
-
-func parseStructuredClashYAMLNodes(yamlText string) []nodes.Node {
-	var doc struct {
-		Proxies []map[string]any `yaml:"proxies"`
-	}
-	if err := yaml.Unmarshal([]byte(yamlText), &doc); err == nil && len(doc.Proxies) > 0 {
-		return buildClashNodes(doc.Proxies)
-	}
-
-	var proxies []map[string]any
-	if err := yaml.Unmarshal([]byte(yamlText), &proxies); err == nil && len(proxies) > 0 {
+	if proxies, err := transport.ParseClashYAMLProxies([]byte(yamlText)); err == nil && len(proxies) > 0 {
 		return buildClashNodes(proxies)
 	}
-
-	var proxy map[string]any
-	if err := yaml.Unmarshal([]byte(yamlText), &proxy); err == nil && len(proxy) > 0 {
-		if normalized, ok := normalizeYAMLValue(proxy).(map[string]any); ok && looksLikeClashProxyMap(normalized) {
-			if node, ok2 := buildClashNode(normalized); ok2 {
-				return []nodes.Node{node}
-			}
-		}
-	}
-
-	return nil
+	return parseInlineClashYAMLNodes(yamlText)
 }
 
 func parseInlineClashYAMLNodes(yamlText string) []nodes.Node {

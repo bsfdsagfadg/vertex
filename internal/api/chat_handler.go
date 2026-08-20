@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/cli"
+	"github.com/bsfdsagfadg/vertex/internal/domain"
 	"github.com/bsfdsagfadg/vertex/internal/strutil"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
@@ -26,8 +27,8 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	var req domain.ChatCompletionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		if _, ok := err.(*json.SyntaxError); ok && strings.Contains(err.Error(), "invalid UTF-8") {
 			oaiError(w, http.StatusBadRequest, "请求体编码错误，需为 UTF-8 (request body must be UTF-8 encoded)", "invalid_request_error")
 			return
@@ -35,11 +36,8 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		oaiError(w, http.StatusBadRequest, "请求格式错误，JSON 解析失败 (invalid JSON)", "invalid_request_error")
 		return
 	}
-	if body == nil {
-		body = make(map[string]any)
-	}
 
-	rawModel, _ := body["model"].(string)
+	rawModel := req.Model
 	if strings.TrimSpace(rawModel) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": "请求参数有误: 缺少必需字段 model (missing required field 'model')",
@@ -53,19 +51,28 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		oaiModelNotFound(w, rawModel)
 		return
 	}
-	body["model"] = actualModel
+	req.Model = actualModel
 	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 
-	stream, _ := body["stream"].(bool)
+	stream := req.Stream
 	aggregateStream := stream && c.cfg.AggregateStream()
 
-	model, geminiPayload, convErr := c.reqConv.Convert(body, c.cfg)
+	model, typedGenReq, convErr := transform.ConvertChatRequest(&req, c.cfg)
 	if convErr != nil {
 		oaiError(w, http.StatusBadRequest, "请求参数有误: "+convErr.Error()+" (invalid argument)", "invalid_request_error")
 		return
 	}
+	geminiPayload, err := transform.GenerateContentRequestToMap(typedGenReq)
+	if err != nil {
+		oaiError(w, http.StatusInternalServerError, "转换请求失败: "+err.Error(), "internal_error")
+		return
+	}
 
-	n, nErr := resolveN(body["n"], c.cfg.MaxN())
+	var nVal any
+	if req.N != nil {
+		nVal = *req.N
+	}
+	n, nErr := resolveN(nVal, c.cfg.MaxN())
 	if nErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": nErr, "type": "invalid_request_error", "code": 400, "param": "n",
@@ -82,7 +89,9 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	log.Printf("[Server] [ChatCompletions] 收到请求: 模型=%s, 真模型=%s, 流式=%v, n=%d", rawModel, actualModel, stream, n)
 
-	transform.ApplyImageConfig(geminiPayload, body, actualModel)
+	if req.ExtraBody != nil {
+		transform.ApplyImageConfig(geminiPayload, req.ExtraBody, actualModel)
+	}
 	transform.ApplyImageDefaults(geminiPayload, actualModel, c.cfg.DefaultImageSize(), c.cfg.DefaultResponseModalities())
 
 	if aggregateStream {

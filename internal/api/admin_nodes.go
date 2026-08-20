@@ -56,6 +56,21 @@ func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (adm *AdminHandler) adminGetTestProgress(w http.ResponseWriter, _ *http.Request) {
+	if adm.taskManager != nil {
+		if task, ok := adm.taskManager.GetActiveTaskByType("node_test_all"); ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"running":      task.State == TaskStateRunning || task.State == TaskStatePaused,
+				"paused":       task.State == TaskStatePaused,
+				"terminated":   task.State == TaskStateTerminated,
+				"total":        task.Progress.Total,
+				"done":         task.Progress.Done,
+				"ok_count":     task.Progress.OkCount,
+				"fail_count":   task.Progress.FailCount,
+				"current_node": task.Progress.CurrentNode,
+			})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, nodes.GetTestProgress())
 }
 
@@ -87,6 +102,101 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 			enabledNodes = append(enabledNodes, node)
 		}
 	}
+
+	if adm.taskManager != nil {
+		if !nodes.StartTestProgress(len(enabledNodes)) {
+			writeJSON(w, http.StatusConflict, adminErr("已有批量测试正在进行中，请先等待其结束或终止"))
+			return
+		}
+
+		dynamicTimeout := batchTestTimeout(len(enabledNodes))
+		ctx, cancel := context.WithTimeout(context.Background(), dynamicTimeout)
+		testAllMu.Lock()
+		testAllGeneration++
+		generation := testAllGeneration
+		testAllCancel = cancel
+		testAllMu.Unlock()
+
+		_, err := adm.taskManager.StartTask(ctx, "node_test_all", len(enabledNodes), func(tc *TaskControl) error {
+			defer func() {
+				cancel()
+				testAllMu.Lock()
+				if testAllGeneration == generation {
+					testAllCancel = nil
+				}
+				testAllMu.Unlock()
+				nodes.FinishTestProgress()
+			}()
+
+			log.Printf("[Admin] [TestAll] 加载待测节点数: %d/%d, 并发上限: %d, 总超时: %v", len(enabledNodes), len(list), batchTestConcurrency, dynamicTimeout)
+
+			var wg sync.WaitGroup
+			sem := make(chan struct{}, batchTestConcurrency)
+
+			for _, n := range enabledNodes {
+				wg.Add(1)
+				go func(node nodes.Node) {
+					defer wg.Done()
+					if tc.CheckControl() || nodes.CheckTestControl() {
+						return
+					}
+					select {
+					case sem <- struct{}{}:
+					case <-tc.Context().Done():
+						return
+					}
+					defer func() { <-sem }()
+					if tc.CheckControl() || nodes.CheckTestControl() {
+						return
+					}
+
+					start := time.Now()
+					log.Printf("[Admin] [TestAll] 开始测试节点: %s (%s)", node.Name, node.Type)
+
+					nodeCtx, nodeCancel := context.WithTimeout(tc.Context(), singleNodeTestTimeoutSec*time.Second)
+					defer nodeCancel()
+					sess, err := adm.vc.Net().CreateSession(singleNodeTestTimeoutSec, node.RawURI, "admin-test-all")
+					var testErr error
+					if err == nil {
+						defer sess.Close()
+						testErr = fetchRecaptchaTokenWithSess(nodeCtx, sess)
+					} else {
+						testErr = err
+					}
+
+					duration := float64(time.Since(start).Milliseconds())
+					testErr, abort := resolveBatchNodeTest(tc.Context(), nodeCtx, testErr)
+					if abort || tc.CheckControl() || nodes.CheckTestControl() {
+						return
+					}
+					if testErr != nil {
+						log.Printf("[Admin] [TestAll] 节点 %s 测试失败: %v, 耗时: %.0fms", node.Name, testErr, duration)
+					} else {
+						log.Printf("[Admin] [TestAll] 节点 %s 测试成功, recaptcha 耗时: %.0fms", node.Name, duration)
+					}
+					success := testErr == nil
+					nodes.RecordTest(node.RawURI, success, duration, errToStr(testErr))
+					if !success {
+						nodes.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
+					}
+					tc.UpdateProgress(node.Name, success)
+					nodes.UpdateTestProgress(node.Name, success)
+				}(n)
+			}
+			wg.Wait()
+			log.Printf("[Admin] [TestAll] 全局节点测试全部结束")
+			return nil
+		})
+		if err != nil {
+			cancel()
+			nodes.FinishTestProgress()
+			writeJSON(w, http.StatusConflict, adminErr("已有批量测试正在进行中，请先等待其结束或终止"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+
 	if !nodes.StartTestProgress(len(enabledNodes)) {
 		writeJSON(w, http.StatusConflict, adminErr("已有批量测试正在进行中，请先等待其结束或终止"))
 		return
@@ -199,6 +309,9 @@ func (adm *AdminHandler) adminTestPause(w http.ResponseWriter, r *http.Request) 
 		adm.adminMethodNotAllowed(w)
 		return
 	}
+	if adm.taskManager != nil {
+		adm.taskManager.PauseActiveByType("node_test_all")
+	}
 	nodes.PauseTestProgress()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -208,6 +321,9 @@ func (adm *AdminHandler) adminTestResume(w http.ResponseWriter, r *http.Request)
 		adm.adminMethodNotAllowed(w)
 		return
 	}
+	if adm.taskManager != nil {
+		adm.taskManager.ResumeActiveByType("node_test_all")
+	}
 	nodes.ResumeTestProgress()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -216,6 +332,9 @@ func (adm *AdminHandler) adminTestTerminate(w http.ResponseWriter, r *http.Reque
 	if r.Method != http.MethodPost {
 		adm.adminMethodNotAllowed(w)
 		return
+	}
+	if adm.taskManager != nil {
+		adm.taskManager.TerminateActiveByType("node_test_all")
 	}
 	nodes.TerminateTestProgress()
 	testAllMu.Lock()

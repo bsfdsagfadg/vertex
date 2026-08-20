@@ -22,12 +22,7 @@ var proxyPageSize = 10;
 var totalProxyPages = 1;
 var cachedEntryProxyURIs = new Set();
 var cachedProxyCandidates = [];
-window.selectedNodeURIs = window.selectedNodeURIs || new Set();
-window.selectedProxyURIs = window.selectedProxyURIs || new Set();
-var proxyTestProgressTimer = null;
 var proxySortMode = '';
-var testProgressTimer = null;
-
 function entryProxyIdentity(rawURI) {
   var value = (rawURI || '').trim();
   var separator = value.indexOf('://');

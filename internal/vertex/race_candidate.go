@@ -11,8 +11,8 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 )
 
-// candidateLauncher manages launching and lifecycle of single node race candidates.
-type candidateLauncher[T any] struct {
+// CandidateLauncher manages launching, lifecycle tracking, and cancellation of race candidates.
+type CandidateLauncher[T any] struct {
 	run         func(ctx context.Context, proxyURI string) (T, error)
 	raceTimeout int
 	parentCtx   context.Context
@@ -21,16 +21,19 @@ type candidateLauncher[T any] struct {
 	active      int32
 }
 
-func newCandidateLauncher[T any](parentCtx context.Context, raceTimeout int, run func(ctx context.Context, proxyURI string) (T, error)) *candidateLauncher[T] {
-	return &candidateLauncher[T]{
+// NewCandidateLauncher constructs a new CandidateLauncher.
+func NewCandidateLauncher[T any](parentCtx context.Context, raceTimeout int, run func(ctx context.Context, proxyURI string) (T, error)) *CandidateLauncher[T] {
+	return &CandidateLauncher[T]{
 		run:         run,
 		raceTimeout: raceTimeout,
 		parentCtx:   parentCtx,
 		cancels:     make(map[string]context.CancelFunc),
+		active:      0,
 	}
 }
 
-func (l *candidateLauncher[T]) CancelCandidate(uri string) {
+// CancelCandidate cancels the context of a single candidate by URI.
+func (l *CandidateLauncher[T]) CancelCandidate(uri string) {
 	l.cancelsMu.Lock()
 	cancelFn := l.cancels[uri]
 	l.cancelsMu.Unlock()
@@ -39,25 +42,38 @@ func (l *candidateLauncher[T]) CancelCandidate(uri string) {
 	}
 }
 
-func (l *candidateLauncher[T]) CancelAllExcept(winnerURI string) {
+// CancelAllExcept cancels all candidates except the specified winning candidate.
+func (l *CandidateLauncher[T]) CancelAllExcept(winnerURI string) {
 	l.cancelsMu.Lock()
 	for u, cancelFn := range l.cancels {
-		if u != winnerURI {
+		if u != winnerURI && cancelFn != nil {
 			cancelFn()
 		}
 	}
 	l.cancelsMu.Unlock()
 }
 
-func (l *candidateLauncher[T]) ActiveCount() int32 {
+// CancelAll cancels all launched candidates.
+func (l *CandidateLauncher[T]) CancelAll() {
+	l.cancelsMu.Lock()
+	for _, cancelFn := range l.cancels {
+		if cancelFn != nil {
+			cancelFn()
+		}
+	}
+	l.cancelsMu.Unlock()
+}
+
+// ActiveCount returns the number of currently in-flight candidate goroutines.
+func (l *CandidateLauncher[T]) ActiveCount() int32 {
 	return atomic.LoadInt32(&l.active)
 }
 
-func (l *candidateLauncher[T]) DecrementActive() int32 {
+// DecrementActive decrements the count of active candidate goroutines.
+func (l *CandidateLauncher[T]) DecrementActive() int32 {
 	return atomic.AddInt32(&l.active, -1)
 }
-
-func (l *candidateLauncher[T]) Launch(c nodes.Node, round int, resCh chan<- raceResult[T]) {
+func (l *CandidateLauncher[T]) Launch(c nodes.Node, round int, resCh chan<- raceResult[T]) {
 	uri := c.RawURI
 
 	candCtx, candCancel := context.WithCancel(l.parentCtx)
@@ -71,7 +87,6 @@ func (l *candidateLauncher[T]) Launch(c nodes.Node, round int, resCh chan<- race
 	go func(u string, candidateCtx context.Context, candidateCancel context.CancelFunc) {
 		nodes.IncInFlight(u)
 		defer nodes.DecInFlight(u)
-
 		resultReady := make(chan raceResult[T], 1)
 		go func() {
 			result := raceResult[T]{uri: u}
@@ -102,7 +117,15 @@ func (l *candidateLauncher[T]) Launch(c nodes.Node, round int, resCh chan<- race
 		}
 
 		timer := time.NewTimer(time.Duration(l.raceTimeout) * time.Second)
-		defer timer.Stop()
+		defer func() {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}()
+
 		select {
 		case result := <-resultReady:
 			resCh <- result
@@ -123,17 +146,25 @@ func (l *candidateLauncher[T]) Launch(c nodes.Node, round int, resCh chan<- race
 	}(uri, candCtx, candCancel)
 }
 
-// resultRecorder handles outcome recording against sticky pools and node health.
-type resultRecorder[T any] struct {
+// ResultRecorder handles outcome recording against sticky pools and node health.
+type ResultRecorder[T any] struct {
 	stickyPool *nodes.StickyNodePool
 }
 
-func newResultRecorder[T any](stickyPool *nodes.StickyNodePool) *resultRecorder[T] {
-	return &resultRecorder[T]{stickyPool: stickyPool}
+// NewResultRecorder constructs a ResultRecorder.
+func NewResultRecorder[T any](stickyPool *nodes.StickyNodePool) *ResultRecorder[T] {
+	return &ResultRecorder[T]{stickyPool: stickyPool}
 }
-func (r *resultRecorder[T]) Record(res raceResult[T]) {
+
+// Record records candidate outcome into sticky pool and health stats.
+func (r *ResultRecorder[T]) Record(res raceResult[T]) {
+	if r == nil {
+		return
+	}
 	if res.err == nil {
-		r.stickyPool.Add(res.uri)
+		if r.stickyPool != nil {
+			r.stickyPool.Add(res.uri)
+		}
 		return
 	}
 	if errors.Is(res.err, context.Canceled) {
@@ -146,10 +177,14 @@ func (r *resultRecorder[T]) Record(res raceResult[T]) {
 	}
 	if ve != nil && ve.Kind == "ratelimit" {
 		nodes.RecordRateLimit(res.uri, 30)
-		r.stickyPool.Evict(res.uri)
+		if r.stickyPool != nil {
+			r.stickyPool.Evict(res.uri)
+		}
 		return
 	}
 
 	nodes.RecordTest(res.uri, false, 0, res.err.Error())
-	r.stickyPool.Evict(res.uri)
+	if r.stickyPool != nil {
+		r.stickyPool.Evict(res.uri)
+	}
 }

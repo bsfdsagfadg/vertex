@@ -1,21 +1,11 @@
 package transform
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"strings"
 
 	"github.com/samber/lo"
-
-	"github.com/bsfdsagfadg/vertex/internal/strutil"
 )
-
-const skipThoughtSentinel = "skip_thought_signature_validator"
-
-// NormalizeBase64 规范化 base64（委托至 strutil.NormalizeBase64 统一维护）。
-func NormalizeBase64(data string) string {
-	return strutil.NormalizeBase64(data)
-}
 
 // FcNameTracker 按出现顺序追踪 functionCall 名称。
 type FcNameTracker struct {
@@ -176,138 +166,4 @@ func finalizeCleanedPart(cleaned map[string]any) {
 		delete(cleaned, "thought")
 		delete(cleaned, "thoughtSignature")
 	}
-}
-
-func ensureBase64Signature(signature string) string {
-	if signature == skipThoughtSentinel {
-		return base64.StdEncoding.EncodeToString([]byte(signature))
-	}
-	normalized := NormalizeBase64(signature)
-	decoded, err := base64.StdEncoding.DecodeString(normalized)
-	if err == nil && base64.StdEncoding.EncodeToString(decoded) == normalized {
-		return normalized
-	}
-	return base64.StdEncoding.EncodeToString([]byte(signature))
-}
-
-// EncodeThoughtSignature recursively normalizes thought signatures to standard Base64.
-func EncodeThoughtSignature(contents any, depth int) any {
-	const maxDepth = 64
-	if depth > maxDepth {
-		return contents
-	}
-	switch v := contents.(type) {
-	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			out[i] = EncodeThoughtSignature(item, depth+1)
-		}
-		return out
-	case map[string]any:
-		out := map[string]any{}
-		for k, val := range v {
-			if k == "parts" {
-				if parts, ok := val.([]any); ok {
-					newParts := make([]any, len(parts))
-					for i, p := range parts {
-						if pm, ok := p.(map[string]any); ok {
-							np := copyMap(pm)
-							if sig, ok := np["thoughtSignature"].(string); ok && sig != "" {
-								np["thoughtSignature"] = ensureBase64Signature(sig)
-							}
-							newParts[i] = np
-						} else {
-							newParts[i] = p
-						}
-					}
-					out[k] = newParts
-					continue
-				}
-			}
-			switch val.(type) {
-			case map[string]any, []any:
-				out[k] = EncodeThoughtSignature(val, depth+1)
-			default:
-				out[k] = val
-			}
-		}
-		return out
-	default:
-		return contents
-	}
-}
-
-// HandleBase64InContents 递归规范化 contents 中 inlineData 的 base64 数据。
-func HandleBase64InContents(contents any) any {
-	switch v := contents.(type) {
-	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			out[i] = HandleBase64InContents(item)
-		}
-		return out
-	case map[string]any:
-		out := map[string]any{}
-		for k, val := range v {
-			if k == "inlineData" {
-				if id, ok := val.(map[string]any); ok {
-					if data, ok := id["data"].(string); ok {
-						ni := copyMap(id)
-						ni["data"] = NormalizeBase64(data)
-						out[k] = ni
-						continue
-					}
-				}
-			}
-			out[k] = HandleBase64InContents(val)
-		}
-		return out
-	default:
-		return contents
-	}
-}
-
-// MergeContentBlocks 合并相邻同类型文本块（thought+thought、text+text）。
-func MergeContentBlocks(parts []map[string]any) []map[string]any {
-	cleaned := make([]map[string]any, 0, len(parts))
-	for _, p := range parts {
-		if c := cleanSimple(p); c != nil {
-			cleaned = append(cleaned, c)
-		}
-	}
-	if len(cleaned) == 0 {
-		return []map[string]any{}
-	}
-
-	merged := make([]map[string]any, 0, len(cleaned))
-	var current map[string]any
-
-	for _, part := range cleaned {
-		isText := truthyStr(part["text"])
-		if !isText {
-			merged = append(merged, part)
-			current = nil
-			continue
-		}
-		isThought := isTruthy(part["thought"])
-		if current != nil && isTruthy(current["thought"]) == isThought {
-			current["text"] = toString(current["text"]) + toString(part["text"])
-			if sig, ok := part["thoughtSignature"]; ok {
-				if _, exists := current["thoughtSignature"]; !exists {
-					current["thoughtSignature"] = sig
-				}
-			}
-		} else {
-			np := map[string]any{"text": toString(part["text"])}
-			if isThought {
-				np["thought"] = true
-				if sig, ok := part["thoughtSignature"]; ok {
-					np["thoughtSignature"] = sig
-				}
-			}
-			merged = append(merged, np)
-			current = np
-		}
-	}
-	return merged
 }

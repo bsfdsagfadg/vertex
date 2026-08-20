@@ -25,7 +25,7 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/db"
 	"github.com/bsfdsagfadg/vertex/internal/logger"
-	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/repository"
 	"github.com/bsfdsagfadg/vertex/internal/spool"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
@@ -175,8 +175,13 @@ func main() {
 
 	spool.SetMaxSpillBytes(int64(cfg.MaxSpillMB()) << 20)
 
-	nodes.SetDeleteNodeCallback(transport.RemoveProxy)
 	transport.StartProxyGC(5*time.Minute, 30*time.Minute)
+
+	nodeRepo := repository.NewSQLiteNodeRepository(db.GlobalDBX)
+	healthRepo := repository.NewSQLiteHealthRepository(db.GlobalDBX)
+	subRepo := repository.NewSQLiteSubscriptionRepository(db.GlobalDBX)
+	entryRepo := repository.NewSQLiteEntryProxyRepository(db.GlobalDBX)
+	taskManager := api.NewTaskManager()
 
 	keys := api.NewAPIKeyManager()
 	keys.LoadKeys()
@@ -188,9 +193,17 @@ func main() {
 	stopEntryProxyProbe := api.StartEntryProxyProbeLoop(vc.Net())
 	defer stopEntryProxyProbe()
 
-
-	srv := api.NewServer(vc, keys, cfg)
-	//nolint:exhaustruct
+	srv := api.NewServerWithDeps(api.ServerDependencies{
+		Config:       cfg,
+		VertexClient: vc,
+		KeyManager:   keys,
+		NodeRepo:     nodeRepo,
+		HealthRepo:   healthRepo,
+		SubRepo:      subRepo,
+		EntryRepo:    entryRepo,
+		TaskManager:  taskManager,
+		Logger:       dailyLogger,
+	})
 	httpServer := &http.Server{
 		Addr:              "0.0.0.0:" + strconv.Itoa(cfg.PortAPI()),
 		Handler:           srv.Handler(),
@@ -224,6 +237,7 @@ func main() {
 			}
 			cancel()
 			srv.Close()
+			_ = healthRepo.Close()
 			transport.StopAllProxies()
 			_ = dailyLogger.Close()
 			close(shutdownDone)
