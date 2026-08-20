@@ -38,10 +38,10 @@ func TestImageStrategy_EnhanceAndValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("no client thinkingConfig - image strategy does not inject console default level", func(t *testing.T) {
+	t.Run("no client thinkingConfig - image strategy injects console default level (aligned with text)", func(t *testing.T) {
 		cfgWithThinking := &mockConfigProvider{defaultThinkingLevel: "中", defaultImageSize: "1K", defaultResponseModalities: "默认"}
 
-		// 2.5-flash-image (unsupported thinking)
+		// 2.5-flash-image (unsupported thinking) -> 不注入
 		st25 := &ImageStrategy{model: "gemini-2.5-flash-image"}
 		req25 := &GeminiRequest{}
 		st25.Enhance(req25, cfgWithThinking)
@@ -52,12 +52,13 @@ func TestImageStrategy_EnhanceAndValidate(t *testing.T) {
 			t.Fatalf("validation failed for gemini-2.5-flash-image: %v", err)
 		}
 
-		// 3.1-flash-image (supports MINIMAL and HIGH thinking)
+		// 3.1-flash-image (supports MINIMAL and HIGH thinking) -> 控制台"中"平滑降级为 MINIMAL
 		st31 := &ImageStrategy{model: "gemini-3.1-flash-image"}
 		req31 := &GeminiRequest{}
 		st31.Enhance(req31, cfgWithThinking)
-		if req31.GenerationConfig.ThinkingConfig != nil {
-			t.Fatalf("expected nil thinkingConfig for gemini-3.1-flash-image without client input, got %v", req31.GenerationConfig.ThinkingConfig)
+		tc := req31.GenerationConfig.ThinkingConfig
+		if tc == nil || tc.ThinkingLevel != "MINIMAL" {
+			t.Fatalf("expected MINIMAL thinkingConfig for gemini-3.1-flash-image without client input (console 中), got %v", tc)
 		}
 		if err := st31.Validate(req31); err != nil {
 			t.Fatalf("validation failed for gemini-3.1-flash-image: %v", err)
@@ -65,33 +66,117 @@ func TestImageStrategy_EnhanceAndValidate(t *testing.T) {
 	})
 }
 
-func TestImageStrategy_All4Models_ThinkingIsolation(t *testing.T) {
+func TestImageStrategy_All4Models_ThinkingDefaultInjection(t *testing.T) {
 	cfgWithThinking := &mockConfigProvider{
 		defaultThinkingLevel:      "高",
 		defaultImageSize:          "1K",
 		defaultResponseModalities: "默认",
 	}
 
-	models := []string{
-		"gemini-2.5-flash-image",
-		"gemini-3-pro-image",
-		"gemini-3.1-flash-image",
-		"gemini-3.1-flash-lite-image",
-	}
+	t.Run("supporting models inject console HIGH", func(t *testing.T) {
+		for _, model := range []string{"gemini-3.1-flash-image", "gemini-3.1-flash-lite-image"} {
+			st := &ImageStrategy{model: model}
+			req := &GeminiRequest{}
+			st.Enhance(req, cfgWithThinking)
+			tc := req.GenerationConfig.ThinkingConfig
+			if tc == nil || tc.ThinkingLevel != "HIGH" {
+				t.Fatalf("expected HIGH thinkingConfig for %s without client input (console 高), got %v", model, tc)
+			}
+			if err := st.Validate(req); err != nil {
+				t.Fatalf("validation failed for %s: %v", model, err)
+			}
+		}
+	})
 
-	for _, model := range models {
-		t.Run(model+" thinking isolation", func(t *testing.T) {
+	t.Run("unsupported models stay nil", func(t *testing.T) {
+		for _, model := range []string{"gemini-2.5-flash-image", "gemini-3-pro-image"} {
 			st := &ImageStrategy{model: model}
 			req := &GeminiRequest{}
 			st.Enhance(req, cfgWithThinking)
 			if req.GenerationConfig.ThinkingConfig != nil {
-				t.Fatalf("expected nil thinkingConfig for model %s without client input when console default is High, got %v", model, req.GenerationConfig.ThinkingConfig)
+				t.Fatalf("expected nil thinkingConfig for %s without client input, got %v", model, req.GenerationConfig.ThinkingConfig)
 			}
 			if err := st.Validate(req); err != nil {
-				t.Fatalf("validation failed for model %s: %v", model, err)
+				t.Fatalf("validation failed for %s: %v", model, err)
+			}
+		}
+	})
+}
+
+func TestImageStrategy_ThinkingSmoothDowngrade(t *testing.T) {
+	cfg := &mockConfigProvider{defaultImageSize: "1K", defaultResponseModalities: "默认"}
+	st := &ImageStrategy{model: "gemini-3.1-flash-image"}
+
+	cases := []struct {
+		name  string
+		level string
+		want  string
+	}{
+		{name: "whitelisted HIGH preserved", level: "high", want: "HIGH"},
+		{name: "whitelisted MINIMAL preserved", level: "minimal", want: "MINIMAL"},
+		{name: "out-of-range LOW downgraded to MINIMAL", level: "low", want: "MINIMAL"},
+		{name: "out-of-range MEDIUM downgraded to MINIMAL", level: "medium", want: "MINIMAL"},
+		{name: "Chinese 中 downgraded to MINIMAL", level: "中", want: "MINIMAL"},
+		{name: "Chinese 低 downgraded to MINIMAL", level: "低", want: "MINIMAL"},
+		{name: "OFF treated as not-sent", level: "off", want: ""},
+		{name: "NONE treated as not-sent", level: "none", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &GeminiRequest{
+				GenerationConfig: &GenerationConfig{
+					ThinkingConfig: &ThinkingConfig{ThinkingLevel: tc.level},
+				},
+			}
+			st.Enhance(req, cfg)
+			got := req.GenerationConfig.ThinkingConfig
+			if tc.want == "" {
+				if got != nil {
+					t.Fatalf("expected nil thinkingConfig for level %q, got %v", tc.level, got)
+				}
+				return
+			}
+			if got == nil || got.ThinkingLevel != tc.want {
+				t.Fatalf("expected level %q to resolve to %s, got %v", tc.level, tc.want, got)
+			}
+			if err := st.Validate(req); err != nil {
+				t.Fatalf("validation failed after smoothing for level %q: %v", tc.level, err)
 			}
 		})
 	}
+}
+
+func TestImageStrategy_BuildVariables_ThinkingSmoothDowngrade(t *testing.T) {
+	cfg := &mockConfigProvider{}
+
+	t.Run("direct BuildVariables downgrades out-of-range level", func(t *testing.T) {
+		st := &ImageStrategy{model: "gemini-3.1-flash-image"}
+		req := &GeminiRequest{
+			Contents: []Content{{Role: "user", Parts: []Part{{Text: "draw"}}}},
+			GenerationConfig: &GenerationConfig{
+				ThinkingConfig: &ThinkingConfig{ThinkingLevel: "MEDIUM"},
+			},
+		}
+		vars := st.BuildVariables("gemini-3.1-flash-image", req, cfg)
+		tc := vars.GeminiRequest.GenerationConfig.ThinkingConfig
+		if tc == nil || tc.ThinkingLevel != "MINIMAL" {
+			t.Fatalf("expected MEDIUM downgraded to MINIMAL by BuildVariables, got %v", tc)
+		}
+	})
+
+	t.Run("direct BuildVariables drops OFF to nil", func(t *testing.T) {
+		st := &ImageStrategy{model: "gemini-3.1-flash-image"}
+		req := &GeminiRequest{
+			Contents: []Content{{Role: "user", Parts: []Part{{Text: "draw"}}}},
+			GenerationConfig: &GenerationConfig{
+				ThinkingConfig: &ThinkingConfig{ThinkingLevel: "OFF"},
+			},
+		}
+		vars := st.BuildVariables("gemini-3.1-flash-image", req, cfg)
+		if vars.GeminiRequest.GenerationConfig.ThinkingConfig != nil {
+			t.Fatalf("expected OFF dropped to nil by BuildVariables, got %v", vars.GeminiRequest.GenerationConfig.ThinkingConfig)
+		}
+	})
 }
 
 func TestImageStrategy_BuildVariables_FixedSafetySettings(t *testing.T) {

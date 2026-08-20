@@ -117,11 +117,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 
 	switch resolved.Family {
 	case transform.FamilyImage:
-		// Gemini 原生非流式端点强约束纯图片模态
-		if req.GenerationConfig == nil {
-			req.GenerationConfig = &transform.GenerationConfig{}
-		}
-		req.GenerationConfig.ResponseModalities = []string{"IMAGE"}
+		// 模态由 ImageStrategy 按后台配置统一注入（非流式与流式端点行为一致）
 		resp, ve = g.ExecuteImageGenerate(requestCtx, resolved, req)
 	case transform.FamilyAudio:
 		resp, ve = g.ExecuteAudioSpeech(requestCtx, resolved, req)
@@ -180,16 +176,6 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 				return
 			}
 			_ = sw.write(g.geminiSSE(vertexErrorToGemini(ve)))
-			return
-		}
-		_ = sw.write(g.geminiSSETyped(resp))
-		return
-	}
-
-	if resolved.Family == transform.FamilyImage {
-		resp, ve := g.ExecuteImageGenerate(requestCtx, resolved, req)
-		if ve != nil {
-			writeGeminiError(w, r.Context(), ve)
 			return
 		}
 		_ = sw.write(g.geminiSSETyped(resp))

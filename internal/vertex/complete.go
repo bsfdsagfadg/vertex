@@ -106,17 +106,9 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, r
 		return nil, err
 	}
 
-	// 防御性回退：直接调用方（未经 transform.BuildVariables 装配）若未带 SafetySettings
-	// 且上游返回 SAFETY，则以统一固定 4×OFF 基座重试一次。生产管线请求恒带 4×OFF，此分支不触发。
-	if req.SafetySettings == nil && candidateFinishTyped(resp) == "SAFETY" {
-		if ctx.Err() != nil {
-			return nil, NormalizeError(ctx.Err())
-		}
-		retryReq := *req
-		retryReq.SafetySettings = transform.BuildSafetySettingsTyped(nil)
-		return c.runSingleCandidate(ctx, model, &retryReq, proxyURI, strategy)
-	}
-
+	// 发往上游的 payload 恒由三家族 BuildVariables 经 BuildSafetySettingsTyped 注入 4×OFF
+	// （无视 req.SafetySettings），故原"req.SafetySettings==nil 且上游返回 SAFETY 时以 4×OFF 重试"
+	// 分支即便命中，重试载荷也与首次逐字节一致、必得相同结果，属确定无效的重复请求；已删除。
 	return resp, nil
 }
 

@@ -25,7 +25,10 @@ func (s *ImageStrategy) FamilyStreamMode() StreamMode { return StreamModeAggrega
 // Enhance 唯一注入 imageConfig / responseModalities / thinkingConfig：
 //   - imageSize：客户端未设置时用默认档位（按能力回退 1K）；
 //   - responseModalities：客户端未设置时按默认配置（["TEXT","IMAGE"] 或 ["IMAGE"]）；
-//   - thinkingConfig：客户端未显式传入时按能力白名单解析（不支持模型返回 nil）。
+//   - thinkingConfig：客户端显式传入时归一化并按白名单平滑降级（越界档位降级、
+//     OFF/NONE 按不发送处理）；未传入时按 (DefaultThinkingLevel, model) 解析注入控制台默认
+//     （自动=不发送，对齐文本家族）。
+// 本方法只做"默认值填充 + 归一/降级"，白名单清洗（Tools/SafetySettings）统一由 BuildVariables 唯一处理。
 func (s *ImageStrategy) Enhance(req *GeminiRequest, cfg config.ConfigProvider) {
 	spec := GetImageModelSpec(s.model)
 
@@ -51,19 +54,38 @@ func (s *ImageStrategy) Enhance(req *GeminiRequest, cfg config.ConfigProvider) {
 	}
 
 	if gc.ThinkingConfig != nil {
-		gc.ThinkingConfig = NormalizeThinkingConfig(gc.ThinkingConfig, s.model)
+		gc.ThinkingConfig = smoothImageThinkingConfig(NormalizeThinkingConfig(gc.ThinkingConfig, s.model), spec)
+	} else if tc := ResolveThinkingConfig(cfg.DefaultThinkingLevel(), s.model); tc != nil {
+		gc.ThinkingConfig = tc
 	}
+}
 
-	// 拦截并清理不被支持模型的 Tools 与 ToolConfig（除非该模型支持 GoogleSearch 且客户端配置了 GoogleSearch）
-	if !spec.AllowSearch {
-		req.Tools = nil
-		req.ToolConfig = nil
-	} else if len(req.Tools) > 0 {
-		req.Tools = filterAllowedSearchTools(req.Tools)
-		if len(req.Tools) == 0 {
-			req.ToolConfig = nil
+// smoothImageThinkingConfig 将已归一化的 ThinkingConfig 对齐当前图像模型白名单：
+//   - 白名单内的档位（MINIMAL/HIGH 等）原样保留；
+//   - 白名单外的档位（LOW/MEDIUM 等）按升序 ["MINIMAL","LOW","MEDIUM","HIGH"]
+//     降级为第一个受支持的档位（图模型当前均为 MINIMAL）；
+//   - OFF/NONE（关闭思考）图模型不支持，按"不发送"处理返回 nil；
+//   - 白名单为空或无可降级档位时返回 nil。
+// 前提：仅适用于 ThinkingLevel 机制模型（当前 4 个图模型均为 Level 机制），
+// 返回的 ThinkingConfig 仅携带 ThinkingLevel、丢弃 ThinkingBudget。
+// 纯函数、幂等，供 Enhance 与 BuildVariables 共用；仅图像家族策略调用，不影响文本/语音家族。
+func smoothImageThinkingConfig(tc *ThinkingConfig, spec ImageModelSpec) *ThinkingConfig {
+	if tc == nil || !spec.SupportsThinking {
+		return nil
+	}
+	lvl := strings.ToUpper(strings.TrimSpace(tc.ThinkingLevel))
+	if spec.ThinkingLevels[lvl] {
+		return &ThinkingConfig{ThinkingLevel: lvl}
+	}
+	if lvl == "OFF" || lvl == "NONE" {
+		return nil
+	}
+	for _, cand := range []string{"MINIMAL", "LOW", "MEDIUM", "HIGH"} {
+		if spec.ThinkingLevels[cand] {
+			return &ThinkingConfig{ThinkingLevel: cand}
 		}
 	}
+	return nil
 }
 
 // filterAllowedSearchTools 过滤出合法的 GoogleSearch 工具定义（生图仅支持纯搜索）：
@@ -100,8 +122,8 @@ func (s *ImageStrategy) Validate(req *GeminiRequest) error {
 	return nil
 }
 
-// Prepare 图像家族特化数据清洗：SafetySettings 已由 BuildVariables 统一覆盖为固定 4×OFF，
-// 旧有的剥离 JAILBREAK / CIVIC_INTEGRITY 逻辑已被取代，本方法保留为空实现（兼容调用点）。
+// Prepare 图像家族无需特化清洗：SafetySettings 与 Tools 白名单统一由 BuildVariables 承担，
+// 本方法保留为空实现（兼容调用点，零破坏）。
 func (s *ImageStrategy) Prepare(req *GeminiRequest) {}
 
 // BuildVariables 实现生图家族独占的上行 variables 构建：
@@ -212,12 +234,9 @@ func (s *ImageStrategy) BuildVariables(model string, req *GeminiRequest, cfg con
 			}
 		}
 
-		// 3.4 思考配置 (ThinkingConfig)：仅支持模型正向保留
+		// 3.4 思考配置 (ThinkingConfig)：仅支持模型正向保留（归一化 + 白名单平滑降级）
 		if orig.ThinkingConfig != nil && spec.SupportsThinking {
-			tc := NormalizeThinkingConfig(orig.ThinkingConfig, model)
-			if tc != nil && tc.ThinkingLevel != "" && spec.ThinkingLevels[tc.ThinkingLevel] {
-				gc.ThinkingConfig = &ThinkingConfig{ThinkingLevel: tc.ThinkingLevel}
-			}
+			gc.ThinkingConfig = smoothImageThinkingConfig(NormalizeThinkingConfig(orig.ThinkingConfig, model), spec)
 		}
 	}
 
