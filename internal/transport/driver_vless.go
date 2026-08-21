@@ -117,7 +117,11 @@ func (d *VlessDriver) FormatURI(cfg map[string]any) (string, error) {
 				q.Set("allowInsecure", "1")
 			}
 		}
-		if sni, _ := cfg["sni"].(string); sni != "" {
+		sni, _ := cfg["sni"].(string)
+		if sni == "" {
+			sni, _ = cfg["servername"].(string)
+		}
+		if sni != "" {
 			q.Set("sni", sni)
 		}
 		if fp, _ := cfg["client-fingerprint"].(string); fp != "" {

@@ -35,7 +35,7 @@ func TestBatchTestTimeoutAndDuplicateRejection(t *testing.T) {
 		nodes.TerminateTestProgress()
 		nodes.FinishTestProgress()
 	})
-	adm := &AdminHandler{}
+	adm := &AdminHandler{handler: handler{taskManager: NewTaskManager()}}
 	recorder := httptest.NewRecorder()
 	adm.adminTestAll(recorder, httptest.NewRequest("POST", "/api/admin/nodes/test-all", nil))
 	if recorder.Code != 409 {
@@ -66,32 +66,42 @@ func TestResolveBatchNodeTestRecordsSingleNodeTimeout(t *testing.T) {
 	}
 }
 
-func TestParseInlineYamlAttrsKeepsNestedObjects(t *testing.T) {
-	attrs := parseInlineYamlAttrs("name: demo, type: vless, ws-opts: { path: /ws, headers: { Host: edge.example.com } }, reality-opts: { public-key: pubkey, short-id: abcd }")
-
-	if got := attrs["ws-opts"]; got != "{ path: /ws, headers: { Host: edge.example.com } }" {
-		t.Fatalf("ws-opts was split unexpectedly: %q", got)
+func TestParseClashInlineKeepsNestedObjects(t *testing.T) {
+	proxyMap, err := transport.ParseClashInline("{name: demo, type: vless, ws-opts: { path: /ws, headers: { Host: edge.example.com } }, reality-opts: { public-key: pubkey, short-id: abcd }}")
+	if err != nil {
+		t.Fatalf("ParseClashInline failed: %v", err)
 	}
-	if got := attrs["reality-opts"]; got != "{ public-key: pubkey, short-id: abcd }" {
-		t.Fatalf("reality-opts was split unexpectedly: %q", got)
+
+	wsOpts, ok := proxyMap["ws-opts"].(map[string]any)
+	if !ok || wsOpts["path"] != "/ws" {
+		t.Fatalf("ws-opts was not parsed properly: %#v", proxyMap["ws-opts"])
+	}
+	realityOpts, ok := proxyMap["reality-opts"].(map[string]any)
+	if !ok || realityOpts["public-key"] != "pubkey" || realityOpts["short-id"] != "abcd" {
+		t.Fatalf("reality-opts was not parsed properly: %#v", proxyMap["reality-opts"])
 	}
 }
 
-func TestClashProxyToURIPreservesVlessWSAndReality(t *testing.T) {
-	raw := clashProxyToURI(map[string]string{
+func TestFormatURIPreservesVlessWSAndReality(t *testing.T) {
+	proxyMap := map[string]any{
 		"type":               "vless",
 		"name":               "demo",
 		"server":             "cf.example.com",
-		"port":               "443",
+		"port":               443,
 		"uuid":               "12345678-1234-1234-1234-123456789012",
-		"tls":                "true",
+		"tls":                true,
 		"servername":         "edge.example.com",
 		"client-fingerprint": "chrome",
 		"flow":               "xtls-rprx-vision",
 		"network":            "ws",
-		"ws-opts":            "{ path: /ws, headers: { Host: edge.example.com } }",
-		"reality-opts":       "{ public-key: pubkey, short-id: abcd }",
-	})
+		"ws-opts":            map[string]any{"path": "/ws", "headers": map[string]any{"Host": "edge.example.com"}},
+		"reality-opts":       map[string]any{"public-key": "pubkey", "short-id": "abcd"},
+	}
+
+	raw, err := transport.FormatURI(proxyMap)
+	if err != nil {
+		t.Fatalf("FormatURI returned error: %v", err)
+	}
 
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -116,17 +126,22 @@ func TestClashProxyToURIPreservesVlessWSAndReality(t *testing.T) {
 	}
 }
 
-func TestClashProxyToURIBuildsHy2WithPortRange(t *testing.T) {
-	raw := clashProxyToURI(map[string]string{
+func TestFormatURIBuildsHy2WithPortRange(t *testing.T) {
+	proxyMap := map[string]any{
 		"type":             "hysteria2",
 		"name":             "demo",
 		"server":           "203.10.99.51",
-		"port":             "20000",
+		"port":             20000,
 		"ports":            "20000-55000",
 		"password":         "secret",
 		"sni":              "www.bing.com",
-		"skip-cert-verify": "true",
-	})
+		"skip-cert-verify": true,
+	}
+
+	raw, err := transport.FormatURI(proxyMap)
+	if err != nil {
+		t.Fatalf("FormatURI returned error: %v", err)
+	}
 
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -151,7 +166,7 @@ proxies:
   - { name: 'HK Demo', type: ss, server: example.com, port: 12022, cipher: aes-128-gcm, password: secret, plugin: obfs, plugin-opts: { mode: http, host: edge.example.com }, udp: true }
 `
 
-	imported := parseClashYAMLToNodes(yamlText)
+	imported := parseImportedNodes(yamlText)
 	if len(imported) != 1 {
 		t.Fatalf("expected 1 node, got %d", len(imported))
 	}
@@ -185,7 +200,7 @@ proxies:
   - { name: group-ish, type: select }
 `
 
-	imported := parseClashYAMLToNodes(yamlText)
+	imported := parseImportedNodes(yamlText)
 	if len(imported) != 0 {
 		t.Fatalf("expected invalid proxy objects to be skipped, got %#v", imported)
 	}
@@ -239,7 +254,7 @@ proxies:
   - { name: wg-missing-public-key, type: wireguard, server: 198.51.100.10, port: 51820, ip: 10.0.0.2/32, private-key: private }
 `
 
-	if imported := parseClashYAMLToNodes(yamlText); len(imported) != 0 {
+	if imported := parseImportedNodes(yamlText); len(imported) != 0 {
 		t.Fatalf("expected incomplete TUIC/WireGuard maps to be skipped, got %#v", imported)
 	}
 }
@@ -257,7 +272,7 @@ func TestSubscriptionFallbackProxyIgnoresActiveNode(t *testing.T) {
 
 func assertClashNodeBuildsWithMihomo(t *testing.T, yamlText string, wantType string) {
 	t.Helper()
-	imported := parseClashYAMLToNodes(yamlText)
+	imported := parseImportedNodes(yamlText)
 	if len(imported) != 1 {
 		t.Fatalf("expected 1 node, got %d", len(imported))
 	}
@@ -357,7 +372,7 @@ func TestParseImportedNodesSupportsSIP008(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseURI returned error: %v", err)
 	}
-	if out["type"] != "ss" || intValue(out["port"]) != 8388 {
+	if out["type"] != "ss" || fmt.Sprintf("%v", out["port"]) != "8388" {
 		t.Fatalf("unexpected imported node: %#v", out)
 	}
 }

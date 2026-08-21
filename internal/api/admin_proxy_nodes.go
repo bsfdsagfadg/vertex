@@ -10,9 +10,10 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/domain"
+	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 )
-
 const (
 	entryProxyProbeURL          = "https://www.google.com/recaptcha/enterprise.js"
 	entryProxyProbeTimeout      = 20 * time.Second
@@ -60,11 +61,7 @@ func (s *entryProxyProbeSchedule) completed(now time.Time) {
 	s.next = now.Add(s.interval)
 }
 
-var (
-	entryProxyTestMu         sync.Mutex             //nolint:gochecknoglobals
-	entryProxyTestState      entryProxyTestProgress //nolint:gochecknoglobals
-	entryProxyTestGeneration uint64                 //nolint:gochecknoglobals
-)
+// No package-level test state variables — all testing operations are managed by TaskManager
 
 func redactProxyURI(rawURI string) string {
 	scheme, remainder, ok := strings.Cut(rawURI, "://")
@@ -88,11 +85,18 @@ func (adm *AdminHandler) adminImportProxyNode(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, adminErr("代理构造失败: "+err.Error()))
 		return
 	}
-	candidate, err := config.AddProxyCandidate(body.RawURI)
+	candidate, err := createEntryProxyCandidate(body.RawURI)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
 		return
 	}
+	if adm.entryRepo != nil {
+		if err := adm.entryRepo.Add(r.Context(), candidate); err != nil {
+			writeJSON(w, http.StatusInternalServerError, adminErr(err.Error()))
+			return
+		}
+	}
+	_, _ = config.AddProxyCandidate(body.RawURI)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "candidate": candidate})
 }
 
@@ -103,18 +107,20 @@ func (adm *AdminHandler) adminEnableProxyNode(w http.ResponseWriter, r *http.Req
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	if !config.HasProxyCandidate(body.RawURI) {
-		writeJSON(w, http.StatusBadRequest, adminErr("该 URI 不在候选列表中"))
-		return
-	}
 	if err := transport.ValidateProxyURI(body.RawURI); err != nil {
 		writeJSON(w, http.StatusBadRequest, adminErr("代理构造失败: "+err.Error()))
 		return
 	}
-	if err := config.SetProxyCandidateEnabled(body.RawURI, true); err != nil {
-		writeJSON(w, http.StatusInternalServerError, adminErr("启用入口代理失败: "+err.Error()))
+	candidate, err := createEntryProxyCandidate(body.RawURI)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, adminErr(err.Error()))
 		return
 	}
+	candidate.Disabled = false
+	if adm.entryRepo != nil {
+		_ = adm.entryRepo.Add(r.Context(), candidate)
+	}
+	_ = config.SetProxyCandidateEnabled(body.RawURI, true)
 	transport.RemoveProxy(body.RawURI)
 	log.Printf("[Admin] [EnableProxyNode] 已启用入口代理: %s", redactProxyURI(body.RawURI))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -134,10 +140,14 @@ func (adm *AdminHandler) adminDisableProxyNode(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusBadRequest, adminErr("缺少入口代理 URI"))
 		return
 	}
-	if err := config.SetProxyCandidateEnabled(body.RawURI, false); err != nil {
-		writeJSON(w, http.StatusInternalServerError, adminErr("停用入口代理失败: "+err.Error()))
-		return
+	candidate, err := createEntryProxyCandidate(body.RawURI)
+	if err == nil {
+		candidate.Disabled = true
+		if adm.entryRepo != nil {
+			_ = adm.entryRepo.Add(r.Context(), candidate)
+		}
 	}
+	_ = config.SetProxyCandidateEnabled(body.RawURI, false)
 	transport.RemoveProxy(body.RawURI)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -157,7 +167,16 @@ func (adm *AdminHandler) adminListProxyNodes(w http.ResponseWriter, r *http.Requ
 	if pageSize > 100 {
 		pageSize = 100
 	}
-	all := config.ListProxyCandidates()
+	var all []domain.EntryProxyCandidate
+	if adm.entryRepo != nil {
+		dbList, err := adm.entryRepo.GetAll(r.Context())
+		if err == nil {
+			all = dbList
+		}
+	}
+	if all == nil {
+		all = domainCandidatesFromLegacy(config.ListProxyCandidates())
+	}
 	start := (page - 1) * pageSize
 	if start > len(all) {
 		start = len(all)
@@ -173,6 +192,46 @@ func (adm *AdminHandler) adminListProxyNodes(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+func createEntryProxyCandidate(rawURI string) (domain.EntryProxyCandidate, error) {
+	rawURI = strings.TrimSpace(rawURI)
+	normalized, err := config.NormalizeProxyURI(rawURI)
+	if err != nil {
+		return domain.EntryProxyCandidate{}, err
+	}
+	name := nodes.GetNodeName(rawURI)
+	nodeType := "unknown"
+	if idx := strings.Index(rawURI, "://"); idx > 0 {
+		nodeType = rawURI[:idx]
+	}
+	return domain.EntryProxyCandidate{
+		RawURI:        rawURI,
+		NormalizedURI: normalized,
+		Name:          name,
+		Type:          nodeType,
+		Disabled:      false,
+	}, nil
+}
+func domainCandidatesFromLegacy(legacyList []config.ProxyCandidate) []domain.EntryProxyCandidate {
+	out := make([]domain.EntryProxyCandidate, len(legacyList))
+	for i, c := range legacyList {
+		normalized, _ := config.NormalizeProxyURI(c.RawURI)
+		out[i] = domain.EntryProxyCandidate{
+			RawURI:              c.RawURI,
+			NormalizedURI:       normalized,
+			Name:                c.Name,
+			Type:                c.Type,
+			Disabled:            c.Disabled,
+			CooldownUntil:       c.CooldownUntil,
+			LastTestOK:          c.LastTestOK,
+			LastTestMs:          c.LastTestMs,
+			LastTestAt:          c.LastTestAt,
+			LastTestError:       c.LastTestError,
+			ConsecutiveFailures: c.ConsecutiveFailures,
+		}
+	}
+	return out
+}
+
 func (adm *AdminHandler) adminImportProxyNodesBatch(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		URIs []string `json:"uris"`
@@ -180,14 +239,24 @@ func (adm *AdminHandler) adminImportProxyNodesBatch(w http.ResponseWriter, r *ht
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
-	added, existing, invalid := make([]config.ProxyCandidate, 0), make([]string, 0), make([]string, 0)
+	added, existing, invalid := make([]domain.EntryProxyCandidate, 0), make([]string, 0), make([]string, 0)
 	for _, rawURI := range body.URIs {
 		if err := transport.ValidateProxyURI(rawURI); err != nil {
 			invalid = append(invalid, strings.TrimSpace(rawURI))
 			continue
 		}
-		candidate, err := config.AddProxyCandidate(rawURI)
-		if err == nil {
+		candidate, err := createEntryProxyCandidate(rawURI)
+		if err != nil {
+			invalid = append(invalid, strings.TrimSpace(rawURI))
+			continue
+		}
+		if adm.entryRepo != nil {
+			if err := adm.entryRepo.Add(r.Context(), candidate); err != nil {
+				invalid = append(invalid, strings.TrimSpace(rawURI))
+				continue
+			}
+		}
+		if _, err := config.AddProxyCandidate(rawURI); err == nil {
 			added = append(added, candidate)
 		} else if config.HasProxyCandidate(rawURI) {
 			existing = append(existing, strings.TrimSpace(rawURI))
@@ -211,6 +280,13 @@ func (adm *AdminHandler) adminSetProxyNodesEnabled(w http.ResponseWriter, r *htt
 	}
 	updated, invalid := make([]string, 0), make([]string, 0)
 	for _, rawURI := range body.URIs {
+		candidate, err := createEntryProxyCandidate(rawURI)
+		if err == nil {
+			candidate.Disabled = !enabled
+			if adm.entryRepo != nil {
+				_ = adm.entryRepo.Add(r.Context(), candidate)
+			}
+		}
 		if err := config.SetProxyCandidateEnabled(rawURI, enabled); err != nil {
 			invalid = append(invalid, strings.TrimSpace(rawURI))
 			continue
@@ -229,21 +305,32 @@ func (adm *AdminHandler) adminDeleteProxyNodesBatch(w http.ResponseWriter, r *ht
 	}
 	deleted, invalid := make([]string, 0), make([]string, 0)
 	for _, rawURI := range body.URIs {
+		rawURI = strings.TrimSpace(rawURI)
+		normalized, err := config.NormalizeProxyURI(rawURI)
+		if err == nil && adm.entryRepo != nil {
+			_ = adm.entryRepo.Remove(r.Context(), normalized)
+		}
 		if _, err := config.RemoveProxyCandidate(rawURI); err != nil {
-			invalid = append(invalid, strings.TrimSpace(rawURI))
+			invalid = append(invalid, rawURI)
 			continue
 		}
 		transport.RemoveProxy(rawURI)
-		deleted = append(deleted, strings.TrimSpace(rawURI))
+		deleted = append(deleted, rawURI)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": len(invalid) == 0, "deleted": deleted, "invalid": invalid})
 }
 
-func (adm *AdminHandler) adminDeleteDisabledProxyNodes(w http.ResponseWriter, _ *http.Request) {
-	deleted, err := config.RemoveDisabledProxyCandidates()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, adminErr(err.Error()))
-		return
+func (adm *AdminHandler) adminDeleteDisabledProxyNodes(w http.ResponseWriter, r *http.Request) {
+	var deleted []string
+	if adm.entryRepo != nil {
+		removed, err := adm.entryRepo.RemoveDisabled(r.Context())
+		if err == nil {
+			deleted = removed
+		}
+	}
+	cfgDeleted, err := config.RemoveDisabledProxyCandidates()
+	if err == nil && len(deleted) == 0 {
+		deleted = cfgDeleted
 	}
 	for _, rawURI := range deleted {
 		transport.RemoveProxy(rawURI)
@@ -257,6 +344,10 @@ func (adm *AdminHandler) adminDeleteProxyNode(w http.ResponseWriter, r *http.Req
 	}
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
+	}
+	normalized, err := config.NormalizeProxyURI(body.RawURI)
+	if err == nil && adm.entryRepo != nil {
+		_ = adm.entryRepo.Remove(r.Context(), normalized)
 	}
 	wasActive, err := config.RemoveProxyCandidate(body.RawURI)
 	if err != nil {
@@ -294,6 +385,10 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 			errText = "timeout"
 		}
 	}
+	normalized, normErr := config.NormalizeProxyURI(body.RawURI)
+	if normErr == nil && adm.entryRepo != nil {
+		_, _ = adm.entryRepo.UpdateTestResult(r.Context(), normalized, err == nil, elapsed, errText, 0, false, false, 0)
+	}
 	if updateErr := config.UpdateProxyCandidateTest(body.RawURI, err == nil, elapsed, errText); updateErr != nil {
 		writeJSON(w, http.StatusInternalServerError, adminErr(updateErr.Error()))
 		return
@@ -306,6 +401,8 @@ func (adm *AdminHandler) adminGetProxyTestProgress(w http.ResponseWriter, _ *htt
 		if task, ok := adm.taskManager.GetActiveTaskByType("proxy_batch_test"); ok {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"running":      task.State == TaskStateRunning || task.State == TaskStatePaused,
+				"paused":       task.State == TaskStatePaused,
+				"terminated":   task.State == TaskStateTerminated,
 				"total":        task.Progress.Total,
 				"done":         task.Progress.Done,
 				"ok_count":     task.Progress.OkCount,
@@ -315,10 +412,7 @@ func (adm *AdminHandler) adminGetProxyTestProgress(w http.ResponseWriter, _ *htt
 			return
 		}
 	}
-	entryProxyTestMu.Lock()
-	state := entryProxyTestState
-	entryProxyTestMu.Unlock()
-	writeJSON(w, http.StatusOK, state)
+	writeJSON(w, http.StatusOK, entryProxyTestProgress{})
 }
 
 func (adm *AdminHandler) adminBatchTestProxyNodes(w http.ResponseWriter, r *http.Request) {
@@ -333,11 +427,22 @@ func (adm *AdminHandler) adminBatchTestProxyNodes(w http.ResponseWriter, r *http
 		body.TimeoutSeconds = 25
 	}
 
-	known := make(map[string]config.ProxyCandidate)
-	for _, candidate := range config.ListProxyCandidates() {
+	var candidateList []domain.EntryProxyCandidate
+	if adm.entryRepo != nil {
+		dbList, err := adm.entryRepo.GetAll(r.Context())
+		if err == nil {
+			candidateList = dbList
+		}
+	}
+	if candidateList == nil {
+		candidateList = domainCandidatesFromLegacy(config.ListProxyCandidates())
+	}
+
+	known := make(map[string]domain.EntryProxyCandidate)
+	for _, candidate := range candidateList {
 		known[candidate.RawURI] = candidate
 	}
-	selected := make([]config.ProxyCandidate, 0, len(body.URIs))
+	selected := make([]domain.EntryProxyCandidate, 0, len(body.URIs))
 	seen := make(map[string]struct{}, len(body.URIs))
 	for _, rawURI := range body.URIs {
 		rawURI = strings.TrimSpace(rawURI)
@@ -355,16 +460,11 @@ func (adm *AdminHandler) adminBatchTestProxyNodes(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusBadRequest, adminErr("没有有效的入口代理可测试"))
 		return
 	}
-	entryProxyTestMu.Lock()
-	if entryProxyTestState.Running {
-		entryProxyTestMu.Unlock()
-		writeJSON(w, http.StatusConflict, adminErr("已有入口代理批量测试正在进行中"))
+
+	if adm.taskManager == nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("任务管理器未就绪"))
 		return
 	}
-	entryProxyTestGeneration++
-	generation := entryProxyTestGeneration
-	entryProxyTestState = entryProxyTestProgress{Running: true, Total: len(selected)} //nolint:exhaustruct
-	entryProxyTestMu.Unlock()
 
 	perItemTimeout := time.Duration(body.TimeoutSeconds * float64(time.Second))
 	rounds := (len(selected) + entryProxyTestConcurrency - 1) / entryProxyTestConcurrency
@@ -374,164 +474,63 @@ func (adm *AdminHandler) adminBatchTestProxyNodes(w http.ResponseWriter, r *http
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), totalTimeout)
 
-	if adm.taskManager != nil {
-		_, err := adm.taskManager.StartTask(ctx, "proxy_batch_test", len(selected), func(tc *TaskControl) error {
-			defer cancel()
-			defer func() {
-				entryProxyTestMu.Lock()
-				if entryProxyTestGeneration == generation {
-					entryProxyTestState.Running = false
-					entryProxyTestState.CurrentNode = ""
+	_, err := adm.taskManager.StartTask(ctx, "proxy_batch_test", len(selected), func(tc *TaskControl) error {
+		defer cancel()
+
+		sem := make(chan struct{}, entryProxyTestConcurrency)
+		var wg sync.WaitGroup
+		for _, candidate := range selected {
+			wg.Add(1)
+			go func(c domain.EntryProxyCandidate) {
+				defer wg.Done()
+				if tc.CheckControl() {
+					return
 				}
-				entryProxyTestMu.Unlock()
-			}()
+				select {
+				case sem <- struct{}{}:
+				case <-tc.Context().Done():
+					return
+				}
+				defer func() { <-sem }()
+				if tc.CheckControl() {
+					return
+				}
 
-			sem := make(chan struct{}, entryProxyTestConcurrency)
-			var wg sync.WaitGroup
-			for _, candidate := range selected {
-				wg.Add(1)
-				go func(c config.ProxyCandidate) {
-					defer wg.Done()
-					if tc.CheckControl() {
-						return
-					}
-					select {
-					case sem <- struct{}{}:
-					case <-tc.Context().Done():
-						return
-					}
-					defer func() { <-sem }()
-					if tc.CheckControl() {
-						return
-					}
+				tc.SetCurrentNode(c.Name)
 
-					entryProxyTestMu.Lock()
-					if entryProxyTestGeneration == generation {
-						entryProxyTestState.CurrentNode = c.Name
+				probeCtx, probeCancel := context.WithTimeout(tc.Context(), perItemTimeout)
+				elapsed, probeErr := probeEntryProxyCandidate(probeCtx, adm.vc.Net(), c.RawURI, int(perItemTimeout.Seconds()))
+				probeCtxErr := probeCtx.Err()
+				probeCancel()
+				if tc.Context().Err() != nil {
+					return
+				}
+				errText := ""
+				if probeErr != nil {
+					errText = probeErr.Error()
+					if probeCtxErr != nil {
+						errText = "timeout"
 					}
-					entryProxyTestMu.Unlock()
-					tc.SetCurrentNode(c.Name)
+				}
+				normalized, normErr := config.NormalizeProxyURI(c.RawURI)
+				if normErr == nil && adm.entryRepo != nil {
+					_, _ = adm.entryRepo.UpdateTestResult(context.Background(), normalized, probeErr == nil, elapsed, errText, 0, false, false, 0)
+				}
+				_ = config.UpdateProxyCandidateTest(c.RawURI, probeErr == nil, elapsed, errText)
 
-					probeCtx, probeCancel := context.WithTimeout(tc.Context(), perItemTimeout)
-					elapsed, err := probeEntryProxyCandidate(probeCtx, adm.vc.Net(), c.RawURI, int(perItemTimeout.Seconds()))
-					probeCtxErr := probeCtx.Err()
-					probeCancel()
-					if tc.Context().Err() != nil {
-						return
-					}
-					errText := ""
-					if err != nil {
-						errText = err.Error()
-						if probeCtxErr != nil {
-							errText = "timeout"
-						}
-					}
-					if updateErr := config.UpdateProxyCandidateTest(c.RawURI, err == nil, elapsed, errText); updateErr != nil {
-						err = updateErr
-					}
-
-					success := err == nil
-					tc.UpdateProgress(c.Name, success)
-
-					entryProxyTestMu.Lock()
-					if entryProxyTestGeneration == generation {
-						entryProxyTestState.Done++
-						if success {
-							entryProxyTestState.OKCount++
-						} else {
-							entryProxyTestState.FailCount++
-						}
-					}
-					entryProxyTestMu.Unlock()
-				}(candidate)
-			}
-			wg.Wait()
-			return nil
-		})
-		if err != nil {
-			cancel()
-			entryProxyTestMu.Lock()
-			if entryProxyTestGeneration == generation {
-				entryProxyTestState.Running = false
-			}
-			entryProxyTestMu.Unlock()
-			writeJSON(w, http.StatusConflict, adminErr("已有入口代理批量测试正在进行中"))
-			return
+				success := probeErr == nil
+				tc.UpdateProgress(c.Name, success)
+			}(candidate)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "total": len(selected)})
+		wg.Wait()
+		return nil
+	})
+	if err != nil {
+		cancel()
+		writeJSON(w, http.StatusConflict, adminErr("已有入口代理批量测试正在进行中"))
 		return
 	}
-
-	go adm.runProxyBatchTest(ctx, cancel, generation, selected, perItemTimeout)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "total": len(selected)})
-}
-func (adm *AdminHandler) runProxyBatchTest(
-	ctx context.Context,
-	cancel context.CancelFunc,
-	generation uint64,
-	candidates []config.ProxyCandidate,
-	perItemTimeout time.Duration,
-) {
-	defer cancel()
-	defer func() {
-		entryProxyTestMu.Lock()
-		if entryProxyTestGeneration == generation {
-			entryProxyTestState.Running = false
-			entryProxyTestState.CurrentNode = ""
-		}
-		entryProxyTestMu.Unlock()
-	}()
-
-	sem := make(chan struct{}, entryProxyTestConcurrency)
-	var wg sync.WaitGroup
-	for _, candidate := range candidates {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
-			defer func() { <-sem }()
-
-			entryProxyTestMu.Lock()
-			if entryProxyTestGeneration == generation {
-				entryProxyTestState.CurrentNode = candidate.Name
-			}
-			entryProxyTestMu.Unlock()
-
-			probeCtx, probeCancel := context.WithTimeout(ctx, perItemTimeout)
-			elapsed, err := probeEntryProxyCandidate(probeCtx, adm.vc.Net(), candidate.RawURI, int(perItemTimeout.Seconds()))
-			probeCtxErr := probeCtx.Err()
-			probeCancel()
-			if ctx.Err() != nil {
-				return
-			}
-			errText := ""
-			if err != nil {
-				errText = err.Error()
-				if probeCtxErr != nil {
-					errText = "timeout"
-				}
-			}
-			if updateErr := config.UpdateProxyCandidateTest(candidate.RawURI, err == nil, elapsed, errText); updateErr != nil {
-				err = updateErr
-			}
-
-			entryProxyTestMu.Lock()
-			if entryProxyTestGeneration == generation {
-				entryProxyTestState.Done++
-				if err == nil {
-					entryProxyTestState.OKCount++
-				} else {
-					entryProxyTestState.FailCount++
-				}
-			}
-			entryProxyTestMu.Unlock()
-		}()
-	}
-	wg.Wait()
 }
 
 func probeEntryProxyCandidate(ctx context.Context, netClient *transport.NetworkClient, rawURI string, timeoutSeconds int) (float64, error) {

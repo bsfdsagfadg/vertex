@@ -14,12 +14,6 @@ import (
 // DefaultPool is the global singleton ProxyDialerPool.
 var DefaultPool = NewProxyDialerPool(nil) //nolint:gochecknoglobals
 
-var (
-	//nolint:gochecknoglobals // Internal proxy connection cache alias
-	proxyMap = DefaultPool.proxies
-	//nolint:gochecknoglobals // Internal proxy mutex alias
-	proxyMutex = &DefaultPool.mu
-)
 
 func getOrStartProxyDialer(uri string, reqID string, debugMode bool, entryURIs ...string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
 	key := NewProxyInstanceKey(uri, entryURIs...)

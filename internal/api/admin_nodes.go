@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/domain"
 	"github.com/bsfdsagfadg/vertex/internal/netx"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
@@ -23,17 +24,30 @@ const (
 	singleNodeTestTimeoutSec = 15
 )
 
-var (
-	//nolint:gochecknoglobals // 当前唯一批量测速任务的取消函数和代次
-	testAllCancel context.CancelFunc
-	//nolint:gochecknoglobals // guards testAllCancel/testAllGeneration
-	testAllMu sync.Mutex
-	//nolint:gochecknoglobals // prevents an old task from clearing a newer cancel function
-	testAllGeneration uint64
-)
+func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var list []domain.Node
+	if adm.nodeRepo != nil {
+		dbList, err := adm.nodeRepo.GetAll(ctx)
+		if err == nil {
+			list = dbList
+		}
+	}
+	if list == nil {
+		list = domainNodesFromLegacy(nodes.LoadNodes())
+	}
 
-func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, _ *http.Request) {
-	list := nodes.LoadNodes()
+	var healthMap any
+	if adm.healthRepo != nil {
+		dbHealth, err := adm.healthRepo.GetAll(ctx)
+		if err == nil {
+			healthMap = dbHealth
+		}
+	}
+	if healthMap == nil {
+		healthMap = nodes.LoadHealth()
+	}
+
 	var enabledCount, disabledCount int
 	for _, n := range list {
 		if n.Disabled {
@@ -45,7 +59,7 @@ func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, _ *http.Request) {
 	sp := nodes.GetStickyPool()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"nodes":                 list,
-		"health":                nodes.LoadHealth(),
+		"health":                healthMap,
 		"total":                 len(list),
 		"enabled_count":         enabledCount,
 		"disabled_count":        disabledCount,
@@ -55,6 +69,18 @@ func (adm *AdminHandler) adminGetNodes(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func domainNodesFromLegacy(legacyList []nodes.Node) []domain.Node {
+	out := make([]domain.Node, len(legacyList))
+	for i, n := range legacyList {
+		out[i] = domain.Node{
+			Type:     n.Type,
+			Name:     n.Name,
+			RawURI:   n.RawURI,
+			Disabled: n.Disabled,
+		}
+	}
+	return out
+}
 func (adm *AdminHandler) adminGetTestProgress(w http.ResponseWriter, _ *http.Request) {
 	if adm.taskManager != nil {
 		if task, ok := adm.taskManager.GetActiveTaskByType("node_test_all"); ok {
@@ -94,106 +120,28 @@ func (adm *AdminHandler) adminFetchSub(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(newNodes)})
 }
 
-func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
-	list := nodes.LoadNodes()
-	enabledNodes := make([]nodes.Node, 0, len(list))
+func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var list []domain.Node
+	if adm.nodeRepo != nil {
+		dbList, err := adm.nodeRepo.GetAll(ctx)
+		if err == nil {
+			list = dbList
+		}
+	}
+	if list == nil {
+		list = domainNodesFromLegacy(nodes.LoadNodes())
+	}
+
+	enabledNodes := make([]domain.Node, 0, len(list))
 	for _, node := range list {
 		if !node.Disabled {
 			enabledNodes = append(enabledNodes, node)
 		}
 	}
 
-	if adm.taskManager != nil {
-		if !nodes.StartTestProgress(len(enabledNodes)) {
-			writeJSON(w, http.StatusConflict, adminErr("已有批量测试正在进行中，请先等待其结束或终止"))
-			return
-		}
-
-		dynamicTimeout := batchTestTimeout(len(enabledNodes))
-		ctx, cancel := context.WithTimeout(context.Background(), dynamicTimeout)
-		testAllMu.Lock()
-		testAllGeneration++
-		generation := testAllGeneration
-		testAllCancel = cancel
-		testAllMu.Unlock()
-
-		_, err := adm.taskManager.StartTask(ctx, "node_test_all", len(enabledNodes), func(tc *TaskControl) error {
-			defer func() {
-				cancel()
-				testAllMu.Lock()
-				if testAllGeneration == generation {
-					testAllCancel = nil
-				}
-				testAllMu.Unlock()
-				nodes.FinishTestProgress()
-			}()
-
-			log.Printf("[Admin] [TestAll] 加载待测节点数: %d/%d, 并发上限: %d, 总超时: %v", len(enabledNodes), len(list), batchTestConcurrency, dynamicTimeout)
-
-			var wg sync.WaitGroup
-			sem := make(chan struct{}, batchTestConcurrency)
-
-			for _, n := range enabledNodes {
-				wg.Add(1)
-				go func(node nodes.Node) {
-					defer wg.Done()
-					if tc.CheckControl() || nodes.CheckTestControl() {
-						return
-					}
-					select {
-					case sem <- struct{}{}:
-					case <-tc.Context().Done():
-						return
-					}
-					defer func() { <-sem }()
-					if tc.CheckControl() || nodes.CheckTestControl() {
-						return
-					}
-
-					start := time.Now()
-					log.Printf("[Admin] [TestAll] 开始测试节点: %s (%s)", node.Name, node.Type)
-
-					nodeCtx, nodeCancel := context.WithTimeout(tc.Context(), singleNodeTestTimeoutSec*time.Second)
-					defer nodeCancel()
-					sess, err := adm.vc.Net().CreateSession(singleNodeTestTimeoutSec, node.RawURI, "admin-test-all")
-					var testErr error
-					if err == nil {
-						defer sess.Close()
-						testErr = fetchRecaptchaTokenWithSess(nodeCtx, sess)
-					} else {
-						testErr = err
-					}
-
-					duration := float64(time.Since(start).Milliseconds())
-					testErr, abort := resolveBatchNodeTest(tc.Context(), nodeCtx, testErr)
-					if abort || tc.CheckControl() || nodes.CheckTestControl() {
-						return
-					}
-					if testErr != nil {
-						log.Printf("[Admin] [TestAll] 节点 %s 测试失败: %v, 耗时: %.0fms", node.Name, testErr, duration)
-					} else {
-						log.Printf("[Admin] [TestAll] 节点 %s 测试成功, recaptcha 耗时: %.0fms", node.Name, duration)
-					}
-					success := testErr == nil
-					nodes.RecordTest(node.RawURI, success, duration, errToStr(testErr))
-					if !success {
-						nodes.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
-					}
-					tc.UpdateProgress(node.Name, success)
-					nodes.UpdateTestProgress(node.Name, success)
-				}(n)
-			}
-			wg.Wait()
-			log.Printf("[Admin] [TestAll] 全局节点测试全部结束")
-			return nil
-		})
-		if err != nil {
-			cancel()
-			nodes.FinishTestProgress()
-			writeJSON(w, http.StatusConflict, adminErr("已有批量测试正在进行中，请先等待其结束或终止"))
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	if adm.taskManager == nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr("任务管理器未就绪"))
 		return
 	}
 
@@ -203,23 +151,14 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	dynamicTimeout := batchTestTimeout(len(enabledNodes))
-	ctx, cancel := context.WithTimeout(context.Background(), dynamicTimeout)
-	testAllMu.Lock()
-	testAllGeneration++
-	generation := testAllGeneration
-	testAllCancel = cancel
-	testAllMu.Unlock()
+	taskCtx, cancel := context.WithTimeout(context.Background(), dynamicTimeout)
 
-	log.Printf("[Admin] [TestAll] 开始触发全局并发测速（基于 recaptchaToken 耗时）")
-	go func() {
+	_, err := adm.taskManager.StartTask(taskCtx, "node_test_all", len(enabledNodes), func(tc *TaskControl) error {
 		defer func() {
 			cancel()
-			testAllMu.Lock()
-			if testAllGeneration == generation {
-				testAllCancel = nil
-			}
-			testAllMu.Unlock()
+			nodes.FinishTestProgress()
 		}()
+
 		log.Printf("[Admin] [TestAll] 加载待测节点数: %d/%d, 并发上限: %d, 总超时: %v", len(enabledNodes), len(list), batchTestConcurrency, dynamicTimeout)
 
 		var wg sync.WaitGroup
@@ -227,25 +166,25 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 
 		for _, n := range enabledNodes {
 			wg.Add(1)
-			go func(node nodes.Node) {
+			go func(node domain.Node) {
 				defer wg.Done()
-				if nodes.CheckTestControl() {
+				if tc.CheckControl() || nodes.CheckTestControl() {
 					return
 				}
 				select {
 				case sem <- struct{}{}:
-				case <-ctx.Done():
+				case <-tc.Context().Done():
 					return
 				}
 				defer func() { <-sem }()
-				if nodes.CheckTestControl() {
+				if tc.CheckControl() || nodes.CheckTestControl() {
 					return
 				}
 
 				start := time.Now()
 				log.Printf("[Admin] [TestAll] 开始测试节点: %s (%s)", node.Name, node.Type)
 
-				nodeCtx, nodeCancel := context.WithTimeout(ctx, singleNodeTestTimeoutSec*time.Second)
+				nodeCtx, nodeCancel := context.WithTimeout(tc.Context(), singleNodeTestTimeoutSec*time.Second)
 				defer nodeCancel()
 				sess, err := adm.vc.Net().CreateSession(singleNodeTestTimeoutSec, node.RawURI, "admin-test-all")
 				var testErr error
@@ -257,8 +196,8 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 				}
 
 				duration := float64(time.Since(start).Milliseconds())
-				testErr, abort := resolveBatchNodeTest(ctx, nodeCtx, testErr)
-				if abort || nodes.CheckTestControl() {
+				testErr, abort := resolveBatchNodeTest(tc.Context(), nodeCtx, testErr)
+				if abort || tc.CheckControl() || nodes.CheckTestControl() {
 					return
 				}
 				if testErr != nil {
@@ -267,17 +206,34 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 					log.Printf("[Admin] [TestAll] 节点 %s 测试成功, recaptcha 耗时: %.0fms", node.Name, duration)
 				}
 				success := testErr == nil
-				nodes.RecordTest(node.RawURI, success, duration, errToStr(testErr))
+				errStr := ""
+				if testErr != nil {
+					errStr = testErr.Error()
+				}
+				if adm.healthRepo != nil {
+					adm.healthRepo.RecordTest(node.RawURI, success, duration, errStr)
+				}
+				nodes.RecordTest(node.RawURI, success, duration, errStr)
 				if !success {
+					if adm.nodeRepo != nil {
+						_ = adm.nodeRepo.BatchSetDisabled(context.Background(), []string{node.RawURI}, true)
+					}
 					nodes.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
 				}
+				tc.UpdateProgress(node.Name, success)
 				nodes.UpdateTestProgress(node.Name, success)
 			}(n)
 		}
 		wg.Wait()
-		nodes.FinishTestProgress()
 		log.Printf("[Admin] [TestAll] 全局节点测试全部结束")
-	}()
+		return nil
+	})
+	if err != nil {
+		cancel()
+		nodes.FinishTestProgress()
+		writeJSON(w, http.StatusConflict, adminErr("已有批量测试正在进行中，请先等待其结束或终止"))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -337,11 +293,6 @@ func (adm *AdminHandler) adminTestTerminate(w http.ResponseWriter, r *http.Reque
 		adm.taskManager.TerminateActiveByType("node_test_all")
 	}
 	nodes.TerminateTestProgress()
-	testAllMu.Lock()
-	if testAllCancel != nil {
-		testAllCancel()
-	}
-	testAllMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -384,9 +335,15 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 
 	disabled := false
 	if body.AutoDisable {
+		if adm.healthRepo != nil {
+			adm.healthRepo.RecordTest(body.RawURI, ok, elapsed, errStr)
+		}
 		nodes.UpdateNodeTestResult(body.RawURI, ok, elapsed, errStr)
 		disabled = !ok
 		if !ok {
+			if adm.nodeRepo != nil {
+				_ = adm.nodeRepo.BatchSetDisabled(r.Context(), []string{body.RawURI}, true)
+			}
 			nodes.BatchUpdateNodesDisabled([]string{body.RawURI}, true)
 		}
 	}
@@ -407,6 +364,9 @@ func (adm *AdminHandler) adminEnableNode(w http.ResponseWriter, r *http.Request)
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
+	if adm.nodeRepo != nil {
+		_ = adm.nodeRepo.SetDisabled(r.Context(), body.RawURI, false)
+	}
 	ok := nodes.EnableNode(body.RawURI)
 	log.Printf("[Admin] [EnableNode] 启用节点 %s: %v", nodes.GetNodeName(body.RawURI), ok)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": ok})
@@ -417,16 +377,50 @@ func fetchRecaptchaTokenWithSess(ctx context.Context, sess *transport.Session) e
 	return err
 }
 
-func (adm *AdminHandler) adminDedupNodes(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed_count": nodes.DedupNodes()})
+func (adm *AdminHandler) adminDedupNodes(w http.ResponseWriter, r *http.Request) {
+	var count int
+	if adm.nodeRepo != nil {
+		preview, err := adm.nodeRepo.Dedup(r.Context())
+		if err == nil {
+			count = preview.DuplicateCount
+		}
+	}
+	memCount := nodes.DedupNodes()
+	if count == 0 {
+		count = memCount
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed_count": count})
 }
 
-func (adm *AdminHandler) adminPreviewDedupNodes(w http.ResponseWriter, _ *http.Request) {
+func (adm *AdminHandler) adminPreviewDedupNodes(w http.ResponseWriter, r *http.Request) {
+	if adm.nodeRepo != nil {
+		preview, err := adm.nodeRepo.Dedup(r.Context())
+		if err == nil {
+			writeJSON(w, http.StatusOK, preview)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, nodes.PreviewDedupNodes())
 }
 
-func (adm *AdminHandler) adminDeleteDisabledNodes(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted_count": nodes.DeleteDisabled()})
+func (adm *AdminHandler) adminDeleteDisabledNodes(w http.ResponseWriter, r *http.Request) {
+	var removed []string
+	if adm.nodeRepo != nil {
+		var err error
+		removed, err = adm.nodeRepo.DeleteDisabled(r.Context())
+		if err != nil {
+			log.Printf("[Admin] [DeleteDisabled] 删除失败: %v", err)
+		}
+	}
+	memRemovedCount := nodes.DeleteDisabled()
+	for _, uri := range removed {
+		transport.RemoveProxy(uri)
+	}
+	count := len(removed)
+	if count == 0 {
+		count = memRemovedCount
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted_count": count})
 }
 
 func (adm *AdminHandler) adminUseNode(w http.ResponseWriter, r *http.Request) {
@@ -466,7 +460,11 @@ func (adm *AdminHandler) adminDeleteNode(w http.ResponseWriter, r *http.Request)
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
+	if adm.nodeRepo != nil {
+		_ = adm.nodeRepo.DeleteByURI(r.Context(), body.RawURI)
+	}
 	nodes.DeleteNode(body.RawURI)
+	transport.RemoveProxy(body.RawURI)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -478,6 +476,9 @@ func (adm *AdminHandler) adminBatchDisableNodes(w http.ResponseWriter, r *http.R
 		return
 	}
 	log.Printf("[Admin] [BatchDisable] 批量禁用 %d 个节点", len(body.URIs))
+	if adm.nodeRepo != nil {
+		_ = adm.nodeRepo.BatchSetDisabled(r.Context(), body.URIs, true)
+	}
 	nodes.BatchUpdateNodesDisabled(body.URIs, true)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -490,6 +491,9 @@ func (adm *AdminHandler) adminBatchEnableNodes(w http.ResponseWriter, r *http.Re
 		return
 	}
 	log.Printf("[Admin] [BatchEnable] 批量启用 %d 个节点", len(body.URIs))
+	if adm.nodeRepo != nil {
+		_ = adm.nodeRepo.BatchSetDisabled(r.Context(), body.URIs, false)
+	}
 	nodes.BatchUpdateNodesDisabled(body.URIs, false)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -502,10 +506,15 @@ func (adm *AdminHandler) adminBatchDeleteNodes(w http.ResponseWriter, r *http.Re
 		return
 	}
 	log.Printf("[Admin] [BatchDelete] 批量删除 %d 个节点", len(body.URIs))
+	if adm.nodeRepo != nil {
+		_ = adm.nodeRepo.BatchDelete(r.Context(), body.URIs)
+	}
 	nodes.BatchDeleteNodes(body.URIs)
+	for _, uri := range body.URIs {
+		transport.RemoveProxy(uri)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
-
 func (adm *AdminHandler) fetchSubscriptionText(ctx context.Context, rawURL string) (string, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {

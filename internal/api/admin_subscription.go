@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/domain"
 	"github.com/bsfdsagfadg/vertex/internal/netx"
 	"github.com/bsfdsagfadg/vertex/internal/nodes"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
@@ -25,23 +26,71 @@ var fallbackUAs = []string{
 
 const maxSubscriptionResponseBytes = 10 * 1024 * 1024
 
-func (adm *AdminHandler) adminListSubscriptions(w http.ResponseWriter, _ *http.Request) {
-	err := config.LoadSubscriptions()
-	if err != nil {
-		log.Printf("[Admin] [ListSubscriptions] 无法加载订阅配置: %v", err)
+func (adm *AdminHandler) adminListSubscriptions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var subs []domain.Subscription
+	var customUAs []domain.CustomUA
+	if adm.subRepo != nil {
+		if list, err := adm.subRepo.GetAll(ctx); err == nil {
+			subs = list
+		}
+		if uas, err := adm.subRepo.GetAllCustomUAs(ctx); err == nil {
+			customUAs = uas
+		}
 	}
-	conf := config.GetSubscriptionConfig()
+	if subs == nil || customUAs == nil {
+		_ = config.LoadSubscriptions()
+		conf := config.GetSubscriptionConfig()
+		if subs == nil {
+			subs = domainSubscriptionsFromLegacy(conf.Subscriptions)
+		}
+		if customUAs == nil {
+			customUAs = domainCustomUAsFromLegacy(conf.CustomUAs)
+		}
+	}
+
 	updatingIDs := []string{}
 	if adm.subscriptionService != nil {
 		updatingIDs = adm.subscriptionService.RunningIDs()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"subscriptions": conf.Subscriptions,
-		"custom_uas":    conf.CustomUAs,
+		"subscriptions": subs,
+		"custom_uas":    customUAs,
 		"updating_ids":  updatingIDs,
 	})
 }
 
+func domainSubscriptionsFromLegacy(legacyList []config.Subscription) []domain.Subscription {
+	out := make([]domain.Subscription, len(legacyList))
+	for i, s := range legacyList {
+		out[i] = domain.Subscription{
+			ID:             s.ID,
+			Name:           s.Name,
+			URL:            s.URL,
+			UserAgent:      s.UserAgent,
+			CustomUAID:     s.CustomUAID,
+			UpdateInterval: s.UpdateInterval,
+			AdoptManual:    s.AdoptManual,
+			LastUpdateTime: s.LastUpdateTime,
+			LastError:      s.LastError,
+			Revision:       int64(s.Revision),
+			Generation:     s.Generation,
+		}
+	}
+	return out
+}
+
+func domainCustomUAsFromLegacy(legacyList []config.CustomUA) []domain.CustomUA {
+	out := make([]domain.CustomUA, len(legacyList))
+	for i, u := range legacyList {
+		out[i] = domain.CustomUA{
+			ID:        u.ID,
+			Name:      u.Name,
+			UserAgent: u.UserAgent,
+		}
+	}
+	return out
+}
 func (adm *AdminHandler) adminSaveSubscription(w http.ResponseWriter, r *http.Request) {
 	var sub config.Subscription
 	if !adm.decodeAdminBody(w, r, &sub) {
@@ -60,6 +109,22 @@ func (adm *AdminHandler) adminSaveSubscription(w http.ResponseWriter, r *http.Re
 	var err error
 	if adm.subscriptionService != nil {
 		err = adm.subscriptionService.SaveSubscription(sub)
+	} else if adm.subRepo != nil {
+		dSub := domain.Subscription{
+			ID:             sub.ID,
+			Name:           sub.Name,
+			URL:            sub.URL,
+			UserAgent:      sub.UserAgent,
+			CustomUAID:     sub.CustomUAID,
+			UpdateInterval: sub.UpdateInterval,
+			AdoptManual:    sub.AdoptManual,
+			LastUpdateTime: sub.LastUpdateTime,
+			LastError:      sub.LastError,
+			Revision:       int64(sub.Revision),
+			Generation:     sub.Generation,
+		}
+		err = adm.subRepo.Save(r.Context(), dSub)
+		_ = config.UpdateSubscription(sub)
 	} else {
 		err = config.UpdateSubscription(sub)
 	}

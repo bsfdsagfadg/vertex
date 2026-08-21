@@ -86,9 +86,9 @@ func TestRemoveProxyCancelsInFlightInitialization(t *testing.T) {
 	if err := <-errCh; err == nil {
 		t.Fatal("expected removed proxy initialization to be canceled")
 	}
-	proxyMutex.RLock()
-	_, cached := proxyMap[uri]
-	proxyMutex.RUnlock()
+	DefaultPool.mu.RLock()
+	_, cached := DefaultPool.proxies[uri]
+	DefaultPool.mu.RUnlock()
 	if cached {
 		t.Fatal("removed proxy was inserted into the cache after initialization completed")
 	}
@@ -133,10 +133,10 @@ func TestGetOrStartProxyDialerForwardsEntryURI(t *testing.T) {
 	if _, err := getOrStartProxyDialer(secondURI, "test", false, entryURI); err != nil {
 		t.Fatalf("build proxy chain through wrapper: %v", err)
 	}
-	proxyMutex.RLock()
-	_, chained := proxyMap[proxyCacheKey(secondURI, entryURI)]
-	_, unchained := proxyMap[proxyCacheKey(secondURI, "")]
-	proxyMutex.RUnlock()
+	DefaultPool.mu.RLock()
+	_, chained := DefaultPool.proxies[proxyCacheKey(secondURI, entryURI)]
+	_, unchained := DefaultPool.proxies[proxyCacheKey(secondURI, "")]
+	DefaultPool.mu.RUnlock()
 	if !chained || unchained {
 		t.Fatalf("entry URI was not forwarded: chained=%v unchained=%v", chained, unchained)
 	}
@@ -163,10 +163,10 @@ func TestProxyChainCacheUsesNormalizedTwoHopIdentity(t *testing.T) {
 		t.Fatalf("normalized URI variants initialized %d proxies, want 2", got)
 	}
 	RemoveProxy("socks5://127.0.0.1:1080#different-label")
-	proxyMutex.RLock()
-	defer proxyMutex.RUnlock()
-	if len(proxyMap) != 0 {
-		t.Fatalf("normalized entry removal left cached chains: %d", len(proxyMap))
+	DefaultPool.mu.RLock()
+	defer DefaultPool.mu.RUnlock()
+	if len(DefaultPool.proxies) != 0 {
+		t.Fatalf("normalized entry removal left cached chains: %d", len(DefaultPool.proxies))
 	}
 }
 

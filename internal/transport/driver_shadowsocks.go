@@ -45,6 +45,9 @@ func (d *ShadowsocksDriver) ParseURI(rawURI string) (map[string]any, error) {
 		"cipher":   normalizeSSCipher(method),
 		"password": password,
 	}
+	if queryFlag(u.Query(), "udp", "udp-relay") {
+		out["udp"] = true
+	}
 	applySSPlugin(out, u.Query().Get("plugin"))
 	return out, nil
 }
@@ -63,13 +66,15 @@ func (d *ShadowsocksDriver) FormatURI(cfg map[string]any) (string, error) {
 	encodedUser := base64.RawURLEncoding.EncodeToString([]byte(rawCreds))
 
 	q := make(url.Values)
+	if udp, ok := cfg["udp"].(bool); ok && udp {
+		q.Set("udp", "true")
+	}
 	if pluginStr := formatSSPlugin(cfg); pluginStr != "" {
 		q.Set("plugin", pluginStr)
 	}
 
 	return buildStandardURI("ss", encodedUser, server, port, q, name), nil
 }
-
 func decodeSSUserInfo(user *url.Userinfo) (string, string, error) {
 	if user == nil {
 		return "", "", fmt.Errorf("ss parse failed: missing userinfo")
