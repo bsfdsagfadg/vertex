@@ -209,10 +209,12 @@ func hashStagedResult(result StagedResult) (string, error) {
 func validateStagedFiles(files []StagedFile) error {
 	allowed := map[string]string{
 		"config.json": "config", "models.json": "models", "data.db": "database",
-		"api_keys.txt": "api_keys", "state/.rules_agreed": "state",
+		"api_keys.txt": "api_keys", "tool-state.key": "state", "state/.rules_agreed": "state",
 		"state/agreed-rules-docker.txt": "state",
 	}
-	required := map[string]bool{"config.json": false, "models.json": false, "data.db": false}
+	required := map[string]bool{
+		"config.json": false, "models.json": false, "data.db": false, "tool-state.key": false,
+	}
 	seen := make(map[string]struct{}, len(files))
 	for _, file := range files {
 		if _, err := safeJoin(".", file.Path); err != nil {

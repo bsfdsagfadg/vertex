@@ -8,6 +8,7 @@ config/node_health.json
 config/data.db
 config/data.db-shm
 config/data.db-wal
+config/tool-state.key
 
 # Binaries
 vertex-proxy
