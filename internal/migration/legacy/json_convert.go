@@ -7,6 +7,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/bsfdsagfadg/vertex/internal/config"
 )
 
 func ConvertConfig(path string) ([]byte, error) {
@@ -82,8 +84,11 @@ func convertModelEntries(value json.RawMessage) (json.RawMessage, error) {
 	for _, entry := range entries {
 		var id string
 		if json.Unmarshal(entry, &id) == nil {
+			defaults := config.DefaultModelEntry(id)
 			object, err := json.Marshal(map[string]any{
-				"id": id, "enabled": true, "fake_stream_enabled": true, "trailing_fix_enabled": false,
+				"id": id, "enabled": defaults.Enabled,
+				"fake_stream_enabled":  defaults.FakeStreamEnabled,
+				"trailing_fix_enabled": defaults.TrailingFixEnabled,
 			})
 			if err != nil {
 				return nil, err
@@ -98,9 +103,13 @@ func convertModelEntries(value json.RawMessage) (json.RawMessage, error) {
 		if len(bytes.TrimSpace(object["id"])) == 0 {
 			return nil, fmt.Errorf("legacy model entry is missing id")
 		}
-		setDefaultJSON(object, "enabled", true)
-		setDefaultJSON(object, "fake_stream_enabled", true)
-		setDefaultJSON(object, "trailing_fix_enabled", false)
+		if err := json.Unmarshal(object["id"], &id); err != nil {
+			return nil, fmt.Errorf("parse legacy model entry id: %w", err)
+		}
+		defaults := config.DefaultModelEntry(id)
+		setDefaultJSON(object, "enabled", defaults.Enabled)
+		setDefaultJSON(object, "fake_stream_enabled", defaults.FakeStreamEnabled)
+		setDefaultJSON(object, "trailing_fix_enabled", defaults.TrailingFixEnabled)
 		encoded, err := marshalStableObject(object)
 		if err != nil {
 			return nil, err

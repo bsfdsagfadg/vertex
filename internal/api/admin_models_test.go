@@ -71,4 +71,8 @@ func TestAdminModelsAcceptsLegacyStringList(t *testing.T) {
 	if !ok || !gemini36.TrailingFixEnabled {
 		t.Fatalf("legacy 3.6 Flash 未应用内置尾部修复默认: %+v", gemini36)
 	}
+	gemini37, ok := config.LookupModel("gemini-3.7-flash")
+	if !ok || !gemini37.Enabled || !gemini37.FakeStreamEnabled || !gemini37.TrailingFixEnabled {
+		t.Fatalf("3.7 Flash 未应用内置默认: %+v", gemini37)
+	}
 }

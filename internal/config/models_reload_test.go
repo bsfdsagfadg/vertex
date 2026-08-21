@@ -108,6 +108,7 @@ func TestModelsV2MergesMissingDefaultsWithoutOverwritingState(t *testing.T) {
 	registry := ModelRegistry()
 	assertModelEntry(t, registry, "custom-model", false, false, true)
 	assertModelEntry(t, registry, "gemini-3.6-flash", true, true, true)
+	assertModelEntry(t, registry, "gemini-3.7-flash", true, true, true)
 	assertModelEntry(t, registry, "gemini-2.5-flash", true, true, false)
 	if contains(BaseModels(), "custom-model") {
 		t.Fatal("禁用模型不应出现在 BaseModels")
