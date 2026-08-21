@@ -10,8 +10,11 @@
 	const rollbackPanel = byId('migration-rollback-panel');
 	const rollbackApplyButton = byId('migration-rollback-apply');
   let currentPlanHash = '';
-	let currentRollbackPlanHash = '';
+  let currentRollbackPlanHash = '';
 	let currentState = '';
+  let applying = false;
+  let rollbackApplying = false;
+  let statusRetryTimer = null;
   let pollTimer = null;
 
   const api = async (path, options = {}) => {
@@ -22,7 +25,9 @@
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = body?.error?.message || `请求失败 (${response.status})`;
-      throw new Error(message);
+      const error = new Error(message);
+      error.status = response.status;
+      throw error;
     }
     return body;
   };
@@ -31,19 +36,18 @@
   const pretty = (value) => JSON.stringify(value, null, 2);
 
   const updateApplyState = () => {
-		const resumableForwardFailure = currentState === 'FailedRecoverable' &&
-			byId('migration-state').dataset.failedFrom !== 'RollingBack';
-    applyButton.disabled = !(currentState === 'Prepared' || resumableForwardFailure) || !currentPlanHash ||
-      !byId('migration-confirm-backup').checked ||
-      !byId('migration-confirm-rollback').checked;
+    // The server remains authoritative about the current state. The UI only
+    // needs a plan and both confirmations; transient status reads (including
+    // the 503 returned while the migration process is switching) must not
+    // leave the action permanently disabled.
+    // Keep the button actionable once a plan exists. The server remains the
+    // authority for the two confirmations and returns a precise validation
+    // error instead of leaving the user with a permanently disabled button.
+    applyButton.disabled = applying || !currentPlanHash;
   };
 
 	const updateRollbackApplyState = () => {
-		const resumableRollbackFailure = currentState === 'FailedRecoverable' &&
-			byId('migration-state').dataset.failedFrom === 'RollingBack';
-		rollbackApplyButton.disabled = !(currentState === 'RollbackReady' || resumableRollbackFailure) || !currentRollbackPlanHash ||
-			!byId('migration-confirm-v1-binary').checked ||
-			!byId('migration-confirm-traffic-stop').checked;
+		rollbackApplyButton.disabled = rollbackApplying || !currentRollbackPlanHash;
 	};
 
   const renderStatus = (status) => {
@@ -67,24 +71,43 @@
       window.clearInterval(pollTimer);
       pollTimer = null;
     }
-    if (status.state === 'Completed') {
+		if (status.state === 'Completed') {
+			applying = false;
 			errorView.textContent = '迁移完成。可以重启进入正常模式；如需立即回退，请先执行回滚预检。';
       applyButton.disabled = true;
     }
+		if (status.state === 'FailedRecoverable') {
+			if (status.failed_from !== 'RollingBack') applying = false;
+			if (status.failed_from === 'RollingBack') rollbackApplying = false;
+		}
 		const rollbackVisible = ['Completed', 'RollbackReady', 'RollingBack', 'RollbackPrepared'].includes(status.state) ||
 			(status.state === 'FailedRecoverable' && status.failed_from === 'RollingBack');
 		rollbackPanel.classList.toggle('hidden', !rollbackVisible);
 		if (status.state === 'RollbackPrepared') {
+			rollbackApplying = false;
 			errorView.textContent = 'V1 数据已恢复且 V2 已归档。本服务即将退出，请启动 V1。';
 		}
 		updateRollbackApplyState();
+  };
+
+  const scheduleStatusRetry = () => {
+    if (statusRetryTimer) return;
+    statusRetryTimer = window.setTimeout(() => {
+      statusRetryTimer = null;
+      refreshStatus();
+    }, 1200);
   };
 
   const refreshStatus = async () => {
     try {
       renderStatus(await api('/api/admin/migration/status'));
     } catch (error) {
-      errorView.textContent = error.message;
+      if (applying || rollbackApplying || error.status === 503) {
+        errorView.textContent = '迁移服务正在处理请求，状态暂时不可读，正在重试…';
+        scheduleStatusRetry();
+      } else {
+        errorView.textContent = error.message;
+      }
     }
   };
 
@@ -123,7 +146,8 @@
 	byId('migration-confirm-traffic-stop').addEventListener('change', updateRollbackApplyState);
   applyButton.addEventListener('click', async () => {
     errorView.textContent = '';
-    applyButton.disabled = true;
+    applying = true;
+    updateApplyState();
     try {
       await api('/api/admin/migration/apply', {
         method: 'POST',
@@ -133,9 +157,13 @@
           rollback_understood: byId('migration-confirm-rollback').checked,
         }),
       });
+      // The apply operation is asynchronous. Start polling even if the
+      // immediate follow-up status read races with an atomic status update.
+      if (!pollTimer) pollTimer = window.setInterval(refreshStatus, 1200);
       await refreshStatus();
     } catch (error) {
       errorView.textContent = error.message;
+      applying = false;
       updateApplyState();
     }
   });
@@ -154,7 +182,8 @@
 
 	rollbackApplyButton.addEventListener('click', async () => {
 		errorView.textContent = '';
-		rollbackApplyButton.disabled = true;
+		rollbackApplying = true;
+		updateRollbackApplyState();
 		try {
 			await api('/api/admin/migration/rollback/apply', {
 				method: 'POST',
@@ -164,9 +193,11 @@
 					traffic_stop_confirmed: byId('migration-confirm-traffic-stop').checked,
 				}),
 			});
+			if (!pollTimer) pollTimer = window.setInterval(refreshStatus, 1200);
 			await refreshStatus();
 		} catch (error) {
 			errorView.textContent = error.message;
+			rollbackApplying = false;
 			updateRollbackApplyState();
 		}
 	});

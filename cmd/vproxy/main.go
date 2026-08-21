@@ -18,6 +18,7 @@ import (
 	_ "time/tzdata"
 	"unicode"
 
+	vertexapi "github.com/bsfdsagfadg/vertex/internal/api"
 	"github.com/bsfdsagfadg/vertex/internal/app"
 	"github.com/bsfdsagfadg/vertex/internal/buildinfo"
 	"github.com/bsfdsagfadg/vertex/internal/config"
@@ -95,6 +96,10 @@ func main() {
 		log.Fatalf("[vproxy] failed to inspect persistent layout: %v", err)
 	}
 	if migrationStatus.Required {
+		// Migration uses the same administrator password as the normal console;
+		// initialize it before starting the isolated migration server instead of
+		// creating a separate one-time token.
+		vertexapi.EnsureAdminPasswordWithProvider(config.GetProvider())
 		migrationApp, appErr := app.NewMigration(app.MigrationOptions{
 			Build: build, Service: migrationService, Status: migrationStatus, ShutdownGrace: shutdownGrace,
 		})

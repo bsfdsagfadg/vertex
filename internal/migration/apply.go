@@ -124,9 +124,6 @@ func (s *Service) finalize(status *Status, completedAt time.Time, operation stri
 	}); err != nil {
 		return err
 	}
-	if err := s.removeMigrationToken(); err != nil {
-		return err
-	}
 	if err := os.Remove(s.MarkerPath()); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove migration-required marker: %w", err)
 	}
@@ -146,14 +143,6 @@ func (s *Service) finalize(status *Status, completedAt time.Time, operation stri
 	status.UpdatedAt = s.now().UTC()
 	if err := s.saveStatus(status); err != nil {
 		return err
-	}
-	return nil
-}
-
-func (s *Service) removeMigrationToken() error {
-	path := filepath.Join(s.controlRoot, ".migration-token")
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove migration token: %w", err)
 	}
 	return nil
 }

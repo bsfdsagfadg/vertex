@@ -68,10 +68,6 @@ func (a *Migration) Start() error {
 	for _, finding := range a.options.Status.Findings {
 		log.Printf("[Migration] 原因=%s 路径=%s", finding.Code, finding.Path)
 	}
-	if credential.Created {
-		log.Printf("[Migration] 一次性迁移令牌（仅本次显示）: %s", credential.Secret)
-		log.Printf("[Migration] 令牌文件: %s", credential.TokenPath)
-	}
 	migrationServer := api.NewMigrationServer(
 		a.options.Service, a.options.Build, bootstrap, credential,
 		api.WithRollbackPrepared(func() {
