@@ -36,3 +36,7 @@ config/migrated/
 
 # Logs
 logs/
+
+# Tool outputs & code packing artifacts
+repomix-output.*
+repomix.config.json
