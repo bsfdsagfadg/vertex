@@ -6,6 +6,7 @@
   const consoleView = byId('migration-console');
   const loginError = byId('migration-login-error');
   const errorView = byId('migration-error');
+  const prepareButton = byId('migration-prepare');
   const applyButton = byId('migration-apply');
 	const rollbackPanel = byId('migration-rollback-panel');
 	const rollbackApplyButton = byId('migration-rollback-apply');
@@ -127,8 +128,10 @@
     }
   });
 
-  byId('migration-prepare').addEventListener('click', async () => {
+  prepareButton.addEventListener('click', async () => {
     errorView.textContent = '';
+    prepareButton.disabled = true;
+    prepareButton.textContent = '正在执行预检…';
     try {
       const plan = await api('/api/admin/migration/prepare', { method: 'POST', body: '{}' });
       currentPlanHash = plan.plan_hash || '';
@@ -136,6 +139,9 @@
       await refreshStatus();
     } catch (error) {
       errorView.textContent = error.message;
+    } finally {
+      prepareButton.disabled = false;
+      prepareButton.textContent = currentPlanHash ? '重新执行只读预检' : '执行只读预检';
     }
   });
 

@@ -1,12 +1,22 @@
+html {
+  height: auto;
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 body {
   --text-custom: var(--text);
   --text-dim-custom: var(--text-dim);
   --base-font-size: 14px;
+  height: auto;
+  min-height: 100vh;
+  overflow: visible;
 }
 
 .migration-shell {
-  min-height: 100%;
-  overflow: auto;
+  min-height: 100vh;
+  overflow: visible;
   display: grid;
   place-items: center;
   padding: 32px 18px;
@@ -40,6 +50,10 @@ body {
 .migration-eyebrow { color: var(--gold); text-transform: uppercase; letter-spacing: .12em; font-size: 12px; }
 .migration-state { padding: 7px 12px; border: 1px solid var(--stroke); border-radius: 999px; color: var(--gold); }
 .migration-actions { display: flex; gap: 10px; margin: 24px 0 14px; }
+.migration-actions .btn { min-height: 46px; }
+#migration-prepare { border: 1px solid rgba(255, 250, 240, .38); box-shadow: 0 7px 22px var(--gold-shadow2); }
+#migration-prepare:hover { box-shadow: 0 10px 28px var(--gold-shadow2); }
+#migration-prepare:focus-visible { outline: 3px solid var(--gold-soft); outline-offset: 3px; }
 .migration-panel { margin-top: 14px; padding: 18px; border: 1px solid var(--stroke); border-radius: 14px; background: rgba(0, 0, 0, .18); }
 .migration-panel h2 { margin-bottom: 10px; font-size: 15px; }
 .migration-panel pre { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-dim); }
