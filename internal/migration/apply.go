@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -144,7 +145,25 @@ func (s *Service) finalize(status *Status, completedAt time.Time, operation stri
 	if err := s.saveStatus(status); err != nil {
 		return err
 	}
+	// The plan, report and result hash are retained for verified rollback. The
+	// staging directory has been fully published and is no longer required.
+	if status.Marker != nil {
+		if err := s.cleanupPublishedStage(status.Marker.MigrationID); err != nil {
+			log.Printf("[Migration] 清理迁移暂存目录失败: %v", err)
+		}
+	}
 	return nil
+}
+
+func (s *Service) cleanupPublishedStage(migrationID string) error {
+	stageRoot, err := s.stagingRoot(migrationID)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(stageRoot); err != nil {
+		return fmt.Errorf("remove published migration staging directory: %w", err)
+	}
+	return syncDirectory(filepath.Dir(stageRoot))
 }
 
 func (s *Service) retire(entry ManifestEntry) error {

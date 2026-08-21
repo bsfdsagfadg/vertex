@@ -22,6 +22,8 @@ type MigrationOptions struct {
 	ShutdownGrace time.Duration
 }
 
+var ErrRestartNormal = errors.New("migration requested normal-mode restart")
+
 // Migration is an isolated Composition Root: it owns only migration HTTP and
 // authentication resources and cannot start normal business dependencies.
 type Migration struct {
@@ -33,6 +35,7 @@ type Migration struct {
 	server        *http.Server
 	apiServer     *api.MigrationServer
 	runtimeCancel context.CancelFunc
+	restart       chan struct{}
 	rollback      chan struct{}
 	closeErr      error
 }
@@ -47,7 +50,7 @@ func NewMigration(options MigrationOptions) (*Migration, error) {
 	if options.ShutdownGrace <= 0 {
 		options.ShutdownGrace = 25 * time.Second
 	}
-	return &Migration{options: options, rollback: make(chan struct{}, 1)}, nil
+	return &Migration{options: options, restart: make(chan struct{}, 1), rollback: make(chan struct{}, 1)}, nil
 }
 
 func (a *Migration) Start() error {
@@ -70,6 +73,12 @@ func (a *Migration) Start() error {
 	}
 	migrationServer := api.NewMigrationServer(
 		a.options.Service, a.options.Build, bootstrap, credential,
+		api.WithRestartRequested(func() {
+			select {
+			case a.restart <- struct{}{}:
+			default:
+			}
+		}),
 		api.WithRollbackPrepared(func() {
 			select {
 			case a.rollback <- struct{}{}:
@@ -115,6 +124,9 @@ func (a *Migration) Run(parent context.Context) error {
 	var runErr error
 	select {
 	case <-parent.Done():
+	case <-a.restart:
+		log.Printf("[Migration] 已确认迁移完成，正在重启进入正常模式")
+		runErr = ErrRestartNormal
 	case <-a.rollback:
 		log.Printf("[Migration] V1 回滚数据已准备完成，正在停止迁移服务")
 	case runErr = <-serveResult:

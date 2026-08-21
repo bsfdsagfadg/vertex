@@ -24,6 +24,7 @@ type MigrationServer struct {
 	build              buildinfo.BuildInfo
 	bootstrap          migration.BootstrapConfig
 	credential         migration.Credential
+	onRestartRequested func()
 	onRollbackPrepared func()
 	loginMu            sync.Mutex
 	login              map[string]loginWindow
@@ -40,6 +41,10 @@ type loginWindow struct {
 }
 
 type MigrationServerOption func(*MigrationServer)
+
+func WithRestartRequested(callback func()) MigrationServerOption {
+	return func(server *MigrationServer) { server.onRestartRequested = callback }
+}
 
 func WithRollbackPrepared(callback func()) MigrationServerOption {
 	return func(server *MigrationServer) { server.onRollbackPrepared = callback }
@@ -118,6 +123,7 @@ func (s *MigrationServer) Handler() http.Handler {
 		mux.HandleFunc(prefix+"status", s.requireAdmin(s.handleStatus))
 		mux.HandleFunc(prefix+"prepare", s.requireAdmin(s.requireSafeMutation(s.handlePrepare)))
 		mux.HandleFunc(prefix+"apply", s.requireAdmin(s.requireSafeMutation(s.handleApply)))
+		mux.HandleFunc(prefix+"restart", s.requireAdmin(s.requireSafeMutation(s.handleRestart)))
 		mux.HandleFunc(prefix+"rollback/prepare", s.requireAdmin(s.requireSafeMutation(s.handleRollbackPrepare)))
 		mux.HandleFunc(prefix+"rollback/apply", s.requireAdmin(s.requireSafeMutation(s.handleRollbackApply)))
 	}
@@ -354,11 +360,44 @@ func (s *MigrationServer) handleRollbackApply(w http.ResponseWriter, r *http.Req
 			log.Printf("[Migration] 准备回滚失败: %v", applyErr)
 			return
 		}
-		if s.onRollbackPrepared != nil {
-			s.onRollbackPrepared()
-		}
 	}(body.PlanHash, status.State == migration.StateFailedRecoverable)
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "state": migration.StateRollingBack})
+}
+
+func (s *MigrationServer) handleRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, adminErr("方法不允许"))
+		return
+	}
+	status, err := s.service.CurrentStatus(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, adminErr(err.Error()))
+		return
+	}
+	var callback func()
+	mode := ""
+	switch status.State {
+	case migration.StateCompleted:
+		callback = s.onRestartRequested
+		mode = "restart_v2"
+	case migration.StateRollbackPrepared:
+		callback = s.onRollbackPrepared
+		mode = "exit_for_v1"
+	default:
+		writeJSON(w, http.StatusConflict, adminErr("迁移尚未完成，暂不能重启"))
+		return
+	}
+	if callback == nil {
+		writeJSON(w, http.StatusServiceUnavailable, adminErr("重启协调器不可用"))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "mode": mode})
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	// Let the client receive the accepted response before stopping its server.
+	time.AfterFunc(150*time.Millisecond, callback)
 }
 
 func (s *MigrationServer) requireAdmin(next http.HandlerFunc) http.HandlerFunc {

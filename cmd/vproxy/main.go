@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -107,11 +108,14 @@ func main() {
 			log.Fatalf("[Migration] 无法构建迁移模式: %v", appErr)
 		}
 		rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		defer stop()
-		if appErr := migrationApp.Run(rootCtx); appErr != nil {
+		appErr = migrationApp.Run(rootCtx)
+		stop()
+		if appErr != nil && !errors.Is(appErr, app.ErrRestartNormal) {
 			log.Fatalf("[Migration] 迁移服务退出异常: %v", appErr)
 		}
-		return
+		if !errors.Is(appErr, app.ErrRestartNormal) {
+			return
+		}
 	}
 
 	// ---- 状态文件迁移（提前执行，无输出） ----

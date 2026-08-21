@@ -8,6 +8,8 @@
   const errorView = byId('migration-error');
   const prepareButton = byId('migration-prepare');
   const applyButton = byId('migration-apply');
+	const restartDialog = byId('migration-restart-dialog');
+	const restartConfirmButton = byId('migration-restart-confirm');
 	const rollbackPanel = byId('migration-rollback-panel');
 	const rollbackApplyButton = byId('migration-rollback-apply');
   let currentPlanHash = '';
@@ -17,6 +19,8 @@
   let rollbackApplying = false;
   let statusRetryTimer = null;
   let pollTimer = null;
+  let restartPromptState = '';
+  let restarting = false;
 
   const api = async (path, options = {}) => {
     const headers = new Headers(options.headers || {});
@@ -35,6 +39,22 @@
 
   const setText = (id, value) => { byId(id).textContent = value; };
   const pretty = (value) => JSON.stringify(value, null, 2);
+
+  const showRestartPrompt = (state) => {
+    if (restartPromptState === state || restarting) return;
+    restartPromptState = state;
+    if (state === 'Completed') {
+      setText('migration-restart-title', '迁移完成');
+      setText('migration-restart-message', '数据已迁移完成。确认后将停止迁移控制台并进入正常 V2 服务。');
+      setText('migration-restart-confirm', '重启并进入 V2');
+    } else {
+      setText('migration-restart-title', '回滚准备完成');
+      setText('migration-restart-message', 'V1 数据已恢复，当前 V2 服务将退出。请确认原 V1 二进制或服务管理器会接管启动。');
+      setText('migration-restart-confirm', '结束 V2 并切换到 V1');
+    }
+    restartDialog.classList.remove('hidden');
+    restartConfirmButton.focus();
+  };
 
   const updateApplyState = () => {
     // The server remains authoritative about the current state. The UI only
@@ -76,6 +96,7 @@
 			applying = false;
 			errorView.textContent = '迁移完成。可以重启进入正常模式；如需立即回退，请先执行回滚预检。';
       applyButton.disabled = true;
+      showRestartPrompt(status.state);
     }
 		if (status.state === 'FailedRecoverable') {
 			if (status.failed_from !== 'RollingBack') applying = false;
@@ -86,7 +107,8 @@
 		rollbackPanel.classList.toggle('hidden', !rollbackVisible);
 		if (status.state === 'RollbackPrepared') {
 			rollbackApplying = false;
-			errorView.textContent = 'V1 数据已恢复且 V2 已归档。本服务即将退出，请启动 V1。';
+			errorView.textContent = 'V1 数据已恢复且 V2 已归档。确认后停止 V2 并切换到 V1。';
+      showRestartPrompt(status.state);
 		}
 		updateRollbackApplyState();
   };
@@ -207,6 +229,22 @@
 			updateRollbackApplyState();
 		}
 	});
+
+  restartConfirmButton.addEventListener('click', async () => {
+    if (restarting || !restartPromptState) return;
+    restarting = true;
+    restartConfirmButton.disabled = true;
+    restartConfirmButton.textContent = '正在切换…';
+    try {
+      await api('/api/admin/migration/restart', { method: 'POST', body: '{}' });
+      setText('migration-restart-message', '服务正在重启，请稍候…');
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (error) {
+      restarting = false;
+      restartConfirmButton.disabled = false;
+      errorView.textContent = error.message;
+    }
+  });
 
   Promise.all([
     api('/api/admin/check-auth'),

@@ -61,6 +61,11 @@ body {
 .migration-confirmations label { display: flex; align-items: flex-start; gap: 10px; color: var(--text-dim); }
 .migration-confirmations input { width: auto; margin-top: 5px; }
 #migration-build { margin-top: 24px; text-align: center; }
+.migration-restart-dialog { position: fixed; inset: 0; z-index: 10000; display: grid; place-items: center; padding: 20px; background: rgba(0, 0, 0, .62); backdrop-filter: blur(4px); }
+.migration-restart-card { width: min(430px, 100%); padding: 26px; border: 1px solid var(--stroke); border-radius: 8px; background: var(--panel); box-shadow: 0 20px 60px rgba(0, 0, 0, .45); }
+.migration-restart-card h2 { margin: 0 0 10px; font-size: 20px; }
+.migration-restart-actions { margin-top: 22px; }
+.migration-restart-actions .migration-primary { margin-top: 0; }
 
 @media (max-width: 620px) {
   .migration-card { padding: 22px; }

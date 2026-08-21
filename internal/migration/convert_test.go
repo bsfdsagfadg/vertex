@@ -58,3 +58,30 @@ func TestValidateStagedFilesRequiresToolStateKey(t *testing.T) {
 		t.Fatal("expected missing tool-state.key to be rejected")
 	}
 }
+
+func TestCleanupPublishedStageRemovesOnlyPublishedStagingDirectory(t *testing.T) {
+	service, err := NewService(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const migrationID = "20260821T105148Z-0123456789abcdef"
+	stageRoot, err := service.stagingRoot(migrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stageRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stageRoot, "staged-result.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.cleanupPublishedStage(migrationID); err != nil {
+		t.Fatalf("cleanupPublishedStage: %v", err)
+	}
+	if _, err := os.Stat(stageRoot); !os.IsNotExist(err) {
+		t.Fatalf("staging directory remains after cleanup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(stageRoot)); err != nil {
+		t.Fatalf("staging parent should remain: %v", err)
+	}
+}
