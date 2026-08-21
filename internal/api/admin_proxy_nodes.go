@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/entrynodes"
-	"github.com/bsfdsagfadg/vertex/internal/transport"
+	"github.com/bsfdsagfadg/vertex/internal/infra/transport"
+	"github.com/bsfdsagfadg/vertex/internal/node/entrypool"
 )
 
 // entryNodeNameFromParsed 从 ParsedNode 推导展示名：优先解析名，否则 scheme://host:port。
@@ -28,7 +28,7 @@ func entryNodeNameFromParsed(n *transport.ParsedNode, raw string) string {
 
 // adminGetProxyNodes 返回所有前置代理节点及其健康度列表。
 func (adm *AdminHandler) adminGetProxyNodes(w http.ResponseWriter, _ *http.Request) {
-	nodes := entrynodes.LoadEntryNodes()
+	nodes := adm.deps.Entry.LoadNodes()
 	var enabledCount, disabledCount int
 	for _, n := range nodes {
 		if n.Disabled {
@@ -39,7 +39,7 @@ func (adm *AdminHandler) adminGetProxyNodes(w http.ResponseWriter, _ *http.Reque
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"nodes":          nodes,
-		"health":         entrynodes.LoadEntryHealth(),
+		"health":         adm.deps.Entry.LoadHealth(),
 		"total":          len(nodes),
 		"enabled_count":  enabledCount,
 		"disabled_count": disabledCount,
@@ -61,7 +61,7 @@ func (adm *AdminHandler) adminImportProxyNode(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	pn, perr := transport.GetOrParse(raw)
+	pn, perr := adm.deps.IR.GetOrParse(raw)
 	if perr != nil || pn == nil || !pn.Supported {
 		reason := "parse failed"
 		if perr != nil {
@@ -73,7 +73,7 @@ func (adm *AdminHandler) adminImportProxyNode(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	entrynodes.MergeEntryNodes([]entrynodes.Node{{
+	adm.deps.Entry.MergeNodes([]entrypool.Node{{
 		RawURI: raw,
 		Type:   pn.Type,
 		Name:   entryNodeNameFromParsed(pn, raw),
@@ -101,7 +101,7 @@ func (adm *AdminHandler) adminToggleProxyNodes(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusBadRequest, adminErr("uris 不能为空"))
 		return
 	}
-	entrynodes.BatchUpdateEntryNodesDisabled(body.URIs, body.Disabled)
+	adm.deps.Entry.BatchUpdateNodesDisabled(body.URIs, body.Disabled)
 	if dialer := adm.dialer(); dialer != nil {
 		if err := dialer.SyncEntryPool(); err != nil {
 			log.Printf("[Admin] [ToggleProxyNode] 同步前置代理池失败: %v", err)
@@ -127,7 +127,7 @@ func (adm *AdminHandler) adminBatchDeleteProxyNodes(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusBadRequest, adminErr("uris 不能为空"))
 		return
 	}
-	entrynodes.BatchDeleteEntryNodes(body.URIs)
+	adm.deps.Entry.BatchDeleteNodes(body.URIs)
 	if dialer := adm.dialer(); dialer != nil {
 		if err := dialer.SyncEntryPool(); err != nil {
 			log.Printf("[Admin] [BatchDeleteProxyNode] 删除后同步前置代理池失败: %v", err)
@@ -139,7 +139,7 @@ func (adm *AdminHandler) adminBatchDeleteProxyNodes(w http.ResponseWriter, r *ht
 
 // adminDeleteDisabledProxyNodes 清空已禁用的前置节点。
 func (adm *AdminHandler) adminDeleteDisabledProxyNodes(w http.ResponseWriter, _ *http.Request) {
-	n := entrynodes.DeleteDisabledEntryNodes()
+	n := adm.deps.Entry.DeleteDisabled()
 	if dialer := adm.dialer(); dialer != nil {
 		if err := dialer.SyncEntryPool(); err != nil {
 			log.Printf("[Admin] [DeleteDisabledProxyNode] 同步轮询池失败: %v", err)
@@ -150,7 +150,7 @@ func (adm *AdminHandler) adminDeleteDisabledProxyNodes(w http.ResponseWriter, _ 
 
 // adminDedupProxyNodes 去重前置节点。
 func (adm *AdminHandler) adminDedupProxyNodes(w http.ResponseWriter, _ *http.Request) {
-	removed := entrynodes.DedupEntryNodes()
+	removed := adm.deps.Entry.DedupNodes()
 	if dialer := adm.dialer(); dialer != nil {
 		if err := dialer.SyncEntryPool(); err != nil {
 			log.Printf("[Admin] [DedupProxyNode] 去重后同步轮询池失败: %v", err)
@@ -171,7 +171,7 @@ func isRetryable(err error) bool {
 }
 
 func (adm *AdminHandler) testNodeOnce(ctx context.Context, timeout int, uri string) (ok bool, statusCode int, err error) {
-	dialCtx, cleanup, err := adm.vc.Net().Dialer().TestEntryProxy(uri)
+	dialCtx, cleanup, err := adm.dialer().TestEntryProxy(uri)
 	if err != nil {
 		return false, 0, err
 	}
@@ -214,7 +214,7 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), 2*timeout+2*time.Second)
 	defer cancel()
 
-	pn, perr := transport.GetOrParse(body.RawURI)
+	pn, perr := adm.deps.IR.GetOrParse(body.RawURI)
 	if perr != nil || pn == nil || !pn.Supported {
 		reason := "parse failed"
 		if perr != nil {
@@ -264,7 +264,7 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	entrynodes.RecordEntryTest(body.RawURI, ok, elapsed, errStr)
+	adm.deps.Entry.RecordTest(body.RawURI, ok, elapsed, errStr)
 
 	// 测试结果（尤其是网络类失败自动禁用）必须即时同步到轮询池，
 	// 否则被禁用的节点仍会留在 Round-Robin 池中继续承接流量。

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/cli"
-	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/engine/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/infra/cli"
+	"github.com/bsfdsagfadg/vertex/internal/infra/config"
 )
 
 type middleware struct {

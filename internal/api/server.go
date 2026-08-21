@@ -6,9 +6,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"time"
-
-	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
 type Server struct {
@@ -17,12 +14,12 @@ type Server struct {
 	mw     *middleware
 }
 
-func NewServer(vc *vertex.VertexAIClient, keys *APIKeyManager, cfg config.ConfigProvider) *Server {
-	h := handler{vc: vc, keys: keys, cfg: cfg}
+func NewServer(deps ServerDeps) *Server {
+	h := handler{vc: deps.VC, keys: deps.Keys, cfg: deps.Cfg, deps: deps}
 	return &Server{
 		gemini: &GeminiHandler{h},
 		admin:  &AdminHandler{h},
-		mw:     &middleware{cfg: cfg, keys: keys},
+		mw:     &middleware{cfg: deps.Cfg, keys: deps.Keys},
 	}
 }
 

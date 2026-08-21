@@ -6,45 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/bsfdsagfadg/vertex/internal/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/engine/vertex"
 )
-
-func TestResolveN(t *testing.T) {
-	cases := []struct { //nolint:govet
-		name    string
-		raw     any
-		maxN    int
-		wantN   int
-		wantErr bool
-	}{
-		{"nil 缺省 1", nil, 8, 1, false},
-		{"float 整数", float64(3), 8, 3, false},
-		{"int", 4, 8, 4, false},
-		{"非整数 float", 2.5, 8, 0, true},
-		{"字符串非法", "x", 8, 0, true},
-		{"小于 1", float64(0), 8, 0, true},
-		{"超上限", float64(20), 8, 0, true},
-		{"等于上限 OK", float64(8), 8, 8, false},
-		{"maxN<=0 用默认 8", float64(8), 0, 8, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			n, errMsg := resolveN(c.raw, c.maxN)
-			if c.wantErr {
-				if errMsg == "" {
-					t.Errorf("want error, got n=%d", n)
-				}
-				return
-			}
-			if errMsg != "" {
-				t.Errorf("unexpected error: %s", errMsg)
-			}
-			if n != c.wantN {
-				t.Errorf("n=%d, want %d", n, c.wantN)
-			}
-		})
-	}
-}
 
 func TestIsSafetyBlock_PlainTextSafety(t *testing.T) {
 	e := vertex.NewInvalidArgumentError("This is a safety test message", nil)

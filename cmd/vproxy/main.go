@@ -22,14 +22,17 @@ import (
 	"unicode"
 
 	"github.com/bsfdsagfadg/vertex/internal/api"
-	"github.com/bsfdsagfadg/vertex/internal/cli"
-	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/db"
-	"github.com/bsfdsagfadg/vertex/internal/logger"
-	"github.com/bsfdsagfadg/vertex/internal/nodes"
-	"github.com/bsfdsagfadg/vertex/internal/spool"
-	"github.com/bsfdsagfadg/vertex/internal/transport"
-	"github.com/bsfdsagfadg/vertex/internal/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/engine/recaptcha"
+	"github.com/bsfdsagfadg/vertex/internal/engine/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/infra/cli"
+	"github.com/bsfdsagfadg/vertex/internal/infra/config"
+	"github.com/bsfdsagfadg/vertex/internal/infra/db"
+	"github.com/bsfdsagfadg/vertex/internal/infra/logger"
+	"github.com/bsfdsagfadg/vertex/internal/infra/spool"
+	"github.com/bsfdsagfadg/vertex/internal/infra/transport"
+	"github.com/bsfdsagfadg/vertex/internal/node/entrypool"
+	"github.com/bsfdsagfadg/vertex/internal/node/exitpool"
+	"github.com/bsfdsagfadg/vertex/internal/node/importer"
 )
 
 var (
@@ -156,26 +159,39 @@ func main() {
 	cli.SetAppInfo(version, buildCommit, buildTime, runtime.GOOS, runtime.GOARCH)
 
 	cfg := config.GetProvider()
-	if err := db.InitDB(filepath.Join(config.ConfigDir(), "data.db")); err != nil {
+	database, err := db.Open(filepath.Join(config.ConfigDir(), "data.db"))
+	if err != nil {
 		log.Fatalf("[vproxy] failed to init database: %v", err)
 	}
-	defer db.CloseDB()
-	nodes.StartHealthAsyncWorker()
+	defer func() { _ = database.Close() }()
+
+	// ── 领域装配链（§2.3.1）：显式构造成品实例，逐层注入，零注册顺序契约 ──
+	irCache := transport.NewIRCache()
+	resolver := transport.NewIdentityResolver(irCache)
+
+	exitMgr := exitpool.NewManager(database, resolver, exitpool.Hooks{
+		InvalidateParsed: irCache.InvalidateBatch,
+		InvalidateAll:    irCache.Clear,
+	})
+	entryMgr := entrypool.NewEntryManager(database, resolver, entrypool.EntryHooks{
+		InvalidateParsed: irCache.InvalidateOne,
+	})
+	exitMgr.StartHealthWorker()
+
+	dialer := transport.NewSingDialer(cfg, transport.DialerDeps{
+		Cache:   irCache,
+		Namer:   exitMgr,
+		Entries: entryMgr,
+	})
+	netClient := transport.NewNetworkClient(dialer)
 
 	// 出口节点池与 IR 解析缓存异步预热：首屏 /api/admin/nodes 免冷加载。
-	// 不依赖 api.InitRegistry（直接调用 transport 包函数），ensureLoaded 先置位语义防重复装载。
 	go func() {
-		nodes.EnsureLoaded()
-		uris := nodes.GetAllRawURIs()
-		transport.PrewarmURIs(uris)
+		exitMgr.EnsureLoaded()
+		irCache.Prewarm(exitMgr.AllRawURIs())
 	}()
 
-	api.InitRegistry() // 显式注册节点回调（替代隐式 init），必须早于 SyncEntryPool 之前
-
 	spool.SetMaxSpillProvider(func() int64 { return int64(config.Load().MaxSpillMB) << 20 })
-
-	dialer := transport.NewSingDialer(cfg)
-	netClient := transport.NewNetworkClient(dialer)
 
 	if err := dialer.SyncEntryPool(); err != nil {
 		log.Printf("[vproxy] 警告: 前置代理池预热失败 (%v)，已降级为直连模式", err)
@@ -187,9 +203,20 @@ func main() {
 	api.EnsureAdminPassword()
 	stopAdminCleanup := api.StartAdminSessionCleanup(time.Hour)
 
-	vc := vertex.NewVertexAIClient(cfg, netClient)
+	tokenPool := recaptcha.NewTokenPool(netClient, cfg, exitMgr)
+	vc := vertex.NewVertexAIClient(cfg, netClient, tokenPool, exitMgr)
 
-	srv := api.NewServer(vc, keys, cfg)
+	srv := api.NewServer(api.ServerDeps{
+		VC:      vc,
+		Keys:    keys,
+		Cfg:     cfg,
+		Exit:    exitMgr,
+		Entry:   entryMgr,
+		Dialer:  dialer,
+		Imports: importer.NewService(),
+		Tokens:  tokenPool,
+		IR:      irCache,
+	})
 	//nolint:exhaustruct
 	httpServer := &http.Server{
 		Addr:              "0.0.0.0:" + strconv.Itoa(cfg.PortAPI()),

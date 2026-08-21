@@ -3,9 +3,9 @@ package api
 import (
 	"context"
 
-	"github.com/bsfdsagfadg/vertex/internal/cli"
-	"github.com/bsfdsagfadg/vertex/internal/transform"
-	"github.com/bsfdsagfadg/vertex/internal/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/engine/transform"
+	"github.com/bsfdsagfadg/vertex/internal/engine/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/infra/cli"
 )
 
 // ExecuteTextComplete 执行文本/语言模型非流式 Complete 生成。

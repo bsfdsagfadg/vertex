@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/infra/config"
 )
 
 func newGeminiHandlerForTest() *GeminiHandler {

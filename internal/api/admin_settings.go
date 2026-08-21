@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/importer"
+	"github.com/bsfdsagfadg/vertex/internal/infra/config"
+	"github.com/bsfdsagfadg/vertex/internal/node/importer"
 )
 
 //nolint:gochecknoglobals // Constant-like map of allowed settings

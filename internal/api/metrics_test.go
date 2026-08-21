@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/bsfdsagfadg/vertex/internal/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/engine/vertex"
 )
 
 // TestWithMetrics 验证 withMetrics 中间件行为：

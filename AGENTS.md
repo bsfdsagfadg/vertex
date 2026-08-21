@@ -4,40 +4,37 @@
 
 ---
 
-## 一、 架构分层与 Package 职责概览
+## 一、 架构领域与 Package 职责概览
 
-项目采用四层架构（接入与协议适配层、核心领域业务层、基础设施与通用服务层、横切关注点层），`internal/` 下包含 17 个独立 package（另有 `internal/assets` 静态资源目录，非 Go package）。代码搜索与定位请使用 `glob` / `grep` 工具动态检索，禁止维护或依赖静态文件名清单。
+项目划分为四个架构领域（接入适配域 `api`、核心引擎域 `engine`、节点领域域 `node`、基础设施域 `infra`），`internal/` 下包含 17 个独立 package 及 1 个静态资源目录。代码搜索与定位请使用 `glob` / `grep` 工具动态检索，禁止维护或依赖静态文件名清单。
 
-### 1. 接入与协议适配层 (Access & Delivery Layer)
-- **`internal/api`**：Gemini 原生 REST 路由入口（`/v1beta/models/*` 等）、模型家族物理隔离 Pipeline 调度（文本、生图、语音）、后台管理 API 及认证/流控中间件。
-- **`internal/admin`**：后台 Web 静态资源（HTML/CSS/JS）与模版文件嵌入 (`embed`) 管理。
-- **`internal/assets`**：通用静态资源与预设资产存储。
-- **`internal/importer`**：多格式前置/出口节点订阅与配置导入引擎（支持 URI、Clash、V2Ray、JSON 等格式解析）。
+### 1. 接入适配域 (`internal/api`)
+- **`internal/api`**：Gemini 原生 REST 路由入口（`/v1beta/models/*` 等）、模型家族物理隔离 Pipeline 调度（文本、生图、语音）、后台管理 API 及认证/流控中间件。全量依赖经 `ServerDeps` 显式构造期注入。
 
-### 2. 核心领域业务层 (Core Domain Layer)
-- **`internal/transform`**：统一模型解析 (`ModelResolver`)、文本与生图双规格能力白名单矩阵、模型家族自治策略与独占变量构建 (`BuildVariables`)、强类型 DTO 与 Schema 定义。
-- **`internal/vertex`**：上游 Vertex/Gemini 通信与协议处理、SSE 增量流式解析 (`Scanner`/`Transform`)、泛型竞速调度引擎 (`RaceEngine`)。
+### 2. 核心引擎域 (`internal/engine`)
+- **`internal/engine/transform`**：统一模型解析 (`ModelResolver`)、文本与生图双规格能力白名单矩阵、模型家族自治策略与独占变量构建 (`BuildVariables`)、强类型 DTO 与 Schema 定义。
+- **`internal/engine/vertex`**：上游 Vertex/Gemini 通信与协议处理、SSE 增量流式解析 (`Scanner`/`Transform`)、泛型竞速调度引擎 (`RaceEngine`)；全局统一错误内核（`errors.go` 的 `NormalizeError`）亦驻留于此。
+- **`internal/engine/recaptcha`**：reCAPTCHA Token 池自动化管理与后台刷新调度。
 
-### 3. 基础设施与通用服务层 (Infrastructure & Services Layer)
-- **`internal/nodes`**：出口竞速节点池内存态维护、状态转换与健康度调度。
-- **`internal/entrynodes`**：前置代理节点池内存态维护与路由切换。
-- **`internal/nodestore`**：出口与前置节点持久化的通用 SQLite 存储内核（提供纯函数+数据行视图抽象）。
-- **`internal/transport`**：网络代理、SOCKS5 环回与拨号器 (`Dialer`) 构建。
-- **`internal/spool`**：TLS 会话复用连接池与 Http2 多路复用传输。
-- **`internal/netx`**：跨平台底层网络适配与 Socket 优化。
-- **`internal/recaptcha`**：reCAPTCHA Token 池自动化管理与后台刷新调度。
-- **`internal/config`**：系统配置加载、环境变量解析与动态模型预设。
-- **`internal/db`**：SQLite 数据库连接初始化与基础持久化支持。
-- **`internal/jsonx`**：高性能 JSON 序列化与反序列化工具库封装。
+### 3. 节点领域域 (`internal/node`)
+- **`internal/node/exitpool`**：出口竞速节点池实例化管理（`Manager` + `Hooks`）、状态转换与健康度调度。
+- **`internal/node/entrypool`**：前置代理节点池实例化管理与路由切换。
+- **`internal/node/nodestore`**：出口与前置节点持久化的通用 SQLite 存储内核（提供纯函数+数据行视图抽象）。
+- **`internal/node/importer`**：多格式前置/出口节点订阅与配置导入引擎（支持 URI、Clash、V2Ray、JSON 等格式解析），纯解析库（无节点池副作用）。
 
-### 4. 横切关注点层 (Cross-Cutting Concerns Layer)
-- **`internal/vertex` (`errors.go`)**：全局统一错误内核，负责网络、上下文、安全拦截及空响应的归一化映射 (`NormalizeError`)。
-- **`internal/logger`**：结构化日志输出与等级控制。
-- **`internal/cli`**：TUI 终端监控面板与交互命令行支持。
+### 4. 基础设施域 (`internal/infra`)
+- **`internal/infra/transport`**：网络代理、SOCKS5 环回与拨号器 (`Dialer`) 构建、节点 URI 解析缓存 (`IRCache`)；对节点域需求经消费方窄接口 `NodeNamer`/`EntrySource` 反转。
+- **`internal/infra/spool`**：TLS 会话复用连接池与 Http2 多路复用传输。
+- **`internal/infra/netx`**：跨平台底层网络适配与 Socket 优化。
+- **`internal/infra/config`**：系统配置加载、环境变量解析与动态模型预设。
+- **`internal/infra/db`**：SQLite 数据库连接初始化（`db.Open` 实例语义）与基础持久化支持。
+- **`internal/infra/jsonx`**：高性能 JSON 序列化与反序列化工具库封装。
+- **`internal/infra/logger`**：结构化日志输出与等级控制。
+- **`internal/infra/cli`**：TUI 终端监控面板与交互命令行支持。
+- **`internal/infra/admin`**：后台 Web 静态资源（HTML/CSS/JS）与模版文件嵌入 (`embed`) 管理。
 
-> **历史注记**：遥测功能（原 `internal/telemetry`）已于 2026-08-21 废案清理中整体移除（详见 `.kilo/plans/CLEANUP_DEAD_FEATURES.md`）。
-
-> **说明**：`internal/` 保持物理目录扁平，新增功能或重构切片需遵循 **package 内按功能语义切分** 原则（零破坏重构），不得随意增加冗余层级。
+> **静态资源目录**：`internal/assets` 存放通用静态资源与预设资产（非 Go package，被 `cmd/vproxy/main.go` 与打包脚本按相对路径引用）。
+> **目录治理原则**：代码新增与重构需遵循 **package 内按功能语义切分** 原则（零破坏重构），不得随意增加冗余层级。
 
 ---
 
@@ -46,7 +43,7 @@
 ### 1. 常用开发校验命令
 - 代码格式检查：`gofmt -l internal cmd scripts`
 - 代码格式自动修复：`gofmt -w -s internal cmd scripts`
-- 单包测试：`go test ./internal/<pkg>/...`
+- 单包测试：`go test ./internal/<domain>/<pkg>/...`（如 `go test ./internal/engine/vertex/...`）
 - 全量测试：`go test ./...`
 - 静态检查：`go vet ./...`
 - 静态分析（**告警必须归零**，U1000 / S1009 等一律清零后再提交）：`staticcheck ./...`
@@ -70,7 +67,7 @@
 3. **gochecks 工具说明**：`scripts/gochecks/` 为挂在根模块下的聚合检查器（无独立 go.mod，直接 `go run ./scripts/gochecks`），豁免规则对齐 gopls 行为（接口实现方法参数、方法接收者不报）。`infertypeargs` 检查器依赖完整类型推断、仅存在于 gopls 内部，无命令行等价物，依靠编辑器提示人工处理（无行为风险）。若需新增检查项，在 `scripts/gochecks/main.go` 注册进 `checkers` map，同步更新本文件与 `.githooks/pre-commit` 注释。
 4. **导出死代码巡检（staticcheck 盲区）**：staticcheck 的 U1000 不检查导出符号，对导出函数的清理需人工复核或定期分析调用链：
    - 生产与测试均零引用的导出符号 → 人工复核后删除；
-   - 测试专用 API（如 `config.StaticProvider`、`nodes.ResetState`）→ 必须保留；
+   - 测试专用 API（如 `config.StaticProvider`、`vertex` 包 `testhooks.go` 内的测试钩子）→ 必须保留；
    - 定义在 `_test.go` 内的未使用函数需结合 `staticcheck` U1000 结果交叉确认。
 
 ---
@@ -109,3 +106,11 @@
 6. **强类型与零 map 往返铁律 (Strong Typing & Zero Map Roundtrip)**：核心领域业务层必须维持强类型 `struct` 传递（利用指针 + `omitempty` 杜绝脏数据污染），严禁退回 `map[string]any` 中转与 in-place 修改范式。
 7. **竞速引擎零模型感知铁律 (Model-Agnostic Race Engine)**：竞速引擎泛型化 (`RunRace[T]`)，零模型业务感知；响应有效性与动态超时判定退回下行阶段由各家族策略 (`CalculateIdleTimeouts`、`IsValidChunk` / `IsValidResponse`) 自治实施。
 8. **统一错误内核与安全拦截放行铁律 (Unified Error & Safety Pass-through)**：上游响应通过 `errors.go` 归一化分类 (`NormalizeError`)。安全拦截等极性拦截报文予以结构化放行，确保客户端能准确识别安全拒绝原因而不会误判为网络崩溃。
+9. **显式装配与零包级状态铁律 (Explicit Assembly & Zero Package State)**：`cmd/vproxy/main.go` 为唯一组合根，全链路经构造函数显式注入装配（`db.Open` → `IRCache` → 出口/前置 Manager 实例（含 `Hooks`）→ `DialerDeps` → `VertexAIClient` → `ServerDeps`）。严禁包级函数指针变量、包级可变单例与全局注册表回归；跨域失效联动一律经 `Hooks` 结构体构造期注入。进程级单例仅限既定白名单类别（build 标签注入变量、TUI 状态、config 进程缓存、只读映射表等）。
+10. **消费方窄接口铁律 (Consumer-Side Narrow Interfaces)**：跨域抽象一律由**消费方定义接口、提供方实现、main 构造期注入**：vertex 的 `NodePool`、recaptcha 的 `NodeSource`、transport 的 `NodeNamer` / `EntrySource`、api 的 `ImportParser` / `TokenVerifier`。严禁提供方反向定义大而全接口，或绕过接口直接 import 跨域具体类型。
+11. **领域依赖方向规则 (Domain Dependency Direction)**：
+    - **R1**：`infra` 域保持零内部依赖；对上层需求一律经消费方窄接口 + main 装配反转。唯一豁免：跨域窄接口签名中的**类型位只读结构体传递**（如 `transport.EntrySource.SelectableNodes() []entrypool.Node`），无行为依赖、不引入回调路径；
+    - **R2**：`node` → `infra` 允许（向下依赖，无环）；
+    - **R3**：`engine` → `infra` + `node` 允许（经窄接口消费）；
+    - **R4**：`api` → 全部域允许；
+    - **R5**：任何"下层回调上层/跨域失效联动"需求，一律经接口/Hooks 构造期注入实现，严禁包级函数指针变量，编译期不得成环。

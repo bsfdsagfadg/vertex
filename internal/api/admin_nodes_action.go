@@ -12,11 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/importer"
-	"github.com/bsfdsagfadg/vertex/internal/netx"
-	"github.com/bsfdsagfadg/vertex/internal/nodes"
-	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
-	"github.com/bsfdsagfadg/vertex/internal/transport"
+	"github.com/bsfdsagfadg/vertex/internal/infra/netx"
+	"github.com/bsfdsagfadg/vertex/internal/infra/transport"
+	"github.com/bsfdsagfadg/vertex/internal/node/exitpool"
+	"github.com/bsfdsagfadg/vertex/internal/node/importer"
 )
 
 const (
@@ -51,7 +50,7 @@ var (
 )
 
 func (adm *AdminHandler) adminGetTestProgress(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, nodes.GetTestProgress())
+	writeJSON(w, http.StatusOK, adm.deps.Exit.GetTestProgress())
 }
 
 func (adm *AdminHandler) adminFetchSub(w http.ResponseWriter, r *http.Request) {
@@ -69,27 +68,48 @@ func (adm *AdminHandler) adminFetchSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newNodes := importer.ParseImportedNodes(text)
-	nodes.MergeNodes(newNodes)
+	newNodes := adm.deps.Imports.Parse(text)
+	adm.markUnsupportedImports(newNodes)
+	adm.deps.Exit.MergeNodes(newNodes)
+	merged := make([]string, 0, len(newNodes))
+	for _, cn := range newNodes {
+		merged = append(merged, cn.RawURI)
+	}
+	adm.deps.IR.Prewarm(merged)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(newNodes)})
 }
 
+// markUnsupportedImports 对导入结果中的不支持节点记录健康度失败原因
+// （原副作用位于 importer.ParseImportedNodeLine，上移调用方以使 importer 回归纯解析库）。
+func (adm *AdminHandler) markUnsupportedImports(newNodes []exitpool.Node) {
+	for _, n := range newNodes {
+		if !n.Disabled {
+			continue
+		}
+		pn, err := adm.deps.IR.GetOrParse(n.RawURI)
+		if err != nil || pn == nil {
+			continue
+		}
+		adm.deps.Exit.RecordTest(n.RawURI, false, 0, "unsupported: "+pn.UnsupportedReason)
+	}
+}
+
 func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
-	if nodes.IsTestRunning() {
+	if adm.deps.Exit.IsTestRunning() {
 		writeJSON(w, http.StatusConflict, adminErr("已有批量测试正在进行中，请先等待其结束或终止"))
 		return
 	}
 	log.Printf("[Admin] [TestAll] 开始触发全局并发测速（基于 recaptchaToken 耗时）")
 	go func() {
-		list := nodes.LoadNodes()
-		var enabledNodes []nodes.Node
+		list := adm.deps.Exit.LoadNodes()
+		var enabledNodes []exitpool.Node
 		for _, n := range list {
 			if !n.Disabled {
 				enabledNodes = append(enabledNodes, n)
 			}
 		}
 		totalEnabled := len(enabledNodes)
-		if !nodes.StartTestProgress(totalEnabled) {
+		if !adm.deps.Exit.StartTestProgress(totalEnabled) {
 			log.Printf("[Admin] [TestAll] 已有批量测试正在进行中，拒绝重复触发")
 			return
 		}
@@ -124,13 +144,13 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 
 		for _, n := range enabledNodes {
 			wg.Add(1)
-			go func(node nodes.Node) {
+			go func(node exitpool.Node) {
 				defer wg.Done()
-				if nodes.CheckTestControl() {
+				if adm.deps.Exit.CheckTestControl() {
 					return
 				}
 				// capability 早检查：不支持/解析失败的节点直接标为失败并禁用，记录真实错误原因
-				pn, perr := transport.GetOrParse(node.RawURI)
+				pn, perr := adm.deps.IR.GetOrParse(node.RawURI)
 				if perr != nil || pn == nil || !pn.Supported {
 					reason := "parse failed"
 					if perr != nil {
@@ -139,9 +159,9 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 						reason = "unsupported: " + pn.UnsupportedReason
 					}
 					log.Printf("[Admin] [TestAll] 节点 %s (%s) 协议不支持或解析失败，标记禁用: %s", node.Name, node.Type, reason)
-					nodes.RecordTest(node.RawURI, false, 0, reason)
-					nodes.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
-					nodes.UpdateTestProgress(node.Name, false)
+					adm.deps.Exit.RecordTest(node.RawURI, false, 0, reason)
+					adm.deps.Exit.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
+					adm.deps.Exit.UpdateTestProgress(node.Name, false)
 					return
 				}
 				select {
@@ -150,7 +170,7 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 					return
 				}
 				defer func() { <-sem }()
-				if nodes.CheckTestControl() {
+				if adm.deps.Exit.CheckTestControl() {
 					return
 				}
 
@@ -161,7 +181,7 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 				var testErr error
 				if err == nil {
 					defer sess.Close()
-					testErr = fetchRecaptchaTokenWithSess(ctx, sess)
+					testErr = adm.fetchRecaptchaTokenWithSess(ctx, sess)
 				} else {
 					testErr = err
 				}
@@ -173,15 +193,15 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 					log.Printf("[Admin] [TestAll] 节点 %s 测试成功, recaptcha 耗时: %.0fms", node.Name, duration)
 				}
 				success := testErr == nil
-				nodes.RecordTest(node.RawURI, success, duration, importer.ErrToStr(testErr))
+				adm.deps.Exit.RecordTest(node.RawURI, success, duration, importer.ErrToStr(testErr))
 				if !success {
-					nodes.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
+					adm.deps.Exit.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
 				}
-				nodes.UpdateTestProgress(node.Name, success)
+				adm.deps.Exit.UpdateTestProgress(node.Name, success)
 			}(n)
 		}
 		wg.Wait()
-		nodes.FinishTestProgress()
+		adm.deps.Exit.FinishTestProgress()
 		log.Printf("[Admin] [TestAll] 全局节点测试全部结束")
 	}()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -192,7 +212,7 @@ func (adm *AdminHandler) adminTestPause(w http.ResponseWriter, r *http.Request) 
 		adm.adminMethodNotAllowed(w)
 		return
 	}
-	nodes.PauseTestProgress()
+	adm.deps.Exit.PauseTestProgress()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -201,7 +221,7 @@ func (adm *AdminHandler) adminTestResume(w http.ResponseWriter, r *http.Request)
 		adm.adminMethodNotAllowed(w)
 		return
 	}
-	nodes.ResumeTestProgress()
+	adm.deps.Exit.ResumeTestProgress()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -210,7 +230,7 @@ func (adm *AdminHandler) adminTestTerminate(w http.ResponseWriter, r *http.Reque
 		adm.adminMethodNotAllowed(w)
 		return
 	}
-	nodes.TerminateTestProgress()
+	adm.deps.Exit.TerminateTestProgress()
 	testAllMu.Lock()
 	if testAllCancel != nil {
 		testAllCancel()
@@ -236,7 +256,7 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// capability 早检查：不支持/解析失败的节点直接标为失败并禁用，记录真实错误原因
-	pn, perr := transport.GetOrParse(body.RawURI)
+	pn, perr := adm.deps.IR.GetOrParse(body.RawURI)
 	if perr != nil || pn == nil || !pn.Supported {
 		reason := "parse failed"
 		if perr != nil {
@@ -244,9 +264,9 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 		} else if pn != nil {
 			reason = "unsupported: " + pn.UnsupportedReason
 		}
-		log.Printf("[Admin] [TestNode] 节点 %s 协议不支持或解析失败，标记禁用: %s", nodes.GetNodeName(body.RawURI), reason)
-		nodes.UpdateNodeTestResult(body.RawURI, false, 0, reason)
-		nodes.BatchUpdateNodesDisabled([]string{body.RawURI}, true)
+		log.Printf("[Admin] [TestNode] 节点 %s 协议不支持或解析失败，标记禁用: %s", adm.deps.Exit.NodeName(body.RawURI), reason)
+		adm.deps.Exit.RecordTest(body.RawURI, false, 0, reason)
+		adm.deps.Exit.BatchUpdateNodesDisabled([]string{body.RawURI}, true)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": false, "elapsed_ms": 0, "error": reason, "disabled": true,
 		})
@@ -257,7 +277,7 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 	sess, err := adm.vc.Net().CreateSession(15, body.RawURI, "admin-test-node")
 	var testErr error
 	if err == nil {
-		testErr = fetchRecaptchaTokenWithSess(ctx, sess)
+		testErr = adm.fetchRecaptchaTokenWithSess(ctx, sess)
 		sess.Close()
 	} else {
 		testErr = err
@@ -276,14 +296,14 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 
 	disabled := false
 	if body.AutoDisable {
-		nodes.UpdateNodeTestResult(body.RawURI, ok, elapsed, errStr)
+		adm.deps.Exit.RecordTest(body.RawURI, ok, elapsed, errStr)
 		disabled = !ok
 		if !ok {
-			nodes.BatchUpdateNodesDisabled([]string{body.RawURI}, true)
+			adm.deps.Exit.BatchUpdateNodesDisabled([]string{body.RawURI}, true)
 		}
 	}
 
-	log.Printf("[Admin] [TestNode] 节点测试 %s: ok=%v elapsed=%.0fms error=%q disabled=%v", nodes.GetNodeName(body.RawURI), ok, elapsed, errStr, disabled)
+	log.Printf("[Admin] [TestNode] 节点测试 %s: ok=%v elapsed=%.0fms error=%q disabled=%v", adm.deps.Exit.NodeName(body.RawURI), ok, elapsed, errStr, disabled)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         ok,
 		"elapsed_ms": elapsed,
@@ -292,8 +312,8 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func fetchRecaptchaTokenWithSess(ctx context.Context, sess *transport.Session) error {
-	_, err := recaptcha.FetchRecaptchaTokenWithSession(ctx, sess)
+func (adm *AdminHandler) fetchRecaptchaTokenWithSess(ctx context.Context, sess *transport.Session) error {
+	_, err := adm.deps.Tokens.FetchTokenWithSession(ctx, sess)
 	return err
 }
 

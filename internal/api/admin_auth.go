@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/cli"
-	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/infra/cli"
+	"github.com/bsfdsagfadg/vertex/internal/infra/config"
 )
 
 const (

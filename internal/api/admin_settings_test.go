@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/infra/config"
 )
 
 // adminGetSettingsRaw 使用已登录 cookie 发起 GET /api/admin/settings，返回解析后的响应体。

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/admin"
-	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/infra/admin"
+	"github.com/bsfdsagfadg/vertex/internal/infra/config"
 )
 
 type AdminHandler struct {

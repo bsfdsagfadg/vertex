@@ -8,29 +8,53 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/jsonx"
-	"github.com/bsfdsagfadg/vertex/internal/transform"
-	"github.com/bsfdsagfadg/vertex/internal/transport"
-	"github.com/bsfdsagfadg/vertex/internal/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/engine/transform"
+	"github.com/bsfdsagfadg/vertex/internal/engine/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/infra/config"
+	"github.com/bsfdsagfadg/vertex/internal/infra/jsonx"
+	"github.com/bsfdsagfadg/vertex/internal/infra/transport"
+	"github.com/bsfdsagfadg/vertex/internal/node/entrypool"
+	"github.com/bsfdsagfadg/vertex/internal/node/exitpool"
 )
+
+// ImportParser 是 admin 导入入口对多格式导入引擎的消费契约（实现 *importer.Service）。
+type ImportParser interface {
+	Parse(text string) []exitpool.Node
+}
+
+// TokenVerifier 是 admin 节点测速对 reCAPTCHA 会话校验的消费契约
+// （实现 *recaptcha.TokenPool，复用其网络客户端装配）。
+type TokenVerifier interface {
+	FetchTokenWithSession(ctx context.Context, sess *transport.Session) (string, error)
+}
+
+// ServerDeps 是接入层的显式装配清单：admin 与 Gemini 管道的全部跨域成品实例逐项注入，
+// 消除 api 对 nodes/entrynodes/importer/recaptcha 包级状态的装配知识。
+type ServerDeps struct {
+	VC      *vertex.VertexAIClient  // Gemini 三管道上游客户端
+	Keys    *APIKeyManager          // API Key 管理
+	Cfg     config.ConfigProvider   // 配置消费口
+	Exit    *exitpool.Manager       // 出口节点池（admin CRUD/测速/去重）
+	Entry   *entrypool.EntryManager // 前置代理节点池（admin 管理）
+	Dialer  transport.ProxyDialer   // admin 前置连通性测试用拨号器
+	Imports ImportParser            // 多格式节点导入引擎
+	Tokens  TokenVerifier           // reCAPTCHA 会话校验（节点测速路径）
+	IR      *transport.IRCache      // IR 解析缓存（admin 能力标注与导入预热）
+}
 
 type handler struct {
 	vc   *vertex.VertexAIClient
 	keys *APIKeyManager
 	cfg  config.ConfigProvider
+	deps ServerDeps
 }
 
 func (h *handler) dialer() transport.ProxyDialer {
-	if h.vc != nil && h.vc.Net() != nil {
-		return h.vc.Net().Dialer()
-	}
-	return nil
+	return h.deps.Dialer
 }
 
 func (h *handler) decodeAdminBody(w http.ResponseWriter, r *http.Request, dst any) bool {
@@ -127,40 +151,6 @@ func isSafetyBlock(e *vertex.VertexError) bool {
 	return transform.IsSafetyFinishReason(e.Status) ||
 		(strings.HasPrefix(e.Status, "BLOCKED_REASON_") && e.Status != "BLOCKED_REASON_UNSPECIFIED") ||
 		e.Status == "OTHER"
-}
-
-func resolveN(raw any, maxN int) (int, string) {
-	if maxN <= 0 {
-		maxN = 8
-	}
-	if raw == nil {
-		return 1, ""
-	}
-	var n int
-	switch v := raw.(type) {
-	case float64:
-		if v != float64(int(v)) {
-			return 0, "请求参数有误: n 必须是整数 (n must be an integer)"
-		}
-		n = int(v)
-	case int:
-		n = v
-	case *int:
-		if v != nil {
-			n = *v
-		} else {
-			return 1, ""
-		}
-	default:
-		return 0, "请求参数有误: n 必须是整数 (n must be an integer)"
-	}
-	if n < 1 {
-		return 0, "请求参数有误: n 必须 >= 1 (n must be >= 1)"
-	}
-	if n > maxN {
-		return 0, "请求参数有误: n 超过上限 " + strconv.Itoa(maxN) + " (n exceeds maximum " + strconv.Itoa(maxN) + ")"
-	}
-	return n, ""
 }
 
 func adminErr(msg string) map[string]any {

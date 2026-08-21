@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,12 +14,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bsfdsagfadg/vertex/internal/config"
-	"github.com/bsfdsagfadg/vertex/internal/db"
-	"github.com/bsfdsagfadg/vertex/internal/nodes"
-	"github.com/bsfdsagfadg/vertex/internal/recaptcha"
-	"github.com/bsfdsagfadg/vertex/internal/transport"
-	"github.com/bsfdsagfadg/vertex/internal/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/engine/recaptcha"
+	"github.com/bsfdsagfadg/vertex/internal/engine/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/infra/config"
+	"github.com/bsfdsagfadg/vertex/internal/infra/db"
+	"github.com/bsfdsagfadg/vertex/internal/infra/transport"
+	"github.com/bsfdsagfadg/vertex/internal/node/entrypool"
+	"github.com/bsfdsagfadg/vertex/internal/node/exitpool"
+	"github.com/bsfdsagfadg/vertex/internal/node/importer"
 )
 
 // testFixture 封装集成测试用到的依赖。
@@ -27,6 +30,21 @@ type testFixture struct {
 	mockUpstream *httptest.Server
 	keys         *APIKeyManager
 	vc           *vertex.VertexAIClient
+}
+
+// assembleDomainManagers 构造测试专用的领域成品实例（与 main.go 装配链同构，
+// 但使用独立 IRCache 与传入 DB，实现用例间完全隔离）。
+func assembleDomainManagers(database *sql.DB) (*exitpool.Manager, *entrypool.EntryManager, *transport.IRCache) {
+	irCache := transport.NewIRCache()
+	resolver := transport.NewIdentityResolver(irCache)
+	exitMgr := exitpool.NewManager(database, resolver, exitpool.Hooks{
+		InvalidateParsed: irCache.InvalidateBatch,
+		InvalidateAll:    irCache.Clear,
+	})
+	entryMgr := entrypool.NewEntryManager(database, resolver, entrypool.EntryHooks{
+		InvalidateParsed: irCache.InvalidateOne,
+	})
+	return exitMgr, entryMgr, irCache
 }
 
 // newTestServer 创建完整的测试服务器。
@@ -38,7 +56,6 @@ type testFixture struct {
 // 用例结束后关闭）。
 func newTestServer(t *testing.T) *testFixture {
 	t.Helper()
-	InitRegistry() // 显式注册节点回调（幂等，替代已移除的 init）
 
 	dir := t.TempDir()
 
@@ -66,9 +83,11 @@ func newTestServer(t *testing.T) *testFixture {
 	t.Setenv("VPROXY_API_KEYS", filepath.Join(dir, "api_keys.txt"))
 
 	// ── DB ──
-	if err := db.InitDB(filepath.Join(dir, "test.db")); err != nil {
-		t.Fatalf("init db: %v", err)
+	database, err := db.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
 	}
+	exitMgr, entryMgr, irCache := assembleDomainManagers(database)
 
 	// ── mock upstream（batchGraphql）──
 	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +101,6 @@ func newTestServer(t *testing.T) *testFixture {
 			geminiNonStreamingResponse())
 		_, _ = w.Write([]byte(resp))
 	}))
-	vertex.SetBatchGraphqlURL(mockUpstream.URL + "/batchGraphql?key=test&prettyPrint=false")
 
 	// ── token pool（mock）──
 	mockPool := recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
@@ -91,8 +109,9 @@ func newTestServer(t *testing.T) *testFixture {
 
 	// ── VertexAIClient ──
 	netClient := transport.NewNetworkClient(nil)
-	vc := vertex.NewVertexAIClient(config.StaticProvider(cfg), netClient)
+	vc := vertex.NewVertexAIClient(config.StaticProvider(cfg), netClient, nil, nil)
 	vc.SetTokenPool(mockPool)
+	vc.SetBatchGraphqlURL(mockUpstream.URL + "/batchGraphql?key=test&prettyPrint=false")
 
 	// ── 恢复 api 全局状态 ──
 	resetAdminSessions()
@@ -101,13 +120,22 @@ func newTestServer(t *testing.T) *testFixture {
 	keys.LoadKeys()
 
 	// ── HTTP server ──
-	srv := NewServer(vc, keys, config.StaticProvider(cfg))
+	srv := NewServer(ServerDeps{
+		VC:      vc,
+		Keys:    keys,
+		Cfg:     config.StaticProvider(cfg),
+		Exit:    exitMgr,
+		Entry:   entryMgr,
+		Imports: importer.NewService(),
+		Tokens:  mockPool,
+		IR:      irCache,
+	})
 	ts := httptest.NewServer(srv.Handler())
 
 	t.Cleanup(func() {
 		ts.Close()
 		mockUpstream.Close()
-		db.CloseDB()
+		_ = database.Close()
 		config.InvalidateCache()
 	})
 
@@ -124,7 +152,6 @@ func newTestServer(t *testing.T) *testFixture {
 // dialers 为可选的 dialer 参数，用于并行池测试。
 func newTestServerCustomMock(t *testing.T, mockHandler http.HandlerFunc, cfgMod func(*config.AppConfig), dialers ...transport.ProxyDialer) *testFixture {
 	t.Helper()
-	InitRegistry() // 显式注册节点回调（幂等，替代已移除的 init）
 
 	dir := t.TempDir()
 
@@ -156,9 +183,11 @@ func newTestServerCustomMock(t *testing.T, mockHandler http.HandlerFunc, cfgMod 
 	t.Setenv("VPROXY_API_KEYS", filepath.Join(dir, "api_keys.txt"))
 
 	// ── DB ──
-	if err := db.InitDB(filepath.Join(dir, "test.db")); err != nil {
-		t.Fatalf("init db: %v", err)
+	database, err := db.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
 	}
+	exitMgr, entryMgr, irCache := assembleDomainManagers(database)
 
 	// ── mock upstream 使用可取消 BaseContext ──
 	// 当 handler 阻塞（如 upstream_hang 测试）时，cleanup 先取消 baseCtx，
@@ -170,7 +199,6 @@ func newTestServerCustomMock(t *testing.T, mockHandler http.HandlerFunc, cfgMod 
 		return mockUpstreamCtx
 	}
 	mockUpstream.Start()
-	vertex.SetBatchGraphqlURL(mockUpstream.URL + "/batchGraphql?key=test&prettyPrint=false")
 
 	// ── token pool ──
 	mockPool := recaptcha.NewTokenPoolCustom(func(proxyURI string) (string, error) {
@@ -183,8 +211,9 @@ func newTestServerCustomMock(t *testing.T, mockHandler http.HandlerFunc, cfgMod 
 		dialer = dialers[0]
 	}
 	netClient := transport.NewNetworkClient(dialer)
-	vc := vertex.NewVertexAIClient(config.StaticProvider(cfg), netClient)
+	vc := vertex.NewVertexAIClient(config.StaticProvider(cfg), netClient, nil, nil)
 	vc.SetTokenPool(mockPool)
+	vc.SetBatchGraphqlURL(mockUpstream.URL + "/batchGraphql?key=test&prettyPrint=false")
 
 	// ── 恢复全局状态 ──
 	resetAdminSessions()
@@ -192,16 +221,25 @@ func newTestServerCustomMock(t *testing.T, mockHandler http.HandlerFunc, cfgMod 
 	keys.LoadKeys()
 
 	// ── HTTP server ──
-	srv := NewServer(vc, keys, config.StaticProvider(cfg))
+	srv := NewServer(ServerDeps{
+		VC:      vc,
+		Keys:    keys,
+		Cfg:     config.StaticProvider(cfg),
+		Exit:    exitMgr,
+		Entry:   entryMgr,
+		Dialer:  dialer,
+		Imports: importer.NewService(),
+		Tokens:  mockPool,
+		IR:      irCache,
+	})
 	ts := httptest.NewServer(srv.Handler())
 
 	t.Cleanup(func() {
 		ts.Close()
 		mockUpstreamCancel()
 		mockUpstream.Close()
-		db.CloseDB()
+		_ = database.Close()
 		config.InvalidateCache()
-		nodes.ResetState()
 	})
 
 	return &testFixture{

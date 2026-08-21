@@ -9,11 +9,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bsfdsagfadg/vertex/internal/nodes"
+	"github.com/bsfdsagfadg/vertex/internal/infra/transport"
+	"github.com/bsfdsagfadg/vertex/internal/node/exitpool"
 )
 
 func TestAdminTestNodeDisablesUnsupportedAndUnparseableURIs(t *testing.T) {
-	adm := &AdminHandler{}
+	// 自持实例验证：独立节点池 + IR 缓存，不依赖任何进程级状态
+	mgr := exitpool.NewManager(nil, nil, exitpool.Hooks{})
+	//nolint:exhaustruct // 仅注入被测路径消费的依赖
+	adm := &AdminHandler{handler: handler{deps: ServerDeps{Exit: mgr, IR: transport.NewIRCache()}}}
 	cases := []struct {
 		name string
 		uri  string
@@ -44,7 +48,7 @@ func TestAdminTestNodeDisablesUnsupportedAndUnparseableURIs(t *testing.T) {
 				t.Fatalf("expected non-empty error reason")
 			}
 			// 不支持/不可解析路径写 healthMap 记录原因
-			h := nodes.LoadHealth()[tc.uri]
+			h := mgr.LoadHealth()[tc.uri]
 			if h == nil || h.LastTestError == "" {
 				t.Fatalf("expected health error recorded, got %#v", h)
 			}
@@ -53,7 +57,8 @@ func TestAdminTestNodeDisablesUnsupportedAndUnparseableURIs(t *testing.T) {
 }
 
 func TestAdminTestProxyNodeSkipsUnsupportedURI(t *testing.T) {
-	adm := &AdminHandler{}
+	//nolint:exhaustruct // 仅注入被测路径消费的依赖（跳过路径仅触达 IR）
+	adm := &AdminHandler{handler: handler{deps: ServerDeps{IR: transport.NewIRCache()}}}
 	body := `{"raw_uri":"vless://uuid@example.com:443?type=xhttp"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/proxy-nodes/test", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

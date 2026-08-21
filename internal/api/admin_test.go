@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/infra/config"
 )
 
 // resetAdminSessions 清空包级 session 表，避免用例间互相污染。

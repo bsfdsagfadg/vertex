@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bsfdsagfadg/vertex/internal/cli"
-	"github.com/bsfdsagfadg/vertex/internal/jsonx"
-	"github.com/bsfdsagfadg/vertex/internal/transform"
-	"github.com/bsfdsagfadg/vertex/internal/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/engine/transform"
+	"github.com/bsfdsagfadg/vertex/internal/engine/vertex"
+	"github.com/bsfdsagfadg/vertex/internal/infra/cli"
+	"github.com/bsfdsagfadg/vertex/internal/infra/jsonx"
 )
 
 // GeminiHandler 提供 Gemini 原生 REST 入口。

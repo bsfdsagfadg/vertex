@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/infra/config"
 )
 
 func (adm *AdminHandler) adminGetKeys(w http.ResponseWriter, _ *http.Request) {
