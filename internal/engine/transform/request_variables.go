@@ -1,7 +1,6 @@
 package transform
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/bsfdsagfadg/vertex/internal/infra/config"
@@ -15,20 +14,6 @@ func BuildGeminiVariablesTyped(model string, req *GeminiRequest, cfg config.Conf
 	router := SharedModelFamilyRouter()
 	strategy := router.For(model)
 	return strategy.BuildVariables(model, req, cfg)
-}
-
-// BuildGeminiVariables 由强类型请求构建发往上游的 variables map 兼容层。
-func BuildGeminiVariables(model string, req *GeminiRequest, cfg config.ConfigProvider) map[string]any {
-	vars := BuildGeminiVariablesTyped(model, req, cfg)
-	b, err := json.Marshal(vars)
-	if err != nil {
-		return map[string]any{}
-	}
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		return map[string]any{}
-	}
-	return m
 }
 
 // packParallelToolResponses 专门处理 FunctionResponse 的打包：

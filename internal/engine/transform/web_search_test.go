@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func TestBuildGeminiVariables_WebSearch(t *testing.T) {
+func TestBuildGeminiVariablesTyped_WebSearch(t *testing.T) {
 	// 测试场景 1：传入带有 GoogleSearch 的 Tool → 追加绑定 googleSearch + googleMaps 双工具
 	geminiReq := &GeminiRequest{
 		Contents: []Content{{Role: "user", Parts: []Part{{Text: "hello"}}}},
@@ -17,32 +17,22 @@ func TestBuildGeminiVariables_WebSearch(t *testing.T) {
 		t.Fatalf("expected 1 tool, got %d", len(geminiReq.Tools))
 	}
 
-	vars := BuildGeminiVariables("gemini-3.6-flash", geminiReq, nil)
-	tools, ok := vars["tools"].([]any)
-	if !ok || len(tools) != 2 {
-		t.Fatalf("expected 2 tools (googleSearch + googleMaps) in vars, got %v", vars["tools"])
+	vars := BuildGeminiVariablesTyped("gemini-3.6-flash", geminiReq, nil)
+	if vars == nil || len(vars.Tools) != 2 {
+		t.Fatalf("expected 2 tools (googleSearch + googleMaps) in vars, got %v", vars.Tools)
 	}
 
-	toolMap, ok := tools[0].(map[string]any)
-	if !ok {
-		t.Fatalf("tool is not a map: %v", tools[0])
-	}
-
-	if _, ok := toolMap["googleSearch"]; !ok {
-		t.Errorf("expected googleSearch in toolMap, got %v", toolMap)
+	if vars.Tools[0].GoogleSearch == nil {
+		t.Errorf("expected googleSearch in first tool, got %+v", vars.Tools[0])
 	}
 
 	// 第二个工具必须是 googleMaps
-	toolMap2, ok := tools[1].(map[string]any)
-	if !ok {
-		t.Fatalf("second tool is not a map: %v", tools[1])
-	}
-	if _, ok := toolMap2["googleMaps"]; !ok {
-		t.Errorf("expected googleMaps in second tool, got %v", toolMap2)
+	if vars.Tools[1].GoogleMaps == nil {
+		t.Errorf("expected googleMaps in second tool, got %+v", vars.Tools[1])
 	}
 }
 
-func TestBuildGeminiVariables_WebSearchWithFunction(t *testing.T) {
+func TestBuildGeminiVariablesTyped_WebSearchWithFunction(t *testing.T) {
 	// 测试场景 2：同时传入 function 声明与 googleSearch → 追加共存，函数声明不丢失
 	geminiReq := &GeminiRequest{
 		Contents: []Content{{Role: "user", Parts: []Part{{Text: "hello"}}}},
@@ -64,34 +54,24 @@ func TestBuildGeminiVariables_WebSearchWithFunction(t *testing.T) {
 		t.Fatalf("expected 1 combined tool, got %d", len(geminiReq.Tools))
 	}
 
-	vars := BuildGeminiVariables("gemini-3.6-flash", geminiReq, nil)
-	tools, ok := vars["tools"].([]any)
-	if !ok || len(tools) != 2 {
-		t.Fatalf("expected 2 tools (function+search 共存, 追加 maps) in vars, got %v", vars["tools"])
+	vars := BuildGeminiVariablesTyped("gemini-3.6-flash", geminiReq, nil)
+	if vars == nil || len(vars.Tools) != 2 {
+		t.Fatalf("expected 2 tools (function+search 共存, 追加 maps) in vars, got %v", vars.Tools)
 	}
 
-	toolMap, ok := tools[0].(map[string]any)
-	if !ok {
-		t.Fatalf("tool is not a map: %v", tools[0])
+	if vars.Tools[0].GoogleSearch == nil {
+		t.Errorf("expected googleSearch in tool[0], got %+v", vars.Tools[0])
 	}
-
-	if _, ok := toolMap["googleSearch"]; !ok {
-		t.Errorf("expected googleSearch in toolMap, got %v", toolMap)
-	}
-	if _, ok := toolMap["functionDeclarations"]; !ok {
-		t.Errorf("expected functionDeclarations in toolMap, got %v", toolMap)
+	if len(vars.Tools[0].FunctionDeclarations) != 1 {
+		t.Errorf("expected functionDeclarations in tool[0], got %+v", vars.Tools[0])
 	}
 
 	// 第二个工具必须是 googleMaps（追加项不含其它字段）
-	toolMap2, ok := tools[1].(map[string]any)
-	if !ok {
-		t.Fatalf("second tool is not a map: %v", tools[1])
+	if vars.Tools[1].GoogleMaps == nil {
+		t.Errorf("expected googleMaps in second tool, got %+v", vars.Tools[1])
 	}
-	if _, ok := toolMap2["googleMaps"]; !ok {
-		t.Errorf("expected googleMaps in second tool, got %v", toolMap2)
-	}
-	if _, ok := toolMap2["functionDeclarations"]; ok {
-		t.Errorf("appended tool must not carry functionDeclarations, got %v", toolMap2)
+	if len(vars.Tools[1].FunctionDeclarations) != 0 {
+		t.Errorf("appended tool must not carry functionDeclarations, got %+v", vars.Tools[1])
 	}
 }
 

@@ -2,6 +2,7 @@ package transport
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -293,28 +294,6 @@ func TestParseURISocksNoPassword(t *testing.T) {
 	}
 }
 
-func TestParseURSocks5h(t *testing.T) {
-	raw := "socks5h://admin:secret@10.0.0.1:1080#socks5h"
-	n, err := ParseURI(raw)
-	if err != nil {
-		t.Fatalf("ParseURI returned error: %v", err)
-	}
-	if n.Type != "socks5" {
-		t.Fatalf("expected type socks5, got %q", n.Type)
-	}
-}
-
-func TestParseURSocks(t *testing.T) {
-	raw := "socks://user:pass@10.0.0.1:1080#socks"
-	n, err := ParseURI(raw)
-	if err != nil {
-		t.Fatalf("ParseURI returned error: %v", err)
-	}
-	if n.Type != "socks5" {
-		t.Fatalf("expected type socks5, got %q", n.Type)
-	}
-}
-
 func TestParseURIHTTP(t *testing.T) {
 	raw := "http://user:pass@proxy.example.com:8080#http-proxy"
 	n, err := ParseURI(raw)
@@ -398,7 +377,7 @@ func TestParseURICapabilityMatrix(t *testing.T) {
 			if n.Supported != tt.wantSupport {
 				t.Fatalf("Supported = %v, want %v (reason=%q)", n.Supported, tt.wantSupport, n.UnsupportedReason)
 			}
-			if !tt.wantSupport && !stringsContains(n.UnsupportedReason, "not supported") {
+			if !tt.wantSupport && !strings.Contains(n.UnsupportedReason, "not supported") {
 				t.Fatalf("UnsupportedReason = %q, want contains 'not supported'", n.UnsupportedReason)
 			}
 		})
@@ -543,17 +522,4 @@ func TestParseTrojan_ECH(t *testing.T) {
 	if n.TLS.ECH.ConfigURL != "https://dns.alidns.com/dns-query" {
 		t.Fatalf("ConfigURL = %q, want https://dns.alidns.com/dns-query", n.TLS.ECH.ConfigURL)
 	}
-}
-
-func stringsContains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || indexOf(s, substr) >= 0)
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

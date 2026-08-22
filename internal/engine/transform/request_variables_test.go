@@ -54,26 +54,7 @@ func TestBuildGeminiVariablesTyped_Basic(t *testing.T) {
 	}
 }
 
-func TestBuildGeminiVariables_Basic(t *testing.T) {
-	req := &GeminiRequest{
-		Contents: []Content{
-			{Role: "user", Parts: []Part{{Text: "hello"}}},
-		},
-	}
-	cfg := &dummyConfig{trailingFixEnabled: false}
-
-	vars := BuildGeminiVariables("gemini-1.5-flash", req, cfg)
-	if vars["model"] != "gemini-1.5-flash" {
-		t.Errorf("model=%v, want 'gemini-1.5-flash'", vars["model"])
-	}
-
-	contents, ok := vars["contents"].([]any)
-	if !ok || len(contents) != 1 {
-		t.Fatalf("invalid contents in vars: %v", vars["contents"])
-	}
-}
-
-func TestBuildGeminiVariables_MergeContiguousRoles(t *testing.T) {
+func TestBuildGeminiVariablesTyped_MergeContiguousRoles(t *testing.T) {
 	req := &GeminiRequest{
 		Contents: []Content{
 			{Role: "user", Parts: []Part{{Text: "part1"}}},
@@ -81,46 +62,42 @@ func TestBuildGeminiVariables_MergeContiguousRoles(t *testing.T) {
 			{Role: "model", Parts: []Part{{Text: "resp"}}},
 		},
 	}
-	vars := BuildGeminiVariables("gemini-pro", req, nil)
-	contents, ok := vars["contents"].([]any)
-	if !ok || len(contents) != 2 {
-		t.Fatalf("len(contents)=%d, want 2", len(contents))
+	vars := BuildGeminiVariablesTyped("gemini-pro", req, nil)
+	if len(vars.Contents) != 2 {
+		t.Fatalf("len(contents)=%d, want 2", len(vars.Contents))
 	}
 }
 
-func TestBuildGeminiVariables_FilterEmptyPartsAndContents(t *testing.T) {
+func TestBuildGeminiVariablesTyped_FilterEmptyPartsAndContents(t *testing.T) {
 	req := &GeminiRequest{
 		Contents: []Content{
 			{Role: "user", Parts: []Part{{Text: ""}, {Text: "valid"}}},
 			{Role: "model", Parts: []Part{{Text: ""}}},
 		},
 	}
-	vars := BuildGeminiVariables("gemini-pro", req, nil)
-	contents, ok := vars["contents"].([]any)
-	if !ok || len(contents) != 1 {
-		t.Fatalf("len(contents)=%d, want 1", len(contents))
+	vars := BuildGeminiVariablesTyped("gemini-pro", req, nil)
+	if len(vars.Contents) != 1 {
+		t.Fatalf("len(contents)=%d, want 1", len(vars.Contents))
 	}
 }
 
-func TestBuildGeminiVariables_SystemInstructionFallback(t *testing.T) {
+func TestBuildGeminiVariablesTyped_SystemInstructionFallback(t *testing.T) {
 	req := &GeminiRequest{
 		SystemInstruction: &Content{Role: "system", Parts: []Part{{Text: "you are helpful"}}},
 		Contents: []Content{
 			{Role: "model", Parts: []Part{{Text: "prior model output"}}},
 		},
 	}
-	vars := BuildGeminiVariables("gemini-pro", req, nil)
-	contents, ok := vars["contents"].([]any)
-	if !ok || len(contents) != 2 {
-		t.Fatalf("len(contents)=%d, want 2", len(contents))
+	vars := BuildGeminiVariablesTyped("gemini-pro", req, nil)
+	if len(vars.Contents) != 2 {
+		t.Fatalf("len(contents)=%d, want 2", len(vars.Contents))
 	}
-	first := contents[0].(map[string]any)
-	if first["role"] != "user" {
-		t.Errorf("first content role=%v, want 'user'", first["role"])
+	if vars.Contents[0].Role != "user" {
+		t.Errorf("first content role=%v, want 'user'", vars.Contents[0].Role)
 	}
 }
 
-func TestBuildGeminiVariables_TrailingModelFix(t *testing.T) {
+func TestBuildGeminiVariablesTyped_TrailingModelFix(t *testing.T) {
 	req := &GeminiRequest{
 		Contents: []Content{
 			{Role: "user", Parts: []Part{{Text: "hi"}}},
@@ -132,24 +109,21 @@ func TestBuildGeminiVariables_TrailingModelFix(t *testing.T) {
 		trailingFixModels:  []string{"gemini-2.0-flash"},
 	}
 
-	vars := BuildGeminiVariables("gemini-2.0-flash", req, cfg)
-	contents, ok := vars["contents"].([]any)
-	if !ok || len(contents) != 3 {
-		t.Fatalf("len(contents)=%d, want 3", len(contents))
+	vars := BuildGeminiVariablesTyped("gemini-2.0-flash", req, cfg)
+	if len(vars.Contents) != 3 {
+		t.Fatalf("len(contents)=%d, want 3", len(vars.Contents))
 	}
 
-	last := contents[len(contents)-1].(map[string]any)
-	if last["role"] != "user" {
-		t.Errorf("last role=%v, want 'user'", last["role"])
+	last := vars.Contents[len(vars.Contents)-1]
+	if last.Role != "user" {
+		t.Errorf("last role=%v, want 'user'", last.Role)
 	}
-	parts := last["parts"].([]any)
-	p0 := parts[0].(map[string]any)
-	if p0["text"] != "继续" {
-		t.Errorf("p0 text=%v, want '继续'", p0["text"])
+	if len(last.Parts) == 0 || last.Parts[0].Text != "继续" {
+		t.Errorf("p0 text=%v, want '继续'", last.Parts)
 	}
 }
 
-func TestBuildGeminiVariables_ToolsNativeSchema(t *testing.T) {
+func TestBuildGeminiVariablesTyped_ToolsNativeSchema(t *testing.T) {
 	req := &GeminiRequest{
 		Contents: []Content{
 			{Role: "user", Parts: []Part{{Text: "read file"}}},
@@ -176,30 +150,19 @@ func TestBuildGeminiVariables_ToolsNativeSchema(t *testing.T) {
 		},
 	}
 
-	vars := BuildGeminiVariables("gemini-3.6-flash", req, nil)
-	tools, ok := vars["tools"].([]any)
-	if !ok || len(tools) != 1 {
-		t.Fatalf("expected 1 tool in vars, got %v", vars["tools"])
+	vars := BuildGeminiVariablesTyped("gemini-3.6-flash", req, nil)
+	if vars == nil || len(vars.Tools) != 1 {
+		t.Fatalf("expected 1 tool in vars, got %v", vars.Tools)
 	}
 
-	toolMap, ok := tools[0].(map[string]any)
+	decls := vars.Tools[0].FunctionDeclarations
+	if len(decls) != 1 {
+		t.Fatalf("expected 1 functionDeclaration, got %v", decls)
+	}
+
+	paramsMap, ok := decls[0].Parameters.(map[string]any)
 	if !ok {
-		t.Fatalf("tool not a map: %v", tools[0])
-	}
-
-	decls, ok := toolMap["functionDeclarations"].([]any)
-	if !ok || len(decls) != 1 {
-		t.Fatalf("expected 1 functionDeclaration, got %v", toolMap["functionDeclarations"])
-	}
-
-	declMap, ok := decls[0].(map[string]any)
-	if !ok {
-		t.Fatalf("decl not a map: %v", decls[0])
-	}
-
-	paramsMap, ok := declMap["parameters"].(map[string]any)
-	if !ok {
-		t.Fatalf("parameters not a map: %v", declMap["parameters"])
+		t.Fatalf("parameters not a map: %v", decls[0].Parameters)
 	}
 
 	// Verify uppercase enum for UI type
@@ -228,7 +191,7 @@ func TestBuildGeminiVariables_ToolsNativeSchema(t *testing.T) {
 	}
 }
 
-func TestBuildGeminiVariables_HistoryThoughtSignatureInjection(t *testing.T) {
+func TestBuildGeminiVariablesTyped_HistoryThoughtSignatureInjection(t *testing.T) {
 	req := &GeminiRequest{
 		Contents: []Content{
 			{Role: "user", Parts: []Part{{Text: "Find files"}}},
@@ -257,39 +220,27 @@ func TestBuildGeminiVariables_HistoryThoughtSignatureInjection(t *testing.T) {
 		},
 	}
 
-	vars := BuildGeminiVariables("gemini-3.6-flash", req, nil)
-	contents, ok := vars["contents"].([]any)
-	if !ok || len(contents) != 3 {
-		t.Fatalf("expected 3 contents, got %v", len(contents))
+	vars := BuildGeminiVariablesTyped("gemini-3.6-flash", req, nil)
+	if vars == nil || len(vars.Contents) != 3 {
+		t.Fatalf("expected 3 contents, got %v", len(vars.Contents))
 	}
 
-	modelTurn, ok := contents[1].(map[string]any)
-	if !ok || modelTurn["role"] != "model" {
-		t.Fatalf("expected model turn at index 1, got %v", contents[1])
+	modelTurn := vars.Contents[1]
+	if modelTurn.Role != "model" {
+		t.Fatalf("expected model turn at index 1, got %v", modelTurn.Role)
 	}
 
-	parts, ok := modelTurn["parts"].([]any)
-	if !ok || len(parts) != 1 {
-		t.Fatalf("expected 1 part in model turn, got %v", modelTurn["parts"])
+	if len(modelTurn.Parts) != 1 {
+		t.Fatalf("expected 1 part in model turn, got %v", len(modelTurn.Parts))
 	}
 
-	p0, ok := parts[0].(map[string]any)
-	if !ok {
-		t.Fatalf("p0 not a map: %v", parts[0])
-	}
-
-	sig, ok := p0["thoughtSignature"].(string)
-	if !ok || sig == "" {
-		t.Fatalf("thoughtSignature missing or empty in history model functionCall part: %v", p0)
-	}
-
-	// Verify the sentinel is base64 encoded and non-empty
-	if len(sig) == 0 {
-		t.Errorf("expected non-empty thoughtSignature, got %q", sig)
+	p0 := modelTurn.Parts[0]
+	if p0.ThoughtSignature == "" {
+		t.Fatalf("thoughtSignature missing or empty in history model functionCall part: %+v", p0)
 	}
 }
 
-func TestBuildGeminiVariables_ToolResponseIsolation(t *testing.T) {
+func TestBuildGeminiVariablesTyped_ToolResponseIsolation(t *testing.T) {
 	geminiReq := &GeminiRequest{
 		Contents: []Content{
 			{Role: "user", Parts: []Part{{Text: "Find files"}}},
@@ -299,61 +250,54 @@ func TestBuildGeminiVariables_ToolResponseIsolation(t *testing.T) {
 		},
 	}
 
-	vars := BuildGeminiVariables("gemini-3.6-flash", geminiReq, nil)
-	contents, ok := vars["contents"].([]any)
-	if !ok {
-		t.Fatalf("contents in vars is not []any")
+	vars := BuildGeminiVariablesTyped("gemini-3.6-flash", geminiReq, nil)
+	if vars == nil {
+		t.Fatal("vars should not be nil")
 	}
 
 	// 验证 4 个独立的 content 节点 (user -> model -> user(functionResponse) -> user(follow-up text))
-	if len(contents) != 4 {
-		t.Fatalf("len(contents)=%d, want 4 (functionResponse must NOT be merged with follow-up user text)", len(contents))
+	if len(vars.Contents) != 4 {
+		t.Fatalf("len(contents)=%d, want 4 (functionResponse must NOT be merged with follow-up user text)", len(vars.Contents))
 	}
 
 	// 节点 2: tool response Content
-	toolContent, ok := contents[2].(map[string]any)
-	if !ok || toolContent["role"] != "user" {
-		t.Fatalf("content[2] role=%v, want 'user'", toolContent["role"])
+	toolContent := vars.Contents[2]
+	if toolContent.Role != "user" {
+		t.Fatalf("content[2] role=%v, want 'user'", toolContent.Role)
 	}
-	toolParts, ok := toolContent["parts"].([]any)
-	if !ok || len(toolParts) != 1 {
-		t.Fatalf("len(toolParts)=%d, want 1", len(toolParts))
+	if len(toolContent.Parts) != 1 {
+		t.Fatalf("len(toolParts)=%d, want 1", len(toolContent.Parts))
 	}
-	pTool, ok := toolParts[0].(map[string]any)
+	pTool := toolContent.Parts[0]
+	fr := pTool.FunctionResponse
+	if fr == nil {
+		t.Fatalf("missing functionResponse in pTool: %+v", pTool)
+	}
+	if fr.Name != "glob" {
+		t.Errorf("functionResponse.name=%v, want 'glob'", fr.Name)
+	}
+	respMap, ok := fr.Response.(map[string]any)
 	if !ok {
-		t.Fatalf("pTool not a map")
-	}
-	fr, ok := pTool["functionResponse"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing functionResponse in pTool: %v", pTool)
-	}
-	if fr["name"] != "glob" {
-		t.Errorf("functionResponse.name=%v, want 'glob'", fr["name"])
-	}
-	respMap, ok := fr["response"].(map[string]any)
-	if !ok {
-		t.Fatalf("functionResponse.response must be a map, got %T (%v)", fr["response"], fr["response"])
+		t.Fatalf("functionResponse.response must be a map, got %T (%v)", fr.Response, fr.Response)
 	}
 	if _, hasResult := respMap["result"]; !hasResult && len(respMap) == 0 {
 		t.Errorf("functionResponse.response map is empty")
 	}
 
 	// 节点 3: follow-up user Content
-	userContent, ok := contents[3].(map[string]any)
-	if !ok || userContent["role"] != "user" {
-		t.Fatalf("content[3] role=%v, want 'user'", userContent["role"])
+	userContent := vars.Contents[3]
+	if userContent.Role != "user" {
+		t.Fatalf("content[3] role=%v, want 'user'", userContent.Role)
 	}
-	userParts, ok := userContent["parts"].([]any)
-	if !ok || len(userParts) != 1 {
-		t.Fatalf("len(userParts)=%d, want 1", len(userParts))
+	if len(userContent.Parts) != 1 {
+		t.Fatalf("len(userParts)=%d, want 1", len(userContent.Parts))
 	}
-	pUser, ok := userParts[0].(map[string]any)
-	if !ok || pUser["text"] != "Analyze main.go" {
-		t.Errorf("content[3] part text=%v, want 'Analyze main.go'", pUser["text"])
+	if userContent.Parts[0].Text != "Analyze main.go" {
+		t.Errorf("content[3] part text=%v, want 'Analyze main.go'", userContent.Parts[0].Text)
 	}
 }
 
-func TestBuildGeminiVariables_MultipleParallelToolResponsesMerged(t *testing.T) {
+func TestBuildGeminiVariablesTyped_MultipleParallelToolResponsesMerged(t *testing.T) {
 	geminiReq := &GeminiRequest{
 		Contents: []Content{
 			{Role: "user", Parts: []Part{{Text: "Find and read files"}}},
@@ -369,10 +313,9 @@ func TestBuildGeminiVariables_MultipleParallelToolResponsesMerged(t *testing.T) 
 		},
 	}
 
-	vars := BuildGeminiVariables("gemini-3.6-flash", geminiReq, nil)
-	contents, ok := vars["contents"].([]any)
-	if !ok {
-		t.Fatalf("contents in vars is not []any")
+	vars := BuildGeminiVariablesTyped("gemini-3.6-flash", geminiReq, nil)
+	if vars == nil {
+		t.Fatal("vars should not be nil")
 	}
 
 	// 期望 4 个 Content 节点：
@@ -380,51 +323,40 @@ func TestBuildGeminiVariables_MultipleParallelToolResponsesMerged(t *testing.T) 
 	// 1: model (2 functionCalls)
 	// 2: user (2 functionResponses 合并到同一个 Content 中！)
 	// 3: user ("Analyze the content" 隔离保持独立)
-	if len(contents) != 4 {
-		t.Fatalf("len(contents)=%d, want 4 (multiple consecutive functionResponses MUST be merged into 1 Content)", len(contents))
+	if len(vars.Contents) != 4 {
+		t.Fatalf("len(contents)=%d, want 4 (multiple consecutive functionResponses MUST be merged into 1 Content)", len(vars.Contents))
 	}
 
-	toolContent, ok := contents[2].(map[string]any)
-	if !ok || toolContent["role"] != "user" {
-		t.Fatalf("content[2] role=%v, want 'user'", toolContent["role"])
+	toolContent := vars.Contents[2]
+	if toolContent.Role != "user" {
+		t.Fatalf("content[2] role=%v, want 'user'", toolContent.Role)
 	}
-	toolParts, ok := toolContent["parts"].([]any)
-	if !ok || len(toolParts) != 2 {
-		t.Fatalf("len(toolParts)=%d, want 2 (both tool responses merged into 1 turn)", len(toolParts))
+	if len(toolContent.Parts) != 2 {
+		t.Fatalf("len(toolParts)=%d, want 2 (both tool responses merged into 1 turn)", len(toolContent.Parts))
 	}
 
 	// 校验第 1 个 part 是 glob
-	p0, ok := toolParts[0].(map[string]any)
-	if !ok {
-		t.Fatalf("toolParts[0] not a map")
-	}
-	fr0, ok := p0["functionResponse"].(map[string]any)
-	if !ok || fr0["name"] != "glob" {
-		t.Errorf("fr0 name=%v, want 'glob'", fr0["name"])
+	fr0 := toolContent.Parts[0].FunctionResponse
+	if fr0 == nil || fr0.Name != "glob" {
+		t.Errorf("fr0 name=%v, want 'glob'", fr0)
 	}
 
 	// 校验第 2 个 part 是 read
-	p1, ok := toolParts[1].(map[string]any)
-	if !ok {
-		t.Fatalf("toolParts[1] not a map")
-	}
-	fr1, ok := p1["functionResponse"].(map[string]any)
-	if !ok || fr1["name"] != "read" {
-		t.Errorf("fr1 name=%v, want 'read'", fr1["name"])
+	fr1 := toolContent.Parts[1].FunctionResponse
+	if fr1 == nil || fr1.Name != "read" {
+		t.Errorf("fr1 name=%v, want 'read'", fr1)
 	}
 
 	// 校验 follow-up user text 节点 3 独立存在
-	userContent, ok := contents[3].(map[string]any)
-	if !ok || userContent["role"] != "user" {
-		t.Fatalf("content[3] role=%v, want 'user'", userContent["role"])
+	userContent := vars.Contents[3]
+	if userContent.Role != "user" {
+		t.Fatalf("content[3] role=%v, want 'user'", userContent.Role)
 	}
-	userParts, ok := userContent["parts"].([]any)
-	if !ok || len(userParts) != 1 {
-		t.Fatalf("len(userParts)=%d, want 1", len(userParts))
+	if len(userContent.Parts) != 1 {
+		t.Fatalf("len(userParts)=%d, want 1", len(userContent.Parts))
 	}
-	pUser, ok := userParts[0].(map[string]any)
-	if !ok || pUser["text"] != "Analyze the content" {
-		t.Errorf("content[3] part text=%v, want 'Analyze the content'", pUser["text"])
+	if userContent.Parts[0].Text != "Analyze the content" {
+		t.Errorf("content[3] part text=%v, want 'Analyze the content'", userContent.Parts[0].Text)
 	}
 }
 
@@ -604,17 +536,6 @@ func TestBuildGeminiVariablesTyped_EmptyRoleMergeOrder(t *testing.T) {
 		if c.Role != "user" {
 			t.Errorf("content[%d] role should be 'user', got %q", i, c.Role)
 		}
-	}
-}
-
-func TestBuildGeminiVariables_Defaults(t *testing.T) {
-	req := &GeminiRequest{
-		Contents: []Content{{Role: "user", Parts: []Part{{Text: "hello"}}}},
-	}
-	vars := BuildGeminiVariables("gemini-3.6-flash", req, nil)
-	modelVal, _ := vars["model"].(string)
-	if modelVal != "gemini-3.6-flash" {
-		t.Errorf("Model=%q, want 'gemini-3.6-flash'", modelVal)
 	}
 }
 

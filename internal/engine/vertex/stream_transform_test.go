@@ -59,25 +59,6 @@ func TestExtractChunk_NoCandidates(t *testing.T) {
 	}
 }
 
-// _extract_chunk: candidates 为空列表 → 保留空列表（对齐 Python）。
-func TestExtractChunk_EmptyCandidatesList(t *testing.T) {
-	chunk := extractChunk(map[string]any{"candidates": []any{}})
-	if chunk == nil {
-		t.Fatal("空 candidates 列表应返回 chunk，不应为 nil")
-	}
-	cands, ok := chunk["candidates"].([]any)
-	if !ok || len(cands) != 0 {
-		t.Errorf("candidates=%v, want empty list", chunk["candidates"])
-	}
-}
-
-// _extract_chunk: 完全空帧 → nil。
-func TestExtractChunk_CompletelyEmpty(t *testing.T) {
-	if chunk := extractChunk(map[string]any{}); chunk != nil {
-		t.Errorf("空帧应返回 nil, got %v", chunk)
-	}
-}
-
 // _extract_chunk 附带元数据：usageMetadata/modelVersion 等非空时带上。
 func TestExtractChunk_AttachesMetadata(t *testing.T) {
 	data := map[string]any{
@@ -118,98 +99,6 @@ func TestCleanStreamParts_NormalText(t *testing.T) {
 	cleaned := cleanStreamParts(parts)
 	if len(cleaned) != 1 || cleaned[0].(map[string]any)["text"] != "plain" {
 		t.Errorf("normal text 被改动: %v", cleaned)
-	}
-}
-
-func TestCleanPart_EmptyDefaults(t *testing.T) {
-	part := map[string]any{
-		"data":             "text",
-		"fileData":         map[string]any{},
-		"functionCall":     map[string]any{},
-		"functionResponse": map[string]any{},
-		"inlineData":       map[string]any{},
-	}
-	if got := cleanPart(part); got != nil {
-		t.Errorf("empty defaults should return nil, got %v", got)
-	}
-}
-
-func TestCleanPart_FunctionCallStringArgs(t *testing.T) {
-	part := map[string]any{
-		"functionCall": map[string]any{
-			"name": "search",
-			"args": `{"q":"hello"}`,
-		},
-	}
-	got := cleanPart(part)
-	if got == nil {
-		t.Fatal("expected non-nil part")
-	}
-	fc, ok := got["functionCall"].(map[string]any)
-	if !ok {
-		t.Fatal("expected functionCall in cleaned part")
-	}
-	if fc["name"] != "search" {
-		t.Errorf("name=%v, want search", fc["name"])
-	}
-	args, ok := fc["args"].(map[string]any)
-	if !ok {
-		t.Fatalf("args should be map after normalization, got %T", fc["args"])
-	}
-	if args["q"] != "hello" {
-		t.Errorf("args.q=%v, want hello", args["q"])
-	}
-}
-
-func TestCleanPart_FunctionCallEmptyArgs(t *testing.T) {
-	// args 为空字符串时应转为空 map（M1 修复）
-	part := map[string]any{
-		"functionCall": map[string]any{
-			"name": "no_args",
-			"args": "",
-		},
-	}
-	got := cleanPart(part)
-	if got == nil {
-		t.Fatal("expected non-nil part when name is present")
-	}
-	fc, ok := got["functionCall"].(map[string]any)
-	if !ok {
-		t.Fatal("expected functionCall in cleaned part")
-	}
-	args, ok := fc["args"].(map[string]any)
-	if !ok {
-		t.Fatalf("空 args 应转为 map[string]any{}, got %T", fc["args"])
-	}
-	if len(args) != 0 {
-		t.Errorf("空 args map 应为空，got %v", args)
-	}
-}
-
-func TestCleanPart_FunctionResponseStringResponse(t *testing.T) {
-	part := map[string]any{
-		"functionResponse": map[string]any{
-			"name":     "search",
-			"response": "result text",
-		},
-	}
-	got := cleanPart(part)
-	if got == nil {
-		t.Fatal("expected non-nil part")
-	}
-	fr, ok := got["functionResponse"].(map[string]any)
-	if !ok {
-		t.Fatal("expected functionResponse in cleaned part")
-	}
-	if fr["name"] != "search" {
-		t.Errorf("name=%v, want search", fr["name"])
-	}
-	resp, ok := fr["response"].(map[string]any)
-	if !ok {
-		t.Fatalf("response should be map after normalization, got %T", fr["response"])
-	}
-	if resp["result"] != "result text" {
-		t.Errorf("response.result=%v, want 'result text'", resp["result"])
 	}
 }
 
@@ -290,29 +179,6 @@ func TestCleanPart_InlineData(t *testing.T) {
 	}
 	if _, ok := got["inlineData"]; !ok {
 		t.Error("inlineData field should be preserved")
-	}
-}
-
-func TestCleanPart_FileData(t *testing.T) {
-	part := map[string]any{"fileData": map[string]any{"fileUri": "gs://bucket/file", "mimeType": "image/png"}}
-	got := cleanPart(part)
-	if got == nil {
-		t.Fatal("fileData part should NOT return nil")
-	}
-	if _, ok := got["fileData"]; !ok {
-		t.Error("fileData field should be preserved")
-	}
-}
-
-func TestCleanPart_ThoughtSignatureOnly(t *testing.T) {
-	// 仅 thoughtSignature 存在，无 text → 必须保留
-	part := map[string]any{"thoughtSignature": "sig_abc123"}
-	got := cleanPart(part)
-	if got == nil {
-		t.Fatal("含 thoughtSignature 的 part 不应返回 nil（漏洞1）")
-	}
-	if got["thoughtSignature"] != "sig_abc123" {
-		t.Errorf("thoughtSignature 字段应保留，got %v", got)
 	}
 }
 

@@ -495,14 +495,18 @@ func TestNormalizeSSMethod(t *testing.T) {
 }
 
 func TestBuildShadowsocks_PlainCredentials(t *testing.T) {
-	uris := []string{
-		"ss://chacha20-poly1305:password@example.com:443",
-		"ss://aes-256-gcm:password@example.com:443",
+	tests := []struct {
+		uri        string
+		wantPwd    string
+		wantMethod string
+	}{
+		{"ss://chacha20-poly1305:password@example.com:443", "password", "chacha20-ietf-poly1305"},
+		{"ss://aes-256-gcm:password@example.com:443", "password", "aes-256-gcm"},
 	}
-	for _, uri := range uris {
-		ob, err := buildOutbound(uri)
+	for _, tt := range tests {
+		ob, err := buildOutbound(tt.uri)
 		if err != nil {
-			t.Fatalf("buildOutbound(%q) unexpected error: %v", uri, err)
+			t.Fatalf("buildOutbound(%q) unexpected error: %v", tt.uri, err)
 		}
 		if ob.Type != C.TypeShadowsocks {
 			t.Fatalf("type = %v, want %v", ob.Type, C.TypeShadowsocks)
@@ -511,20 +515,12 @@ func TestBuildShadowsocks_PlainCredentials(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected ShadowsocksOutboundOptions, got %T", ob.Options)
 		}
-		if opts.Password != "password" {
-			t.Fatalf("password = %q, want %q", opts.Password, "password")
+		if opts.Password != tt.wantPwd {
+			t.Fatalf("password = %q, want %q", opts.Password, tt.wantPwd)
 		}
-	}
-}
-
-func TestBuildShadowsocks_PlainMethodNormalized(t *testing.T) {
-	ob, err := buildOutbound("ss://chacha20-poly1305:password@example.com:443")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	opts := ob.Options.(*option.ShadowsocksOutboundOptions)
-	if opts.Method != "chacha20-ietf-poly1305" {
-		t.Fatalf("method = %q, want chacha20-ietf-poly1305", opts.Method)
+		if opts.Method != tt.wantMethod {
+			t.Fatalf("method = %q, want %q", opts.Method, tt.wantMethod)
+		}
 	}
 }
 
@@ -565,38 +561,40 @@ func TestBuildSOCKS4_VersionPassthrough(t *testing.T) {
 	}
 }
 
-func TestBuildSSH_Params(t *testing.T) {
-	ob, err := buildOutbound("ssh://tunnel:secret@203.0.113.9:2222?pk=QUJDRA%3D%3D&psk=pp")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if ob.Type != C.TypeSSH {
-		t.Fatalf("type = %v, want %v", ob.Type, C.TypeSSH)
-	}
-	opts := ob.Options.(*option.SSHOutboundOptions)
-	if opts.User != "tunnel" || opts.Password != "secret" {
-		t.Fatalf("expected user/pass, got %q/%q", opts.User, opts.Password)
-	}
-	if len(opts.PrivateKey) != 1 || opts.PrivateKey[0] != "QUJDRA==" {
-		t.Fatalf("expected private key passthrough, got %#v", opts.PrivateKey)
-	}
-	if opts.PrivateKeyPassphrase != "pp" {
-		t.Fatalf("expected passphrase pp, got %q", opts.PrivateKeyPassphrase)
-	}
-}
+func TestBuildSSH(t *testing.T) {
+	t.Run("with params and pk", func(t *testing.T) {
+		ob, err := buildOutbound("ssh://tunnel:secret@203.0.113.9:2222?pk=QUJDRA%3D%3D&psk=pp")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ob.Type != C.TypeSSH {
+			t.Fatalf("type = %v, want %v", ob.Type, C.TypeSSH)
+		}
+		opts := ob.Options.(*option.SSHOutboundOptions)
+		if opts.User != "tunnel" || opts.Password != "secret" {
+			t.Fatalf("expected user/pass, got %q/%q", opts.User, opts.Password)
+		}
+		if len(opts.PrivateKey) != 1 || opts.PrivateKey[0] != "QUJDRA==" {
+			t.Fatalf("expected private key passthrough, got %#v", opts.PrivateKey)
+		}
+		if opts.PrivateKeyPassphrase != "pp" {
+			t.Fatalf("expected passphrase pp, got %q", opts.PrivateKeyPassphrase)
+		}
+	})
 
-func TestBuildSSH_PasswordOnly(t *testing.T) {
-	ob, err := buildOutbound("ssh://root@203.0.113.9:22")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	opts := ob.Options.(*option.SSHOutboundOptions)
-	if opts.User != "root" || opts.Password != "" {
-		t.Fatalf("expected user root with empty password, got %q/%q", opts.User, opts.Password)
-	}
-	if len(opts.PrivateKey) != 0 {
-		t.Fatalf("expected no private key, got %#v", opts.PrivateKey)
-	}
+	t.Run("password only", func(t *testing.T) {
+		ob, err := buildOutbound("ssh://root@203.0.113.9:22")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		opts := ob.Options.(*option.SSHOutboundOptions)
+		if opts.User != "root" || opts.Password != "" {
+			t.Fatalf("expected user root with empty password, got %q/%q", opts.User, opts.Password)
+		}
+		if len(opts.PrivateKey) != 0 {
+			t.Fatalf("expected no private key, got %#v", opts.PrivateKey)
+		}
+	})
 }
 
 func TestBuildHTTP_NoPassword(t *testing.T) {

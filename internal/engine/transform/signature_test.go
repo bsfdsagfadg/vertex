@@ -136,7 +136,7 @@ func TestSignatureApplyContents_NormalizesToBase64(t *testing.T) {
 	}
 }
 
-func TestBuildGeminiVariables_AppliesSignaturesInBuildVariables(t *testing.T) {
+func TestBuildGeminiVariablesTyped_AppliesSignaturesInBuildVariables(t *testing.T) {
 	gem := &GeminiRequest{
 		Contents: []Content{
 			{Role: "user", Parts: []Part{{Text: "check weather"}}},
@@ -149,26 +149,23 @@ func TestBuildGeminiVariables_AppliesSignaturesInBuildVariables(t *testing.T) {
 		},
 	}
 
-	vars := BuildGeminiVariables("gemini-2.5-flash", gem, nil)
-	contents, ok := vars["contents"].([]any)
-	if !ok || len(contents) != 3 {
-		t.Fatalf("contents 长度 = %d，want 3", len(contents))
+	vars := BuildGeminiVariablesTyped("gemini-2.5-flash", gem, nil)
+	if vars == nil || len(vars.Contents) != 3 {
+		t.Fatalf("contents 长度 = %d，want 3", len(vars.Contents))
 	}
-	// 第二个回合是 model：functionCall part 必须在 BuildGeminiVariables 后携带哨兵签名
-	modelTurn := contents[1].(map[string]any)
-	modelParts := modelTurn["parts"].([]any)
-	if len(modelParts) != 1 {
-		t.Fatalf("model 回合预期 1 个 part，got %v", modelParts)
+	// 第二个回合是 model：functionCall part 必须在 BuildGeminiVariablesTyped 后携带哨兵签名
+	modelTurn := vars.Contents[1]
+	if len(modelTurn.Parts) != 1 {
+		t.Fatalf("model 回合预期 1 个 part，got %v", modelTurn.Parts)
 	}
-	p0 := modelParts[0].(map[string]any)
-	if p0["thoughtSignature"] != wantSentinelBase64 {
-		t.Errorf("model 回合 functionCall 签名应为 base64 哨兵，got %v", p0["thoughtSignature"])
+	p0 := modelTurn.Parts[0]
+	if p0.ThoughtSignature != wantSentinelBase64 {
+		t.Errorf("model 回合 functionCall 签名应为 base64 哨兵，got %v", p0.ThoughtSignature)
 	}
 	// functionResponse 回合必须无签名
-	frTurn := contents[2].(map[string]any)
-	frParts := frTurn["parts"].([]any)
-	p2 := frParts[0].(map[string]any)
-	if sig, exists := p2["thoughtSignature"]; exists && sig != "" {
-		t.Errorf("functionResponse part 不应带签名，got %v", sig)
+	frTurn := vars.Contents[2]
+	p2 := frTurn.Parts[0]
+	if p2.ThoughtSignature != "" {
+		t.Errorf("functionResponse part 不应带签名，got %v", p2.ThoughtSignature)
 	}
 }
