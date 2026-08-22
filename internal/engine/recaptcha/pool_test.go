@@ -35,8 +35,6 @@ func TestTokenPoolNoCache(t *testing.T) {
 		t.Fatalf("Expected 2 fetch calls (no cache), got %d", calls)
 	}
 
-	// Invalidate 为空操作，不影响后续抓取
-	p.Invalidate()
 	tok3, err := p.GetTokenShared(context.Background())
 	if err != nil || tok3 != "tok-3" {
 		t.Fatalf("Expected tok-3, got tok=%q err=%v", tok3, err)

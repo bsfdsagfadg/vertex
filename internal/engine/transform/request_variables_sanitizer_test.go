@@ -5,65 +5,6 @@ import (
 	"testing"
 )
 
-func TestPrepareNativeSafetySettings(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    []SafetySetting
-		expected []SafetySetting
-	}{
-		{
-			name:     "Nil input",
-			input:    nil,
-			expected: nil,
-		},
-		{
-			name:     "Empty input",
-			input:    []SafetySetting{},
-			expected: nil,
-		},
-		{
-			name: "Spaces and lowercases normalization",
-			input: []SafetySetting{
-				{
-					Category:  " harm_category_hate_speech ",
-					Threshold: "block_none",
-				},
-				{
-					Category:  "HARM_CATEGORY_HARASSMENT",
-					Threshold: " block_medium_and_above ",
-				},
-				{
-					Category:  " harm_category_jailbreak ",
-					Threshold: "block_medium_and_above",
-				},
-			},
-			expected: []SafetySetting{
-				{
-					Category:  "HARM_CATEGORY_HATE_SPEECH",
-					Threshold: "BLOCK_NONE",
-				},
-				{
-					Category:  "HARM_CATEGORY_HARASSMENT",
-					Threshold: "BLOCK_MEDIUM_AND_ABOVE",
-				},
-				{
-					Category:  "HARM_CATEGORY_JAILBREAK",
-					Threshold: "BLOCK_MEDIUM_AND_ABOVE",
-				},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := prepareNativeSafetySettings(tt.input)
-			if !reflect.DeepEqual(got, tt.expected) {
-				t.Errorf("prepareNativeSafetySettings() = %v, want %v", got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestPrepareNativeGenerationConfig_ThinkingLevel(t *testing.T) {
 	tests := []struct {
 		name     string

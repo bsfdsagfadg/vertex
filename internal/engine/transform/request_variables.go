@@ -238,25 +238,6 @@ func prepareNativeToolConfig(tc *ToolConfig) *ToolConfig {
 	return tc
 }
 
-// prepareNativeSafetySettings 规范化 SafetySettings 中的 Category 与 Threshold 枚举为全大写并去除首尾空格。
-func prepareNativeSafetySettings(settings []SafetySetting) []SafetySetting {
-	if len(settings) == 0 {
-		return nil
-	}
-	out := make([]SafetySetting, 0, len(settings))
-	for _, s := range settings {
-		cat := strings.ToUpper(strings.TrimSpace(s.Category))
-		out = append(out, SafetySetting{
-			Category:  cat,
-			Threshold: strings.ToUpper(strings.TrimSpace(s.Threshold)),
-		})
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
 // prepareNativeGenerationConfig 规范化 GenerationConfig 中的枚举字段（MediaResolution, ThinkingLevel, ResponseModalities）。
 func prepareNativeGenerationConfig(gc *GenerationConfig) *GenerationConfig {
 	if gc == nil {

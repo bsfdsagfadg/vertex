@@ -8,7 +8,7 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/infra/cli"
 )
 
-// executePipelineChat 执行各家族统一的非流式 CompleteChatTyped Pipeline 生命周期。
+// executePipelineChat 执行各家族统一的非流式 CompleteChat Pipeline 生命周期。
 func (h *handler) executePipelineChat(ctx context.Context, resolved *transform.ResolvedModel, req *transform.GeminiRequest) (*transform.GeminiResponse, *vertex.VertexError) {
 	strategy := resolved.Strategy
 	strategy.Enhance(req, h.cfg)
@@ -18,7 +18,7 @@ func (h *handler) executePipelineChat(ctx context.Context, resolved *transform.R
 	strategy.Prepare(req)
 
 	cli.UpdateReqModel(vertex.RequestIDFromContext(ctx), resolved.ActualModel)
-	resp, err := h.vc.CompleteChatTyped(ctx, resolved.ActualModel, req, strategy)
+	resp, err := h.vc.CompleteChat(ctx, resolved.ActualModel, req, strategy)
 	if err != nil {
 		return nil, toVertexError(err)
 	}
@@ -42,7 +42,7 @@ func (h *handler) ExecuteTextStream(ctx context.Context, resolved *transform.Res
 	strategy.Prepare(req)
 
 	cli.UpdateReqModel(vertex.RequestIDFromContext(ctx), resolved.ActualModel)
-	h.vc.StreamChatTyped(ctx, resolved.ActualModel, req, func(ch vertex.StreamChunkTyped) bool {
+	h.vc.StreamChat(ctx, resolved.ActualModel, req, func(ch vertex.StreamChunk) bool {
 		if ch.Err != nil {
 			return onChunk(nil, ch.Err)
 		}

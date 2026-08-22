@@ -183,7 +183,7 @@ func parseBudgetToLevelEnum(budget int) string {
 // fixedSafetySettings4OFF 返回固定 4 类别 × OFF 的安全设置基座（单一事实源）。
 // 类别与顺序严格对齐官方清单（logs/LLM模型参数清单.txt / logs/image模型参数清单.txt）：
 // HATE_SPEECH → DANGEROUS_CONTENT → SEXUALLY_EXPLICIT → HARASSMENT。
-// 固定列表已为大写规范枚举，无需再经 prepareNativeSafetySettings 规范化。
+// 固定列表已为大写规范枚举，无需再做规范化。
 func fixedSafetySettings4OFF() []SafetySetting {
 	return []SafetySetting{
 		{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "OFF"},

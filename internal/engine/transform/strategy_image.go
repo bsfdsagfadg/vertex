@@ -31,7 +31,7 @@ func (s *ImageStrategy) FamilyStreamMode() StreamMode { return StreamModeAggrega
 //
 // 本方法只做"默认值填充 + 归一/降级"，白名单清洗（Tools/SafetySettings）统一由 BuildVariables 唯一处理。
 func (s *ImageStrategy) Enhance(req *GeminiRequest, cfg config.ConfigProvider) {
-	spec := GetImageModelSpec(s.model)
+	spec := ImageSpecFor(s.model)
 
 	gc := req.GenerationConfig
 	if gc == nil {
@@ -135,7 +135,7 @@ func (s *ImageStrategy) BuildVariables(model string, req *GeminiRequest, cfg con
 		req = &GeminiRequest{}
 	}
 
-	spec := GetImageModelSpec(model)
+	spec := ImageSpecFor(model)
 
 	// 2. 内容部分：清理角色并过滤空内容
 	contents := sanitizeContentRolesTyped(req.Contents)

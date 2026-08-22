@@ -141,14 +141,9 @@ func ImageSpecFor(model string) ImageModelSpec {
 	}
 }
 
-// GetImageModelSpec 获取指定图模型的白名单规格（保留为 ImageSpecFor 的兼容包装函数）。
-func GetImageModelSpec(model string) ImageModelSpec {
-	return ImageSpecFor(model)
-}
-
 // ImageSizeAllowedFor 模型是否支持某档位。
 func ImageSizeAllowedFor(model, tier string) bool {
-	spec := GetImageModelSpec(model)
+	spec := ImageSpecFor(model)
 	return spec.SupportedSizes[tier]
 }
 
@@ -163,7 +158,7 @@ func IsImageModel(model string) bool {
 
 // AspectRatioAllowedFor 模型是否支持某比例。
 func AspectRatioAllowedFor(model, ratio string) bool {
-	spec := GetImageModelSpec(model)
+	spec := ImageSpecFor(model)
 	return spec.SupportedRatios[ratio]
 }
 

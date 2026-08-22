@@ -34,10 +34,6 @@ func NewTokenPoolCustom(fetch func(proxyURI string) (string, error)) *TokenPool 
 	return &TokenPool{fetch: fetch}
 }
 
-// Invalidate 为兼容保留的空操作：30 秒全局缓存已移除，
-// 每次 GetTokenShared 都会实时抓取最新 token，无需主动失效。
-func (p *TokenPool) Invalidate() {}
-
 // FetchTokenWithSession 在既有 Session 上执行 anchor→reload 校验
 // （admin 节点测速路径的消费入口，委托共享核心实现）。
 func (p *TokenPool) FetchTokenWithSession(ctx context.Context, sess *transport.Session) (string, error) {
