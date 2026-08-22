@@ -8,8 +8,8 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/infra/cli"
 )
 
-// ExecuteTextComplete 执行文本/语言模型非流式 Complete 生成。
-func (h *handler) ExecuteTextComplete(ctx context.Context, resolved *transform.ResolvedModel, req *transform.GeminiRequest) (*transform.GeminiResponse, *vertex.VertexError) {
+// executePipelineChat 执行各家族统一的非流式 CompleteChatTyped Pipeline 生命周期。
+func (h *handler) executePipelineChat(ctx context.Context, resolved *transform.ResolvedModel, req *transform.GeminiRequest) (*transform.GeminiResponse, *vertex.VertexError) {
 	strategy := resolved.Strategy
 	strategy.Enhance(req, h.cfg)
 	if err := strategy.Validate(req); err != nil {
@@ -24,6 +24,11 @@ func (h *handler) ExecuteTextComplete(ctx context.Context, resolved *transform.R
 	}
 	transform.CleanFinishReasonUnspecified(resp)
 	return resp, nil
+}
+
+// ExecuteTextComplete 执行文本/语言模型非流式 Complete 生成。
+func (h *handler) ExecuteTextComplete(ctx context.Context, resolved *transform.ResolvedModel, req *transform.GeminiRequest) (*transform.GeminiResponse, *vertex.VertexError) {
+	return h.executePipelineChat(ctx, resolved, req)
 }
 
 // ExecuteTextStream 执行文本/语言模型原生真流式 Stream 生成。

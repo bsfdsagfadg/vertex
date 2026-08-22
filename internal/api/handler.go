@@ -57,6 +57,21 @@ func (h *handler) dialer() transport.ProxyDialer {
 	return h.deps.Dialer
 }
 
+// checkNodeSupport 解析并检查节点是否受支持；若不支持或解析失败，返回对应的错误描述。
+func (h *handler) checkNodeSupport(rawURI string) (supported bool, reason string, pn *transport.ParsedNode) {
+	pn, perr := h.deps.IR.GetOrParse(rawURI)
+	if perr != nil || pn == nil || !pn.Supported {
+		reason = "parse failed"
+		if perr != nil {
+			reason = "parse failed: " + perr.Error()
+		} else if pn != nil {
+			reason = "unsupported: " + pn.UnsupportedReason
+		}
+		return false, reason, pn
+	}
+	return true, "", pn
+}
+
 func (h *handler) decodeAdminBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	if r.Body == nil {
 		writeJSON(w, http.StatusBadRequest, adminErr("请求体为空 (empty body)"))

@@ -61,14 +61,8 @@ func (adm *AdminHandler) adminImportProxyNode(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	pn, perr := adm.deps.IR.GetOrParse(raw)
-	if perr != nil || pn == nil || !pn.Supported {
-		reason := "parse failed"
-		if perr != nil {
-			reason = "parse failed: " + perr.Error()
-		} else if pn != nil {
-			reason = "unsupported: " + pn.UnsupportedReason
-		}
+	supported, reason, pn := adm.checkNodeSupport(raw)
+	if !supported {
 		writeJSON(w, http.StatusBadRequest, adminErr(reason))
 		return
 	}
@@ -214,14 +208,7 @@ func (adm *AdminHandler) adminTestProxyNode(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), 2*timeout+2*time.Second)
 	defer cancel()
 
-	pn, perr := adm.deps.IR.GetOrParse(body.RawURI)
-	if perr != nil || pn == nil || !pn.Supported {
-		reason := "parse failed"
-		if perr != nil {
-			reason = "parse failed: " + perr.Error()
-		} else if pn != nil {
-			reason = "unsupported: " + pn.UnsupportedReason
-		}
+	if supported, reason, _ := adm.checkNodeSupport(body.RawURI); !supported {
 		log.Printf("[Admin] [TestProxyNode] 跳过前置代理测试 %s: %s", transport.RedactURI(body.RawURI), reason)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": false, "elapsed_ms": 0, "error": reason,

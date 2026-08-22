@@ -150,14 +150,7 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 					return
 				}
 				// capability 早检查：不支持/解析失败的节点直接标为失败并禁用，记录真实错误原因
-				pn, perr := adm.deps.IR.GetOrParse(node.RawURI)
-				if perr != nil || pn == nil || !pn.Supported {
-					reason := "parse failed"
-					if perr != nil {
-						reason = "parse failed: " + perr.Error()
-					} else if pn != nil {
-						reason = "unsupported: " + pn.UnsupportedReason
-					}
+				if supported, reason, _ := adm.checkNodeSupport(node.RawURI); !supported {
 					log.Printf("[Admin] [TestAll] 节点 %s (%s) 协议不支持或解析失败，标记禁用: %s", node.Name, node.Type, reason)
 					adm.deps.Exit.RecordTest(node.RawURI, false, 0, reason)
 					adm.deps.Exit.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
@@ -256,14 +249,7 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// capability 早检查：不支持/解析失败的节点直接标为失败并禁用，记录真实错误原因
-	pn, perr := adm.deps.IR.GetOrParse(body.RawURI)
-	if perr != nil || pn == nil || !pn.Supported {
-		reason := "parse failed"
-		if perr != nil {
-			reason = "parse failed: " + perr.Error()
-		} else if pn != nil {
-			reason = "unsupported: " + pn.UnsupportedReason
-		}
+	if supported, reason, _ := adm.checkNodeSupport(body.RawURI); !supported {
 		log.Printf("[Admin] [TestNode] 节点 %s 协议不支持或解析失败，标记禁用: %s", adm.deps.Exit.NodeName(body.RawURI), reason)
 		adm.deps.Exit.RecordTest(body.RawURI, false, 0, reason)
 		adm.deps.Exit.BatchUpdateNodesDisabled([]string{body.RawURI}, true)
