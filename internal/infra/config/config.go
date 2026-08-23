@@ -130,13 +130,13 @@ func WriteSettings(updates map[string]any) error {
 		raw[k] = v
 	}
 
-	// 拦截并在面板保存配置时限制并发上限为 20
-	if val, ok := raw["parallel_pool_size"].(float64); ok && val > 20 {
-		log.Printf("[Config] 面板设置并发数过高 (%v)，已强制保存为上限 20", val)
-		raw["parallel_pool_size"] = 20
-	} else if val, ok2 := raw["parallel_pool_size"].(int); ok2 && val > 20 { //nolint:govet
-		log.Printf("[Config] 面板设置并发数过高 (%v)，已强制保存为上限 20", val)
-		raw["parallel_pool_size"] = 20
+	// 拦截并在面板保存配置时限制并发上限为 100
+	if val, ok := raw["parallel_pool_size"].(float64); ok && val > 100 {
+		log.Printf("[Config] 面板设置并发数过高 (%v)，已强制保存为上限 100", val)
+		raw["parallel_pool_size"] = 100
+	} else if val, ok2 := raw["parallel_pool_size"].(int); ok2 && val > 100 { //nolint:govet
+		log.Printf("[Config] 面板设置并发数过高 (%v)，已强制保存为上限 100", val)
+		raw["parallel_pool_size"] = 100
 	}
 
 	if err := writeJSONFile(path, raw); err != nil {
@@ -180,10 +180,10 @@ func Load() AppConfig {
 		if errUnm := json.Unmarshal(data, &cfg); errUnm != nil { //nolint:govet
 			log.Printf("[Config] 解析 config.json 失败: %v", err)
 		} else {
-			// 拦截在文件读取配置时过高的并发数限制为 20
-			if cfg.ParallelPoolSize > 20 {
-				log.Printf("[Config] 警告: 并发数配置过高 (%d)，已强制限制为上限 20", cfg.ParallelPoolSize)
-				cfg.ParallelPoolSize = 20
+			// 拦截在文件读取配置时过高的并发数限制为 100
+			if cfg.ParallelPoolSize > 100 {
+				log.Printf("[Config] 警告: 并发数配置过高 (%d)，已强制限制为上限 100", cfg.ParallelPoolSize)
+				cfg.ParallelPoolSize = 100
 			}
 			if cfg.DefaultImageSize == "" {
 				cfg.DefaultImageSize = "1K"
