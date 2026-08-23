@@ -56,22 +56,18 @@ func (c *VertexAIClient) StreamChat(ctx context.Context, model string, req *tran
 		strategy = transform.SharedModelFamilyRouter().For(model)
 	}
 	// L1 透传层：单候选一次尝试，原样上报真实错误（不重试、不分类、不转换）。
-	// 每轮独立建连 + 独立取 token；首帧已交付后断流时对错误标 Truncated（Committed 语义）。
+	// 每轮独立建连 + 独立取 token（两者并行执行，见 prepareCandidate）；
+	// 首帧已交付后断流时对错误标 Truncated（Committed 语义）。
 	op := func(ctx context.Context, proxyURI string) <-chan StreamChunk {
 		ch := make(chan StreamChunk, 64)
 		go func() {
 			defer close(ch)
-			sess, err := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, RequestIDFromContext(ctx))
+			sess, tok, err := c.prepareCandidate(ctx, proxyURI)
 			if err != nil {
-				ch <- StreamChunk{Err: NewInternalError("create session: "+err.Error(), nil)}
+				ch <- StreamChunk{Err: err}
 				return
 			}
 			defer sess.Close()
-			tok, err := c.pool.GetTokenShared(ctx)
-			if err != nil || tok == "" {
-				ch <- StreamChunk{Err: NewRecaptchaUnavailableError("Could not fetch recaptcha token", err)}
-				return
-			}
 			var contentYielded bool
 			emit := func(chunk *transform.GeminiChunk) bool {
 				if strategy.IsValidChunk(chunk) {

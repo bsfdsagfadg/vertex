@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/engine/recaptcha"
@@ -69,6 +70,74 @@ func (c *VertexAIClient) nodePool() NodePool {
 		return nopNodePool{}
 	}
 	return c.nodes
+}
+
+// prepareCandidate 并行执行候选启动前置准备：出口建联与 rT 抓取互不依赖
+// （rT 抓取内部自建临时会话，从不复用候选连接），关键路径由 T建联+T取rT
+// 收敛为 max(T建联, T取rT)。裁决语义见 joinPrepared。
+//
+// 取消语义无条件最优先：join 后若 ctx 已取消（含取消发生在两任务执行期间），
+// 无论建联/抓取结果如何一律丢弃并上浮取消错误——防止请求死亡时的资源类错误
+// 被误判为 infra/FailFast 扭曲竞速终局；失败路径上已建成的会话就地关闭，
+// 临时 sing-box 实例绝不泄漏。
+func (c *VertexAIClient) prepareCandidate(ctx context.Context, proxyURI string) (*transport.Session, string, *VertexError) {
+	sess, tok, sessErr, tokErr := runPrepareTasks(
+		func() (*transport.Session, error) {
+			return c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, RequestIDFromContext(ctx))
+		},
+		func() (string, error) {
+			return c.pool.GetTokenShared(ctx)
+		},
+	)
+
+	if err := ctx.Err(); err != nil {
+		if sess != nil {
+			sess.Close()
+		}
+		return nil, "", NewContextError(err)
+	}
+	return joinPrepared(sess, sessErr, tok, tokErr)
+}
+
+// runPrepareTasks 并发调度两组互不依赖的前置任务并等待双双完成。
+// 只负责并发编排与汇合，不做任何错误取舍（裁决见 joinPrepared）；
+// 独立成函数以便以受控桩做确定性的并行性测试。
+func runPrepareTasks(
+	sessFn func() (*transport.Session, error),
+	tokFn func() (string, error),
+) (sess *transport.Session, tok string, sessErr error, tokErr error) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		sess, sessErr = sessFn()
+	}()
+	go func() {
+		defer wg.Done()
+		tok, tokErr = tokFn()
+	}()
+	wg.Wait()
+	return
+}
+
+// joinPrepared 对并行完成的结果做错误裁决（纯函数，矩阵可穷举单测）：
+//  1. rT 失败或为空 → RecaptchaUnavailableError（infra：流式下触发 FailFast 尽早终局；
+//     双失败时同样由 rT 错误胜出，省去无谓候选消耗）；
+//  2. 仅会话失败 → InternalError（internal：仅该候选出局，其余候选照常竞争）；
+//  3. 全部成功 → 会话与 token 原样移交调用方（Close 责任随之转移）。
+//
+// 任一失败路径上已建成的会话在返回前负责关闭。
+func joinPrepared(sess *transport.Session, sessErr error, tok string, tokErr error) (*transport.Session, string, *VertexError) {
+	if tokErr != nil || tok == "" {
+		if sess != nil {
+			sess.Close()
+		}
+		return nil, "", NewRecaptchaUnavailableError("Could not fetch recaptcha token", tokErr)
+	}
+	if sessErr != nil {
+		return nil, "", NewInternalError("create session: "+sessErr.Error(), nil)
+	}
+	return sess, tok, nil
 }
 
 // getBatchGraphqlURL 每次动态读取配置密钥（cfg 经 SIGHUP 缓存失效热重载），

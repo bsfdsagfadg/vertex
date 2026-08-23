@@ -69,20 +69,16 @@ func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, req *tr
 }
 
 // runSingleCandidate 执行单候选单次尝试（L1 透传层非流式版）：
-// 单次建连 + 取 token + 单次 attempt，原样上报真实错误。
+// 并行建联 + 取 token（见 prepareCandidate）+ 单次 attempt，原样上报真实错误。
 func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, req *transform.GeminiRequest, proxyURI string, strategy transform.ModelStrategy) (*transform.GeminiResponse, error) {
 	var chunks []*transform.GeminiChunk
 	var validChunkCount int
-	sess, err := c.net.CreateSession(sessionTimeoutFromContext(ctx, 180), proxyURI, RequestIDFromContext(ctx))
+	sess, tok, err := c.prepareCandidate(ctx, proxyURI)
 	if err != nil {
-		return nil, NewInternalError("create session: "+err.Error(), nil)
+		return nil, err
 	}
 	defer sess.Close()
-	tok, err := c.pool.GetTokenShared(ctx)
-	if err != nil || tok == "" {
-		return nil, NewRecaptchaUnavailableError("Could not fetch recaptcha token", err)
-	}
-	err = withRTFirstTryCompensation(ctx, func() error {
+	attemptErr := withRTFirstTryCompensation(ctx, func() error {
 		return c.executeStreamingAttempt(ctx, sess, model, req, tok, func(chunk *transform.GeminiChunk) bool {
 			if chunk == nil {
 				return true
@@ -94,17 +90,17 @@ func (c *VertexAIClient) runSingleCandidate(ctx context.Context, model string, r
 			return true
 		}, strategy)
 	})
-	if err != nil {
-		return nil, NormalizeError(err)
+	if attemptErr != nil {
+		return nil, NormalizeError(attemptErr)
 	}
 	if validChunkCount == 0 {
 		return nil, NewEmptyResponseError("Upstream returned no valid content", nil)
 	}
 
 	result := collectChunksToParseResultTyped(chunks)
-	resp, err := c.buildCompleteResponseTyped(result)
-	if err != nil {
-		return nil, err
+	resp, buildErr := c.buildCompleteResponseTyped(result)
+	if buildErr != nil {
+		return nil, buildErr
 	}
 
 	// 发往上游的 payload 恒由三家族 BuildVariables 经 BuildSafetySettingsTyped 注入 4×OFF
