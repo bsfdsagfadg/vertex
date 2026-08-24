@@ -95,26 +95,6 @@ func (m *Manager) saveNodesUnsafe() {
 	}
 }
 
-func (m *Manager) saveHealthUnsafe() {
-	rows := make([]nodestore.HealthRow, 0, len(m.healthMap))
-	for uri, h := range m.healthMap {
-		rows = append(rows, nodestore.HealthRow{
-			RawURI:              uri,
-			SuccessCount:        h.SuccessCount,
-			FailCount:           h.FailCount,
-			ConsecutiveFailures: h.ConsecutiveFailures,
-			LastTestMs:          h.LastTestMs,
-			LastTestError:       h.LastTestError,
-			LastSuccessAt:       h.LastSuccessAt,
-			LastFailAt:          h.LastFailAt,
-			CooldownUntil:       h.CooldownUntil,
-		})
-	}
-	if err := nodestore.SaveHealth(m.database, "node_health", rows); err != nil {
-		log.Printf("[Nodes] 保存健康度失败: %v", err)
-	}
-}
-
 func (m *Manager) pruneHealthUnsafe() {
 	nodeKeys := make(map[string]bool, len(m.nodeList))
 	for _, n := range m.nodeList {
@@ -151,25 +131,9 @@ func (m *Manager) MergeNodes(newNodes []Node) {
 	m.saveNodesUnsafe()
 }
 
+// DeleteNode 删除指定 URI 的出口节点（委托 BatchDeleteNodes 统一编排）。
 func (m *Manager) DeleteNode(uri string) {
-	m.mu.Lock()
-	m.ensureLoaded()
-	var kept []Node
-	for _, n := range m.nodeList {
-		if n.RawURI != uri {
-			kept = append(kept, n)
-		}
-	}
-	m.nodeList = kept
-	delete(m.healthMap, uri)
-	m.rebuildNodeNameMapUnsafe()
-	m.saveNodesUnsafe()
-	m.saveHealthUnsafe()
-	hooks := m.hooks
-	m.mu.Unlock() // 必须先解锁，避免底层的销毁回调查找节点名称时发生死锁
-	if hooks.InvalidateParsed != nil {
-		hooks.InvalidateParsed([]string{uri})
-	}
+	m.BatchDeleteNodes([]string{uri})
 }
 
 // filterNodesUnsafe 按 keep 谓词过滤节点池并清理被移除节点的健康度，返回被移除 URI 列表。

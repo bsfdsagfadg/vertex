@@ -18,13 +18,6 @@ func ErrToStr(err error) string {
 	return err.Error()
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func decodeSubBase64(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	s = strings.ReplaceAll(s, "\r", "")
