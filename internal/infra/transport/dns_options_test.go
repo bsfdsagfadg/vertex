@@ -80,6 +80,16 @@ func TestDNSOptionsForNode(t *testing.T) {
 			wantNil: true,
 		},
 		{
+			name:    "DoH端口越界",
+			uri:     "vless://" + uuid + "@example.com:443?security=tls&ech=cloudflare-ech.com%2Bhttps%3A%2F%2Fdns.alidns.com%3A70000%2Fdns-query",
+			wantNil: true,
+		},
+		{
+			name:    "DoH端口为0",
+			uri:     "vless://" + uuid + "@example.com:443?security=tls&ech=cloudflare-ech.com%2Bhttps%3A%2F%2Fdns.alidns.com%3A0%2Fdns-query",
+			wantNil: true,
+		},
+		{
 			name:    "nil节点",
 			uri:     "",
 			wantNil: true,

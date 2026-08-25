@@ -23,9 +23,10 @@ const defaultBootstrapDNS = "223.5.5.5"
 //   - 附加 UDP bootstrap（223.5.5.5 公共 DNS，直连解析 DoH 服务器域名，杜绝自查询循环与本地污染）；
 //   - DoH URL 的 path 与 query 原样透传（带 token 等参数的私有 DoH 可正常工作）；
 //   - DoH 服务器为 IP 时返回 nil（无法携带 SNI，TLS 证书校验必然失败）；
+//   - DoH 端口越界时返回 nil（uint16 截断会静默指向错误端口）；
 //   - Final 指向 DoH、Strategy 固定 prefer_ipv4。
 //
-// 返回 nil 的四种情况：节点为 nil / 无 TLS / TLS 未启用 / DoH 地址非法（非 https、host 为空或为 IP）。
+// 返回 nil 的四种情况：节点为 nil / 无 TLS / TLS 未启用 / DoH 地址非法（非 https、host 为空、为 IP 或端口越界）。
 func dnsOptionsForNode(n *ParsedNode) *option.DNSOptions {
 	if n == nil || n.TLS == nil || !n.TLS.Enabled {
 		return nil
@@ -42,7 +43,10 @@ func dnsOptionsForNode(n *ParsedNode) *option.DNSOptions {
 	if port == "" {
 		port = "443"
 	}
-	portNum, _ := strconv.Atoi(port)
+	portNum, convErr := strconv.Atoi(port)
+	if convErr != nil || portNum < 1 || portNum > 65535 {
+		return nil
+	}
 	path := u.Path
 	if path == "" || path == "/" {
 		path = "/dns-query"
