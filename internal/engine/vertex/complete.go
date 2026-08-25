@@ -2,10 +2,8 @@ package vertex
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/engine/transform"
 )
@@ -20,52 +18,25 @@ func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, req *tr
 	if strategy == nil {
 		strategy = transform.SharedModelFamilyRouter().For(model)
 	}
-	// L3 预算循环：整批重试 max_retries 次（总轮数 max_retries+1），仅 Transient 退避重试。
-	// 非流式无部分交付（不标 Truncated），中途断流只是候选失败，交预算循环处置。
-	totalRounds := c.cfg.MaxRetries() + 1
-	var bestErr error
 	run := func(ctx context.Context, proxyURI string) (*transform.GeminiResponse, error) {
 		return c.runSingleCandidate(ctx, model, req, proxyURI, strategy)
 	}
-	for round := 1; round <= totalRounds; round++ {
-		timeoutSec := c.cfg.RequestTimeoutSeconds()
-		if timeoutSec <= 0 {
-			timeoutSec = 180
-		}
-		roundTimeout := time.Duration(timeoutSec) * time.Second
-		roundCtx, roundCancel := context.WithTimeout(ctx, roundTimeout)
-
-		resp, err := RunRace(roundCtx, c.nodePool(), c.cfg, run,
-			WithWinningCheck(func(resp *transform.GeminiResponse) bool {
-				return candidateFinishTyped(resp) == "STOP" && strategy.IsValidResponse(resp)
-			}), WithCollectedFinalizer(func(results []raceResult[*transform.GeminiResponse]) (*transform.GeminiResponse, error) {
-				cr := make([]candidateResult, len(results))
-				for i, r := range results {
-					cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
-				}
-				return pickBestResult(cr, strategy)
-			}))
-		if err == nil {
-			roundCancel()
-			return resp, nil
-		}
-		roundCancel()
-		if ctx.Err() != nil {
-			return nil, NormalizeError(ctx.Err())
-		}
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			err = NewNetworkError(err)
-		}
-		bestErr = pickBestError([]error{bestErr, err})
-		retry, backoff := retryableAndBudgetLeft(err, round, totalRounds, ctx)
-		if !retry {
-			break
-		}
-		if sleepErr := sleepCtx(ctx, backoff); sleepErr != nil {
-			break
-		}
+	// 非流式无部分交付（不标 Truncated），中途断流只是候选失败，由窗口引擎补位承接；
+	// 补位、发射预算与 FailFast 门禁均由 RunRace 内部自治。
+	resp, err := RunRace(ctx, c.nodePool(), c.cfg, run,
+		WithWinningCheck(func(resp *transform.GeminiResponse) bool {
+			return candidateFinishTyped(resp) == "STOP" && strategy.IsValidResponse(resp)
+		}), WithCollectedFinalizer(func(results []raceResult[*transform.GeminiResponse]) (*transform.GeminiResponse, error) {
+			cr := make([]candidateResult, len(results))
+			for i, r := range results {
+				cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
+			}
+			return pickBestResult(cr, strategy)
+		}))
+	if err != nil {
+		return nil, NormalizeError(err)
 	}
-	return nil, NormalizeError(bestErr)
+	return resp, nil
 }
 
 // runSingleCandidate 执行单候选单次尝试（L1 透传层非流式版）：

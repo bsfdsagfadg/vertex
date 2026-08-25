@@ -132,10 +132,10 @@ func scanStream(ctx context.Context, body io.Reader, onObject func(raw []byte) (
 					buffer = buffer[endIdx+1:]
 					scanPos = 0
 
-					// 畸形完整帧：花括号配平但 JSON 语法非法 → 可重试的上游协议错误
+					// 畸形完整帧：花括号配平但 JSON 语法非法 → 可补位的上游协议错误
 					// （不能静默跳过，否则流末尾会误报空响应）。错误带稳定前缀、
 					// 截断预览与长度，不泄漏完整超长 payload；归为 network 类以便
-					// 上层按 MaxRetries 重试（ClassifyBatch()==Transient）。
+					// 窗口引擎视作候选失败并立即换点补位（ClassifyBatch()==Transient）。
 					if !json.Valid(jsonStr) {
 						return NewNetworkError(fmt.Errorf("streamScan: invalid JSON object from upstream (protocol error), raw_len=%d, preview=%s",
 							len(jsonStr), truncateStr(string(jsonStr), 200)))

@@ -164,7 +164,19 @@ type tierCandidate struct {
 	inFlight int32
 }
 
+// SelectForParallel 按健康分层严格选点：Tier 2 亚健康节点处于 429 冷却期时被跳过。
 func (m *Manager) SelectForParallel(k int, debugMode bool) []Node {
+	return m.selectForParallelCore(k, debugMode, false)
+}
+
+// SelectForParallelRelaxed 宽松选点：忽略 CooldownUntil 冷却（冷却只是保护措施，
+// 竞速引擎在严格通道供给不足的非常时期按优先级强行补位）。
+// Disabled 节点仍然排除；Tier 排序、InFlight/LastSelectedAt 权衡与 Phase 3 保护逻辑与严格路径一致。
+func (m *Manager) SelectForParallelRelaxed(k int, debugMode bool) []Node {
+	return m.selectForParallelCore(k, debugMode, true)
+}
+
+func (m *Manager) selectForParallelCore(k int, debugMode bool, ignoreCooldown bool) []Node {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ensureLoaded()
@@ -276,7 +288,7 @@ func (m *Manager) SelectForParallel(k int, debugMode bool) []Node {
 			for l := 0; l < len(group) && len(selected) < k; l++ {
 				idx := (offset + l) % len(group)
 				h := m.healthMap[group[idx].node.RawURI]
-				if h != nil && h.CooldownUntil > now {
+				if !ignoreCooldown && h != nil && h.CooldownUntil > now {
 					continue
 				}
 				selected = append(selected, group[idx].node)
@@ -304,7 +316,7 @@ func (m *Manager) SelectForParallel(k int, debugMode bool) []Node {
 				}
 				continue
 			}
-			if h.CooldownUntil > now {
+			if !ignoreCooldown && h.CooldownUntil > now {
 				continue
 			}
 			if h.LastSelectedAt == 0 || now-h.LastSelectedAt >= 5 {
@@ -343,28 +355,6 @@ func (m *Manager) SelectForParallel(k int, debugMode bool) []Node {
 		log.Printf("[Nodes] 选择并行节点 (需求: %d, 实际: %d)", k, len(selected))
 	}
 	return selected
-}
-
-func (m *Manager) GetAverageLatency() float64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ensureLoaded()
-	var sum float64
-	var count int
-	for _, n := range m.nodeList {
-		if n.Disabled {
-			continue
-		}
-		h := m.healthMap[n.RawURI]
-		if h != nil && h.LastTestMs > 0 && h.CooldownUntil <= time.Now().Unix() {
-			sum += h.LastTestMs
-			count++
-		}
-	}
-	if count == 0 {
-		return 500.0
-	}
-	return sum / float64(count)
 }
 
 func (m *Manager) SortNodesByLatency() {

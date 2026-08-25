@@ -59,17 +59,17 @@ func (e *VertexError) WithTruncated() *VertexError {
 	return e
 }
 
-// BatchDisposition 是批次级重试裁决的四态分类。
+// BatchDisposition 是窗口竞速引擎的候选结果四态分类。
 type BatchDisposition int
 
 const (
-	// Committed 批次已向客户端输出内容，最高优先级透传真实原因，绝不重试。
+	// Committed 已向客户端输出内容，最高优先级透传真实原因，绝不补位。
 	Committed BatchDisposition = iota
-	// Transient 该候选瞬时失败，整批可退避重试。
+	// Transient 该候选瞬时失败，窗口引擎立即换点补位。
 	Transient
-	// FailFast 请求级硬错误，所有候选必败，首个即终止整批。
+	// FailFast 请求级硬错误，所有候选必败，首个即终止整个请求（剩余预算作废）。
 	FailFast
-	// Terminal 不可重试，但不禁杀其他候选（其他候选独立尝试可能成功）。
+	// Terminal 不禁杀请求：该候选失败照常补位，其他节点独立尝试可能成功。
 	Terminal
 )
 
@@ -124,7 +124,7 @@ func NewAuthenticationError(msg string, cause error) *VertexError {
 }
 
 // NewRecaptchaUnavailableError reCAPTCHA token 子系统不可用（GetTokenShared 穷尽重试后仍失败）。
-// Kind="infra" 归 FailFast：子系统整体挂了，所有候选都会在 rT 上失败，不浪费预算重试。
+// Kind="infra" 归 FailFast：子系统整体挂了，所有候选都会在 rT 上失败，补位是确定性浪费。
 // 替代旧实现把 rT 耗尽错塞进 auth 触发节点禁用的现状（infra 不归因节点）。
 func NewRecaptchaUnavailableError(msg string, cause error) *VertexError {
 	return &VertexError{Message: msg, Code: 502, Status: StatusUnavailable, Kind: "infra", cause: cause} //nolint:exhaustruct
@@ -172,7 +172,7 @@ func NewEmptyResponseError(msg string, cause error) *VertexError {
 }
 
 // NewNetworkError 包装网络抖动错误（连接超时、DNS 失败、TCP Reset 等）。
-// Code=502 避免上游网关误判；Kind="network" 触发 ClassifyBatch 持续重试。
+// Code=502 避免上游网关误判；Kind="network" 使窗口引擎视作可补位的候选失败。
 func NewNetworkError(err error) *VertexError {
 	return &VertexError{Message: err.Error(), Code: 502, Status: StatusUnavailable, Kind: "network", cause: err}
 }

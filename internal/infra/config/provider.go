@@ -24,7 +24,6 @@ type ConfigProvider interface {
 
 	ParallelPoolEnabled() bool
 	ParallelPoolSize() int
-	ParallelPoolDelayDynamic() bool
 	RecaptchaTryEntryOrDirect() bool
 	ActiveNodeURI() string
 
@@ -89,7 +88,6 @@ func (d dynamicConfig) SafetySettings() map[string]string {
 }
 func (d dynamicConfig) ParallelPoolEnabled() bool       { return Load().ParallelPoolEnabled }
 func (d dynamicConfig) ParallelPoolSize() int           { return Load().ParallelPoolSize }
-func (d dynamicConfig) ParallelPoolDelayDynamic() bool  { return Load().ParallelPoolDelayDynamic }
 func (d dynamicConfig) RecaptchaTryEntryOrDirect() bool { return Load().RecaptchaTryEntryOrDirect }
 func (d dynamicConfig) ActiveNodeURI() string           { return Load().ActiveNodeURI }
 func (d dynamicConfig) BackgroundImage() string         { return Load().BackgroundImage }

@@ -2,31 +2,16 @@ package vertex
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/bsfdsagfadg/vertex/internal/engine/transform"
 	"github.com/bsfdsagfadg/vertex/internal/infra/config"
 )
 
-// retryableAndBudgetLeft 是预算循环的共享重试决策：Transient 且预算未耗尽才退避重试。
-// ctx 取消、非 Transient、预算耗尽均返回不重试；退避统一 backoff(round)，不区分候选数。
-func retryableAndBudgetLeft(err error, round, totalRounds int, ctx context.Context) (bool, time.Duration) {
-	if ctx.Err() != nil {
-		return false, 0
-	}
-	ve := asVertexError(err)
-	if ve == nil || ve.ClassifyBatch() != Transient {
-		return false, 0
-	}
-	if round >= totalRounds {
-		return false, 0
-	}
-	return true, backoff(round)
-}
-
+// StreamParallel 是真流式路径的窗口竞速交付层：
+// 单次调用恒满窗口引擎（补位、预算、FailFast 早退均由 RunRace 内部自治），
+// 胜出后 drain winnerCh 逐帧 yield；无胜出者时收敛错误帧透传。
 func StreamParallel(ctx context.Context, pool NodePool, cfg config.ConfigProvider, model string,
 	op func(context.Context, string) <-chan StreamChunk,
 	yield func(StreamChunk) bool,
@@ -85,54 +70,23 @@ func StreamParallel(ctx context.Context, pool NodePool, cfg config.ConfigProvide
 		return rest, nil
 	}
 
-	// L3 预算循环：整批重试 max_retries 次（总轮数 max_retries+1），仅 Transient 退避重试。
-	// 胜出路径（含 Truncated 错误帧）直透传，绝不重试；FailFast/Terminal 立即 break。
-	totalRounds := cfg.MaxRetries() + 1
-	var bestErr error
-	for round := 1; round <= totalRounds; round++ {
-		log.Printf("[Vertex] [Dispatch] 发起请求 (Round %d/%d), 模型=%s, 请求ID=%s", round, totalRounds, model, RequestIDFromContext(ctx))
-		timeoutSec := cfg.RequestTimeoutSeconds()
-		if timeoutSec <= 0 {
-			timeoutSec = 180
-		}
-		roundTimeout := time.Duration(timeoutSec) * time.Second
-		roundCtx, roundCancel := context.WithTimeout(streamCtx, roundTimeout)
-
-		winnerCh, err := RunRace(roundCtx, pool, cfg, wrappedOp,
-			WithPreserveRaceCtxOnWin[<-chan StreamChunk](),
-			WithFailFastOnHardError[<-chan StreamChunk]())
-		if err == nil {
-			// 胜出（winnerCh 非 nil）：提交，不再重试
-			for chunk := range winnerCh {
-				if !yield(chunk) {
-					roundCancel()
-					streamCancel()
-					return
-				}
-			}
-			roundCancel()
-			return
-		}
-		roundCancel()
-		// 客户端取消/上下文超时静默早退，不产错误帧
+	log.Printf("[Vertex] [Dispatch] 发起窗口竞速请求, 模型=%s, 请求ID=%s", model, RequestIDFromContext(ctx))
+	winnerCh, err := RunRace(streamCtx, pool, cfg, wrappedOp,
+		WithPreserveRaceCtxOnWin[<-chan StreamChunk](),
+		WithFailFastOnHardError[<-chan StreamChunk]())
+	if err != nil {
+		// 客户端取消静默早退，不产错误帧
 		if streamCtx.Err() != nil {
 			return
 		}
-		// 本轮 roundCtx 超时或取消（但客户端未断）：归一化为 NetworkError (Transient)，以便下轮重试
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			err = NewNetworkError(err)
-		}
-		// RunRace 返回错误（无胜出者）
-		bestErr = pickBestError([]error{bestErr, err})
-		retry, backoff := retryableAndBudgetLeft(err, round, totalRounds, streamCtx)
-		if !retry {
-			break
-		}
-		if sleepErr := sleepCtx(streamCtx, backoff); sleepErr != nil {
-			break
+		yield(StreamChunk{Err: NormalizeError(err)})
+		log.Printf("[Vertex] [Dispatch] 窗口竞速失败收敛, 模型=%s, 请求ID=%s", model, RequestIDFromContext(ctx))
+		return
+	}
+	for chunk := range winnerCh {
+		if !yield(chunk) {
+			streamCancel()
+			return
 		}
 	}
-	// 预算耗尽或不可重试
-	yield(StreamChunk{Err: NormalizeError(bestErr)})
-	log.Printf("[Vertex] [Dispatch] 重试轮次耗尽 (%d 轮均失败), 请求ID=%s", totalRounds, RequestIDFromContext(ctx))
 }

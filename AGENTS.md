@@ -104,7 +104,7 @@
    - **文本家族**：实施同 Role 连续消息合并、空 Part 过滤、历史思维链签名注入、TrailingModelFix 与系统指令降级；
    - **生图/语音家族**：采用正向白名单参数提取，硬性清空无关 Tools / ThinkingConfig，杜绝跨家族变量污染。
 6. **强类型与零 map 往返铁律 (Strong Typing & Zero Map Roundtrip)**：核心领域业务层必须维持强类型 `struct` 传递（利用指针 + `omitempty` 杜绝脏数据污染），严禁退回 `map[string]any` 中转与 in-place 修改范式。
-7. **竞速引擎零模型感知铁律 (Model-Agnostic Race Engine)**：竞速引擎泛型化 (`RunRace[T]`)，零模型业务感知；响应有效性与动态超时判定退回下行阶段由各家族策略 (`CalculateIdleTimeouts`、`IsValidChunk` / `IsValidResponse`) 自治实施。
+7. **竞速引擎零模型感知铁律 (Model-Agnostic Race Engine)**：竞速引擎泛型化 (`RunRace[T]`)，恒满窗口补位模型（失败/非胜出收集即瞬时换点补位，发射预算 = `(max_retries+1)×并发数` 封顶，每候选独立超时），零模型业务感知；响应有效性与动态超时判定退回下行阶段由各家族策略 (`CalculateIdleTimeouts`、`IsValidChunk` / `IsValidResponse`) 自治实施。
 8. **统一错误内核与安全拦截放行铁律 (Unified Error & Safety Pass-through)**：上游响应通过 `errors.go` 归一化分类 (`NormalizeError`)。安全拦截等极性拦截报文予以结构化放行，确保客户端能准确识别安全拒绝原因而不会误判为网络崩溃。
 9. **显式装配与零包级状态铁律 (Explicit Assembly & Zero Package State)**：`cmd/vproxy/main.go` 为唯一组合根，全链路经构造函数显式注入装配（`db.Open` → `IRCache` → 出口/前置 Manager 实例（含 `Hooks`）→ `DialerDeps` → `VertexAIClient` → `ServerDeps`）。严禁包级函数指针变量、包级可变单例与全局注册表回归；跨域失效联动一律经 `Hooks` 结构体构造期注入。进程级单例仅限既定白名单类别（build 标签注入变量、TUI 状态、config 进程缓存、只读映射表等）。
 10. **消费方窄接口铁律 (Consumer-Side Narrow Interfaces)**：跨域抽象一律由**消费方定义接口、提供方实现、main 构造期注入**：vertex 的 `NodePool`、recaptcha 的 `NodeSource`、transport 的 `NodeNamer` / `EntrySource`、api 的 `ImportParser` / `TokenVerifier`。严禁提供方反向定义大而全接口，或绕过接口直接 import 跨域具体类型。

@@ -17,7 +17,7 @@ func TestRunRace_DeadlineExceeded_ReturnsBestErrorWhenFailedErrorsExist(t *testi
 	setupRaceNodes(t, "uri1", "uri2")
 	defer testNodes.Reset()
 
-	cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+	cfg := config.StaticProvider(raceTestConfig())
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 
@@ -74,7 +74,7 @@ func TestRunRace_ParentContextCanceled_ReturnsContextErrorOverFailedErrors(t *te
 	setupRaceNodes(t, "uri1", "uri2")
 	defer testNodes.Reset()
 
-	cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+	cfg := config.StaticProvider(raceTestConfig())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -128,7 +128,9 @@ func TestRunRace_ContextCanceled_PreservesCollectedResultsAndFailedErrors(t *tes
 		setupRaceNodes(t, "uri1", "uri2")
 		defer testNodes.Reset()
 
-		cfg := config.StaticProvider(raceTestConfig())
+		// 窗口=可用节点数（无富余预算）：两候选各跑恰好一发后收敛，
+		// 收集结果优先于 context 类失败。
+		cfg := config.StaticProvider(raceTestConfigSize(2))
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -222,7 +224,7 @@ func TestRunRace_FailuresAlwaysNormalizedToVertexError(t *testing.T) {
 	t.Run("FinalizeCollectedErrorNormalized", func(t *testing.T) {
 		setupRaceNodes(t, "uri1")
 		defer testNodes.Reset()
-		cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+		cfg := config.StaticProvider(raceTestConfig())
 
 		_, err := RunRace(context.Background(), testNodes, cfg, func(ctx context.Context, proxyURI string) (string, error) {
 			return "some-val", nil
@@ -241,7 +243,7 @@ func TestRunRace_FailuresAlwaysNormalizedToVertexError(t *testing.T) {
 	t.Run("FailFastGlobalHardErrorReturnsDirectly", func(t *testing.T) {
 		setupRaceNodes(t, "uri1", "uri2")
 		defer testNodes.Reset()
-		cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+		cfg := config.StaticProvider(raceTestConfig())
 
 		hardErr := NewInvalidArgumentError("invalid model argument", nil)
 		_, err := RunRace(context.Background(), testNodes, cfg, func(ctx context.Context, proxyURI string) (string, error) {

@@ -272,7 +272,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 
 // isAuthVerifyFail 判定 auth 错误是否为 rT 验证时序失败（"Failed to verify action" 或
 // "The caller does not have permission"）。这类失败在同一 token 静置 500ms 后重试一次
-// 即可成功（rT 时序补偿机制），其余 auth 错误（token 彻底失效）交由预算循环换 token 承接。
+// 即可成功（rT 时序补偿机制），其余 auth 错误（token 彻底失效）由窗口引擎换点补位承接。
 func isAuthVerifyFail(ve *VertexError) bool {
 	if ve == nil || ve.Kind != "auth" {
 		return false
@@ -284,7 +284,7 @@ func isAuthVerifyFail(ve *VertexError) bool {
 // withRTFirstTryCompensation 是全局唯一的 rT 第一发补偿机制：
 // 每个真实请求的第一发必被上游 "Failed to verify action" 拒绝，必须以同一 token
 // 重发第二发才成功（与等待时长无关，保留旧版 500ms 间隔）。换新 token 同样首轮必败，
-// 故该机制无法由预算循环承接（预算每轮均为新 token），只能附着在"发起真实请求"的
+// 故该机制无法由窗口补位承接（补位每发均为新 token），只能附着在"发起真实请求"的
 // 公共动作上，流式/非流式两个 L1 入口共用同一实现。
 func withRTFirstTryCompensation(ctx context.Context, attempt func() error) error {
 	err := attempt()

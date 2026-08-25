@@ -68,7 +68,6 @@ func (c *fakeCfg) CountTokensQuerySignature() string { panic("unexpected") }
 func (c *fakeCfg) SafetySettings() map[string]string { panic("unexpected") }
 func (c *fakeCfg) ParallelPoolEnabled() bool         { panic("unexpected") }
 func (c *fakeCfg) ParallelPoolSize() int             { panic("unexpected") }
-func (c *fakeCfg) ParallelPoolDelayDynamic() bool    { panic("unexpected") }
 func (c *fakeCfg) ActiveNodeURI() string             { panic("unexpected") }
 func (c *fakeCfg) BackgroundImage() string           { panic("unexpected") }
 func (c *fakeCfg) FontSize() string                  { panic("unexpected") }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math"
 	"net"
 	"sort"
 	"sync"
@@ -310,14 +309,6 @@ func NormalizeError(err error) *VertexError {
 // classifyNetworkError 将网络原生 error 统一包装为 *VertexError（内部复用 NormalizeError）。
 func classifyNetworkError(err error) *VertexError {
 	return NormalizeError(err)
-}
-
-func backoff(attempt int) time.Duration {
-	v := math.Pow(1.5, float64(attempt))
-	if v > 15 {
-		v = 15
-	}
-	return time.Duration(v * float64(time.Second))
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

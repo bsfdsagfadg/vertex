@@ -2,11 +2,10 @@ const SETTINGS_FIELDS = [
   // 🚀 Group: pool (并发与 Token 池管理)
   { k: 'parallel_pool_enabled', label: '并发请求池', type: 'bool', group: 'pool', desc: '同时请求多个健康节点，首包到达即采纳，降低延迟' },
   { k: 'parallel_pool_size', label: '并发数', type: 'number', max: 100, min: 1, group: 'pool', desc: '并发抢跑的节点数 (默认 15，最大 100)' },
-  { k: 'parallel_pool_delay_dynamic', label: '动态对冲延迟', type: 'bool', group: 'pool', desc: '根据节点平均响应时间动态调整并发启动间隔，平衡延迟与流量消耗' },
   { k: 'recaptcha_try_entry_or_direct', label: '优先前置/直连抓取 RT', type: 'bool', group: 'pool', desc: '开启时获取 reCAPTCHA Token 优先尝试前置代理/直连；关闭或失败时顺次轮询健康候选节点' },
 
   // 🛠 Group: core (核心控制与基础参数)
-  { k: 'max_retries', label: '上游重试次数', type: 'number', group: 'core', desc: '上游请求失败时的重试次数；总尝试 = 此值 + 1' },
+  { k: 'max_retries', label: '补位轮数', type: 'number', group: 'core', desc: '窗口竞速的补位轮数；总发射预算 = (此值+1) × 并发数，失败即瞬时换点补位' },
   { k: 'max_n', label: '最大候选数 (max_n)', type: 'number', group: 'core', desc: '限制客户端一次生成回答的条数上限，防滥用刷量 (默认 8)' },
   { k: 'max_spill_mb', label: '最大内存缓冲 (MB)', type: 'number', group: 'core', desc: '上传大文件时，超过此大小将写入磁盘，防爆内存 (默认 2048)' },
   { k: 'aggregate_stream', label: '聚合流式', type: 'bool', group: 'core', desc: '拦截流式请求，改为一次性返回完整结果的单块流（解决部分客户端单字流式卡顿问题）' },

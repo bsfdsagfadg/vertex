@@ -29,62 +29,74 @@ func setupRaceNodes(t *testing.T, uris ...string) {
 	testNodes.MergeNodes(ns)
 }
 
-func raceTestConfig() config.AppConfig {
-	return config.AppConfig{
-		ParallelPoolEnabled:      true,
-		ParallelPoolSize:         3,
-		ParallelPoolDelayDynamic: true,
-	}
-}
-
-func raceTestConfigAllAtOnce() config.AppConfig {
+// raceTestConfigSize 返回指定窗口宽度的引擎测试配置。
+// 注意：AppConfig 字面量 MaxRetries 零值即 0，发射预算 = 窗口宽度；
+// 需要"整批补满一轮"语义的用例应显式设 MaxRetries=1。
+func raceTestConfigSize(size int) config.AppConfig {
 	return config.AppConfig{
 		ParallelPoolEnabled: true,
-		ParallelPoolSize:    3,
+		ParallelPoolSize:    size,
 	}
 }
 
-// TestRunRace_NoLaunchAfterCtxCancel verifies that after ctx is canceled,
-// RunRace does NOT launch new candidate nodes (scenario A, hedge mode).
-func TestRunRace_NoLaunchAfterCtxCancel(t *testing.T) {
-	setupRaceNodes(t, "uri1", "uri2", "uri3")
+// raceTestConfig 是窗口宽度 3 的默认引擎测试配置。
+func raceTestConfig() config.AppConfig {
+	return raceTestConfigSize(3)
+}
+
+// TestRunRace_NoRefillAfterCtxCancel 验证父 ctx 取消后补位立即停止：
+// 初始拉满窗口（min(W, 可用节点)=3）后第一发取消父 ctx，剩余预算与候选一律不再发射。
+func TestRunRace_NoRefillAfterCtxCancel(t *testing.T) {
+	setupRaceNodes(t, "uri1", "uri2", "uri3", "uri4", "uri5", "uri6")
 	defer testNodes.Reset()
 
 	cfg := config.StaticProvider(raceTestConfig())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	started := make(chan struct{}, 3)
 	var launchCount int32
 
 	run := func(ctx context.Context, uri string) (string, error) {
-		atomic.AddInt32(&launchCount, 1)
-		cancel()
+		started <- struct{}{}
+		if atomic.AddInt32(&launchCount, 1) == 1 {
+			cancel()
+		}
 		time.Sleep(5 * time.Millisecond)
 		return "", fmt.Errorf("node failed")
 	}
 
-	_, err := RunRace(ctx, testNodes, cfg, run)
-	if err == nil {
-		t.Error("expected error from RunRace, got nil")
+	go func() {
+		_, _ = RunRace(ctx, testNodes, cfg, run)
+	}()
+
+	// 屏障：等待初始填充的三个候选全部真正进入执行函数（发射为同步填充，必然到达）。
+	for i := 0; i < 3; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("initial fill candidates did not all enter run")
+		}
 	}
 
-	if count := atomic.LoadInt32(&launchCount); count > 1 {
-		t.Errorf("expected launchCount <= 1, got %d", count)
+	// 给可能的越界补位留观察窗：取消后绝不出现第 4 发。
+	time.Sleep(50 * time.Millisecond)
+	if count := atomic.LoadInt32(&launchCount); count != 3 {
+		t.Errorf("expected exactly 3 launches (initial fill only, no refill after cancel), got %d", count)
 	}
 }
 
-// TestRunRace_AllAtOnce_LaunchesAllCandidates verifies that when
-// ParallelPoolDelayDynamic=false, all candidates launch simultaneously.
+// TestRunRace_AllAtOnce_LaunchesAllCandidates 验证初始填充一次拉满全部窗口槽位：
+// 所有候选在释放屏障前均已进入执行函数。
 //
 // 说明：不使用返回后读取计数的方式断言（那依赖 goroutine 调度时序，成功者先返回时
 // 其余候选可能尚未进入 run，造成假失败）。改用双阶段同步屏障：started 记录候选真正
-// 进入执行函数，release 阻塞候选直至全部启动，验证的是“全量模式下所有候选都已启动”
-// 的目标语义。
+// 进入执行函数，release 阻塞候选直至全部启动，验证的是"初始填充满窗"的目标语义。
 func TestRunRace_AllAtOnce_LaunchesAllCandidates(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2", "uri3")
 	defer testNodes.Reset()
 
-	cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+	cfg := config.StaticProvider(raceTestConfig())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -121,8 +133,8 @@ func TestRunRace_AllAtOnce_LaunchesAllCandidates(t *testing.T) {
 	}
 }
 
-// TestRunRace_HangWithTimeout_NoResend verifies that RunRace returns promptly
-// on ctx timeout and does not keep launching new nodes (scenario B).
+// TestRunRace_HangWithTimeout_NoResend 验证全体候选挂起时请求按父 ctx 时限收敛，
+// 且发射数被初始填充封顶（预算=窗口=3），不产生任何超限补位。
 func TestRunRace_HangWithTimeout_NoResend(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2", "uri3")
 	defer testNodes.Reset()
@@ -152,21 +164,17 @@ func TestRunRace_HangWithTimeout_NoResend(t *testing.T) {
 
 	count := atomic.LoadInt32(&launchCount)
 	if count > 3 {
-		t.Errorf("expected launchCount <= 3, got %d", count)
+		t.Errorf("expected launchCount <= 3 (budget=window), got %d", count)
 	}
 }
 
-// TestRunRace_SuccessAfterHedge verifies that normal hedge racing still works
-// (scenario C): first node is slow, hedge launches a fast backup → success.
-func TestRunRace_SuccessAfterHedge(t *testing.T) {
+// TestRunRace_SuccessAcrossWindowFill 验证恒满窗口下的并行竞速胜出：
+// 慢速候选与快速候选同窗起跑，快速者立即胜出交付。
+func TestRunRace_SuccessAcrossWindowFill(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2", "uri3")
 	defer testNodes.Reset()
 
-	cfg := config.StaticProvider(config.AppConfig{
-		ParallelPoolEnabled:      true,
-		ParallelPoolSize:         3,
-		ParallelPoolDelayDynamic: false,
-	})
+	cfg := config.StaticProvider(raceTestConfig())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -194,65 +202,73 @@ func TestRunRace_SuccessAfterHedge(t *testing.T) {
 	}
 
 	if count := atomic.LoadInt32(&callOrder); count < 2 {
-		t.Errorf("expected at least 2 calls (hedge), got %d", count)
+		t.Errorf("expected at least 2 parallel candidates, got %d", count)
 	}
 }
 
-// TestRunRace_NoHedgeOnWrappedContextError verifies that RunRace does NOT
-// launch hedge nodes when the error is a VertexError wrapping a context
-// deadline (scenario D: Fix 3 effective through Unwrap chain).
-func TestRunRace_NoHedgeOnWrappedContextError(t *testing.T) {
+// TestRunRace_CandidateTimeout_RefillsUntilBudget 验证窗口模型下的候选级超时语义：
+// 父 ctx 存活时的 context 类候选失败照常补位、不改节点健康记账；
+// 发射严格受 (MaxRetries+1)×W 封顶，耗尽后收敛为 context 错误。
+func TestRunRace_CandidateTimeout_RefillsUntilBudget(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2", "uri3")
 	defer testNodes.Reset()
 
-	cfg := config.StaticProvider(raceTestConfig())
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	cfg := config.StaticProvider(config.AppConfig{
+		ParallelPoolEnabled: true,
+		ParallelPoolSize:    3,
+		MaxRetries:          1, // 预算 = (1+1)*3 = 6
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	var launchCount int32
 
 	run := func(ctx context.Context, uri string) (string, error) {
 		atomic.AddInt32(&launchCount, 1)
-		// Simulate the real streaming error chain:
-		// executeStreamingAttempt wraps with %w,
-		// 上层预算循环通过 cause 链识别 context 错误而不发起对冲。
+		// 模拟真实流式错误链：executeStreamingAttempt 以 %w 包装上游 context 超时。
 		return "", NewContextError(fmt.Errorf("upstream request: %w", context.DeadlineExceeded))
 	}
 
 	_, err := RunRace(ctx, testNodes, cfg, run)
-
-	// 1. In hedge mode, the node returns context error so no hedge should launch.
-	if count := atomic.LoadInt32(&launchCount); count > 1 {
-		t.Errorf("expected launchCount <= 1 (no hedge), got %d", count)
-	}
-
-	// 2. RunRace returned quickly (no hang).
-	// 3. The returned error unwraps to DeadlineExceeded.
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected errors.Is(err, DeadlineExceeded) == true, got %v", err)
 	}
+
+	// 发射数恰为预算上限：初始 3 发 + 补位 3 发。
+	if count := atomic.LoadInt32(&launchCount); count != 6 {
+		t.Errorf("expected exactly 6 launches ((1+1)*3 budget), got %d", count)
+	}
+
+	// context 类候选失败不记账：健康记录不得出现失败计数或冷却。
+	for uri, h := range testNodes.LoadHealth() {
+		if h.ConsecutiveFailures != 0 || h.FailCount != 0 || h.CooldownUntil != 0 {
+			t.Errorf("node %s health polluted by context-class failure: %+v", uri, h)
+		}
+	}
 }
 
 // TestRunRace_CompleteChat_HardErrorDoesNotBlockSTOP 验证 CompleteChat 语义：
-// 第一个候选返回不可重试硬错误时不会终止竞速，第二个候选的 STOP 仍可胜出。
+// 第一个候选返回不可重试硬错误（Terminal 类 403）时照常补位，第二个候选的 STOP 胜出。
 func TestRunRace_CompleteChat_HardErrorDoesNotBlockSTOP(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2")
 	defer testNodes.Reset()
 
-	cfg := config.StaticProvider(raceTestConfig())
+	cfg := config.StaticProvider(raceTestConfigSize(2))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var callOrder int32
-
 	run := func(ctx context.Context, uri string) (*transform.GeminiResponse, error) {
-		order := atomic.AddInt32(&callOrder, 1)
-		if order == 1 {
-			// 第一个候选：不可重试硬错误（403）。
+		if uri == "uri1" {
+			// 第一个候选：不可重试硬错误（403 Terminal）。
 			return nil, NewPermissionDeniedError("forbidden", nil)
+		}
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 		return &transform.GeminiResponse{
 			Candidates: []*transform.Candidate{{FinishReason: "STOP"}},
@@ -275,13 +291,11 @@ func TestRunRace_CompleteChat_HardErrorDoesNotBlockSTOP(t *testing.T) {
 	if finish := candidateFinishTyped(result); finish != "STOP" {
 		t.Errorf("expected STOP finish reason, got %s", finish)
 	}
-	if count := atomic.LoadInt32(&callOrder); count < 2 {
-		t.Errorf("expected 2 candidates to be launched, got %d", count)
-	}
 }
 
 // TestRunRace_CompleteChat_PickBestNonSTOP 验证非流式多个非 STOP 结果收集后
 // 使用 pickBestResult 规则：MAX_TOKENS 优先，然后按内容长度。
+// 窗口=可用节点数（无富余预算），两候选各跑恰好一发后收敛择优。
 func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 	makeResult := func(finish, text string) *transform.GeminiResponse {
 		return &transform.GeminiResponse{
@@ -304,7 +318,7 @@ func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 		setupRaceNodes(t, "uri1", "uri2")
 		defer testNodes.Reset()
 
-		cfg := config.StaticProvider(raceTestConfig())
+		cfg := config.StaticProvider(raceTestConfigSize(2))
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -328,7 +342,7 @@ func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 			t.Errorf("expected MAX_TOKENS to win, got %s", finish)
 		}
 		if count := atomic.LoadInt32(&callOrder); count != 2 {
-			t.Errorf("expected both candidates to launch, got %d", count)
+			t.Errorf("expected both candidates to launch exactly once, got %d", count)
 		}
 	})
 
@@ -336,7 +350,7 @@ func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 		setupRaceNodes(t, "uri1", "uri2")
 		defer testNodes.Reset()
 
-		cfg := config.StaticProvider(raceTestConfig())
+		cfg := config.StaticProvider(raceTestConfigSize(2))
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -366,13 +380,69 @@ func TestRunRace_CompleteChat_PickBestNonSTOP(t *testing.T) {
 	})
 }
 
+// TestRunRace_CollectResult_TriggersRefill 验证非流式收集补位：
+// 候选成功但非 STOP（收集）同样释放槽位并补位下一节点，
+// 直至预算耗尽后统一择优（长文本胜出）。
+func TestRunRace_CollectResult_TriggersRefill(t *testing.T) {
+	setupRaceNodes(t, "a", "bbbb")
+	defer testNodes.Reset()
+
+	cfg := config.StaticProvider(config.AppConfig{
+		ParallelPoolEnabled: true,
+		ParallelPoolSize:    1,
+		MaxRetries:          1, // 预算 = (1+1)*1 = 2
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var mu sync.Mutex
+	seen := map[string]bool{}
+
+	run := func(ctx context.Context, uri string) (*transform.GeminiResponse, error) {
+		mu.Lock()
+		seen[uri] = true
+		mu.Unlock()
+		return &transform.GeminiResponse{
+			Candidates: []*transform.Candidate{{
+				FinishReason: "MAX_TOKENS",
+				Content:      &transform.Content{Role: "model", Parts: []transform.Part{{Text: strings.Repeat("x", len(uri))}}},
+			}},
+		}, nil
+	}
+
+	result, err := RunRace(ctx, testNodes, cfg, run,
+		WithWinningCheck(func(resp *transform.GeminiResponse) bool {
+			return candidateFinishTyped(resp) == "STOP"
+		}),
+		WithCollectedFinalizer(func(results []raceResult[*transform.GeminiResponse]) (*transform.GeminiResponse, error) {
+			cr := make([]candidateResult, len(results))
+			for i, r := range results {
+				cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
+			}
+			return pickBestResult(cr, &transform.TextStrategy{})
+		}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	distinct := len(seen)
+	mu.Unlock()
+	if distinct != 2 {
+		t.Errorf("expected collect-refill to cover both nodes, saw %d distinct uris", distinct)
+	}
+	if got := responseContentLengthTyped(result); got != len("bbbb") {
+		t.Errorf("expected longer collected text to win (len %d), got len %d", len("bbbb"), got)
+	}
+}
+
 // TestRunRace_Streaming_PermissionDenied_NoFailFast 验证 403 不会触发 fail-fast：
-// Node 1 返回 403 PermissionDenied，Node 2 延迟后成功，竞速引擎应淘汰 Node 1 并返回 Node 2 结果。
+// uri1 返回 403 PermissionDenied，uri2 延迟后交付有效首帧并胜出。
 func TestRunRace_Streaming_PermissionDenied_NoFailFast(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2")
 	defer testNodes.Reset()
 
-	cfg := config.StaticProvider(raceTestConfig())
+	cfg := config.StaticProvider(raceTestConfigSize(2))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -406,119 +476,103 @@ func TestRunRace_Streaming_PermissionDenied_NoFailFast(t *testing.T) {
 	}
 }
 
-// TestRunRace_Streaming_GlobalHardError_FailFast 验证全局硬错误（invalid 400）仍触发 fail-fast：
-// Node 1 返回 400 InvalidArgument，应在对冲定时器触发前终止竞速，不启动 Node 2。
+// TestRunRace_Streaming_GlobalHardError_FailFast 验证全局硬错误（invalid 400）触发 fail-fast：
+// 双候选经释放屏障确保都已发射，首个硬错误结果到达即终止整个请求，绝不补位。
 func TestRunRace_Streaming_GlobalHardError_FailFast(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2")
 	defer testNodes.Reset()
 
-	cfg := config.StaticProvider(raceTestConfig())
+	cfg := config.StaticProvider(raceTestConfigSize(2))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
 	var launchCount int32
 
 	run := func(ctx context.Context, uri string) (<-chan StreamChunk, error) {
 		atomic.AddInt32(&launchCount, 1)
+		started <- struct{}{}
+		<-release
 		return nil, NewInvalidArgumentError("invalid model name", nil)
 	}
 
-	_, err := RunRace(ctx, testNodes, cfg, run, WithFailFastOnHardError[<-chan StreamChunk]())
-	if err == nil {
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunRace(ctx, testNodes, cfg, run, WithFailFastOnHardError[<-chan StreamChunk]())
+		done <- err
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("candidates did not all enter run")
+		}
+	}
+	close(release)
+
+	if err := <-done; err == nil {
 		t.Error("expected error, got nil")
 	}
-	if count := atomic.LoadInt32(&launchCount); count > 1 {
-		t.Errorf("expected launchCount <= 1 (fail-fast on global hard error), got %d", count)
-	}
-}
-
-// TestStreamParallel_FailoverOnEmptyResponse 验证 StreamParallel 在节点 A 返回空流
-// （channel 无数据直接关闭）时能故障转移到节点 B。
-func TestStreamParallel_FailoverOnEmptyResponse(t *testing.T) {
-	setupRaceNodes(t, "uri1", "uri2")
-	defer testNodes.Reset()
-
-	cfg := config.StaticProvider(raceTestConfig())
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var data atomic.Value
-	data.Store("")
-
-	var launched sync.WaitGroup
-
-	op := func(ctx context.Context, uri string) <-chan StreamChunk {
-		ch := make(chan StreamChunk, 64)
-		go func() {
-			defer close(ch)
-			if uri == "uri1" {
-				// Node A：channel 直接关闭（空流），触发 wrappedOp 的 !ok 分支。
-				return
-			}
-			launched.Add(1)
-			defer launched.Done()
-			select {
-			case <-time.After(50 * time.Millisecond):
-			case <-ctx.Done():
-				return
-			}
-			ch <- StreamChunk{Data: &transform.GeminiChunk{Candidates: []*transform.Candidate{{Content: &transform.Content{Parts: []transform.Part{{Text: "node-b-success"}}}}}}}
-		}()
-		return ch
-	}
-
-	var gotChunks []StreamChunk
-	yield := func(chunk StreamChunk) bool {
-		gotChunks = append(gotChunks, chunk)
-		return true
-	}
-
-	StreamParallel(ctx, testNodes, cfg, "gemini-2.5-flash", op, yield, nil)
-	launched.Wait()
-
-	if len(gotChunks) == 0 {
-		t.Fatal("expected at least one chunk from node B")
-	}
-	if gotChunks[0].Err != nil {
-		t.Fatalf("expected success chunk, got error: %v", gotChunks[0].Err)
+	// 初始填充同步发射 2 发；fail-fast 在首个结果处理时终止，绝无第三发。
+	if count := atomic.LoadInt32(&launchCount); count != 2 {
+		t.Errorf("expected exactly 2 launches (full-window fill then fail-fast abort), got %d", count)
 	}
 }
 
 // TestRunRace_Streaming_FailFastOnHardError 验证流式首帧的全局硬错误快速终止：
-// 第一个候选返回 notfound 硬错误后直接终止，不启动对冲节点。
+// 双候选经释放屏障确保都已发射，notfound 硬错误首达即终止，不消耗剩余预算补位。
 func TestRunRace_Streaming_FailFastOnHardError(t *testing.T) {
-	setupRaceNodes(t, "uri1", "uri2", "uri3")
+	setupRaceNodes(t, "uri1", "uri2")
 	defer testNodes.Reset()
 
-	cfg := config.StaticProvider(raceTestConfig())
+	cfg := config.StaticProvider(raceTestConfigSize(2))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
 	var launchCount int32
 
 	run := func(ctx context.Context, uri string) (<-chan StreamChunk, error) {
 		atomic.AddInt32(&launchCount, 1)
+		started <- struct{}{}
+		<-release
 		return nil, NewNotFoundError("model not found", nil)
 	}
 
-	_, err := RunRace(ctx, testNodes, cfg, run, WithFailFastOnHardError[<-chan StreamChunk]())
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunRace(ctx, testNodes, cfg, run, WithFailFastOnHardError[<-chan StreamChunk]())
+		done <- err
+	}()
 
-	if err == nil {
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("candidates did not all enter run")
+		}
+	}
+	close(release)
+
+	if err := <-done; err == nil {
 		t.Error("expected error, got nil")
 	}
-	if count := atomic.LoadInt32(&launchCount); count > 1 {
-		t.Errorf("expected launchCount <= 1 (fail-fast on global hard error), got %d", count)
+	if count := atomic.LoadInt32(&launchCount); count != 2 {
+		t.Errorf("expected exactly 2 launches (full-window fill then fail-fast abort), got %d", count)
 	}
 }
 
 // TestRunRace_AuthErrorDisablesNode 验证 auth 错误分支：
 // RunRace 遇到 Kind == "auth" 的 VertexError 后，通过 BatchUpdateNodesDisabled
-// 将该节点在节点池中标记为禁用。
+// 将该节点在节点池中标记为禁用；全员禁用后在飞归零即收敛（宽松通道也排除 Disabled）。
 func TestRunRace_AuthErrorDisablesNode(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2")
 	defer testNodes.Reset()
 
-	cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+	cfg := config.StaticProvider(raceTestConfig())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -546,7 +600,7 @@ func TestRunRace_CandidatePanic_HandledGracefully(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2")
 	defer testNodes.Reset()
 
-	cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+	cfg := config.StaticProvider(raceTestConfig())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -593,13 +647,13 @@ func waitForZeroInFlight(t *testing.T, uris ...string) {
 }
 
 // TestRunRace_StreamIdleTimeout_TriggersRateLimitCooldown 验证流式包间空闲超时
-// （ErrStreamIdleTimeout）会触发节点的短时避让（RecordRateLimit），使僵死/慢节点被隔离，
-// 避免反复被选中。修复前：空闲超时的节点仅记失败、无冷却，极易被下一轮竞速再次选中。
+// （ErrStreamIdleTimeout）会触发节点的短时避让（RecordRateLimit），使僵死/慢节点被隔离。
+// 宽松通道忽略冷却仅用于非常时期强行补位，冷却标记本身必须如实落账。
 func TestRunRace_StreamIdleTimeout_TriggersRateLimitCooldown(t *testing.T) {
 	setupRaceNodes(t, "uri1", "uri2")
 	defer testNodes.Reset()
 
-	cfg := config.StaticProvider(raceTestConfigAllAtOnce())
+	cfg := config.StaticProvider(raceTestConfig())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -622,6 +676,112 @@ func TestRunRace_StreamIdleTimeout_TriggersRateLimitCooldown(t *testing.T) {
 		if h.CooldownUntil <= now {
 			t.Errorf("node %s 应进入 15 秒冷却避让, CooldownUntil=%d (now=%d)", uri, h.CooldownUntil, now)
 		}
+	}
+}
+
+// TestRunRace_InitialFill_FallsBackToRelaxedOnCooldown 验证初始填充的宽松兜底：
+// 全员处于 429 冷却期时严格选点为空，引擎以宽松通道拉起窗口而非误降级直连；
+// 冷却只是保护措施，非常时期按优先级照样开跑。
+func TestRunRace_InitialFill_FallsBackToRelaxedOnCooldown(t *testing.T) {
+	setupRaceNodes(t, "uri1", "uri2")
+	defer testNodes.Reset()
+
+	testNodes.RecordRateLimit("uri1", 60)
+	testNodes.RecordRateLimit("uri2", 60)
+
+	cfg := config.StaticProvider(raceTestConfigSize(2))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var launchCount int32
+	run := func(ctx context.Context, uri string) (string, error) {
+		atomic.AddInt32(&launchCount, 1)
+		return "", NewRateLimitError("too many requests 429", 0, nil)
+	}
+
+	_, err := RunRace(ctx, testNodes, cfg, run)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if count := atomic.LoadInt32(&launchCount); count != 2 {
+		t.Errorf("expected both cooling-down nodes to be launched via relaxed path, got %d", count)
+	}
+}
+
+// TestRunRace_LaunchBudgetHardCap 验证发射硬预算：
+// 任意失败序列下总发射数恰为 (MaxRetries+1)×W，绝不越界。
+func TestRunRace_LaunchBudgetHardCap(t *testing.T) {
+	uris := make([]string, 5)
+	for i := range uris {
+		uris[i] = fmt.Sprintf("uri%d", i+1)
+	}
+	setupRaceNodes(t, uris...)
+	defer testNodes.Reset()
+
+	cfg := config.StaticProvider(config.AppConfig{
+		ParallelPoolEnabled: true,
+		ParallelPoolSize:    3,
+		MaxRetries:          1, // 预算 = 6
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var launched int32
+	run := func(ctx context.Context, uri string) (string, error) {
+		atomic.AddInt32(&launched, 1)
+		// 错误文案避开自动禁用关键词（dial/refused/timeout/connection 等），
+		// 保证节点保持可选、补位链条可以吃满预算。
+		return "", NewNetworkError(fmt.Errorf("transient upstream blip"))
+	}
+
+	_, err := RunRace(ctx, testNodes, cfg, run)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if count := atomic.LoadInt32(&launched); count != 6 {
+		t.Errorf("expected exactly 6 launches ((1+1)*3 hard budget), got %d", count)
+	}
+}
+
+// TestRunRace_PerCandidateTimeout_AnchoredAtLaunch 验证每候选独立超时的启动锚定：
+// 窗口=1、预算=2 时两个候选串行接力，各自获得完整 1s 个人时限（总耗时 ≈2s）。
+// 若超时是"从请求起点共享"的口径，第二发会立即到期（总耗时 ≈1s），据此判定语义正确。
+// 说明：秒级配置粒度决定本用例下限 ~1.5s，属超时语义验证的合理例外（规范上限 500ms）。
+func TestRunRace_PerCandidateTimeout_AnchoredAtLaunch(t *testing.T) {
+	setupRaceNodes(t, "cand1", "cand2")
+	defer testNodes.Reset()
+
+	cfg := config.StaticProvider(config.AppConfig{
+		ParallelPoolEnabled:   true,
+		ParallelPoolSize:      1,
+		MaxRetries:            1,
+		RequestTimeoutSeconds: 1,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var attempts int32
+	run := func(ctx context.Context, uri string) (string, error) {
+		atomic.AddInt32(&attempts, 1)
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+
+	start := time.Now()
+	_, err := RunRace(ctx, testNodes, cfg, run)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected DeadlineExceeded convergence, got %v", err)
+	}
+	if n := atomic.LoadInt32(&attempts); n != 2 {
+		t.Fatalf("expected exactly 2 sequential attempts ((1+1)*1 budget), got %d", n)
+	}
+	if elapsed < 1500*time.Millisecond || elapsed > 3500*time.Millisecond {
+		t.Errorf("expected ~2s wall clock (two fresh 1s candidate deadlines), got %v", elapsed)
 	}
 }
 
@@ -716,6 +876,7 @@ func TestRunRace_PickBestError_Priority(t *testing.T) {
 // TestRunRace_Convergence_PriorityLadder 验证收敛路径（pickBestError）的优先级梯队：
 // 确定性业务真相（FailFast）> ratelimit > 其他瞬态；Committed（Truncated）压顶一切；
 // 优先级与节点多数无关（防把方案误解为多数决）。不注入 failFast 选项（CompleteChat 语义）。
+// 预算 = 窗口 = 20：全员各自失败一发后立即收敛，无补位空间。
 func TestRunRace_Convergence_PriorityLadder(t *testing.T) {
 	uris := make([]string, 20)
 	for i := range uris {
@@ -797,283 +958,92 @@ func TestRunRace_Convergence_PriorityLadder(t *testing.T) {
 	})
 }
 
-// TestStreamParallel_SingleCandidate_RetryLoop 验证预算循环：
-// 池关闭时走单候选直连分支；第 1 轮返回 Transient 网络错误（预算内退避重试），
-// 第 2 轮成功交付内容 → 客户端看到内容且无错误帧。
-// 注：MaxRetries=1（总退避 ~1.5s），避免多轮真实退避拉长单用例耗时。
-func TestStreamParallel_SingleCandidate_RetryLoop(t *testing.T) {
-	start := time.Now()
-	defer func() {
-		if elapsed := time.Since(start); elapsed > 5*time.Second {
-			t.Errorf("预算循环退避应短促，实际 %v", elapsed)
-		}
-	}()
-
-	testNodes.Reset()
-	defer testNodes.Reset()
-
-	cfg := config.StaticProvider(config.AppConfig{
-		ParallelPoolEnabled: false,
-		MaxRetries:          1,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var attempts int32
-	op := func(ctx context.Context, uri string) <-chan StreamChunk {
-		ch := make(chan StreamChunk, 1)
-		go func() {
-			defer close(ch)
-			n := atomic.AddInt32(&attempts, 1)
-			if n < 2 {
-				ch <- StreamChunk{Err: NewNetworkError(fmt.Errorf("tcp reset"))}
-				return
-			}
-			ch <- StreamChunk{Data: &transform.GeminiChunk{Candidates: []*transform.Candidate{{Content: &transform.Content{Parts: []transform.Part{{Text: "recovered"}}}}}}}
-		}()
-		return ch
-	}
-
-	var gotData string
-	yield := func(chunk StreamChunk) bool {
-		if chunk.Err != nil {
-			t.Errorf("unexpected error chunk: %v", chunk.Err)
-			return false
-		}
-		gotData = firstPartText(chunk.Data)
-		return true
-	}
-
-	StreamParallel(ctx, testNodes, cfg, "test-model", op, yield, nil)
-
-	if gotData != "recovered" {
-		t.Errorf("expected retry loop to recover content, got %q", gotData)
-	}
-	if n := atomic.LoadInt32(&attempts); n != 2 {
-		t.Errorf("expected exactly 2 attempts (1 retry), got %d", n)
-	}
-}
-
-// TestStreamParallel_MultiCandidate_RetryWholeBatch 验证多候选场景下竞速失败后整批重试：
-// 两个节点首轮均瞬态失败 → 预算内第 2 轮 uri1 成功交付。
-func TestStreamParallel_MultiCandidate_RetryWholeBatch(t *testing.T) {
-	setupRaceNodes(t, "uri1", "uri2")
+// TestRunRace_ActiveURINeverRelaunched 是方案 §9 I1 的去重回归锚：
+// 同一 URI 在飞期间（初始填充与补位两条路径）绝不重复发射；
+// 结果消费释放占位后，允许跨轮复用（窗口模型核心语义）。
+func TestRunRace_ActiveURINeverRelaunched(t *testing.T) {
+	setupRaceNodes(t, "hang", "flaky")
 	defer testNodes.Reset()
 
 	cfg := config.StaticProvider(config.AppConfig{
 		ParallelPoolEnabled: true,
 		ParallelPoolSize:    2,
-		MaxRetries:          1,
+		MaxRetries:          5,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var attempts int32
-	op := func(ctx context.Context, uri string) <-chan StreamChunk {
-		ch := make(chan StreamChunk, 1)
-		go func() {
-			defer close(ch)
-			n := atomic.AddInt32(&attempts, 1)
-			if n <= 2 {
-				ch <- StreamChunk{Err: NewNetworkError(fmt.Errorf("dial failed"))}
-				return
-			}
-			ch <- StreamChunk{Data: &transform.GeminiChunk{Candidates: []*transform.Candidate{{Content: &transform.Content{Parts: []transform.Part{{Text: "ok-" + uri}}}}}}}
-		}()
-		return ch
-	}
+	var hangLaunches, flakyLaunches int32
+	hangStarted := make(chan struct{}, 8)
+	release := make(chan struct{})
 
-	var gotText string
-	yield := func(chunk StreamChunk) bool {
-		if chunk.Err != nil {
-			t.Errorf("unexpected error chunk: %v", chunk.Err)
-			return false
+	run := func(ctx context.Context, uri string) (string, error) {
+		if uri == "hang" {
+			atomic.AddInt32(&hangLaunches, 1)
+			hangStarted <- struct{}{}
+			<-release
+			return "ok-hang", nil
 		}
-		if chunk.Data != nil {
-			gotText = firstPartText(chunk.Data)
+		// 错误文案避开自动禁用关键词（dial/refused/timeout 等）。
+		atomic.AddInt32(&flakyLaunches, 1)
+		return "", NewNetworkError(fmt.Errorf("transient upstream blip"))
+	}
+
+	type raceOut struct {
+		val string
+		err error
+	}
+	done := make(chan raceOut, 1)
+	go func() {
+		v, err := RunRace(ctx, testNodes, cfg, run)
+		done <- raceOut{v, err}
+	}()
+
+	// 等待初始填充完成：hang 一发 + flaky 一发。
+	select {
+	case <-hangStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial fill did not launch hang node")
+	}
+	fillDeadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&flakyLaunches) == 0 {
+		select {
+		case <-fillDeadline:
+			t.Fatal("initial fill did not launch flaky node")
+		case <-time.After(10 * time.Millisecond):
 		}
-		return true
+	}
+	if n := atomic.LoadInt32(&hangLaunches); n != 1 {
+		t.Fatalf("expected exactly 1 initial launch of hang node, got %d", n)
 	}
 
-	StreamParallel(ctx, testNodes, cfg, "test-model", op, yield, nil)
-
-	if !strings.HasPrefix(gotText, "ok-") {
-		t.Errorf("expected whole-batch retry to deliver content, got %q", gotText)
-	}
-	if n := atomic.LoadInt32(&attempts); n < 3 {
-		t.Errorf("expected >= 3 attempts (whole batch retried), got %d", n)
-	}
-}
-
-// TestStreamParallel_Truncated_Committed_NoRetry 验证截断（Committed）错误不触发重试：
-// 首帧后断流 → 单轮即止，Truncated 错误如实透传。
-func TestStreamParallel_Truncated_Committed_NoRetry(t *testing.T) {
-	testNodes.Reset()
-	defer testNodes.Reset()
-
-	cfg := config.StaticProvider(config.AppConfig{
-		ParallelPoolEnabled: false,
-		MaxRetries:          3,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var attempts int32
-	op := func(ctx context.Context, uri string) <-chan StreamChunk {
-		ch := make(chan StreamChunk, 1)
-		go func() {
-			defer close(ch)
-			atomic.AddInt32(&attempts, 1)
-			ch <- StreamChunk{Err: NewNetworkError(ErrStreamIdleTimeout).WithTruncated()}
-		}()
-		return ch
-	}
-
-	var gotErr *VertexError
-	StreamParallel(ctx, testNodes, cfg, "test-model", op, func(chunk StreamChunk) bool {
-		if chunk.Err != nil {
-			gotErr = chunk.Err
+	// flaky 持续失败触发多轮补位；期间 hang 始终在飞，绝不可被重复发射。
+	deadline := time.After(500 * time.Millisecond)
+	for atomic.LoadInt32(&flakyLaunches) < 3 {
+		select {
+		case <-hangStarted:
+			t.Fatal("active hang node was relaunched while in flight")
+		case <-deadline:
+			t.Fatalf("expected multiple flaky refill cycles, got %d", atomic.LoadInt32(&flakyLaunches))
+		default:
+			time.Sleep(10 * time.Millisecond)
 		}
-		return true
-	}, nil)
-
-	if gotErr == nil {
-		t.Fatal("expected truncated error chunk, got nil")
 	}
-	if !gotErr.Truncated {
-		t.Errorf("expected Truncated flag set, got %+v", gotErr)
-	}
-	if gotErr.ClassifyBatch() != Committed {
-		t.Errorf("expected Committed disposition, got %v", gotErr.ClassifyBatch())
-	}
-	if n := atomic.LoadInt32(&attempts); n != 1 {
-		t.Errorf("expected no retry for Committed error, got %d attempts", n)
-	}
-}
-
-// TestStreamParallel_ClientCancel_Silent 验证客户端取消后 StreamParallel 静默返回：
-// 不产错误帧、不产数据帧。
-func TestStreamParallel_ClientCancel_Silent(t *testing.T) {
-	testNodes.Reset()
-	defer testNodes.Reset()
-
-	cfg := config.StaticProvider(config.AppConfig{
-		ParallelPoolEnabled: false,
-		MaxRetries:          0,
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // 立即取消
-
-	op := func(ctx context.Context, uri string) <-chan StreamChunk {
-		ch := make(chan StreamChunk, 1)
-		go func() {
-			defer close(ch)
-			<-ctx.Done()
-			ch <- StreamChunk{Err: NormalizeError(ctx.Err())}
-		}()
-		return ch
+	if n := atomic.LoadInt32(&hangLaunches); n != 1 {
+		t.Fatalf("hang node relaunched while in flight: %d launches", n)
 	}
 
-	var got []StreamChunk
-	StreamParallel(ctx, testNodes, cfg, "test-model", op, func(chunk StreamChunk) bool {
-		got = append(got, chunk)
-		return true
-	}, nil)
-
-	if len(got) != 0 {
-		t.Errorf("expected silent return on client cancel, got %d chunks", len(got))
+	close(release)
+	out := <-done
+	if out.err != nil {
+		t.Fatalf("expected success after release, got error: %v", out.err)
 	}
-}
-
-// TestStreamParallel_FailFast_NoRetry 验证 FailFast（invalid 等全局硬错误）在预算循环
-// 首轮即终止：attempts==1，错误帧如实透传，不启动重试轮。
-func TestStreamParallel_FailFast_NoRetry(t *testing.T) {
-	testNodes.Reset()
-	defer testNodes.Reset()
-
-	cfg := config.StaticProvider(config.AppConfig{
-		ParallelPoolEnabled: false,
-		MaxRetries:          3,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var attempts int32
-	op := func(ctx context.Context, uri string) <-chan StreamChunk {
-		ch := make(chan StreamChunk, 1)
-		go func() {
-			defer close(ch)
-			atomic.AddInt32(&attempts, 1)
-			ch <- StreamChunk{Err: NewInvalidArgumentError("invalid model name", nil)}
-		}()
-		return ch
+	if out.val != "ok-hang" {
+		t.Errorf("expected ok-hang, got %q", out.val)
 	}
-
-	var gotErr *VertexError
-	StreamParallel(ctx, testNodes, cfg, "test-model", op, func(chunk StreamChunk) bool {
-		if chunk.Err != nil {
-			gotErr = chunk.Err
-		}
-		return true
-	}, nil)
-
-	if gotErr == nil {
-		t.Fatal("expected error chunk, got nil")
-	}
-	if gotErr.ClassifyBatch() != FailFast {
-		t.Errorf("expected FailFast disposition, got %v", gotErr.ClassifyBatch())
-	}
-	if n := atomic.LoadInt32(&attempts); n != 1 {
-		t.Errorf("expected no retry for FailFast error, got %d attempts", n)
-	}
-}
-
-// TestStreamParallel_Terminal_Converges 验证 Terminal（permission 等）错误不触发重试
-// 且不触发 fail-fast 旁路：单候选下 attempts==1，错误帧透传为 Terminal。
-func TestStreamParallel_Terminal_Converges(t *testing.T) {
-	testNodes.Reset()
-	defer testNodes.Reset()
-
-	cfg := config.StaticProvider(config.AppConfig{
-		ParallelPoolEnabled: false,
-		MaxRetries:          3,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var attempts int32
-	op := func(ctx context.Context, uri string) <-chan StreamChunk {
-		ch := make(chan StreamChunk, 1)
-		go func() {
-			defer close(ch)
-			atomic.AddInt32(&attempts, 1)
-			ch <- StreamChunk{Err: NewPermissionDeniedError("forbidden", nil)}
-		}()
-		return ch
-	}
-
-	var gotErr *VertexError
-	StreamParallel(ctx, testNodes, cfg, "test-model", op, func(chunk StreamChunk) bool {
-		if chunk.Err != nil {
-			gotErr = chunk.Err
-		}
-		return true
-	}, nil)
-
-	if gotErr == nil {
-		t.Fatal("expected error chunk, got nil")
-	}
-	if gotErr.ClassifyBatch() != Terminal {
-		t.Errorf("expected Terminal disposition, got %v", gotErr.ClassifyBatch())
-	}
-	if n := atomic.LoadInt32(&attempts); n != 1 {
-		t.Errorf("expected no retry for Terminal error, got %d attempts", n)
+	if n := atomic.LoadInt32(&hangLaunches); n != 1 {
+		t.Errorf("hang node should never be relaunched in this scenario, got %d total launches", n)
 	}
 }
 

@@ -38,7 +38,6 @@ type AppConfig struct { //nolint:govet
 	DebugMode                 bool     `json:"debug_mode"`
 	TrailingModelFixEnabled   bool     `json:"trailing_model_fix_enabled"`
 	TrailingFixModels         []string `json:"trailing_fix_models,omitempty"`
-	ParallelPoolDelayDynamic  bool     `json:"parallel_pool_delay_dynamic"`
 	RecaptchaTryEntryOrDirect bool     `json:"recaptcha_try_entry_or_direct"`
 
 	// 外观配置
@@ -65,16 +64,15 @@ type AppConfig struct { //nolint:govet
 func DefaultConfig() AppConfig {
 	return AppConfig{ //nolint:exhaustruct
 		PortAPI:                   2156,
-		MaxRetries:                1, // 默认为 1 次
+		MaxRetries:                1, // 补位轮数：总发射预算 = (max_retries+1) × parallel_pool_size
 		VertexAPIKey:              defaultAnonAPIKey,
 		CountTokensQuerySignature: defaultCountTokensQuerySig,
 		MaxN:                      8,
 		MaxSpillMB:                2048,
 		RequestTimeoutSeconds:     180,
 		ParallelPoolEnabled:       true,
-		ParallelPoolSize:          15,    // 默认为 15 并发
-		ParallelPoolDelayDynamic:  false, // 建议默认关闭动态对冲，改为稳定的秒级接力
-		RecaptchaTryEntryOrDirect: true,  // 默认优先尝试前置/直连抓取 RT
+		ParallelPoolSize:          15,   // 默认为 15 并发
+		RecaptchaTryEntryOrDirect: true, // 默认优先尝试前置/直连抓取 RT
 		BackgroundImage:           "url('background.jpg')",
 		FontSize:                  "14px",
 		FontColorType:             "adaptive",
