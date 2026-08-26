@@ -107,10 +107,12 @@ func (c *VertexAIClient) StreamChat(ctx context.Context, model string, req *tran
 // ctx 绑定 to 上游流连接：ctx 取消时 Body.Read 报错，scanStream 干净结束（返回 nil，不 panic）。
 func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *transport.Session, model string, req *transform.GeminiRequest, recaptchaToken string, emit func(*transform.GeminiChunk) bool, strategy transform.ModelStrategy) error {
 	reqID := RequestIDFromContext(ctx)
-	log.Printf("[Vertex] [executeStreamingAttempt] 准备发送流式请求: 模型=%s, 请求ID=%s, 代理=%s", model, reqID, c.nodePool().NodeName(sess.ProxyURI))
 	cfg := c.cfg
 	if strategy == nil {
 		strategy = transform.SharedModelFamilyRouter().For(model)
+	}
+	if cfg.DebugMode() {
+		log.Printf("[Vertex] [executeStreamingAttempt] 准备发送流式请求: 模型=%s, 请求ID=%s, 代理=%s", model, reqID, c.nodePool().NodeName(sess.ProxyURI))
 	}
 	newBody := buildTypedRequestPayload(model, req, recaptchaToken, cfg)
 	// 上游请求 payload 序列化到 spool 缓冲（大媒体自动落盘）。流式：请求体在 DoStream 发送期被读取，

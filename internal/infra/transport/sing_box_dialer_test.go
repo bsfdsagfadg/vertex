@@ -54,7 +54,7 @@ func (c *fakeCfg) PortAPI() int                      { panic("unexpected") }
 func (c *fakeCfg) MaxRetries() int                   { panic("unexpected") }
 func (c *fakeCfg) AdminPassword() string             { panic("unexpected") }
 func (c *fakeCfg) DebugPprof() bool                  { panic("unexpected") }
-func (c *fakeCfg) DebugMode() bool                   { panic("unexpected") }
+func (c *fakeCfg) DebugMode() bool                   { return false }
 func (c *fakeCfg) TrailingModelFixEnabled() bool     { panic("unexpected") }
 func (c *fakeCfg) TrailingFixModels() []string       { panic("unexpected") }
 func (c *fakeCfg) DropMaxTokens() bool               { panic("unexpected") }

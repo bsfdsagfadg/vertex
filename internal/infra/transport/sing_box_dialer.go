@@ -373,11 +373,15 @@ func (d *singDialer) CreateDialer(uri string, reqID string) (func(ctx context.Co
 	// 自引用守卫：第二跳 URI 恰为池内前置代理时，直接经该实例回环 SOCKS 拨号，
 	// 不自建第二跳 box。
 	if socksAddr := d.entry.socksAddrForURI(uri); socksAddr != "" {
-		log.Printf("[Transport] 请求ID=%s 第二跳 URI 命中前置代理池, 直接经回环", reqID)
+		if d.cfg != nil && d.cfg.DebugMode() {
+			log.Printf("[Transport] 请求ID=%s 出口 URI 命中前置代理池, 直接经回环", reqID)
+		}
 		return socks5DialFunc(socksAddr), func() {}, nil
 	}
 
-	log.Printf("[Transport] 请求ID=%s 触发第二跳代理初始化: %s", reqID, d.nodeName(uri))
+	if d.cfg != nil && d.cfg.DebugMode() {
+		log.Printf("[Transport] 请求ID=%s 触发出口代理初始化: %s", reqID, d.nodeName(uri))
+	}
 
 	nb, err := d.boxBuilder(uri)
 	if err != nil {

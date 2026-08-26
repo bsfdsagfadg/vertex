@@ -32,7 +32,7 @@ func (c *VertexAIClient) CompleteChat(ctx context.Context, model string, req *tr
 				cr[i] = candidateResult{proxyURI: r.uri, resp: r.val, err: r.err}
 			}
 			return pickBestResult(cr, strategy)
-		}))
+		}), WithLatencyLabel[*transform.GeminiResponse]("总耗时"))
 	if err != nil {
 		return nil, NormalizeError(err)
 	}

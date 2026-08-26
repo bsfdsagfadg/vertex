@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"sync"
 
@@ -126,7 +125,6 @@ func pickProfile() profiles.ClientProfile {
 //     禁止对第二跳 URI 直接使用 WithProxyUrl 绕过第一跳。
 func (c *NetworkClient) CreateSession(timeoutSec int, secondHopURI string, reqID string) (*Session, error) {
 	prof := pickProfile()
-	log.Printf("[Transport] reqID: %s, Assigned TLS Profile: %s", reqID, prof.GetClientHelloStr())
 
 	opts := []tls_client.HttpClientOption{
 		tls_client.WithTimeoutSeconds(timeoutSec),

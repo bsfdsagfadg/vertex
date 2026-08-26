@@ -38,6 +38,9 @@ func isContextClass(err error) bool {
 type raceConfig[T any] struct {
 	preserveRaceCtxOnWin bool // 仅控制 RunRace 返回时是否 cancel 主竞速 ctx；落败候选的关停由 cancelOthers 独立完成，与此字段无关
 	failFastOnHardError  bool
+	// latencyLabel 是胜出日志中耗时指标的显示名；空值在选项装配后归一为 "首字耗时"
+	// （首个有效结果即胜出的流式口径）。收齐全量响应才交付裁决的调用方应显式传 "总耗时"。
+	latencyLabel string
 	// isWinningResult 决定某个成功结果是否可"立即胜出"。
 	// nil 表示首个无错误结果立即胜出（流式默认）。
 	// 非 nil：返回 true 即时胜出，false 表示结果被收集（CompleteChat 的非 STOP 结果）。
@@ -81,6 +84,16 @@ func WithFailFastOnHardError[T any]() RaceOption[T] {
 func WithCollectedFinalizer[T any](fn func([]raceResult[T]) (T, error)) RaceOption[T] {
 	return func(cfg *raceConfig[T]) {
 		cfg.finalizeCollected = fn
+	}
+}
+
+// WithLatencyLabel 自定义胜出日志的耗时指标名。
+// 默认空值回退 "首字耗时"——适用于首个有效结果即胜出的流式路径；
+// 收齐全量响应后才交付裁决的调用方（CompleteChat 等）必须显式声明，
+// 避免把整响应耗时误标为首字耗时。
+func WithLatencyLabel[T any](label string) RaceOption[T] {
+	return func(cfg *raceConfig[T]) {
+		cfg.latencyLabel = label
 	}
 }
 
@@ -188,6 +201,9 @@ func RunRace[T any](ctx context.Context, pool NodePool, cfg config.ConfigProvide
 	var rc raceConfig[T]
 	for _, o := range opts {
 		o(&rc)
+	}
+	if rc.latencyLabel == "" {
+		rc.latencyLabel = "首字耗时" // 流式默认口径：首个有效结果即胜出
 	}
 	if pool == nil {
 		pool = nopNodePool{}
@@ -401,7 +417,7 @@ func RunRace[T any](ctx context.Context, pool NodePool, cfg config.ConfigProvide
 			if res.err == nil {
 				// 判定是否可立即胜出。
 				if rc.isWinningResult == nil || rc.isWinningResult(res.val) {
-					log.Printf("[Racing] 竞速胜出节点: %s", name)
+					log.Printf("[Racing] 竞速胜出节点: %s (%s: %.2fs)", name, rc.latencyLabel, elapsedMs/1000)
 					cli.UpdateReqWinner(RequestIDFromContext(ctx), name)
 					cli.UpdateReqState(RequestIDFromContext(ctx), "🟢 数据传输", "\033[32m", "已建立连接")
 					pool.RecordTest(res.uri, true, elapsedMs, "")
