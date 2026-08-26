@@ -40,6 +40,8 @@ type raceConfig[T any] struct {
 	failFastOnHardError  bool
 	// latencyLabel 是胜出日志中耗时指标的显示名；空值在选项装配后归一为 "首字耗时"
 	// （首个有效结果即胜出的流式口径）。收齐全量响应才交付裁决的调用方应显式传 "总耗时"。
+	// 耗时数值统一为请求级口径：自竞速启动起算，涵盖窗口填充与此前全部失败补位尝试；
+	// 节点健康记账（RecordTest）仍使用每候选独立耗时。
 	latencyLabel string
 	// isWinningResult 决定某个成功结果是否可"立即胜出"。
 	// nil 表示首个无错误结果立即胜出（流式默认）。
@@ -219,14 +221,14 @@ func RunRace[T any](ctx context.Context, pool NodePool, cfg config.ConfigProvide
 	}
 
 	if !cfg.ParallelPoolEnabled() || len(cands) == 0 {
-		return runDirectMode(ctx, pool, cfg, rc.failFastOnHardError, run)
+		return runDirectMode(ctx, pool, cfg, rc.failFastOnHardError, rc.latencyLabel, run)
 	}
 
 	budget := (cfg.MaxRetries() + 1) * window
 	if budget <= 0 {
 		// 防御：异常配置（如 max_retries 为负）会使预算归零，窗口路径将一发不发
 		// 且永无结果可消费而挂死；降级直连路径（其内部对轮数下限钳制为 1）。
-		return runDirectMode(ctx, pool, cfg, rc.failFastOnHardError, run)
+		return runDirectMode(ctx, pool, cfg, rc.failFastOnHardError, rc.latencyLabel, run)
 	}
 	// launched 是发射计数器（含初始填充与全部补位），严格受 budget 封顶；
 	// 初值必须为 0，由 tryLaunchBatch(cands) 统一累加，切勿预置 len(cands)
@@ -383,6 +385,10 @@ func RunRace[T any](ctx context.Context, pool NodePool, cfg config.ConfigProvide
 		return true, zero, convergeRaceFailure(ctx, failedErrors, lastResErr)
 	}
 
+	// raceStart 是请求级耗时锚点：胜出日志的 首字耗时/总耗时 自此起算，
+	// 涵盖窗口填充与此前全部失败补位尝试；节点健康记账仍用每候选 elapsedMs。
+	raceStart := time.Now()
+
 	// 初始填充：一次拉满窗口（受预算与窗口双重约束，实际发射 = min(W, 可用节点, 预算)）。
 	tryLaunchBatch(cands)
 
@@ -417,7 +423,7 @@ func RunRace[T any](ctx context.Context, pool NodePool, cfg config.ConfigProvide
 			if res.err == nil {
 				// 判定是否可立即胜出。
 				if rc.isWinningResult == nil || rc.isWinningResult(res.val) {
-					log.Printf("[Racing] 竞速胜出节点: %s (%s: %.2fs)", name, rc.latencyLabel, elapsedMs/1000)
+					log.Printf("[Racing] 竞速胜出节点: %s (%s: %.2fs)", name, rc.latencyLabel, time.Since(raceStart).Seconds())
 					cli.UpdateReqWinner(RequestIDFromContext(ctx), name)
 					cli.UpdateReqState(RequestIDFromContext(ctx), "🟢 数据传输", "\033[32m", "已建立连接")
 					pool.RecordTest(res.uri, true, elapsedMs, "")
@@ -479,13 +485,15 @@ func RunRace[T any](ctx context.Context, pool NodePool, cfg config.ConfigProvide
 
 // runDirectMode 是直连/锁定模式（节点池关闭或严格选点为空）的降级路径：
 // 视为窗口=1，对 ActiveNodeURI 顺序尝试至预算耗尽（MaxRetries+1 次），无退避连续接力。
-// FailFast 门禁、客户端取消静默、context 不记账规则与主路径一致。
+// FailFast 门禁、客户端取消静默、context 不记账规则与主路径一致；
+// latencyLabel 为胜出日志的请求级耗时指标名（与主窗口路径同格式）。
 func runDirectMode[T any](ctx context.Context, pool NodePool, cfg config.ConfigProvider,
-	failFast bool, run func(ctx context.Context, proxyURI string) (T, error),
+	failFast bool, latencyLabel string, run func(ctx context.Context, proxyURI string) (T, error),
 ) (T, error) {
 	var zero T
 	proxy := cfg.ActiveNodeURI()
 	log.Printf("[Vertex] [RunParallel] 降级为单节点运行: %s", pool.NodeName(proxy))
+	raceStart := time.Now()
 
 	attempts := cfg.MaxRetries() + 1
 	if attempts < 1 {
@@ -501,6 +509,7 @@ func runDirectMode[T any](ctx context.Context, pool NodePool, cfg config.ConfigP
 		attemptCtx, attemptCancel := context.WithTimeout(ctx, requestTimeout(cfg))
 		val, err := run(attemptCtx, proxy)
 		if err == nil {
+			log.Printf("[Racing] 竞速胜出节点: %s (%s: %.2fs)", pool.NodeName(proxy), latencyLabel, time.Since(raceStart).Seconds())
 			// 胜出路径不得取消 attemptCtx：流式候选的交付仍由该上下文供数
 			// （与主窗口路径的胜者语义一致——沿用个人时限直至交付完成，
 			// ctx 随请求父级结束而释放）。_ = attemptCancel 为有意不取消的
