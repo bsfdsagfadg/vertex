@@ -30,6 +30,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1beta/models", s.handleModelsGemini)
 	mux.HandleFunc("/v1beta1/models", s.handleModelsGemini)
 	mux.HandleFunc("/v1alpha/models", s.handleModelsGemini)
+	mux.HandleFunc("/v1/models", s.handleModelsGemini)
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/admin", s.admin.handleAdminPage)
 	mux.HandleFunc("/admin/", s.admin.handleAdminPage)
@@ -87,7 +88,7 @@ func (s *Server) handleModelsGemini(w http.ResponseWriter, _ *http.Request) {
 	models := s.mw.cfg.ModelsWithFakeVariants()
 	data := make([]any, 0, len(models))
 	for _, m := range models {
-		data = append(data, map[string]any{"name": "models/" + m, "displayName": m})
+		data = append(data, geminiModelInfo(m))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": data})
 }

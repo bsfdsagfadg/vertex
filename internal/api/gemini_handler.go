@@ -290,7 +290,7 @@ func (g *GeminiHandler) handleModelInfo(w http.ResponseWriter, modelName string)
 		}})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": "models/" + name, "displayName": name})
+	writeJSON(w, http.StatusOK, geminiModelInfo(name))
 }
 
 func (g *GeminiHandler) geminiSSE(obj map[string]any) string {

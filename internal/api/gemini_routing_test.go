@@ -10,9 +10,9 @@ func TestGeminiEndpointRouting(t *testing.T) {
 	fx := newTestServer(t)
 	client := &http.Client{}
 
-	prefixes := []string{"/v1beta", "/v1beta1", "/v1alpha"}
+	prefixes := []string{"/v1beta", "/v1beta1", "/v1alpha", "/v1"}
 
-	// 1. 测试 GET /v1beta/models, /v1beta1/models, /v1alpha/models (Gemini 拉取模型)
+	// 1. 测试各前缀 GET .../models (Gemini 拉取模型)
 	for _, prefix := range prefixes {
 		t.Run("ModelsList_"+prefix, func(t *testing.T) {
 			req, _ := http.NewRequest("GET", fx.server.URL+prefix+"/models?key=sk-test-key", nil)
@@ -31,8 +31,30 @@ func TestGeminiEndpointRouting(t *testing.T) {
 				t.Fatalf("Failed to decode Gemini models response: %v", err)
 			}
 
-			if _, ok := geminiModelsResp["models"]; !ok {
-				t.Errorf("Gemini models response missing 'models' field: %v", geminiModelsResp)
+			modelsArr, ok := geminiModelsResp["models"].([]any)
+			if !ok || len(modelsArr) == 0 {
+				t.Fatalf("Gemini models response 'models' must be non-empty array: %v", geminiModelsResp)
+			}
+			for _, entry := range modelsArr {
+				obj, ok := entry.(map[string]any)
+				if !ok {
+					t.Fatalf("Gemini model entry must be object: %v", entry)
+				}
+				methods, ok := obj["supportedGenerationMethods"].([]any)
+				if !ok {
+					t.Errorf("model %v missing supportedGenerationMethods (下游客户端依赖此字段过滤)", obj["name"])
+					continue
+				}
+				hasGenerate := false
+				for _, mv := range methods {
+					if s, _ := mv.(string); s == "generateContent" {
+						hasGenerate = true
+						break
+					}
+				}
+				if !hasGenerate {
+					t.Errorf("model %v supportedGenerationMethods=%v missing generateContent", obj["name"], methods)
+				}
 			}
 			if _, ok := geminiModelsResp["data"]; ok {
 				t.Errorf("Gemini models response unexpectedly contained OpenAI 'data' field: %v", geminiModelsResp)
