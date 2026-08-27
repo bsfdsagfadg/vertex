@@ -499,3 +499,46 @@ func TestImageStrategy_BuildVariables_SearchFilter(t *testing.T) {
 		}
 	})
 }
+
+func TestImageStrategy_BuildVariables_SearchFilter_Pipeline(t *testing.T) {
+	cfg := &mockConfigProvider{}
+
+	t.Run("flash-image googleSearch tool preserved, other tools stripped", func(t *testing.T) {
+		st := &ImageStrategy{model: "gemini-3.1-flash-image"}
+		req := &GeminiRequest{
+			Contents: []Content{{Role: "user", Parts: []Part{{Text: "draw"}}}},
+			Tools:    []Tool{{GoogleSearch: map[string]any{}}},
+		}
+		vars := st.BuildVariables("gemini-3.1-flash-image", req, cfg)
+		outReq := vars.GeminiRequest
+		if len(outReq.Tools) != 1 || outReq.Tools[0].GoogleSearch == nil {
+			t.Fatalf("expected exactly 1 googleSearch tool, got %v", outReq.Tools)
+		}
+	})
+
+	t.Run("lite-image googleSearch tool cleared", func(t *testing.T) {
+		st := &ImageStrategy{model: "gemini-3.1-flash-lite-image"}
+		req := &GeminiRequest{
+			Contents: []Content{{Role: "user", Parts: []Part{{Text: "draw"}}}},
+			Tools:    []Tool{{GoogleSearch: map[string]any{}}},
+		}
+		vars := st.BuildVariables("gemini-3.1-flash-lite-image", req, cfg)
+		outReq := vars.GeminiRequest
+		if len(outReq.Tools) != 0 {
+			t.Fatalf("expected 0 tools for lite-image, got %v", outReq.Tools)
+		}
+	})
+
+	t.Run("flash-image empty tool filtered", func(t *testing.T) {
+		st := &ImageStrategy{model: "gemini-3.1-flash-image"}
+		req := &GeminiRequest{
+			Contents: []Content{{Role: "user", Parts: []Part{{Text: "draw"}}}},
+			Tools:    []Tool{{}},
+		}
+		vars := st.BuildVariables("gemini-3.1-flash-image", req, cfg)
+		outReq := vars.GeminiRequest
+		if len(outReq.Tools) != 0 {
+			t.Fatalf("expected 0 tools for empty input, got %v", outReq.Tools)
+		}
+	})
+}

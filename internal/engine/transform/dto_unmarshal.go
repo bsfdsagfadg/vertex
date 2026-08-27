@@ -32,6 +32,18 @@ var (
 		"codeExecutionResult": {"code_execution_result"},
 		"videoMetadata":       {"video_metadata"},
 	}
+	toolAliases = map[string][]string{
+		"functionDeclarations":  {"function_declarations"},
+		"googleSearch":          {"google_search"},
+		"googleSearchRetrieval": {"google_search_retrieval"},
+		"codeExecution":         {"code_execution"},
+		"retrieval":             {"retrieval"},
+		"googleMaps":            {"google_maps"},
+		"urlContext":            {"url_context"},
+		"computerUse":           {"computer_use"},
+		"mcpServer":             {"mcp_server", "mcpTool", "mcp_tool"},
+		"fileSearch":            {"file_search"},
+	}
 )
 
 // unmarshalWithAliases 反序列化 + 别名归一：
@@ -97,5 +109,21 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*p = Part(out)
+	return nil
+}
+
+// UnmarshalJSON 兼容 Tool 全部可变体字段的 snake_case 别名反序列化：
+// googleSearch / google_search、googleMaps / google_maps、
+// functionDeclarations / function_declarations、codeExecution / code_execution、
+// retrieval / retrieval、googleSearchRetrieval / google_search_retrieval、
+// urlContext / url_context、computerUse / computer_use、
+// mcpServer / mcp_server / mcpTool、fileSearch / file_search。
+func (t *Tool) UnmarshalJSON(data []byte) error {
+	type alias Tool
+	var out alias
+	if err := unmarshalWithAliases(data, &out, toolAliases); err != nil {
+		return err
+	}
+	*t = Tool(out)
 	return nil
 }

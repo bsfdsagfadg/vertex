@@ -237,3 +237,77 @@ func TestApplyTextSamplingParams(t *testing.T) {
 }
 
 func intPtr(v int) *int { return &v }
+
+func TestBuildGeminiVariablesTyped_WebSearch_SnakeCase(t *testing.T) {
+	t.Run("snake_case google_search triggers dual binding", func(t *testing.T) {
+		geminiReq := &GeminiRequest{
+			Contents: []Content{{Role: "user", Parts: []Part{{Text: "hello"}}}},
+			Tools:    []Tool{{GoogleSearch: map[string]any{}}},
+		}
+		vars := BuildGeminiVariablesTyped("gemini-3.6-flash", geminiReq, nil)
+		if vars == nil || len(vars.Tools) != 2 {
+			t.Fatalf("expected 2 tools (googleSearch + googleMaps), got %v", vars.Tools)
+		}
+		if vars.Tools[0].GoogleSearch == nil {
+			t.Errorf("expected googleSearch in first tool")
+		}
+		if vars.Tools[1].GoogleMaps == nil {
+			t.Errorf("expected googleMaps in second tool")
+		}
+	})
+
+	t.Run("empty tool filtered in non-triggered path", func(t *testing.T) {
+		geminiReq := &GeminiRequest{
+			Contents: []Content{{Role: "user", Parts: []Part{{Text: "hello"}}}},
+			Tools:    []Tool{{}},
+		}
+		vars := BuildGeminiVariablesTyped("gemini-3.6-flash", geminiReq, nil)
+		if vars == nil {
+			t.Fatal("expected non-nil vars")
+		}
+		if len(vars.Tools) != 0 {
+			t.Fatalf("expected 0 tools (empty tool filtered), got %v", vars.Tools)
+		}
+	})
+
+	t.Run("unknown field tool filtered in non-triggered path", func(t *testing.T) {
+		geminiReq := &GeminiRequest{
+			Contents: []Content{{Role: "user", Parts: []Part{{Text: "hello"}}}},
+			Tools:    []Tool{{CodeExecution: map[string]any{"unknown": 123}}},
+		}
+		vars := BuildGeminiVariablesTyped("gemini-3.6-flash", geminiReq, nil)
+		if vars == nil {
+			t.Fatal("expected non-nil vars")
+		}
+		if len(vars.Tools) != 1 {
+			t.Fatalf("expected 1 tool (codeExecution preserved), got %v", vars.Tools)
+		}
+	})
+
+	t.Run("snake_case google_search with function_declarations", func(t *testing.T) {
+		geminiReq := &GeminiRequest{
+			Contents: []Content{{Role: "user", Parts: []Part{{Text: "hello"}}}},
+			Tools: []Tool{
+				{
+					GoogleSearch: map[string]any{},
+					FunctionDeclarations: []FunctionDeclaration{
+						{Name: "get_weather", Description: "get weather"},
+					},
+				},
+			},
+		}
+		vars := BuildGeminiVariablesTyped("gemini-3.6-flash", geminiReq, nil)
+		if vars == nil || len(vars.Tools) != 2 {
+			t.Fatalf("expected 2 tools, got %v", vars.Tools)
+		}
+		if vars.Tools[0].GoogleSearch == nil {
+			t.Errorf("expected googleSearch in first tool")
+		}
+		if len(vars.Tools[0].FunctionDeclarations) != 1 {
+			t.Errorf("expected 1 function declaration in first tool")
+		}
+		if vars.Tools[1].GoogleMaps == nil {
+			t.Errorf("expected googleMaps in second tool")
+		}
+	})
+}

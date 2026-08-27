@@ -196,12 +196,16 @@ func matchTrailingFixModel(model string, list []string) bool {
 // prepareNativeTools 把 Tools 中各 FunctionDeclaration 的 Parameters
 // 转换为私有 GraphQL 端点 (google_cloud_aiplatform_ui_Schema) 认可的原生 Map-style Schema，
 // 包含将 type 转换为全大写 (OBJECT/STRING/NUMBER 等) 及 properties 转为 key/value 数组。
+// 转换完成后过滤空工具兜底，防止边界场景泄漏空 Tool 至上游。
 func prepareNativeTools(tools []Tool) []Tool {
 	if len(tools) == 0 {
 		return nil
 	}
-	out := make([]Tool, len(tools))
-	for i, t := range tools {
+	out := make([]Tool, 0, len(tools))
+	for _, t := range tools {
+		if IsToolEmpty(t) {
+			continue
+		}
 		toolCopy := t
 		if len(t.FunctionDeclarations) > 0 {
 			decls := make([]FunctionDeclaration, len(t.FunctionDeclarations))
@@ -215,7 +219,10 @@ func prepareNativeTools(tools []Tool) []Tool {
 			}
 			toolCopy.FunctionDeclarations = decls
 		}
-		out[i] = toolCopy
+		out = append(out, toolCopy)
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

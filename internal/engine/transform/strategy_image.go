@@ -93,14 +93,15 @@ func smoothImageThinkingConfig(tc *ThinkingConfig, spec ImageModelSpec) *Thinkin
 // filterAllowedSearchTools 过滤出合法的 GoogleSearch 工具定义（生图仅支持纯搜索）：
 // 仅保留 googleSearch 字段非 nil 的 Tool，硬剥离 googleMaps / googleSearchRetrieval /
 // functionDeclarations 等一切其它字段；返回全新数组。
+// 统一正向生成标准的 GoogleSearch{} 空结构体标记，丢弃反序列化后的原始 any 值，
+// 确保类型安全且与文本家族 bindSearchAndMapsTools 的追加项对齐。
 func filterAllowedSearchTools(tools []Tool) []Tool {
-	var filtered []Tool
 	for _, t := range tools {
 		if t.GoogleSearch != nil {
-			filtered = append(filtered, Tool{GoogleSearch: t.GoogleSearch})
+			return []Tool{{GoogleSearch: GoogleSearch{}}}
 		}
 	}
-	return filtered
+	return nil
 }
 
 // Validate 校验图载荷的 thinkingConfig 合法性。

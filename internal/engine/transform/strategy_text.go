@@ -125,13 +125,13 @@ func applyTextSamplingParams(gc *GenerationConfig, spec TextModelSpec, cfg confi
 
 // bindSearchAndMapsTools 文本家族搜索/地图工具追加绑定（纯函数）：
 // 客户端传任意 googleSearch / googleMaps 工具 → 在原工具数组（含 functionDeclarations 等）基础上
-// 追加去重后的 [googleSearch, googleMaps]（追加共存，非替换）；未触发则原样返回。
+// 追加去重后的 [googleSearch, googleMaps]（追加共存，非替换）；未触发则过滤空工具后返回。
 // 客户端重复的 googleSearch / googleMaps 标记会被折叠（仅保留首个，其它字段如 functionDeclarations 不受影响）。
 // googleSearchRetrieval 不计入触发条件，也不参与追加/删除（透传保留）。
 // 约束：不修改原数组元素（range 拷贝上折叠标记），追加项仅空结构标记，不复制客户端字段。
 func bindSearchAndMapsTools(tools []Tool) []Tool {
 	if len(tools) == 0 {
-		return tools
+		return nil
 	}
 	triggered := false
 	for _, t := range tools {
@@ -141,7 +141,7 @@ func bindSearchAndMapsTools(tools []Tool) []Tool {
 		}
 	}
 	if !triggered {
-		return tools
+		return FilterEmptyTools(tools)
 	}
 
 	out := make([]Tool, 0, len(tools)+2)
@@ -162,11 +162,7 @@ func bindSearchAndMapsTools(tools []Tool) []Tool {
 			}
 		}
 		// 折叠后为空壳（纯重复标记）直接跳过，避免输出空工具
-		if t.GoogleSearch == nil && t.GoogleMaps == nil &&
-			t.FunctionDeclarations == nil && t.GoogleSearchRetrieval == nil &&
-			t.CodeExecution == nil && t.Retrieval == nil &&
-			t.URLContext == nil && t.ComputerUse == nil &&
-			t.MCPTool == nil && t.FileSearch == nil {
+		if IsToolEmpty(t) {
 			continue
 		}
 		out = append(out, t)

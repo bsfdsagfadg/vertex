@@ -459,3 +459,144 @@ func TestPart_AllFieldsRoundTrip(t *testing.T) {
 		t.Errorf("mediaResolution 丢失: %q", p.MediaResolution)
 	}
 }
+
+func TestTool_UnmarshalJSON_SnakeAlias(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      string
+		wantGS   bool
+		wantGM   bool
+		wantFunc bool
+		wantRet  bool
+		wantCE   bool
+		wantGSR  bool
+		wantURL  bool
+		wantComp bool
+		wantMCP  bool
+		wantFS   bool
+	}{
+		{
+			name:   "camelCase googleSearch",
+			raw:    `{"googleSearch": {}}`,
+			wantGS: true,
+		},
+		{
+			name:   "snake_case google_search",
+			raw:    `{"google_search": {}}`,
+			wantGS: true,
+		},
+		{
+			name:   "camelCase googleMaps",
+			raw:    `{"googleMaps": {}}`,
+			wantGM: true,
+		},
+		{
+			name:   "snake_case google_maps",
+			raw:    `{"google_maps": {}}`,
+			wantGM: true,
+		},
+		{
+			name:     "snake_case function_declarations",
+			raw:      `{"function_declarations": [{"name": "fn"}]}`,
+			wantFunc: true,
+		},
+		{
+			name:   "snake_case code_execution",
+			raw:    `{"code_execution": {}}`,
+			wantCE: true,
+		},
+		{
+			name:    "snake_case retrieval",
+			raw:     `{"retrieval": {}}`,
+			wantRet: true,
+		},
+		{
+			name:    "snake_case google_search_retrieval",
+			raw:     `{"google_search_retrieval": {}}`,
+			wantGSR: true,
+		},
+		{
+			name:    "snake_case url_context",
+			raw:     `{"url_context": {}}`,
+			wantURL: true,
+		},
+		{
+			name:     "snake_case computer_use",
+			raw:      `{"computer_use": {}}`,
+			wantComp: true,
+		},
+		{
+			name:    "snake_case mcp_server",
+			raw:     `{"mcp_server": {}}`,
+			wantMCP: true,
+		},
+		{
+			name:    "mcpTool alias",
+			raw:     `{"mcpTool": {}}`,
+			wantMCP: true,
+		},
+		{
+			name:    "mcp_tool alias",
+			raw:     `{"mcp_tool": {}}`,
+			wantMCP: true,
+		},
+		{
+			name:   "snake_case file_search",
+			raw:    `{"file_search": {}}`,
+			wantFS: true,
+		},
+		{
+			name:   "UPPERCASE GOOGLE_SEARCH case-fold",
+			raw:    `{"GOOGLE_SEARCH": {}}`,
+			wantGS: true,
+		},
+		{
+			name:   "mixed camelCase and snake_case",
+			raw:    `{"googleSearch": {}, "google_maps": {}}`,
+			wantGS: true,
+			wantGM: true,
+		},
+		{
+			name: "empty object yields all-nil Tool",
+			raw:  `{}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var tool Tool
+			if err := json.Unmarshal([]byte(c.raw), &tool); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+			if (tool.GoogleSearch != nil) != c.wantGS {
+				t.Errorf("GoogleSearch: got %v, want %v", tool.GoogleSearch != nil, c.wantGS)
+			}
+			if (tool.GoogleMaps != nil) != c.wantGM {
+				t.Errorf("GoogleMaps: got %v, want %v", tool.GoogleMaps != nil, c.wantGM)
+			}
+			if (len(tool.FunctionDeclarations) > 0) != c.wantFunc {
+				t.Errorf("FunctionDeclarations: got %v, want %v", len(tool.FunctionDeclarations) > 0, c.wantFunc)
+			}
+			if (tool.Retrieval != nil) != c.wantRet {
+				t.Errorf("Retrieval: got %v, want %v", tool.Retrieval != nil, c.wantRet)
+			}
+			if (tool.CodeExecution != nil) != c.wantCE {
+				t.Errorf("CodeExecution: got %v, want %v", tool.CodeExecution != nil, c.wantCE)
+			}
+			if (tool.GoogleSearchRetrieval != nil) != c.wantGSR {
+				t.Errorf("GoogleSearchRetrieval: got %v, want %v", tool.GoogleSearchRetrieval != nil, c.wantGSR)
+			}
+			if (tool.URLContext != nil) != c.wantURL {
+				t.Errorf("URLContext: got %v, want %v", tool.URLContext != nil, c.wantURL)
+			}
+			if (tool.ComputerUse != nil) != c.wantComp {
+				t.Errorf("ComputerUse: got %v, want %v", tool.ComputerUse != nil, c.wantComp)
+			}
+			if (tool.MCPTool != nil) != c.wantMCP {
+				t.Errorf("MCPTool: got %v, want %v", tool.MCPTool != nil, c.wantMCP)
+			}
+			if (tool.FileSearch != nil) != c.wantFS {
+				t.Errorf("FileSearch: got %v, want %v", tool.FileSearch != nil, c.wantFS)
+			}
+		})
+	}
+}
