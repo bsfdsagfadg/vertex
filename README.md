@@ -1,6 +1,6 @@
-# Vertex AI Proxy
+# Agent Platform Studio 2api
 
-免费使用 Google Gemini 模型的代理工具。将 **OpenAI 兼容的 API 请求**无缝转换为对 Google 匿名端点的调用——让你的客户端以为在调用 OpenAI，实际上使用的是免费的 Gemini 服务。也支持原始Gemini格式
+免费使用 Google Gemini 模型的 2api 工具。将 **OpenAI 兼容的 API 请求**无缝转换为对 Google 匿名端点的调用——让你的客户端以为在调用 OpenAI，实际上使用的是免费的 Gemini 服务。也支持原始Gemini格式
 
 **免安装、解压即用的绿色软件。** 全面支持 Windows、Linux、macOS 以及 Android 手机等平台。
 
@@ -9,8 +9,8 @@
 - **完整兼容 OpenAI 接口**：支持聊天（流式/非流式）、工具调用（Function Calling）、多模态输入（图片/文件）。
 - **丰富的多媒体支持**：支持文生图、图片编辑、语音合成（TTS）。
 - **内置反爬突破**：内置 TLS 指纹伪装及 reCAPTCHA token 自动获取，轻松通过 Google 匿名端点校验。
-- **内置代理节点池**：内嵌 mihomo 内核，支持批量导入订阅和节点，提供并发竞速功能，有效应对429
-- **可视化管理面板**：提供精美的 Web 后台，无需修改 JSON 文件，在浏览器中即可轻松管理 API 密钥、模型别名、代理节点和系统设置。
+- **内置 2api 节点池**：内嵌 mihomo 内核，支持批量导入订阅和节点，提供并发竞速功能，有效应对429
+- **可视化管理面板**：提供精美的 Web 后台，无需修改 JSON 文件，在浏览器中即可轻松管理 API 密钥、模型别名、2api 节点和系统设置。
 - **高级功能**：支持 Token 计数、Gemini 原生端点透传、假流式输出等。
 
 ## 🚀 三步上手
@@ -29,20 +29,20 @@
 > **如何使用？**
 > 在你的客户端（如 Cherry Studio、ChatBox 等）中，将 API Key 填为刚才设置的 `sk-...`，API 地址填为 `http://127.0.0.1:2156/v1` 即可开始使用！
 
-**完整的分平台部署教程**（包括开机自启、代理配置、手机部署、常见问题解答）见 **[部署指南](部署指南.md)**。
+**完整的分平台部署教程**（包括开机自启、2api 配置、手机部署、常见问题解答）见 **[部署指南](部署指南.md)**。
 
 ## 🛠 自己编译（可选）
 
 如果你想从源码自行编译：
 
 ```bash
-go build -o vertex-proxy ./cmd/vproxy
-go build -o vertex-proxy.exe ./cmd/vproxy
+go build -o agent-platform-studio-2api ./cmd/aps-2api
+go build -o agent-platform-studio-2api.exe ./cmd/aps-2api
 ```
 
 交叉编译示例（例如在 macOS/Windows 上编译 Linux 适用版本）：
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o vertex-proxy ./cmd/vproxy
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o agent-platform-studio-2api ./cmd/aps-2api
 ```
 
 ## ⚙️ 配置说明
@@ -55,11 +55,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ver
 | `port_api` | 2156 | 服务监听端口 |
 | `admin_password` | 自动生成 | 管理面板登录密码 |
 | `max_retries` | 10 | 请求失败重试次数 |
-| `proxy_url` | 空 | 全局入口代理；业务节点启用时作为第一跳，否则单独出站 |
-| `proxy_url_candidates` | `[]` | 由管理页维护的入口代理候选、测速结果和显示名称 |
+| `2api_url` | 空 | 全局入口 2api；业务节点启用时作为第一跳，否则单独出站 |
+| `2api_url_candidates` | `[]` | 由管理页维护的入口 2api 候选、测速结果和显示名称 |
 | `parallel_pool_enabled` | true | 是否开启并发竞速节点池 |
 
 > **提示**：在模型名（如 `gemini-3.5-flash`）前加上 `fake-` 或 `假流式-` 前缀，可将非流式模型伪装成流式输出。
 
 详细配置说明请参阅 [部署指南](部署指南.md#配置怎么改)。
-
