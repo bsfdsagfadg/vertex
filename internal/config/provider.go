@@ -36,6 +36,7 @@ type ConfigProvider interface {
 	EntryProxyProbeCooldownSeconds() int
 	EntryProxyProbeAutoDisableEnabled() bool
 	EntryProxyProbeAutoDisableFailures() int
+	RecaptchaTryEntryOrDirect() bool
 	ActiveNodeURI() string
 	ParallelNodeTopK() int
 
@@ -116,12 +117,13 @@ func (d dynamicConfig) EntryProxyProbeAutoDisableEnabled() bool {
 func (d dynamicConfig) EntryProxyProbeAutoDisableFailures() int {
 	return Load().EntryProxyProbeAutoDisableFailures
 }
-func (d dynamicConfig) ActiveNodeURI() string   { return Load().ActiveNodeURI }
-func (d dynamicConfig) ParallelNodeTopK() int   { return Load().ParallelNodeTopK }
-func (d dynamicConfig) BackgroundImage() string { return Load().BackgroundImage }
-func (d dynamicConfig) FontSize() string        { return Load().FontSize }
-func (d dynamicConfig) FontColorType() string   { return Load().FontColorType }
-func (d dynamicConfig) FontColor() string       { return Load().FontColor }
+func (d dynamicConfig) RecaptchaTryEntryOrDirect() bool { return Load().RecaptchaTryEntryOrDirect }
+func (d dynamicConfig) ActiveNodeURI() string           { return Load().ActiveNodeURI }
+func (d dynamicConfig) ParallelNodeTopK() int           { return Load().ParallelNodeTopK }
+func (d dynamicConfig) BackgroundImage() string         { return Load().BackgroundImage }
+func (d dynamicConfig) FontSize() string                { return Load().FontSize }
+func (d dynamicConfig) FontColorType() string           { return Load().FontColorType }
+func (d dynamicConfig) FontColor() string               { return Load().FontColor }
 func (d dynamicConfig) CustomBgPresets() []string {
 	c := Load()
 	out := make([]string, len(c.CustomBgPresets))

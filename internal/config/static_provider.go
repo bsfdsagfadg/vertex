@@ -44,6 +44,7 @@ func (s staticConfig) EntryProxyProbeAutoDisableEnabled() bool {
 func (s staticConfig) EntryProxyProbeAutoDisableFailures() int {
 	return s.c.EntryProxyProbeAutoDisableFailures
 }
+func (s staticConfig) RecaptchaTryEntryOrDirect() bool          { return s.c.RecaptchaTryEntryOrDirect }
 func (s staticConfig) ActiveNodeURI() string                    { return s.c.ActiveNodeURI }
 func (s staticConfig) ParallelNodeTopK() int                    { return s.c.ParallelNodeTopK }
 func (s staticConfig) BackgroundImage() string                  { return s.c.BackgroundImage }

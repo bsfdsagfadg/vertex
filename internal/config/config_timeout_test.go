@@ -25,8 +25,8 @@ func TestLoadNormalizesAndPersistsTimeouts(t *testing.T) {
 	if cfg.RaceTimeout != maxTimeoutSeconds {
 		t.Fatalf("race_timeout=%d, want %d", cfg.RaceTimeout, maxTimeoutSeconds)
 	}
-	if cfg.StreamIdleTimeoutSeconds != 30 {
-		t.Fatalf("stream_idle_timeout_seconds=%d, want 30", cfg.StreamIdleTimeoutSeconds)
+	if cfg.StreamIdleTimeoutSeconds != DefaultStreamIdleTimeoutSeconds {
+		t.Fatalf("stream_idle_timeout_seconds=%d, want %d", cfg.StreamIdleTimeoutSeconds, DefaultStreamIdleTimeoutSeconds)
 	}
 	if cfg.ParallelPoolSize != 20 {
 		t.Fatalf("parallel_pool_size=%d, want 20", cfg.ParallelPoolSize)
@@ -43,7 +43,7 @@ func TestLoadNormalizesAndPersistsTimeouts(t *testing.T) {
 	if raw["request_timeout"] != float64(maxTimeoutSeconds) || raw["race_timeout"] != float64(maxTimeoutSeconds) {
 		t.Fatalf("规范化超时未写回: %#v", raw)
 	}
-	if raw["stream_idle_timeout_seconds"] != float64(30) || raw["parallel_pool_size"] != float64(20) {
+	if raw["stream_idle_timeout_seconds"] != float64(DefaultStreamIdleTimeoutSeconds) || raw["parallel_pool_size"] != float64(20) {
 		t.Fatalf("规范化空闲超时/并发数未写回: %#v", raw)
 	}
 	if raw["custom_field"] != "preserved" {
@@ -61,7 +61,7 @@ func TestLoadNormalizesNegativeTimeouts(t *testing.T) {
 	InvalidateCache()
 
 	cfg := Load()
-	if cfg.RequestTimeout != 180 || cfg.RaceTimeout != 0 || cfg.StreamIdleTimeoutSeconds != 30 {
+	if cfg.RequestTimeout != 180 || cfg.RaceTimeout != 0 || cfg.StreamIdleTimeoutSeconds != DefaultStreamIdleTimeoutSeconds {
 		t.Fatalf("负值规范化错误: request=%d race=%d idle=%d", cfg.RequestTimeout, cfg.RaceTimeout, cfg.StreamIdleTimeoutSeconds)
 	}
 }
