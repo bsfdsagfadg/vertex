@@ -19,5 +19,10 @@
   "entry_proxy_probe_auto_disable_failures": 10,
   "sticky_node_priority": false,
   "parallel_pool_size": 15,
+  "max_request_mb": 128,
+  "max_spill_mb": 32,
+  "race_timeout": 60,
+  "stream_idle_timeout_seconds": 20,
+  "recaptcha_try_entry_or_direct": true,
   "telemetry_enabled": false
 }

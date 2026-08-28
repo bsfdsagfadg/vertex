@@ -14,6 +14,8 @@ import (
 	"github.com/bogdanfinn/tls-client/profiles"
 )
 
+const maxReadResponseBytes = 8 << 20
+
 // Header 是 fhttp.Header 的别名，让 recaptcha/vertex 能构造请求头而不直接 import fhttp。
 type Header = http.Header
 
@@ -55,7 +57,10 @@ func (s *Session) DoAndRead(ctx context.Context, method, url string, header http
 		return 0, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	data, readErr := io.ReadAll(resp.Body)
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxReadResponseBytes+1))
+	if len(data) > maxReadResponseBytes {
+		return resp.StatusCode, nil, fmt.Errorf("response body exceeds %d bytes", maxReadResponseBytes)
+	}
 	if readErr != nil {
 		return resp.StatusCode, nil, fmt.Errorf("error: %w", readErr)
 

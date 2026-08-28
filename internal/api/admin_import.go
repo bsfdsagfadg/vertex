@@ -132,10 +132,48 @@ func parseFlexibleImportedNodeLine(line string) (nodes.Node, bool) {
 
 func (adm *AdminHandler) adminImportNodes(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Text    string `json:"text"`
-		Replace bool   `json:"replace"`
+		Text      string `json:"text"`
+		Replace   bool   `json:"replace"`
+		SingleURI bool   `json:"single_uri"`
 	}
 	if !adm.decodeAdminBody(w, r, &body) {
+		return
+	}
+	if body.SingleURI {
+		// Strict single-node mode is intentionally separate from subscription/file
+		// import: reject multiline payloads and URL-shaped subscription sources.
+		text := strings.TrimSpace(body.Text)
+		if body.Replace {
+			writeJSON(w, http.StatusBadRequest, adminErr("单节点导入不允许 replace=true"))
+			return
+		}
+		if text == "" {
+			writeJSON(w, http.StatusBadRequest, adminErr("请提供一个节点 URI"))
+			return
+		}
+		if strings.ContainsAny(text, "\r\n") {
+			writeJSON(w, http.StatusBadRequest, adminErr("一次只能导入一个节点；多节点内容请前往订阅管理"))
+			return
+		}
+		lower := strings.ToLower(text)
+		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+			writeJSON(w, http.StatusBadRequest, adminErr("订阅 URL 请前往订阅管理；单节点导入仅接受代理 URI"))
+			return
+		}
+		node, ok := parseFlexibleImportedNodeLine(text)
+		if !ok || strings.TrimSpace(node.RawURI) == "" {
+			writeJSON(w, http.StatusBadRequest, adminErr("格式不支持或不是完整节点 URI"))
+			return
+		}
+		if configNodeExists(node.RawURI) {
+			writeJSON(w, http.StatusConflict, adminErr("节点已存在"))
+			return
+		}
+		if err := nodes.ImportManualNodes([]nodes.Node{node}, false); err != nil {
+			writeJSON(w, http.StatusInternalServerError, adminErr("导入节点失败"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": 1})
 		return
 	}
 	log.Printf("[Admin] [ImportNodes] 收到优选节点文件导入请求, 替换模式: %v", body.Replace)
@@ -147,6 +185,15 @@ func (adm *AdminHandler) adminImportNodes(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(newNodes)})
+}
+
+func configNodeExists(rawURI string) bool {
+	for _, n := range nodes.LoadNodes() {
+		if strings.TrimSpace(n.RawURI) == strings.TrimSpace(rawURI) {
+			return true
+		}
+	}
+	return false
 }
 
 func (adm *AdminHandler) adminImportNodesJson(w http.ResponseWriter, r *http.Request) {

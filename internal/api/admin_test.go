@@ -18,6 +18,34 @@ func resetAdminSessions() {
 	adminSessionsMu.Unlock()
 }
 
+func TestAdminFrontendDisablesBrowserCache(t *testing.T) {
+	adm := &AdminHandler{}
+	for _, path := range []string{"/admin/", "/admin/admin.css", "/admin/page-settings.js"} {
+		recorder := httptest.NewRecorder()
+		adm.handleAdminPage(recorder, httptest.NewRequest("GET", path, nil))
+		if recorder.Code != 200 {
+			t.Fatalf("%s status=%d", path, recorder.Code)
+		}
+		if got := recorder.Header().Get("Cache-Control"); got != "no-store, no-cache, must-revalidate" {
+			t.Fatalf("%s Cache-Control=%q", path, got)
+		}
+		if got := recorder.Header().Get("Pragma"); got != "no-cache" {
+			t.Fatalf("%s Pragma=%q", path, got)
+		}
+	}
+}
+
+func TestBuildMetadataDisablesBrowserCache(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	(&Server{}).handleBuildMeta(recorder, httptest.NewRequest("GET", "/api/meta/build", nil))
+	if recorder.Code != 200 {
+		t.Fatalf("status=%d", recorder.Code)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store, no-cache, must-revalidate" {
+		t.Fatalf("Cache-Control=%q", got)
+	}
+}
+
 func TestAdminGetKeysIncludesDescription(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "api_keys.txt")
 	t.Setenv("VPROXY_API_KEYS", path)

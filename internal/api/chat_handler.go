@@ -37,6 +37,10 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	if body == nil {
 		body = make(map[string]any)
 	}
+	if strings.EqualFold(r.Header.Get("X-OpenAI-Strict"), "true") {
+		known := map[string]bool{"model":true,"messages":true,"stream":true,"stream_options":true,"n":true,"temperature":true,"top_p":true,"max_tokens":true,"max_completion_tokens":true,"stop":true,"tools":true,"tool_choice":true,"parallel_tool_calls":true,"response_format":true,"reasoning_effort":true,"thinking":true,"media_resolution":true,"safety_settings":true,"safetySettings":true,"user":true,"presence_penalty":true,"frequency_penalty":true,"seed":true,"logprobs":true,"top_logprobs":true,"extra_body":true}
+		for k := range body { if !known[k] { oaiError(w, 400, "unknown parameter: "+k, "unsupported_parameter"); return } }
+	}
 
 	rawModel, _ := body["model"].(string)
 	if strings.TrimSpace(rawModel) == "" {
@@ -94,7 +98,11 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	if stream {
-		c.streamChatCompletions(r.Context(), w, model, geminiPayload)
+		includeUsage := false
+		if so, ok := body["stream_options"].(map[string]any); ok {
+			includeUsage, _ = so["include_usage"].(bool)
+		}
+		c.streamChatCompletions(r.Context(), w, model, geminiPayload, includeUsage)
 		return
 	}
 
@@ -135,8 +143,11 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, oaiResp)
 }
 
-func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
-	requestID := reqID24()
+func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any, includeUsage bool) {
+	requestID := vertex.RequestIDFromContext(ctx)
+	if requestID == "" {
+		requestID = reqID24()
+	}
 
 	sw := newSSEWriter(w, "text/event-stream")
 
@@ -170,6 +181,9 @@ func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.Response
 		events := c.respConv.StreamToSSE(ch.Data, model, requestID, isFirst, toolCallTracker)
 		isFirst = false
 		for _, ev := range events {
+			if !includeUsage && strings.Contains(ev, `"usage":`) {
+				continue
+			}
 			if strings.Contains(ev, `"finish_reason"`) && !strings.Contains(ev, `"finish_reason":null`) {
 				hasFinish = true
 			}
@@ -222,7 +236,10 @@ func (c *ChatHandler) writeStreamError(write func(string) bool, e *vertex.Vertex
 }
 
 func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
-	requestID := reqID24()
+	requestID := vertex.RequestIDFromContext(ctx)
+	if requestID == "" {
+		requestID = reqID24()
+	}
 	sw := newSSEWriter(w, "text/event-stream")
 
 	resp, vErr := c.vc.CompleteChat(ctx, model, geminiPayload)
@@ -294,7 +311,10 @@ func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, 
 }
 
 func (c *ChatHandler) oaiAggregateStream(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
-	requestID := reqID24()
+	requestID := vertex.RequestIDFromContext(ctx)
+	if requestID == "" {
+		requestID = reqID24()
+	}
 	sw := newSSEWriter(w, "text/event-stream")
 
 	resp, vErr := c.vc.CompleteChat(ctx, model, geminiPayload)

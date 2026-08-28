@@ -16,18 +16,36 @@ type TokenPool struct {
 	fetch        func(context.Context, string) (string, error)
 	defaultProxy func() string
 	routes       func() []string
+	primary      func() []string
+	fallback     func() []string
 }
 
 func NewTokenPool(net *transport.NetworkClient, cfg config.ConfigProvider) *TokenPool {
-	return &TokenPool{
+	p := &TokenPool{
 		fetch: func(ctx context.Context, proxyURI string) (string, error) {
 			return FetchRecaptchaToken(ctx, net, proxyURI, cfg.DebugMode())
 		},
 		defaultProxy: cfg.ProxyURL,
-		routes: func() []string {
-			return sharedTokenRoutes(cfg)
-		},
+		routes:       func() []string { return sharedTokenRoutes(cfg) },
 	}
+	if cfg.RecaptchaTryEntryOrDirect() {
+		p.primary = func() []string {
+			out := []string{}
+			for _, e := range config.SelectEntryProxySequence(1, cfg) {
+				out = append(out, e)
+			}
+			out = append(out, "")
+			return out
+		}
+		p.fallback = func() []string {
+			out := []string{}
+			for _, n := range nodes.SelectForParallel(cfg.ParallelPoolSize(), cfg.ParallelNodeTopK(), cfg.DebugMode(), false) {
+				out = append(out, n.RawURI)
+			}
+			return out
+		}
+	}
+	return p
 }
 
 // NewTokenPoolCustom creates a token pool with a custom fetch function.
@@ -75,6 +93,15 @@ func (p *TokenPool) GetTokenWithProxyContext(ctx context.Context, proxyURI strin
 // GetTokenSharedContext 每次调用都会独立获取一份 token，不缓存，也不使用 singleflight。
 // 最多五条路线立即并发执行完整 reCAPTCHA 流程，首个成功结果胜出并取消其余请求。
 func (p *TokenPool) GetTokenSharedContext(ctx context.Context) (string, error) {
+	if p.primary != nil {
+		if token, err := p.fetchRoutes(ctx, p.primary()); err == nil {
+			return token, nil
+		}
+		if token, err := p.fetchRoutes(ctx, p.fallback()); err == nil {
+			return token, nil
+		}
+		return "", fmt.Errorf("all recaptcha token routes failed")
+	}
 	routes := []string(nil)
 	if p.routes != nil {
 		routes = p.routes()
@@ -126,6 +153,29 @@ func (p *TokenPool) GetTokenSharedContext(ctx context.Context) (string, error) {
 		firstErr = fmt.Errorf("all recaptcha token routes failed")
 	}
 	return "", firstErr
+}
+
+func (p *TokenPool) fetchRoutes(ctx context.Context, routes []string) (string, error) {
+	if len(routes) == 0 {
+		return "", errors.New("no recaptcha routes")
+	}
+	var first error
+	for _, route := range routes {
+		token, err := p.fetch(ctx, route)
+		if err == nil && token != "" {
+			return token, nil
+		}
+		if err != nil && !errors.Is(err, context.Canceled) && first == nil {
+			first = err
+		}
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+	}
+	if first == nil {
+		first = errors.New("all recaptcha token routes failed")
+	}
+	return "", first
 }
 
 func sharedTokenRoutes(cfg config.ConfigProvider) []string {

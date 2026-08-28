@@ -4,14 +4,20 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"unicode"
 )
 
 const skipThoughtSentinel = "skip_thought_signature_validator"
 
 // NormalizeBase64 规范化 base64：剥离 data URI 前缀、URL-safe 字符还原、补 padding。
 func NormalizeBase64(data string) string {
-	value := strings.TrimSpace(data)
-	if strings.Contains(value, ",") && strings.HasPrefix(value, "data:") {
+	value := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, data)
+	if strings.HasPrefix(strings.ToLower(value), "data:") {
 		if idx := strings.Index(value, ","); idx >= 0 {
 			value = value[idx+1:]
 		}

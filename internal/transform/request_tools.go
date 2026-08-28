@@ -30,7 +30,12 @@ func convertTools(body, geminiPayload map[string]any) (map[string]bool, error) {
 	}
 
 	var funcDecls []any
+	var builtins []any
 	for _, t := range oaiTools {
+		if builtin := normalizeBuiltinTool(t); builtin != nil {
+			builtins = append(builtins, builtin)
+			continue
+		}
 		f := extractOAIFunctionTool(t)
 		if f == nil {
 			continue
@@ -49,10 +54,40 @@ func convertTools(body, geminiPayload map[string]any) (map[string]bool, error) {
 		}
 		funcDecls = append(funcDecls, decl)
 	}
-	if len(funcDecls) > 0 {
-		geminiPayload["tools"] = []any{map[string]any{"functionDeclarations": funcDecls}}
+	if len(funcDecls) > 0 || len(builtins) > 0 {
+		tools := make([]any, 0, 1+len(builtins))
+		if len(funcDecls) > 0 {
+			tools = append(tools, map[string]any{"functionDeclarations": funcDecls})
+		}
+		tools = append(tools, builtins...)
+		geminiPayload["tools"] = tools
 	}
 	return declared, nil
+}
+
+// normalizeBuiltinTool maps OpenAI web-search aliases to Gemini's canonical
+// googleSearch tool while preserving already-native tool objects.
+func normalizeBuiltinTool(tool any) map[string]any {
+	m, ok := tool.(map[string]any)
+	if !ok {
+		return nil
+	}
+	typ, _ := m["type"].(string)
+	switch strings.ToLower(typ) {
+	case "web_search", "web_search_2", "web_search_preview", "google_search", "google_search_2":
+		out := map[string]any{"googleSearch": map[string]any{}}
+		if cfg, ok := m["googleSearch"].(map[string]any); ok {
+			out["googleSearch"] = cfg
+		}
+		return out
+	}
+	if _, ok := m["googleSearch"]; ok {
+		return convertToolsFormat(m).(map[string]any)
+	}
+	if _, ok := m["google_search"]; ok {
+		return convertToolsFormat(m).(map[string]any)
+	}
+	return nil
 }
 
 // convertToolChoice 把 tool_choice（或 legacy function_call）转为 toolConfig。
@@ -153,7 +188,7 @@ func convertToolsFormat(data any) any {
 			switch k {
 			case "function_declarations", "functionDeclarations":
 				out["functionDeclarations"] = convertToolsFormat(v)
-			case "google_search", "googleSearch":
+			case "google_search", "google_search_2", "web_search", "web_search_2", "googleSearch":
 				out["googleSearch"] = convertToolsFormatLeaf(v)
 			case "google_search_retrieval", "googleSearchRetrieval":
 				out["googleSearchRetrieval"] = convertToolsFormatLeaf(v)

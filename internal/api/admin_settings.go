@@ -12,10 +12,12 @@ var adminAllowedSettings = map[string]bool{
 	"max_request_mb": true, "max_n": true, "aggregate_stream": true,
 	"fake_stream_enabled": true,
 	"drop_max_tokens":     true, "proxy_url": true,
-	"request_timeout":          true,
-	"race_timeout":             true,
-	"model_turn_guard_enabled": true,
-	"parallel_pool_enabled":    true, "parallel_pool_size": true,
+	"request_timeout":               true,
+	"race_timeout":                  true,
+	"stream_idle_timeout_seconds":   true,
+	"recaptcha_try_entry_or_direct": true,
+	"model_turn_guard_enabled":      true,
+	"parallel_pool_enabled":         true, "parallel_pool_size": true,
 	"telemetry_enabled":                       true,
 	"parallel_pool_delay_dynamic":             true,
 	"entry_proxy_probe_enabled":               true,
@@ -44,18 +46,20 @@ func (adm *AdminHandler) adminGetSettings(w http.ResponseWriter, _ *http.Request
 		telEnabled = *adm.cfg.TelemetryEnabled()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"settings": map[string]any{
-		"max_retries":              adm.cfg.MaxRetries(),
-		"max_spill_mb":             adm.cfg.MaxSpillMB(),
-		"max_request_mb":           adm.cfg.MaxRequestMB(),
-		"max_n":                    adm.cfg.MaxN(),
-		"aggregate_stream":         adm.cfg.AggregateStream(),
-		"fake_stream_enabled":      adm.cfg.FakeStreamEnabled(),
-		"drop_max_tokens":          adm.cfg.DropMaxTokens(),
-		"telemetry_enabled":        telEnabled,
-		"request_timeout":          adm.cfg.RequestTimeout(),
-		"race_timeout":             adm.cfg.RaceTimeout(),
-		"model_turn_guard_enabled": adm.cfg.ModelTurnGuardEnabled(),
-		"proxy_url":                adm.cfg.ProxyURL(), "parallel_pool_enabled": adm.cfg.ParallelPoolEnabled(), "parallel_pool_size": adm.cfg.ParallelPoolSize(), "active_node_uri": adm.cfg.ActiveNodeURI(),
+		"max_retries":                   adm.cfg.MaxRetries(),
+		"max_spill_mb":                  adm.cfg.MaxSpillMB(),
+		"max_request_mb":                adm.cfg.MaxRequestMB(),
+		"max_n":                         adm.cfg.MaxN(),
+		"aggregate_stream":              adm.cfg.AggregateStream(),
+		"fake_stream_enabled":           adm.cfg.FakeStreamEnabled(),
+		"drop_max_tokens":               adm.cfg.DropMaxTokens(),
+		"telemetry_enabled":             telEnabled,
+		"request_timeout":               adm.cfg.RequestTimeout(),
+		"race_timeout":                  adm.cfg.RaceTimeout(),
+		"stream_idle_timeout_seconds":   adm.cfg.StreamIdleTimeoutSeconds(),
+		"recaptcha_try_entry_or_direct": adm.cfg.RecaptchaTryEntryOrDirect(),
+		"model_turn_guard_enabled":      adm.cfg.ModelTurnGuardEnabled(),
+		"proxy_url":                     adm.cfg.ProxyURL(), "parallel_pool_enabled": adm.cfg.ParallelPoolEnabled(), "parallel_pool_size": adm.cfg.ParallelPoolSize(), "active_node_uri": adm.cfg.ActiveNodeURI(),
 		"proxy_url_candidates":                    config.ListProxyCandidates(),
 		"parallel_pool_delay_dynamic":             adm.cfg.ParallelPoolDelayDynamic(),
 		"parallel_pool_delay_ms":                  adm.cfg.ParallelPoolDelayMs(),
@@ -97,7 +101,7 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 			continue
 		}
 		switch k {
-		case "max_retries", "max_spill_mb", "max_request_mb", "max_n", "parallel_pool_size", "parallel_pool_delay_ms", "request_timeout", "race_timeout",
+		case "max_retries", "max_spill_mb", "max_request_mb", "max_n", "parallel_pool_size", "parallel_pool_delay_ms", "request_timeout", "race_timeout", "stream_idle_timeout_seconds",
 			"entry_proxy_probe_interval_seconds", "entry_proxy_probe_cooldown_seconds", "entry_proxy_probe_auto_disable_failures":
 			if f, ok := v.(float64); ok {
 				val := int(f)
@@ -111,6 +115,12 @@ func (adm *AdminHandler) adminPutSettings(w http.ResponseWriter, r *http.Request
 				case "race_timeout":
 					if val < 0 {
 						val = 0
+					} else if val > 1800 {
+						val = 1800
+					}
+				case "stream_idle_timeout_seconds":
+					if val <= 0 {
+						val = config.DefaultStreamIdleTimeoutSeconds
 					} else if val > 1800 {
 						val = 1800
 					}

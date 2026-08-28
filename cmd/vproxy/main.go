@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,6 +20,7 @@ import (
 	"unicode"
 
 	"github.com/bsfdsagfadg/vertex/internal/api"
+	"github.com/bsfdsagfadg/vertex/internal/buildinfo"
 	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/config"
 	"github.com/bsfdsagfadg/vertex/internal/db"
@@ -32,9 +32,14 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
+const fallbackVersion = "1.3.0-dev"
+
 var (
+	// version has a repository fallback so a plain `go build` still produces a
+	// useful user-facing version. Release scripts may override it with -ldflags;
+	// their default "dev" value falls back again in main.
 	//nolint:gochecknoglobals // Injected by build script
-	version = "dev"
+	version = fallbackVersion
 	//nolint:gochecknoglobals // Injected by build script
 	buildCommit = "unknown"
 	//nolint:gochecknoglobals // Injected by build script
@@ -77,11 +82,12 @@ func inDocker() bool {
 
 // 提取原有的终端普通打印，仅在需要同意规则阶段展示
 func printLegacyBanner() {
+	bi := buildinfo.Current()
 	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
-	fmt.Printf("║  Vertex AI Proxy  %-42s ║\n", version)
+	fmt.Printf("║  Vertex AI Proxy  %-42s ║\n", bi.Version)
 	fmt.Println("║  PolyForm Noncommercial License 1.0.0   Deconstructed_Cube   ║")
-	fmt.Printf("║  Build: %s / %s                                  ║\n", buildCommit, buildTime)
-	fmt.Printf("║  Platform: %s/%s                                       ║\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Printf("║  Build: %s / %s                                  ║\n", bi.Commit, bi.BuildTime)
+	fmt.Printf("║  Platform: %s/%s                                       ║\n", bi.GOOS, bi.GOARCH)
 	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
 
 	fmt.Println()
@@ -97,6 +103,14 @@ func printLegacyBanner() {
 }
 
 func main() {
+	if version == "" || version == "dev" {
+		version = fallbackVersion
+	}
+	source := "local"
+	if buildCommit != "" && buildCommit != "unknown" && buildTime != "" && buildTime != "unknown" {
+		source = "release"
+	}
+	buildinfo.SetInjected(version, buildCommit, buildTime, source)
 	setupTermuxCerts() // 优先初始化 Termux 证书
 
 	logDir := filepath.Join(filepath.Dir(config.ConfigDir()), "logs")
@@ -159,7 +173,8 @@ func main() {
 
 	// ---- 同意通过之后，干净地启动 TUI 看板，坚决不影响前面的交互输入 ───
 	cli.InitTracker(dailyLogger)
-	cli.SetAppInfo(version, buildCommit, buildTime, runtime.GOOS, runtime.GOARCH)
+	bi := buildinfo.Current()
+	cli.SetAppInfo(bi.Version, bi.Commit, bi.BuildTime, bi.GOOS, bi.GOARCH)
 	defer cli.StopTUI()
 
 	cfg := config.GetProvider()
@@ -184,7 +199,8 @@ func main() {
 	keys.LoadKeys()
 
 	api.EnsureAdminPassword()
-	api.StartAdminSessionCleanup(time.Hour)
+	stopAdminSessionCleanup := api.StartAdminSessionCleanup(time.Hour)
+	defer stopAdminSessionCleanup()
 
 	vc := vertex.NewVertexAIClient(cfg)
 	stopEntryProxyProbe := api.StartEntryProxyProbeLoop(vc.Net())
@@ -194,7 +210,7 @@ func main() {
 	if cfg.TelemetryEnabled() != nil {
 		telemetryEnabled = *cfg.TelemetryEnabled()
 	}
-	telemetry.Start(version, runtime.GOOS+"/"+runtime.GOARCH, telemetryEnabled)
+	telemetry.Start(bi.Version, bi.GOOS+"/"+bi.GOARCH, telemetryEnabled)
 
 	srv := api.NewServer(vc, keys, cfg)
 	//nolint:exhaustruct

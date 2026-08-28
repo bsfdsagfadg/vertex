@@ -375,6 +375,85 @@ func TestRunRaceReturnsGlobalRequestError(t *testing.T) {
 	}
 }
 
+func TestRunRaceSlidingWindowLaunchBudgetAndActiveLimit(t *testing.T) {
+	var added []nodes.Node
+	for i := 1; i <= 6; i++ {
+		added = append(added, nodes.Node{Type: "http", Name: fmt.Sprintf("budget-%d", i), RawURI: fmt.Sprintf("http://budget-%d:8080", i)})
+	}
+	nodes.MergeNodes(added)
+	t.Cleanup(func() {
+		for _, n := range added {
+			nodes.DeleteNode(n.RawURI)
+		}
+	})
+	cfg := config.StaticProvider(config.AppConfig{ParallelPoolEnabled: true, ParallelPoolSize: 3, MaxRetries: 2, RaceTimeout: 1})
+	var launched atomic.Int32
+	var active atomic.Int32
+	var peak atomic.Int32
+	_, err := RunRace(context.Background(), cfg, func(ctx context.Context, _ string) (string, error) {
+		launched.Add(1)
+		n := active.Add(1)
+		for {
+			old := peak.Load()
+			if n <= old || peak.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		defer active.Add(-1)
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	if err == nil {
+		t.Fatal("all sliding-window candidates should fail")
+	}
+	if got := launched.Load(); got != 9 {
+		t.Fatalf("launch budget=%d, want 9", got)
+	}
+	if got := peak.Load(); got > 3 {
+		t.Fatalf("active peak=%d, want <=3", got)
+	}
+}
+
+func TestRunRaceSlidingWindowRefillsFailedSlotImmediately(t *testing.T) {
+	var added []nodes.Node
+	for i := 1; i <= 4; i++ {
+		added = append(added, nodes.Node{Type: "http", Name: fmt.Sprintf("refill-%d", i), RawURI: fmt.Sprintf("http://refill-%d:8080", i)})
+	}
+	nodes.MergeNodes(added)
+	t.Cleanup(func() {
+		for _, n := range added {
+			nodes.DeleteNode(n.RawURI)
+		}
+	})
+	cfg := config.StaticProvider(config.AppConfig{ParallelPoolEnabled: true, ParallelPoolSize: 3, MaxRetries: 1, RaceTimeout: 0})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var launched atomic.Int32
+	fourth := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = RunRace(ctx, cfg, func(candidateCtx context.Context, _ string) (string, error) {
+			n := launched.Add(1)
+			if n == 1 {
+				return "", errors.New("immediate failure")
+			}
+			if n == 4 {
+				close(fourth)
+			}
+			<-candidateCtx.Done()
+			return "", candidateCtx.Err()
+		})
+	}()
+	select {
+	case <-fourth:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("failed slot was not refilled promptly")
+	}
+	cancel()
+	<-done
+}
+
 func TestStreamParallelReportsEmptyResponse(t *testing.T) {
 	raceTestNodes(t)
 	var gotErr *VertexError

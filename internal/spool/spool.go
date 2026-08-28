@@ -10,13 +10,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 )
 
 var (
 	//nolint:gochecknoglobals // Internal spool state
 	maxMemSize int64 // 0 = unlimited（永不落盘）
 	//nolint:gochecknoglobals // Internal spool state
-	spilledBytes int64
+	spilledBytes atomic.Int64
 )
 
 // SetMaxSpillBytes 设置磁盘溢出阈值（字节数）；0 或负数表示永不落盘。
@@ -25,7 +26,7 @@ func SetMaxSpillBytes(limit int64) {
 }
 
 // SpilledBytes 返回进程启动以来写入临时文件的累计字节数。
-func SpilledBytes() int64 { return spilledBytes }
+func SpilledBytes() int64 { return spilledBytes.Load() }
 
 // Buffer 是"先写后读"字节缓冲，支持自动磁盘溢出。
 //
@@ -73,7 +74,7 @@ func (b *Buffer) Write(p []byte) (int, error) {
 			b.totalWritten = int64(len(b.mem)) + int64(n)
 		}
 		b.mem = nil
-		spilledBytes += b.totalWritten
+		spilledBytes.Add(b.totalWritten)
 		return n, err
 
 	}

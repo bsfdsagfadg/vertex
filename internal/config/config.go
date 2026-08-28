@@ -19,6 +19,8 @@ const (
 	DefaultEntryProxyProbeIntervalSeconds = 300
 	DefaultEntryProxyProbeCooldownSeconds = 60
 	DefaultEntryProxyAutoDisableFailures  = 10
+	DefaultRaceTimeoutSeconds             = 60
+	DefaultStreamIdleTimeoutSeconds       = 20
 	MinEntryProxyProbeIntervalSeconds     = 60
 	MaxEntryProxyProbeSeconds             = 86400
 	MaxEntryProxyAutoDisableFailures      = 100
@@ -59,6 +61,7 @@ type AppConfig struct { //nolint:govet
 	EntryProxyProbeCooldownSeconds     int    `json:"entry_proxy_probe_cooldown_seconds"`
 	EntryProxyProbeAutoDisableEnabled  bool   `json:"entry_proxy_probe_auto_disable_enabled"`
 	EntryProxyProbeAutoDisableFailures int    `json:"entry_proxy_probe_auto_disable_failures"`
+	RecaptchaTryEntryOrDirect          bool   `json:"recaptcha_try_entry_or_direct"`
 
 	// 匿名遥测：仅发送实例 ID + 版本 + 平台，不含任何用户/网络/隐私数据。
 	// 用于了解软件的版本分布和活跃数。指针类型区分"未设置"和"显式 false"，未设置时默认开启。
@@ -83,11 +86,12 @@ func DefaultConfig() AppConfig {
 		VertexAPIKey:                       defaultAnonAPIKey,
 		CountTokensQuerySignature:          defaultCountTokensQuerySig,
 		MaxN:                               8,
-		MaxSpillMB:                         2048,
+		MaxSpillMB:                         32,
+		MaxRequestMB:                       128,
 		RequestTimeout:                     180,
 		FakeStreamEnabled:                  true,
-		RaceTimeout:                        0,
-		StreamIdleTimeoutSeconds:           30,
+		RaceTimeout:                        DefaultRaceTimeoutSeconds,
+		StreamIdleTimeoutSeconds:           DefaultStreamIdleTimeoutSeconds,
 		ModelTurnGuardEnabled:              true,
 		ParallelPoolEnabled:                true,
 		StickyNodePriority:                 false,
@@ -100,6 +104,7 @@ func DefaultConfig() AppConfig {
 		EntryProxyProbeCooldownSeconds:     DefaultEntryProxyProbeCooldownSeconds,
 		EntryProxyProbeAutoDisableEnabled:  false,
 		EntryProxyProbeAutoDisableFailures: DefaultEntryProxyAutoDisableFailures,
+		RecaptchaTryEntryOrDirect:          true,
 		BackgroundImage:                    "url('background.jpg')",
 		FontSize:                           "14px",
 		FontColorType:                      "adaptive",
@@ -224,7 +229,7 @@ func Load() AppConfig {
 				needsSave = true
 			}
 			if cfg.StreamIdleTimeoutSeconds <= 0 {
-				cfg.StreamIdleTimeoutSeconds = 30
+				cfg.StreamIdleTimeoutSeconds = DefaultStreamIdleTimeoutSeconds
 				needsSave = true
 			}
 			if cfg.EntryProxyProbeIntervalSeconds <= 0 {
@@ -283,6 +288,7 @@ func Load() AppConfig {
 					"entry_proxy_probe_interval_seconds":      cfg.EntryProxyProbeIntervalSeconds,
 					"entry_proxy_probe_cooldown_seconds":      cfg.EntryProxyProbeCooldownSeconds,
 					"entry_proxy_probe_auto_disable_failures": cfg.EntryProxyProbeAutoDisableFailures,
+					"recaptcha_try_entry_or_direct":           cfg.RecaptchaTryEntryOrDirect,
 					"default_image_size":                      cfg.DefaultImageSize,
 					"default_response_modalities":             cfg.DefaultResponseModalities,
 				}); errSave != nil {

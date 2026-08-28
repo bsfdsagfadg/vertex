@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
@@ -23,14 +24,18 @@ func (g *GeminiHandler) handleModelsSubtree(w http.ResponseWriter, r *http.Reque
 	switch {
 	case strings.HasPrefix(r.URL.Path, "/v1beta/models/"):
 		rest = strings.TrimPrefix(r.URL.Path, "/v1beta/models/")
+	case strings.HasPrefix(r.URL.Path, "/v1beta1/models/"):
+		rest = strings.TrimPrefix(r.URL.Path, "/v1beta1/models/")
+	case strings.HasPrefix(r.URL.Path, "/v1alpha/models/"):
+		rest = strings.TrimPrefix(r.URL.Path, "/v1alpha/models/")
 	case strings.HasPrefix(r.URL.Path, "/v1/models/"):
 		rest = strings.TrimPrefix(r.URL.Path, "/v1/models/")
 	default:
-		oaiError(w, http.StatusNotFound, "not found", "invalid_request_error")
+		g.geminiError(w, http.StatusNotFound, "not found", "NOT_FOUND")
 		return
 	}
 	if rest == "" {
-		oaiError(w, http.StatusNotFound, "not found", "invalid_request_error")
+		g.geminiError(w, http.StatusNotFound, "not found", "NOT_FOUND")
 		return
 	}
 
@@ -44,7 +49,7 @@ func (g *GeminiHandler) handleModelsSubtree(w http.ResponseWriter, r *http.Reque
 	switch method {
 	case "":
 		if r.Method != http.MethodGet {
-			oaiError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
+			g.geminiError(w, http.StatusMethodNotAllowed, "method not allowed", "INVALID_ARGUMENT")
 			return
 		}
 		g.handleModelInfo(w, model)
@@ -55,13 +60,13 @@ func (g *GeminiHandler) handleModelsSubtree(w http.ResponseWriter, r *http.Reque
 	case "countTokens":
 		g.requirePost(w, r, func() { g.handleCountTokens(w, r, model) })
 	default:
-		oaiError(w, http.StatusNotFound, "未知方法 "+method+" (unknown method)", "invalid_request_error")
+		g.geminiError(w, http.StatusNotFound, "未知方法 "+method+" (unknown method)", "NOT_FOUND")
 	}
 }
 
 func (g *GeminiHandler) requirePost(w http.ResponseWriter, r *http.Request, fn func()) {
 	if r.Method != http.MethodPost {
-		oaiError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
+		g.geminiError(w, http.StatusMethodNotAllowed, "method not allowed", "INVALID_ARGUMENT")
 		return
 	}
 	fn()
@@ -89,6 +94,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 		geminiModelNotFound(w, model)
 		return
 	}
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -122,6 +128,8 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 		geminiModelNotFound(w, model)
 		return
 	}
+	requestID := vertex.RequestIDFromContext(r.Context())
+	cli.UpdateReqModel(requestID, actualModel)
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -146,6 +154,9 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	suffix := generateVPSuffix()
 	toolCallIDAssigner := transform.NewFunctionCallIDAssigner()
 	g.vc.StreamChat(r.Context(), actualModel, body, func(ch vertex.StreamChunk) bool {
+		if !gotChunk && ch.Err == nil {
+			cli.UpdateReqState(requestID, "💬 流式打字", "\033[36m", "正在输出...")
+		}
 		if ch.Err != nil {
 			if !sw.hasWritten() {
 				ve := toVertexError(ch.Err)
@@ -274,6 +285,7 @@ func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request
 		geminiModelNotFound(w, model)
 		return
 	}
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return

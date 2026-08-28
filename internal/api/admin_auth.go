@@ -92,19 +92,27 @@ func requireAdmin(r *http.Request) bool {
 	return checkAdminToken(adminTokenFromRequest(r))
 }
 
-func StartAdminSessionCleanup(interval time.Duration) {
+func StartAdminSessionCleanup(interval time.Duration) func() {
 	if interval <= 0 {
 		interval = time.Hour
 	}
+	stop := make(chan struct{})
+	var stopOnce sync.Once
 	go func() {
 		t := time.NewTicker(interval)
 		defer t.Stop()
-		for range t.C {
-			if n := cleanupAdminSessions(); n > 0 {
-				log.Printf("[Admin] 已清理 %d 个过期会话 token", n)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				if n := cleanupAdminSessions(); n > 0 {
+					log.Printf("[Admin] 已清理 %d 个过期会话 token", n)
+				}
 			}
 		}
 	}()
+	return func() { stopOnce.Do(func() { close(stop) }) }
 }
 
 func EnsureAdminPassword() {

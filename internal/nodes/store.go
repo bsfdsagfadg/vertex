@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -113,14 +114,19 @@ func LoadNodes() []Node {
 	defer mu.Unlock()
 	ensureLoaded()
 	log.Printf("[Nodes] 获取所有节点 (数量: %d)", len(nodeList))
-	return nodeList
+	// Return an isolated snapshot. Callers frequently sort or annotate the
+	// result; exposing the backing slice would race with concurrent updates and
+	// allow accidental mutation of the store's authoritative state.
+	snapshot := make([]Node, len(nodeList))
+	copy(snapshot, nodeList)
+	return snapshot
 }
 
 func LoadHealth() map[string]*NodeHealth {
 	mu.Lock()
 	defer mu.Unlock()
 	ensureLoaded()
-	return healthMap
+	return cloneHealthMapUnsafe()
 }
 
 // writeAtomicJSON has been removed because it is unused
@@ -136,81 +142,128 @@ type healthUpdate struct {
 	h   NodeHealth
 }
 
+// healthQueue coalesces updates by URI before handing them to the database.
+// This keeps memory and goroutine usage bounded when SQLite is slow: callers
+// never spawn a goroutine to wait for a full queue, and repeated updates for a
+// URI replace its older pending value.
+type healthQueue struct {
+	mu      sync.Mutex
+	pending map[string]NodeHealth
+	wake    chan struct{}
+}
+
+const maxPendingHealthUpdates = 4096
+
 var (
-	healthUpdateChan chan healthUpdate //nolint:gochecknoglobals
-	healthOnce       sync.Once         //nolint:gochecknoglobals
+	healthQueueInst *healthQueue //nolint:gochecknoglobals
+	healthOnce      sync.Once    //nolint:gochecknoglobals
 )
 
 func initHealthQueue() {
-	healthUpdateChan = make(chan healthUpdate, 2048)
-	go func() {
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
+	q := &healthQueue{pending: make(map[string]NodeHealth), wake: make(chan struct{}, 1)}
+	healthQueueInst = q
+	go q.run()
+}
 
-		batch := make(map[string]NodeHealth)
+func (q *healthQueue) enqueue(update healthUpdate) {
+	q.mu.Lock()
+	if _, exists := q.pending[update.uri]; !exists && len(q.pending) >= maxPendingHealthUpdates {
+		// Apply bounded backpressure by dropping this new URI. Existing entries
+		// (and therefore the latest state for already queued URIs) are retained.
+		q.mu.Unlock()
+		return
+	}
+	q.pending[update.uri] = update.h
+	q.mu.Unlock()
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
+}
 
-		flush := func() {
-			if len(batch) == 0 {
-				return
-			}
-			if db.GlobalDB == nil {
-				if len(batch) > 1000 {
-					for k := range batch {
-						delete(batch, k)
-					}
-				}
-				return
-			}
-			tx, err := db.GlobalDB.Begin()
-			if err != nil {
-				log.Printf("[ERROR] Failed to begin health save transaction: %v", err)
-				if len(batch) > 1000 {
-					for k := range batch {
-						delete(batch, k)
-					}
-				}
-				return
-			}
-			stmt, err := tx.Prepare(`INSERT OR REPLACE INTO node_health
-				(raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until, last_429_at, rate_limit_count, last_sub_healthy_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			if err != nil {
+func (q *healthQueue) drain() map[string]NodeHealth {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.pending) == 0 {
+		return nil
+	}
+	batch := q.pending
+	q.pending = make(map[string]NodeHealth)
+	return batch
+}
+
+func (q *healthQueue) requeue(batch map[string]NodeHealth) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for uri, h := range batch {
+		// Preserve a newer value that arrived while the failed batch was being
+		// written; only restore entries that are still absent.
+		if _, exists := q.pending[uri]; !exists && len(q.pending) < maxPendingHealthUpdates {
+			q.pending[uri] = h
+		}
+	}
+}
+
+func (q *healthQueue) run() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-q.wake:
+		case <-ticker.C:
+		}
+		batch := q.drain()
+		if len(batch) == 0 {
+			continue
+		}
+		if !persistHealthBatch(batch) {
+			// Keep updates bounded while the database is unavailable. The latest
+			// value remains in memory and will be retried on a later wake/tick.
+			q.requeue(batch)
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+}
+
+func persistHealthBatch(batch map[string]NodeHealth) bool {
+	if db.GlobalDB == nil {
+		// Database shutdown is terminal for this process; dropping the drained
+		// batch avoids retaining an unbounded retry backlog after CloseDB.
+		return true
+	}
+	tx, err := db.GlobalDB.Begin()
+	if err != nil {
+		log.Printf("[ERROR] Failed to begin health save transaction: %v", err)
+		return false
+	}
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO node_health
+		(raw_uri, success_count, fail_count, consecutive_failures, last_test_ms, last_test_error, last_success_at, last_fail_at, cooldown_until, last_429_at, rate_limit_count, last_sub_healthy_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		_ = tx.Rollback()
+		log.Printf("[ERROR] Failed to prepare health save statement: %v", err)
+		return false
+	}
+	for uri, h := range batch {
+		if _, err := stmt.Exec(uri, h.SuccessCount, h.FailCount, h.ConsecutiveFailures, h.LastTestMs, h.LastTestError, h.LastSuccessAt, h.LastFailAt, h.CooldownUntil, h.Last429At, h.RateLimitCount, h.LastSubHealthyAt); err != nil {
+			// A node may have been deleted while this update was queued. Skip
+			// that stale row rather than rolling back the whole batch and retrying
+			// it forever; transient transaction failures are still surfaced by
+			// Begin/Commit and requeued by the worker.
+			log.Printf("[WARN] Dropping stale health update for %q: %v", uri, err)
+			if !strings.Contains(strings.ToLower(err.Error()), "foreign key") {
+				_ = stmt.Close()
 				_ = tx.Rollback()
-				log.Printf("[ERROR] Failed to prepare health save statement: %v", err)
-				if len(batch) > 1000 {
-					for k := range batch {
-						delete(batch, k)
-					}
-				}
-				return
-			}
-			defer stmt.Close()
-
-			for uri, h := range batch {
-				_, _ = stmt.Exec(uri, h.SuccessCount, h.FailCount, h.ConsecutiveFailures, h.LastTestMs, h.LastTestError, h.LastSuccessAt, h.LastFailAt, h.CooldownUntil, h.Last429At, h.RateLimitCount, h.LastSubHealthyAt)
-			}
-			_ = tx.Commit()
-			for k := range batch {
-				delete(batch, k)
+				return false
 			}
 		}
-
-		for {
-			select {
-			case update, ok := <-healthUpdateChan:
-				if !ok {
-					flush()
-					return
-				}
-				batch[update.uri] = update.h
-				if len(batch) >= 100 {
-					flush()
-				}
-			case <-ticker.C:
-				flush()
-			}
-		}
-	}()
+	}
+	_ = stmt.Close()
+	if err := tx.Commit(); err != nil {
+		log.Printf("[ERROR] Failed to commit health save transaction: %v", err)
+		return false
+	}
+	return true
 }
 
 func saveHealthUnsafe() {
@@ -218,15 +271,10 @@ func saveHealthUnsafe() {
 		return
 	}
 	healthOnce.Do(initHealthQueue)
+	q := healthQueueInst
 	for uri, h := range healthMap {
 		if h != nil {
-			select {
-			case healthUpdateChan <- healthUpdate{uri: uri, h: *h}:
-			default:
-				go func(update healthUpdate) {
-					healthUpdateChan <- update
-				}(healthUpdate{uri: uri, h: *h})
-			}
+			q.enqueue(healthUpdate{uri: uri, h: *h})
 		}
 	}
 }
@@ -236,13 +284,7 @@ func updateSingleNodeHealthUnsafe(uri string, h *NodeHealth) {
 		return
 	}
 	healthOnce.Do(initHealthQueue)
-	select {
-	case healthUpdateChan <- healthUpdate{uri: uri, h: *h}:
-	default:
-		go func(update healthUpdate) {
-			healthUpdateChan <- update
-		}(healthUpdate{uri: uri, h: *h})
-	}
+	healthQueueInst.enqueue(healthUpdate{uri: uri, h: *h})
 }
 
 func updateSingleNodeDisabledUnsafe(uri string, disabled bool) {
@@ -368,6 +410,42 @@ func CheckTestControl() bool {
 		testControlCond.Wait()
 	}
 	return !globalProgress.Running || globalProgress.Terminated
+}
+
+// CheckTestControlContext is the cancellation-aware variant used by bounded
+// batch workers. It deliberately avoids waiting on the legacy condition
+// variable while paused, so a parent timeout can always release the worker.
+func CheckTestControlContext(ctx context.Context) bool {
+	for {
+		progressMu.Lock()
+		stop := !globalProgress.Running || globalProgress.Terminated
+		paused := globalProgress.Paused && !globalProgress.Terminated && globalProgress.Running
+		progressMu.Unlock()
+		if stop {
+			return true
+		}
+		if !paused {
+			return false
+		}
+		t := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !t.Stop() {
+				<-t.C
+			}
+			return true
+		case <-t.C:
+		}
+	}
+}
+
+func nodeExistsUnsafe(uri string) bool {
+	for _, n := range nodeList {
+		if n.RawURI == uri {
+			return true
+		}
+	}
+	return false
 }
 
 func pruneHealthUnsafe() {
@@ -711,6 +789,12 @@ func RecordTest(uri string, ok bool, ms float64, errStr string) {
 	mu.Lock()
 	defer mu.Unlock()
 	ensureLoaded()
+	if !nodeExistsUnsafe(uri) {
+		// Ignore late results for nodes removed while a test was in flight. In
+		// particular this prevents creating orphan health rows that violate the
+		// node_health foreign key.
+		return
+	}
 	h, exists := healthMap[uri]
 	if !exists {
 		h = &NodeHealth{} //nolint:exhaustruct
@@ -754,6 +838,9 @@ func RecordRateLimit(uri string, cooldownSec int) {
 	mu.Lock()
 	defer mu.Unlock()
 	ensureLoaded()
+	if !nodeExistsUnsafe(uri) {
+		return
+	}
 	h, exists := healthMap[uri]
 	if !exists {
 		h = &NodeHealth{} //nolint:exhaustruct

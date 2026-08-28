@@ -22,6 +22,9 @@ type AdminHandler struct {
 }
 
 func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin")
 	log.Printf("[Server] [AdminAPI] 收到请求: %s %s", r.Method, path)
 
@@ -334,7 +337,9 @@ func (adm *AdminHandler) handleAdminPage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.Header().Set("Content-Type", contentTypeFor(name))
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 	_, _ = w.Write(data)
 }
 
