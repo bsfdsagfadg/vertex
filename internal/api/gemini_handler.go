@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/jsonx"
 	"github.com/bsfdsagfadg/vertex/internal/transform"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
@@ -93,6 +94,7 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 		geminiModelNotFound(w, model)
 		return
 	}
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -126,6 +128,8 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 		geminiModelNotFound(w, model)
 		return
 	}
+	requestID := vertex.RequestIDFromContext(r.Context())
+	cli.UpdateReqModel(requestID, actualModel)
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return
@@ -150,6 +154,9 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	suffix := generateVPSuffix()
 	toolCallIDAssigner := transform.NewFunctionCallIDAssigner()
 	g.vc.StreamChat(r.Context(), actualModel, body, func(ch vertex.StreamChunk) bool {
+		if !gotChunk && ch.Err == nil {
+			cli.UpdateReqState(requestID, "💬 流式打字", "\033[36m", "正在输出...")
+		}
 		if ch.Err != nil {
 			if !sw.hasWritten() {
 				ve := toVertexError(ch.Err)
@@ -278,6 +285,7 @@ func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request
 		geminiModelNotFound(w, model)
 		return
 	}
+	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 	body, ok := g.readGeminiBody(w, r)
 	if !ok {
 		return

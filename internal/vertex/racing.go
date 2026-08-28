@@ -18,25 +18,39 @@ func StreamParallel(ctx context.Context, cfg config.ConfigProvider,
 
 	wrappedOp := func(ctx context.Context, uri string) (<-chan StreamChunk, error) {
 		ch := op(ctx, uri)
-		var first StreamChunk
-		var ok bool
-		select {
-		case first, ok = <-ch:
-			if !ok {
-				if err := ctx.Err(); err != nil {
-					return nil, err
+		// Anonymous streaming commonly starts with metadata/default finish frames.
+		// Do not let those frames win the race: wait for real content or an error,
+		// while retaining every frame so the winning stream remains lossless.
+		buffered := make([]StreamChunk, 0, 4)
+		hasValidContent := false
+		for {
+			select {
+			case chunk, ok := <-ch:
+				if !ok {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+					return nil, NewEmptyResponseError(fmt.Sprintf("stream: %s closed with no valid content", nodes.GetNodeName(uri)))
 				}
-				return nil, NewEmptyResponseError(fmt.Sprintf("stream: %s closed with no data", nodes.GetNodeName(uri)))
+				buffered = append(buffered, chunk)
+				if chunk.Err != nil {
+					return nil, chunk.Err
+				}
+				if streamChunkHasContent(chunk) {
+					hasValidContent = true
+				}
+				if hasValidContent {
+					goto contentReady
+				}
+			case <-ctx.Done():
+				return nil, ctx.Err()
 			}
-		case <-ctx.Done():
-			return nil, ctx.Err()
 		}
-
-		if first.Err != nil {
-			return nil, first.Err
-		}
+	contentReady:
 		rest := make(chan StreamChunk, 64)
-		rest <- first
+		for _, chunk := range buffered {
+			rest <- chunk
+		}
 		go func() {
 			defer close(rest)
 			for chunk := range ch {
@@ -65,4 +79,17 @@ func StreamParallel(ctx context.Context, cfg config.ConfigProvider,
 			return
 		}
 	}
+}
+
+// streamChunkHasContent accepts both normalized Gemini chunks and the small
+// map-shaped chunks used by lower-level callers/tests. Metadata-only frames
+// must never decide the winner of a streaming race.
+func streamChunkHasContent(chunk StreamChunk) bool {
+	if chunk.Err != nil || chunk.Data == nil {
+		return false
+	}
+	if text, ok := chunk.Data["text"].(string); ok && text != "" {
+		return true
+	}
+	return isValidContentChunk(chunk.Data)
 }

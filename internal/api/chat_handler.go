@@ -144,7 +144,10 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 }
 
 func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any, includeUsage bool) {
-	requestID := reqID24()
+	requestID := vertex.RequestIDFromContext(ctx)
+	if requestID == "" {
+		requestID = reqID24()
+	}
 
 	sw := newSSEWriter(w, "text/event-stream")
 
@@ -233,7 +236,10 @@ func (c *ChatHandler) writeStreamError(write func(string) bool, e *vertex.Vertex
 }
 
 func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
-	requestID := reqID24()
+	requestID := vertex.RequestIDFromContext(ctx)
+	if requestID == "" {
+		requestID = reqID24()
+	}
 	sw := newSSEWriter(w, "text/event-stream")
 
 	resp, vErr := c.vc.CompleteChat(ctx, model, geminiPayload)
@@ -305,7 +311,10 @@ func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, 
 }
 
 func (c *ChatHandler) oaiAggregateStream(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
-	requestID := reqID24()
+	requestID := vertex.RequestIDFromContext(ctx)
+	if requestID == "" {
+		requestID = reqID24()
+	}
 	sw := newSSEWriter(w, "text/event-stream")
 
 	resp, vErr := c.vc.CompleteChat(ctx, model, geminiPayload)
