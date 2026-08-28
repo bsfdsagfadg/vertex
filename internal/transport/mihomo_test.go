@@ -3,6 +3,8 @@ package transport
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -179,6 +181,41 @@ func TestProxyChainRejectsSelfReference(t *testing.T) {
 		return adapter.ParseProxy(mapping, options...)
 	}, "SOCKS5://127.0.0.1:1080#candidate"); err == nil {
 		t.Fatal("self-referencing proxy chain was accepted")
+	}
+}
+
+func TestEvictInactiveLRUOnlyRemovesOldestIdleEntries(t *testing.T) {
+	StopAllProxies()
+	t.Cleanup(StopAllProxies)
+	proxyMutex.Lock()
+	base := time.Now()
+	for i := 0; i < maxProxyCacheEntries+1; i++ {
+		proxyMap["k"+strconv.Itoa(i)] = &proxyInfo{proxyURI: "u" + strconv.Itoa(i), lastUsedAt: base.Add(time.Duration(i) * time.Second)}
+	}
+	active := proxyMap["k10"]
+	active.activeRefs = 1
+	evicted := evictInactiveLRULocked(1)
+	_, oldestStillThere := proxyMap["k0"]
+	_, activeStillThere := proxyMap["k10"]
+	proxyMutex.Unlock()
+	if len(evicted) != 1 || evicted[0].proxyURI != "u0" || oldestStillThere || !activeStillThere {
+		t.Fatalf("unexpected LRU eviction: evicted=%v oldest=%v active=%v", len(evicted), oldestStillThere, activeStillThere)
+	}
+}
+
+func TestTrackedConnReleasesActiveReferenceOnce(t *testing.T) {
+	left, right := net.Pipe()
+	defer right.Close()
+	info := &proxyInfo{activeRefs: 1}
+	conn := &trackedConn{Conn: left, info: info}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close tracked connection: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("second close tracked connection: %v", err)
+	}
+	if info.activeRefs != 0 {
+		t.Fatalf("active refs = %d, want 0", info.activeRefs)
 	}
 }
 

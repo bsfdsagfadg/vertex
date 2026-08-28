@@ -90,7 +90,8 @@ func TestNodesLifecycle(t *testing.T) {
 	}
 
 	RecordTest("uri1", false, 0, "timeout")
-	hUri1 = health["uri1"]
+	// LoadHealth returns an isolated snapshot; reload after mutation.
+	hUri1 = LoadHealth()["uri1"]
 	if hUri1 == nil || hUri1.FailCount != 1 {
 		t.Errorf("Expected fail count 1, got %v", hUri1)
 	}
@@ -555,8 +556,12 @@ func TestCooldownAndSubHealthyStateSurvivesReload(t *testing.T) {
 		t.Fatalf("重载后活动冷却节点不应进入候选: %+v", selected)
 	}
 
+	// Mutate the store under its lock; the previously returned health value is
+	// intentionally a deep-copy snapshot and must not affect selection.
 	mu.Lock()
-	h.CooldownUntil = time.Now().Unix() - 1
+	if current := healthMap["limited"]; current != nil {
+		current.CooldownUntil = time.Now().Unix() - 1
+	}
 	mu.Unlock()
 	selected = SelectForParallel(2, 80, false, false)
 	if len(selected) != 2 {

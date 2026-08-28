@@ -12,9 +12,11 @@ import (
 // DailyLogger implements an io.Writer that writes to logs_latest.log.
 // On Close, it appends the content to a daily log file and clears logs_latest.log.
 type DailyLogger struct {
-	mu       sync.Mutex
-	logDir   string
-	latestFd *os.File
+	mu        sync.Mutex
+	logDir    string
+	latestFd  *os.File
+	stopCh    chan struct{}
+	closeOnce sync.Once
 }
 
 // NewDailyLogger creates a new DailyLogger that writes logs to the specified directory.
@@ -33,6 +35,7 @@ func NewDailyLogger(dir string) *DailyLogger {
 	dl := &DailyLogger{
 		logDir:   dir,
 		latestFd: f,
+		stopCh:   make(chan struct{}),
 	}
 	go dl.cleanupRoutine()
 	return dl
@@ -48,39 +51,53 @@ func (l *DailyLogger) Write(p []byte) (n int, err error) {
 }
 
 func (l *DailyLogger) Close() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	var closeErr error
+	l.closeOnce.Do(func() {
+		close(l.stopCh)
+		l.mu.Lock()
+		defer l.mu.Unlock()
 
-	if l.latestFd != nil {
-		_ = l.latestFd.Close()
-		l.latestFd = nil
-	}
-
-	latestPath := filepath.Join(l.logDir, "logs_latest.log")
-	nowDate := time.Now().Format("2006-01-02")
-	targetPath := filepath.Join(l.logDir, fmt.Sprintf("vproxy-%s.log", nowDate))
-
-	latestData, _ := os.ReadFile(latestPath)
-
-	// Create or open the target file regardless of whether there's data
-	f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err == nil {
-		if len(latestData) > 0 {
-			_, _ = f.Write(latestData)
+		if l.latestFd != nil {
+			_ = l.latestFd.Close()
+			l.latestFd = nil
 		}
-		_ = f.Close()
-	}
 
-	// Always remove logs_latest.log
-	_ = os.Remove(latestPath)
+		latestPath := filepath.Join(l.logDir, "logs_latest.log")
+		nowDate := time.Now().Format("2006-01-02")
+		targetPath := filepath.Join(l.logDir, fmt.Sprintf("vproxy-%s.log", nowDate))
 
-	return nil
+		latestData, _ := os.ReadFile(latestPath)
+
+		// Create or open the target file regardless of whether there's data
+		f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err == nil {
+			if len(latestData) > 0 {
+				_, _ = f.Write(latestData)
+			}
+			_ = f.Close()
+		}
+
+		// Always remove logs_latest.log
+		_ = os.Remove(latestPath)
+	})
+	return closeErr
 }
 
 func (l *DailyLogger) cleanupRoutine() {
 	for {
 		l.cleanup()
-		time.Sleep(1 * time.Hour)
+		t := time.NewTimer(time.Hour)
+		select {
+		case <-t.C:
+		case <-l.stopCh:
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
+				}
+			}
+			return
+		}
 	}
 }
 

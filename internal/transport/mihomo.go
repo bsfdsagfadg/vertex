@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,7 +27,10 @@ type proxyInfo struct {
 	entryURI     string
 	lastUsedAt   time.Time
 	closed       bool
+	activeRefs   int
 }
+
+const maxProxyCacheEntries = 512
 
 type proxyInitState struct {
 	done     chan struct{}
@@ -48,7 +52,11 @@ var (
 )
 
 func getOrStartProxyDialer(uri string, reqID string, debugMode bool, entryURIs ...string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
-	return getOrStartProxyDialerWithBuilder(uri, reqID, debugMode, func(mapping map[string]any, options ...adapter.ProxyOption) (constant.Proxy, error) {
+	return getOrStartProxyDialerContext(context.Background(), uri, reqID, debugMode, entryURIs...)
+}
+
+func getOrStartProxyDialerContext(ctx context.Context, uri string, reqID string, debugMode bool, entryURIs ...string) (func(context.Context, string, string) (net.Conn, error), error) {
+	return getOrStartProxyDialerWithBuilderContext(ctx, uri, reqID, debugMode, func(mapping map[string]any, options ...adapter.ProxyOption) (constant.Proxy, error) {
 		return adapter.ParseProxy(mapping, options...)
 	}, entryURIs...)
 }
@@ -66,6 +74,10 @@ func ValidateProxyURI(uri string) error {
 }
 
 func getOrStartProxyDialerWithBuilder(uri string, reqID string, debugMode bool, builder proxyBuilder, entryURIs ...string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
+	return getOrStartProxyDialerWithBuilderContext(context.Background(), uri, reqID, debugMode, builder, entryURIs...)
+}
+
+func getOrStartProxyDialerWithBuilderContext(ctx context.Context, uri string, reqID string, debugMode bool, builder proxyBuilder, entryURIs ...string) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
 	entryURI := ""
 	if len(entryURIs) > 0 {
 		entryURI = strings.TrimSpace(entryURIs[0])
@@ -79,15 +91,21 @@ func getOrStartProxyDialerWithBuilder(uri string, reqID string, debugMode bool, 
 		info.lastUsedAt = time.Now()
 		p := info.proxy
 		proxyMutex.Unlock()
-		return makeDialer(p, debugMode), nil
+		return makeTrackedDialer(p, info, debugMode), nil
 	}
 	if pending, ok := proxyInitMap[cacheKey]; ok {
 		proxyMutex.Unlock()
-		<-pending.done
+		select {
+		case <-pending.done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(30 * time.Second):
+			return nil, errors.New("proxy initialization timed out")
+		}
 		if pending.err != nil {
 			return nil, pending.err
 		}
-		return getOrStartProxyDialerWithBuilder(uri, reqID, debugMode, builder, entryURI)
+		return getOrStartProxyDialerWithBuilderContext(ctx, uri, reqID, debugMode, builder, entryURI)
 	}
 	pending := &proxyInitState{done: make(chan struct{}), proxyURI: uri, entryURI: entryURI}
 	proxyInitMap[cacheKey] = pending
@@ -122,10 +140,50 @@ func getOrStartProxyDialerWithBuilder(uri string, reqID string, debugMode bool, 
 	proxyMap[cacheKey] = &proxyInfo{
 		proxy: proxy, dependencies: dependencies, proxyURI: uri, entryURI: entryURI, lastUsedAt: time.Now(),
 	}
+	info := proxyMap[cacheKey]
+	var evicted []*proxyInfo
+	if len(proxyMap) > maxProxyCacheEntries {
+		evicted = evictInactiveLRULocked(len(proxyMap) - maxProxyCacheEntries)
+	}
 	delete(proxyInitMap, cacheKey)
 	close(pending.done)
 	proxyMutex.Unlock()
-	return makeDialer(proxy, debugMode), nil
+	for _, item := range evicted {
+		closeMihomoProxies(item.proxy, item.dependencies)
+	}
+	return makeTrackedDialer(proxy, info, debugMode), nil
+}
+
+// evictInactiveLRULocked removes the least recently used inactive entries.
+// proxyMutex must be held by the caller.
+func evictInactiveLRULocked(limit int) []*proxyInfo {
+	if limit <= 0 {
+		return nil
+	}
+	type candidate struct {
+		key  string
+		info *proxyInfo
+	}
+	candidates := make([]candidate, 0, len(proxyMap))
+	for key, info := range proxyMap {
+		if info.closed || info.activeRefs > 0 {
+			continue
+		}
+		candidates = append(candidates, candidate{key: key, info: info})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].info.lastUsedAt.Before(candidates[j].info.lastUsedAt)
+	})
+	if limit > len(candidates) {
+		limit = len(candidates)
+	}
+	evicted := make([]*proxyInfo, 0, limit)
+	for _, item := range candidates[:limit] {
+		item.info.closed = true
+		delete(proxyMap, item.key)
+		evicted = append(evicted, item.info)
+	}
+	return evicted
 }
 
 func proxyCacheKey(uri, entryURI string) string {
@@ -191,6 +249,28 @@ func buildMihomoProxy(uri, entryURI string, builder proxyBuilder) (proxy constan
 }
 
 func makeDialer(p constant.Proxy, debugMode bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return makeTrackedDialer(p, nil, debugMode)
+}
+
+type trackedConn struct {
+	net.Conn
+	info *proxyInfo
+	once sync.Once
+}
+
+func (c *trackedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() {
+		proxyMutex.Lock()
+		if c.info.activeRefs > 0 {
+			c.info.activeRefs--
+		}
+		proxyMutex.Unlock()
+	})
+	return err
+}
+
+func makeTrackedDialer(p constant.Proxy, info *proxyInfo, debugMode bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -207,8 +287,24 @@ func makeDialer(p constant.Proxy, debugMode bool) func(ctx context.Context, netw
 			DstPort: uint16(portInt),
 		}
 
+		if info != nil {
+			proxyMutex.Lock()
+			if info.closed {
+				proxyMutex.Unlock()
+				return nil, errors.New("proxy cache entry closed")
+			}
+			info.activeRefs++
+			proxyMutex.Unlock()
+		}
 		conn, err := p.DialContext(ctx, metadata)
 		if err != nil {
+			if info != nil {
+				proxyMutex.Lock()
+				if info.activeRefs > 0 {
+					info.activeRefs--
+				}
+				proxyMutex.Unlock()
+			}
 			// 若是因为上下文取消导致拨号中止，属于并发竞速中的正常现象，直接退出，不打印误报
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 				return nil, fmt.Errorf("error: %w", err)
@@ -221,6 +317,9 @@ func makeDialer(p constant.Proxy, debugMode bool) func(ctx context.Context, netw
 
 		}
 
+		if info != nil {
+			return &trackedConn{Conn: conn, info: info}, nil
+		}
 		return conn, nil
 	}
 }
@@ -282,7 +381,7 @@ func cleanupIdleProxies(maxIdle time.Duration) {
 	proxyMutex.Lock()
 	now := time.Now()
 	for cacheKey, info := range proxyMap {
-		if now.Sub(info.lastUsedAt) > maxIdle {
+		if now.Sub(info.lastUsedAt) > maxIdle && info.activeRefs == 0 {
 			if !info.closed {
 				info.closed = true
 				idle = append(idle, idleProxy{uri: info.proxyURI, proxy: info.proxy, dependencies: info.dependencies})
