@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -122,6 +123,12 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 	var rc raceConfig[T]
 	for _, o := range opts {
 		o(&rc)
+	}
+	// Configured retries use the constant-fill sliding window. Keep the
+	// historical single-shot path (MaxRetries==0) for compatibility with
+	// direct/locked callers that explicitly disable retries.
+	if cfg.ParallelPoolEnabled() && cfg.MaxRetries() > 0 {
+		return runSlidingWindow(ctx, cfg, run, rc)
 	}
 
 	stickyPool := nodes.GetStickyPool()
@@ -498,6 +505,162 @@ func RunRace[T any](ctx context.Context, cfg config.ConfigProvider,
 					return zero, fmt.Errorf("all nodes failed")
 				}
 			}
+		}
+	}
+}
+
+// runSlidingWindow keeps as many candidates in flight as the configured pool
+// permits and immediately refills a slot after a failure or non-winning result.
+// The launch budget is (max_retries+1)*window; a URI is excluded only while it
+// is in flight, so a small pool can safely reuse completed nodes.
+func runSlidingWindow[T any](ctx context.Context, cfg config.ConfigProvider, run func(context.Context, string) (T, error), rc raceConfig[T]) (T, error) {
+	var zero T
+	stickyPool := nodes.GetStickyPool()
+	w := cfg.ParallelPoolSize()
+	if w <= 0 {
+		w = 1
+	}
+	retries := cfg.MaxRetries()
+	if retries < 0 {
+		retries = 0
+	}
+	if retries > 1_000_000 {
+		retries = 1_000_000
+	}
+	budget64 := (int64(retries) + 1) * int64(w)
+	if budget64 < int64(w) {
+		budget64 = int64(w)
+	}
+	budget := int(budget64)
+	type result struct {
+		uri string
+		val T
+		err error
+	}
+	results := make(chan result, w)
+	active := make(map[string]context.CancelFunc)
+	var mu sync.Mutex
+	launched := 0
+	var failures []error
+	var collected []raceResult[T]
+	launch := func(uri string) {
+		candCtx, cancel := context.WithCancel(ctx)
+		mu.Lock()
+		active[uri] = cancel
+		mu.Unlock()
+		launched++
+		go func() {
+			defer func() {
+				if recover() != nil {
+					results <- result{uri: uri, err: NewInternalError("candidate panic")}
+				}
+			}()
+			if timeout := cfg.RaceTimeout(); timeout > 0 {
+				var stop context.CancelFunc
+				candCtx, stop = context.WithTimeout(candCtx, time.Duration(timeout)*time.Second)
+				defer stop()
+			}
+			v, err := run(candCtx, uri)
+			results <- result{uri: uri, val: v, err: err}
+		}()
+	}
+	fill := func() {
+		for len(active) < w && launched < budget {
+			cands := nodes.SelectForParallel(w, cfg.ParallelNodeTopK(), cfg.DebugMode(), cfg.StickyNodePriority())
+			picked := ""
+			for _, c := range cands {
+				if _, ok := active[c.RawURI]; !ok && strings.TrimSpace(c.RawURI) != "" {
+					picked = c.RawURI
+					break
+				}
+			}
+			if picked == "" {
+				// Best-effort relaxed fill: cooling nodes may be retried when a
+				// configured window would otherwise go idle, but disabled nodes
+				// remain excluded.
+				for _, c := range nodes.LoadNodes() {
+					if !c.Disabled {
+						if _, ok := active[c.RawURI]; !ok && strings.TrimSpace(c.RawURI) != "" {
+							picked = c.RawURI
+							break
+						}
+					}
+				}
+			}
+			if picked == "" {
+				return
+			}
+			launch(picked)
+		}
+	}
+	fill()
+	if len(active) == 0 && launched == 0 {
+		proxy := cfg.ActiveNodeURI()
+		if proxy == "" {
+			proxy = cfg.ProxyURL()
+		}
+		return run(ctx, proxy)
+	}
+	for {
+		if len(active) == 0 {
+			if len(collected) > 0 {
+				if rc.finalizeCollected != nil {
+					return rc.finalizeCollected(collected)
+				}
+				return collected[0].val, nil
+			}
+			if launched >= budget {
+				if len(failures) > 0 {
+					return zero, pickBestError(failures)
+				}
+				return zero, fmt.Errorf("all nodes failed")
+			}
+			fill()
+			if len(active) == 0 {
+				if len(failures) > 0 {
+					return zero, pickBestError(failures)
+				}
+				return zero, fmt.Errorf("all nodes failed")
+			}
+		}
+		select {
+		case <-ctx.Done():
+			mu.Lock()
+			for _, cancel := range active {
+				cancel()
+			}
+			mu.Unlock()
+			return zero, ctx.Err()
+		case res := <-results:
+			mu.Lock()
+			if cancel := active[res.uri]; cancel != nil {
+				cancel()
+				delete(active, res.uri)
+			}
+			mu.Unlock()
+			if res.err == nil {
+				nodes.RecordTest(res.uri, true, 50, "")
+				stickyPool.Add(res.uri)
+				if rc.isWinningResult == nil || rc.isWinningResult(res.val) {
+					mu.Lock()
+					for _, cancel := range active {
+						cancel()
+					}
+					mu.Unlock()
+					return res.val, nil
+				}
+				collected = append(collected, raceResult[T]{uri: res.uri, val: res.val})
+			} else if !errors.Is(res.err, context.Canceled) {
+				failures = append(failures, res.err)
+				if ve := asVertexError(res.err); ve != nil && ve.Kind == "ratelimit" {
+					nodes.RecordRateLimit(res.uri, 30)
+					stickyPool.Evict(res.uri)
+				} else {
+					nodes.RecordTest(res.uri, false, 0, res.err.Error())
+					stickyPool.Evict(res.uri)
+				}
+			}
+			fill()
 		}
 	}
 }

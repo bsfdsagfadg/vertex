@@ -44,6 +44,8 @@ type StreamChunk struct {
 	Err *VertexError
 }
 
+const maxPendingMetadataChunks = 128
+
 // StreamChat 真流式入口。
 //
 // 通过 yield 回调推送增量：回调返回 false 表示客户端断开/上层要求停止，立即终止。
@@ -102,18 +104,71 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 	}
 
 	reqID := RequestIDFromContext(ctx)
-	sess, err := c.net.CreateSessionContext(ctx, cfg.RequestTimeout(), proxyURI, reqID)
-	if err != nil {
-		var entryErr *transport.EntryProxyError
-		if errors.As(err, &entryErr) {
-			markEntryFailure(entryErr.EntryURI, err)
+	// Session establishment and the shared rT acquisition are independent
+	// candidate-preparation steps. Run them under one child context so either
+	// failure/cancellation promptly releases the other operation.
+	prepCtx, prepCancel := context.WithCancel(ctx)
+	type sessionResult struct {
+		sess *transport.Session
+		err  error
+	}
+	type tokenResult struct {
+		token string
+		err   error
+	}
+	sessionCh := make(chan sessionResult, 1)
+	tokenCh := make(chan tokenResult, 1)
+	go func() {
+		sess, err := c.net.CreateSessionContext(prepCtx, cfg.RequestTimeout(), proxyURI, reqID)
+		sessionCh <- sessionResult{sess: sess, err: err}
+	}()
+	go func() {
+		token, err := c.pool.GetTokenSharedContext(prepCtx)
+		tokenCh <- tokenResult{token: token, err: err}
+	}()
+	var session sessionResult
+	var token tokenResult
+	for gotSession, gotToken := false, false; !gotSession || !gotToken; {
+		select {
+		case session = <-sessionCh:
+			gotSession = true
+			if session.err != nil {
+				prepCancel()
+			}
+		case token = <-tokenCh:
+			gotToken = true
+			if token.err != nil {
+				// Keep the session if it succeeded: the retry loop may obtain a
+				// fresh token, but cancel the preparation context to stop a
+				// still-running dial when token acquisition already failed.
+				if !gotSession {
+					prepCancel()
+				}
+			}
+		case <-ctx.Done():
+			prepCancel()
 		}
-		yield(StreamChunk{Err: NewInternalError("create session: " + err.Error())})
+	}
+	prepCancel()
+	if session.err != nil {
+		if session.sess != nil {
+			session.sess.Close()
+		}
+		var entryErr *transport.EntryProxyError
+		if errors.As(session.err, &entryErr) {
+			markEntryFailure(entryErr.EntryURI, session.err)
+		}
+		yield(StreamChunk{Err: NewInternalError("create session: " + session.err.Error())})
 		return
 	}
+	if session.sess == nil {
+		yield(StreamChunk{Err: NewInternalError("create session: empty session")})
+		return
+	}
+	sess := session.sess
 	defer sess.Close()
 
-	recaptchaToken := ""
+	recaptchaToken := token.token
 	isFirstAuth := true
 	attempt := 0
 
@@ -169,7 +224,9 @@ retryLoop:
 			if contentYielded {
 				return yield(StreamChunk{Data: ch})
 			}
-			pendingChunks = append(pendingChunks, ch)
+			if len(pendingChunks) < maxPendingMetadataChunks {
+				pendingChunks = append(pendingChunks, ch)
+			}
 			return true
 		})
 
@@ -284,11 +341,7 @@ type idleTouchingReader struct {
 }
 
 func (ir *idleTouchingReader) Read(p []byte) (int, error) {
-	n, err := ir.r.Read(p)
-	if n > 0 {
-		ir.touch()
-	}
-	return n, err
+	return ir.r.Read(p)
 }
 
 // executeStreamingAttempt 执行单次流式请求：发请求 → 增量扫描 JSON → 提取 chunk → 过滤 finishReason。
@@ -320,7 +373,11 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	streamReqCtx, cancelStreamReq := context.WithCancel(ctx)
 	defer cancelStreamReq()
 
-	preTimeout := time.Duration(max(cfg.StreamIdleTimeoutSeconds()*2, 40)) * time.Second
+	preSeconds := cfg.RaceTimeout()
+	if preSeconds <= 0 {
+		preSeconds = config.DefaultRaceTimeoutSeconds
+	}
+	preTimeout := time.Duration(preSeconds) * time.Second
 	postTimeout := time.Duration(cfg.StreamIdleTimeoutSeconds()) * time.Second
 
 	var (
@@ -393,7 +450,7 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	// HTTP 错误：读完 error body 后按状态映射（与非流式 executeCompleteRequest 一致）。
 	if sr.StatusCode != 200 {
 		var buf bytes.Buffer
-		_, _ = buf.ReadFrom(sr.Body)
+		_, _ = io.CopyN(&buf, sr.Body, 1<<20)
 		errText := buf.String()
 		if cfg.DebugMode() {
 			debugReq, _ := json.Marshal(newBody)
@@ -411,6 +468,9 @@ func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *tran
 	// 增量扫描上游流，逐个完整 JSON 对象提取 chunk。
 	completionState := newStreamCompletionState()
 	scanErr := scanStream(&idleTouchingReader{r: sr.Body, touch: touchActivity}, func(obj map[string]any) (stop bool, err error) {
+		// Only a complete, successfully parsed upstream object proves the stream
+		// is alive; arbitrary TCP bytes or malformed frames cannot reset idle.
+		touchActivity()
 		return processStreamingObject(obj, emit, completionState)
 	})
 
@@ -490,6 +550,12 @@ func scanStream(body io.Reader, onObject func(map[string]any) (bool, error)) err
 		n, readErr := reader.Read(readBuf)
 		if n > 0 {
 			buffer = append(buffer, readBuf[:n]...)
+			// A stream may open a JSON object and never close it. Keep the
+			// in-flight object bounded so an adversarial upstream cannot retain
+			// an unbounded buffer indefinitely.
+			if braceCount > 0 && startIdx >= 0 && len(buffer)-startIdx > maxBufferSize {
+				return fmt.Errorf("upstream stream object exceeds %d bytes", maxBufferSize)
+			}
 
 			if len(buffer) > maxBufferSize && braceCount == 0 {
 				log.Printf("[DEBUG-scan] buffer exceeded %d bytes, resetting from scanPos=%d", maxBufferSize, scanPos)
