@@ -237,6 +237,7 @@ func ConvertChatRequest(body map[string]any, cfg config.ConfigProvider) (string,
 			ensureGenCfg(geminiPayload)["thinkingConfig"] = tc
 		}
 	}
+	ApplyModelCapabilities(geminiPayload, model)
 
 	return model, geminiPayload, nil
 }
