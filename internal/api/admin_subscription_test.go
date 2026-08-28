@@ -38,6 +38,14 @@ func TestFetchSubWithFallbackDeduplicatesUserAgents(t *testing.T) {
 	}
 }
 
+func TestUniqueSubscriptionUAsPreservesFallbackOrder(t *testing.T) {
+	got := uniqueSubscriptionUAs([]string{"Clash.Meta", "clash-verge/v2.5.2", "Clash.Meta", "v2rayNG/1.8.5", ""})
+	want := []string{"Clash.Meta", "clash-verge/v2.5.2", "v2rayNG/1.8.5"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("UA fallback order=%v, want %v", got, want)
+	}
+}
+
 func TestSaveSubscriptionRejectsUnknownCustomUA(t *testing.T) {
 	t.Setenv("VPROXY_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	if err := config.SaveSubscriptions(config.SubscriptionConfig{}); err != nil {

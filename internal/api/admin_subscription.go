@@ -24,6 +24,11 @@ var fallbackUAs = []string{
 
 const maxSubscriptionResponseBytes = 10 * 1024 * 1024
 
+const (
+	subscriptionProxyUATimeout  = 15 * time.Second
+	subscriptionDirectUATimeout = 10 * time.Second
+)
+
 func (adm *AdminHandler) adminListSubscriptions(w http.ResponseWriter, _ *http.Request) {
 	err := config.LoadSubscriptions()
 	if err != nil {
@@ -235,41 +240,102 @@ func (adm *AdminHandler) fetchSubWithFallback(ctx context.Context, rawURL, prima
 	if primaryUA == "" || primaryUA == "Chrome" {
 		uasToTry[0] = subscriptionFetchUserAgent
 	}
-	uasToTry = append(uasToTry, fallbackUAs...)
+	uasToTry = uniqueSubscriptionUAs(append(uasToTry, fallbackUAs...))
 
 	var lastErr error
-	seen := make(map[string]struct{}, len(uasToTry))
-	for _, ua := range uasToTry {
-		if ua == "" {
-			continue
-		}
-		if _, duplicate := seen[ua]; duplicate {
-			continue
-		}
-		seen[ua] = struct{}{}
-		data, err := adm.fetchSubDataWithUA(ctx, rawURL, ua)
-		if err == nil {
-			text := strings.TrimSpace(string(data))
-			if text != "" {
-				parsed := parseImportedNodes(text)
-				if len(parsed) > 0 {
+	proxyURI := config.SelectEntryProxy(adm.cfg)
+	if proxyURI != "" && adm.vc != nil && adm.vc.Net() != nil {
+		allTransportFailed := true
+		for _, ua := range uasToTry {
+			uaCtx, uaCancel := context.WithTimeout(ctx, subscriptionProxyUATimeout)
+			data, err := adm.fetchSubscriptionDataViaProxyWithUA(uaCtx, adm.vc.Net(), rawURL, proxyURI, ua)
+			uaCancel()
+			if err == nil {
+				allTransportFailed = false
+				_ = config.MarkEntryProxySuccess(proxyURI)
+				text := strings.TrimSpace(string(data))
+				if text != "" && len(parseImportedNodes(text)) > 0 {
 					return text, nil
 				}
-				lastErr = fmt.Errorf("使用 UA %s 拉取成功但未解析到任何节点", ua)
+				lastErr = fmt.Errorf("入口 %s 使用 UA %s 拉取成功但未解析到任何节点", proxyURI, ua)
 			} else {
-				lastErr = fmt.Errorf("使用 UA %s 响应内容为空", ua)
+				if strings.Contains(err.Error(), "status code ") {
+					allTransportFailed = false
+				}
+				lastErr = fmt.Errorf("入口 %s 使用 UA %s 拉取失败: %v", proxyURI, ua, err)
 			}
-		} else {
-			lastErr = fmt.Errorf("使用 UA %s 拉取失败: %v", ua, err)
+			log.Printf("[Admin] [FetchFallback] %v, 尝试下一个 UA...", lastErr)
+			if ctx.Err() != nil {
+				break
+			}
 		}
-		log.Printf("[Admin] [FetchFallback] %v, 尝试下一个...", lastErr)
+		if allTransportFailed && lastErr != nil {
+			_ = config.MarkEntryProxyFailure(proxyURI, lastErr.Error())
+		}
+
+		// The selected entry exhausted every UA. Append a complete direct-UA phase.
+		for _, ua := range uasToTry {
+			uaCtx, uaCancel := context.WithTimeout(ctx, subscriptionDirectUATimeout)
+			data, err := adm.fetchSubDataWithUA(uaCtx, rawURL, ua)
+			uaCancel()
+			if err == nil {
+				text := strings.TrimSpace(string(data))
+				if text != "" && len(parseImportedNodes(text)) > 0 {
+					return text, nil
+				}
+				lastErr = fmt.Errorf("直连使用 UA %s 拉取成功但未解析到任何节点", ua)
+			} else {
+				lastErr = fmt.Errorf("直连使用 UA %s 拉取失败: %v", ua, err)
+			}
+			log.Printf("[Admin] [FetchFallback] %v, 尝试下一个 UA...", lastErr)
+			if ctx.Err() != nil {
+				break
+			}
+		}
+		return "", fmt.Errorf("入口代理及追加直连的所有 UA 均拉取失败，最后错误: %v", lastErr)
 	}
 
+	// No eligible entry: each direct UA receives its own full 15-second timeout.
+	for _, ua := range uasToTry {
+		uaCtx, uaCancel := context.WithTimeout(ctx, subscriptionProxyUATimeout)
+		data, err := adm.fetchSubDataWithUA(uaCtx, rawURL, ua)
+		uaCancel()
+		if err == nil {
+			text := strings.TrimSpace(string(data))
+			if text != "" && len(parseImportedNodes(text)) > 0 {
+				return text, nil
+			}
+			lastErr = fmt.Errorf("直连使用 UA %s 拉取成功但未解析到任何节点", ua)
+		} else {
+			lastErr = fmt.Errorf("直连使用 UA %s 拉取失败: %v", ua, err)
+		}
+		log.Printf("[Admin] [FetchFallback] %v, 尝试下一个 UA...", lastErr)
+		if ctx.Err() != nil {
+			break
+		}
+	}
 	return "", fmt.Errorf("所有 UA 均拉取失败，最后错误: %v", lastErr)
 }
 
+func uniqueSubscriptionUAs(uas []string) []string {
+	unique := make([]string, 0, len(uas))
+	seen := make(map[string]struct{}, len(uas))
+	for _, ua := range uas {
+		ua = strings.TrimSpace(ua)
+		if ua == "" {
+			continue
+		}
+		if _, exists := seen[ua]; exists {
+			continue
+		}
+		seen[ua] = struct{}{}
+		unique = append(unique, ua)
+	}
+	return unique
+}
+
 func (adm *AdminHandler) fetchSubDataWithUA(ctx context.Context, rawURL, ua string) ([]byte, error) {
-	client := netx.NewHTTPClient(30 * time.Second)
+	client := netx.NewHTTPClient(subscriptionHTTPTimeout(ctx))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
@@ -279,11 +345,6 @@ func (adm *AdminHandler) fetchSubDataWithUA(ctx context.Context, rawURL, ua stri
 
 	resp, err := client.Do(req)
 	if err != nil {
-		// try via proxy
-		proxyURI := subscriptionFallbackProxy(adm.cfg)
-		if proxyURI != "" && adm.vc != nil && adm.vc.Net() != nil {
-			return adm.fetchSubscriptionDataViaProxyWithUA(ctx, adm.vc.Net(), rawURL, proxyURI, ua)
-		}
 		return nil, fmt.Errorf("error: %w", err)
 	}
 	defer resp.Body.Close()
@@ -308,7 +369,7 @@ func (adm *AdminHandler) fetchSubscriptionDataViaProxyWithUA(ctx context.Context
 		return nil, fmt.Errorf("network client unavailable")
 	}
 
-	sess, err := netClient.CreateSession(30, proxyURI, "admin-fetch-sub")
+	sess, err := netClient.CreateSessionWithoutEntryProxy(subscriptionTimeoutSeconds(ctx), proxyURI, "admin-fetch-sub")
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
 	}
@@ -326,4 +387,25 @@ func (adm *AdminHandler) fetchSubscriptionDataViaProxyWithUA(ctx context.Context
 		return nil, fmt.Errorf("status code %d", statusCode)
 	}
 	return data, nil
+}
+
+func subscriptionTimeoutSeconds(ctx context.Context) int {
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= time.Second {
+			return 1
+		}
+		return int((remaining + time.Second - 1) / time.Second)
+	}
+	return int(subscriptionProxyUATimeout / time.Second)
+}
+
+func subscriptionHTTPTimeout(ctx context.Context) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 {
+			return remaining
+		}
+		return time.Millisecond
+	}
+	return subscriptionProxyUATimeout
 }
