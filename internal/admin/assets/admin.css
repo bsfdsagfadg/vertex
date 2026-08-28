@@ -94,6 +94,9 @@ option { background: #1f1813; color: var(--text-custom); }
 aside { padding: 24px 16px; display: flex; flex-direction: column; gap: 4px; }
 .brand { display: flex; align-items: center; gap: 11px; padding: 4px 6px 24px; font-size: calc(var(--base-font-size) * 16 / 14); font-weight: 700; letter-spacing: .01em; }
 .brand .mk { width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, var(--gold), var(--gold-deep)); display: grid; place-items: center; font-size: calc(var(--base-font-size) * 15 / 14); font-weight: 800; color: #2c1d08; flex: none; }
+.brand-copy { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; line-height: 1.35; }
+.brand-copy > span { white-space: nowrap; }
+#buildVersion { color: var(--text-dim-custom, var(--text-dim)); font-size: calc(var(--base-font-size) * 11 / 14); font-weight: 600; white-space: nowrap; }
 nav { display: flex; flex-direction: column; gap: 3px; }
 nav button {
   display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;

@@ -28,7 +28,13 @@
   <div id="app" class="hidden">
     <button class="menu-btn" id="menuBtn" onclick="toggleMenu()">☰</button>
     <aside class="glass">
-      <div class="brand"><span class="mk">V</span> Vertex AI Proxy <small id="buildVersion" title="构建信息">v未知</small></div>
+      <div class="brand">
+        <span class="mk">V</span>
+        <span class="brand-copy">
+          <span>Vertex AI Proxy</span>
+          <small id="buildVersion" title="构建信息">v未知</small>
+        </span>
+      </div>
       <nav>
         <button data-page="overview" class="active"><span class="ic">📊</span> 概览</button>
         <button data-page="settings"><span class="ic">⚙️</span> 设置</button>

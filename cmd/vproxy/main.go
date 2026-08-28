@@ -32,9 +32,14 @@ import (
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
 
+const fallbackVersion = "1.3.0-dev"
+
 var (
+	// version has a repository fallback so a plain `go build` still produces a
+	// useful user-facing version. Release scripts may override it with -ldflags;
+	// their default "dev" value falls back again in main.
 	//nolint:gochecknoglobals // Injected by build script
-	version = "dev"
+	version = fallbackVersion
 	//nolint:gochecknoglobals // Injected by build script
 	buildCommit = "unknown"
 	//nolint:gochecknoglobals // Injected by build script
@@ -98,9 +103,12 @@ func printLegacyBanner() {
 }
 
 func main() {
-	source := "release"
 	if version == "" || version == "dev" {
-		source = "local"
+		version = fallbackVersion
+	}
+	source := "local"
+	if buildCommit != "" && buildCommit != "unknown" && buildTime != "" && buildTime != "unknown" {
+		source = "release"
 	}
 	buildinfo.SetInjected(version, buildCommit, buildTime, source)
 	setupTermuxCerts() // 优先初始化 Termux 证书
