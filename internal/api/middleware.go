@@ -97,16 +97,16 @@ func (m *middleware) withMetrics(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-Id", reqID)
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		cli.StartReq(reqID)
+		defer cli.FinishReq(reqID)
 		start := time.Now()
 		next.ServeHTTP(sw, r.WithContext(ctx))
 		elapsed := time.Since(start)
-		cli.FinishReq(reqID)
 		log.Printf("[Server] %s %s - %d (%.3fs) 请求ID=%s", r.Method, r.URL.Path, sw.status, elapsed.Seconds(), reqID)
 	})
 }
 
 func (m *middleware) withAPIKey(next http.Handler) http.Handler {
-	excluded := map[string]bool{"/": true, "/health": true, "/favicon.ico": true}
+	excluded := map[string]bool{"/": true, "/health": true, "/favicon.ico": true, "/api/meta/build": true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if excluded[r.URL.Path] || isAdminPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
@@ -114,25 +114,27 @@ func (m *middleware) withAPIKey(next http.Handler) http.Handler {
 		}
 		key := extractAPIKey(r)
 		if key == "" {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]any{
-				"code": 401, "message": "缺少 API 密钥 (missing API key)", "status": "UNAUTHENTICATED",
-			}})
+			writeAuthError(w, r, "缺少 API 密钥 (missing API key)")
 			return
 		}
 		if key == "sk-your-key-here" {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]any{
-				"code": 401, "message": "示例密钥禁止调用，请新建密钥。", "status": "UNAUTHENTICATED",
-			}})
+			writeAuthError(w, r, "示例密钥禁止调用，请新建密钥。")
 			return
 		}
 		if !m.keys.ValidateKey(key) {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]any{
-				"code": 401, "message": "API 密钥无效 (invalid API key)", "status": "UNAUTHENTICATED",
-			}})
+			writeAuthError(w, r, "API 密钥无效 (invalid API key)")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func writeAuthError(w http.ResponseWriter, r *http.Request, message string) {
+	if strings.HasPrefix(r.URL.Path, "/v1beta") || strings.HasPrefix(r.URL.Path, "/v1alpha") {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]any{"code": 401, "message": message, "status": "UNAUTHENTICATED"}})
+		return
+	}
+	writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]any{"type": "invalid_request_error", "code": "invalid_api_key", "message": message}})
 }
 
 func isAdminPath(path string) bool {

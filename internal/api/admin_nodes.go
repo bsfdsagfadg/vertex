@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	batchTestConcurrency     = 50
+	batchTestConcurrency     = 20
 	singleNodeTestTimeoutSec = 15
 )
 
@@ -112,59 +112,85 @@ func (adm *AdminHandler) adminTestAll(w http.ResponseWriter, _ *http.Request) {
 		}()
 		log.Printf("[Admin] [TestAll] 加载待测节点数: %d/%d, 并发上限: %d, 总超时: %v", len(enabledNodes), len(list), batchTestConcurrency, dynamicTimeout)
 
-		var wg sync.WaitGroup
-		sem := make(chan struct{}, batchTestConcurrency)
-
-		for _, n := range enabledNodes {
-			wg.Add(1)
-			go func(node nodes.Node) {
-				defer wg.Done()
-				if nodes.CheckTestControl() {
-					return
-				}
-				select {
-				case sem <- struct{}{}:
-				case <-ctx.Done():
-					return
-				}
-				defer func() { <-sem }()
-				if nodes.CheckTestControl() {
-					return
-				}
-
-				start := time.Now()
-				log.Printf("[Admin] [TestAll] 开始测试节点: %s (%s)", node.Name, node.Type)
-
-				nodeCtx, nodeCancel := context.WithTimeout(ctx, singleNodeTestTimeoutSec*time.Second)
-				defer nodeCancel()
-				sess, err := adm.vc.Net().CreateSession(singleNodeTestTimeoutSec, node.RawURI, "admin-test-all")
-				var testErr error
-				if err == nil {
-					defer sess.Close()
-					testErr = fetchRecaptchaTokenWithSess(nodeCtx, sess)
-				} else {
-					testErr = err
-				}
-
-				duration := float64(time.Since(start).Milliseconds())
-				testErr, abort := resolveBatchNodeTest(ctx, nodeCtx, testErr)
-				if abort || nodes.CheckTestControl() {
-					return
-				}
-				if testErr != nil {
-					log.Printf("[Admin] [TestAll] 节点 %s 测试失败: %v, 耗时: %.0fms", node.Name, testErr, duration)
-				} else {
-					log.Printf("[Admin] [TestAll] 节点 %s 测试成功, recaptcha 耗时: %.0fms", node.Name, duration)
-				}
-				success := testErr == nil
-				nodes.RecordTest(node.RawURI, success, duration, errToStr(testErr))
-				if !success {
-					nodes.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
-				}
-				nodes.UpdateTestProgress(node.Name, success)
-			}(n)
+		workers := batchTestConcurrency
+		if workers > len(enabledNodes) {
+			workers = len(enabledNodes)
 		}
+		jobs := make(chan nodes.Node)
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					var node nodes.Node
+					var ok bool
+					select {
+					case node, ok = <-jobs:
+						if !ok {
+							return
+						}
+					case <-ctx.Done():
+						return
+					}
+					if nodes.CheckTestControlContext(ctx) {
+						return
+					}
+					start := time.Now()
+					log.Printf("[Admin] [TestAll] 开始测试节点: %s (%s)", node.Name, node.Type)
+
+					nodeCtx, nodeCancel := context.WithTimeout(ctx, singleNodeTestTimeoutSec*time.Second)
+					var sess *transport.Session
+					var err error
+					acquired := acquireTestSession(nodeCtx)
+					if acquired {
+						sess, err = adm.vc.Net().CreateSession(singleNodeTestTimeoutSec, node.RawURI, "admin-test-all")
+					} else {
+						err = nodeCtx.Err()
+					}
+					var testErr error
+					if err == nil {
+						testErr = fetchRecaptchaTokenWithSess(nodeCtx, sess)
+						sess.Close()
+					} else {
+						testErr = err
+					}
+					if acquired {
+						releaseTestSession()
+					}
+					duration := float64(time.Since(start).Milliseconds())
+					testErr, abort := resolveBatchNodeTest(ctx, nodeCtx, testErr)
+					nodeCancel()
+					if abort || nodes.CheckTestControl() {
+						return
+					}
+					if testErr != nil {
+						log.Printf("[Admin] [TestAll] 节点 %s 测试失败: %v, 耗时: %.0fms", node.Name, testErr, duration)
+					} else {
+						log.Printf("[Admin] [TestAll] 节点 %s 测试成功, recaptcha 耗时: %.0fms", node.Name, duration)
+					}
+					success := testErr == nil
+					nodes.RecordTest(node.RawURI, success, duration, errToStr(testErr))
+					if !success {
+						nodes.BatchUpdateNodesDisabled([]string{node.RawURI}, true)
+					}
+					nodes.UpdateTestProgress(node.Name, success)
+				}
+			}()
+		}
+		for _, n := range enabledNodes {
+			select {
+			case jobs <- n:
+			case <-ctx.Done():
+				break
+			}
+			if ctx.Err() != nil {
+				break
+			}
+		}
+		close(jobs)
 		wg.Wait()
+		requestPostTestGC(len(enabledNodes))
 		nodes.FinishTestProgress()
 		log.Printf("[Admin] [TestAll] 全局节点测试全部结束")
 	}()
@@ -235,6 +261,10 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 	if !adm.decodeAdminBody(w, r, &body) {
 		return
 	}
+	if !isKnownTestURI(body.RawURI) {
+		oaiError(w, http.StatusBadRequest, "未知节点 URI", "invalid_parameter")
+		return
+	}
 	if body.TimeoutSeconds <= 0 {
 		body.TimeoutSeconds = 25
 	}
@@ -243,6 +273,11 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	start := time.Now()
+	if !acquireTestSession(ctx) {
+		oaiError(w, http.StatusGatewayTimeout, "测试会话等待超时", "timeout")
+		return
+	}
+	defer releaseTestSession()
 	sess, err := adm.vc.Net().CreateSession(15, body.RawURI, "admin-test-node")
 	var testErr error
 	if err == nil {
@@ -279,6 +314,36 @@ func (adm *AdminHandler) adminTestNode(w http.ResponseWriter, r *http.Request) {
 		"error":      errStr,
 		"disabled":   disabled,
 	})
+}
+
+func isKnownTestURI(raw string) bool {
+	want := strings.TrimSpace(raw)
+	if want == "" {
+		return false
+	}
+	normalized, err := config.NormalizeProxyURI(want)
+	if err == nil {
+		want = normalized
+	}
+	for _, node := range nodes.LoadNodes() {
+		candidate := strings.TrimSpace(node.RawURI)
+		if n, e := config.NormalizeProxyURI(candidate); e == nil {
+			candidate = n
+		}
+		if candidate == want {
+			return true
+		}
+	}
+	for _, candidate := range config.ListProxyCandidates() {
+		uri := strings.TrimSpace(candidate.RawURI)
+		if n, e := config.NormalizeProxyURI(uri); e == nil {
+			uri = n
+		}
+		if uri == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (adm *AdminHandler) adminEnableNode(w http.ResponseWriter, r *http.Request) {
@@ -438,7 +503,10 @@ func fetchSubscriptionDataDirect(ctx context.Context, rawURL string) ([]byte, er
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSubscriptionResponseBytes+1))
+	if len(data) > maxSubscriptionResponseBytes {
+		return nil, fmt.Errorf("订阅响应超过大小限制")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("error: %w", err)
 	}

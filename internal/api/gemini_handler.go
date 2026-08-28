@@ -23,14 +23,18 @@ func (g *GeminiHandler) handleModelsSubtree(w http.ResponseWriter, r *http.Reque
 	switch {
 	case strings.HasPrefix(r.URL.Path, "/v1beta/models/"):
 		rest = strings.TrimPrefix(r.URL.Path, "/v1beta/models/")
+	case strings.HasPrefix(r.URL.Path, "/v1beta1/models/"):
+		rest = strings.TrimPrefix(r.URL.Path, "/v1beta1/models/")
+	case strings.HasPrefix(r.URL.Path, "/v1alpha/models/"):
+		rest = strings.TrimPrefix(r.URL.Path, "/v1alpha/models/")
 	case strings.HasPrefix(r.URL.Path, "/v1/models/"):
 		rest = strings.TrimPrefix(r.URL.Path, "/v1/models/")
 	default:
-		oaiError(w, http.StatusNotFound, "not found", "invalid_request_error")
+		g.geminiError(w, http.StatusNotFound, "not found", "NOT_FOUND")
 		return
 	}
 	if rest == "" {
-		oaiError(w, http.StatusNotFound, "not found", "invalid_request_error")
+		g.geminiError(w, http.StatusNotFound, "not found", "NOT_FOUND")
 		return
 	}
 
@@ -44,7 +48,7 @@ func (g *GeminiHandler) handleModelsSubtree(w http.ResponseWriter, r *http.Reque
 	switch method {
 	case "":
 		if r.Method != http.MethodGet {
-			oaiError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
+			g.geminiError(w, http.StatusMethodNotAllowed, "method not allowed", "INVALID_ARGUMENT")
 			return
 		}
 		g.handleModelInfo(w, model)
@@ -55,13 +59,13 @@ func (g *GeminiHandler) handleModelsSubtree(w http.ResponseWriter, r *http.Reque
 	case "countTokens":
 		g.requirePost(w, r, func() { g.handleCountTokens(w, r, model) })
 	default:
-		oaiError(w, http.StatusNotFound, "未知方法 "+method+" (unknown method)", "invalid_request_error")
+		g.geminiError(w, http.StatusNotFound, "未知方法 "+method+" (unknown method)", "NOT_FOUND")
 	}
 }
 
 func (g *GeminiHandler) requirePost(w http.ResponseWriter, r *http.Request, fn func()) {
 	if r.Method != http.MethodPost {
-		oaiError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
+		g.geminiError(w, http.StatusMethodNotAllowed, "method not allowed", "INVALID_ARGUMENT")
 		return
 	}
 	fn()

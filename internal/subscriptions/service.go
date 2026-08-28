@@ -223,13 +223,52 @@ func (s *Service) Trigger(id string) bool {
 
 func (s *Service) TriggerAll() int {
 	conf := config.GetSubscriptionConfig()
-	triggered := 0
+	ids := make([]string, 0, len(conf.Subscriptions))
 	for _, sub := range conf.Subscriptions {
-		if s.Trigger(sub.ID) {
-			triggered++
+		if sub.ID != "" && s.beginUpdate(sub.ID) {
+			ids = append(ids, sub.ID)
 		}
 	}
-	return triggered
+	if len(ids) == 0 {
+		return 0
+	}
+	s.lifecycleMu.Lock()
+	if s.stopping {
+		s.lifecycleMu.Unlock()
+		for _, id := range ids {
+			s.finishUpdate(id)
+		}
+		return 0
+	}
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	workers := 20
+	if workers > len(ids) {
+		workers = len(ids)
+	}
+	jobs := make(chan string, len(ids))
+	for _, id := range ids {
+		jobs <- id
+	}
+	close(jobs)
+	s.wg.Add(workers)
+	s.lifecycleMu.Unlock()
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer s.wg.Done()
+			for id := range jobs {
+				if ctx.Err() == nil {
+					if err := s.updateReserved(ctx, id); err != nil && !errors.Is(err, ErrStaleResult) {
+						log.Printf("[Subscriptions] 更新 %s 失败: %v", id, err)
+					}
+				}
+				s.finishUpdate(id)
+			}
+		}()
+	}
+	return len(ids)
 }
 
 func (s *Service) triggerDue(now time.Time) {

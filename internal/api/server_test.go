@@ -1,10 +1,26 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	responseproto "github.com/bsfdsagfadg/vertex/internal/responses"
 )
+
+func TestWriteResponseRecordPreservesArrayOutput(t *testing.T) {
+	rr := httptest.NewRecorder()
+	writeResponseRecord(rr, responseproto.ResponseRecord{ID: "resp_test", Status: "completed", Model: "m", CreatedAt: 1, Output: json.RawMessage(`[{"type":"message"}]`)})
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	output, ok := body["output"].([]any)
+	if !ok || len(output) != 1 {
+		t.Fatalf("output=%#v", body["output"])
+	}
+}
 
 func TestResolveN(t *testing.T) {
 	cases := []struct { //nolint:govet

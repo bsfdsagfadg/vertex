@@ -40,6 +40,7 @@ const API = {
     dedupPreview() { return API.raw('/api/admin/nodes/deduplicate/preview'); },
     deleteDisabled() { return API.raw('/api/admin/nodes/disabled', { method: 'DELETE' }); },
     import(text, replace) { return API.raw('/api/admin/nodes/import', { method: 'POST', body: JSON.stringify({ text, replace }) }); },
+    importSingle(uri) { return API.raw('/api/admin/nodes/import', { method: 'POST', body: JSON.stringify({ text: uri, replace: false, single_uri: true }) }); },
     importJson(text, replace) { return API.raw('/api/admin/nodes/import-json', { method: 'POST', body: JSON.stringify({ text, replace }) }); },
     batchEnable(uris) { return API.raw('/api/admin/nodes/batch-enable', { method: 'POST', body: JSON.stringify({ uris }) }); },
     batchDisable(uris) { return API.raw('/api/admin/nodes/batch-disable', { method: 'POST', body: JSON.stringify({ uris }) }); },

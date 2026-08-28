@@ -17,7 +17,7 @@ const (
 	entryProxyProbeURL          = "https://www.google.com/recaptcha/enterprise.js"
 	entryProxyProbeTimeout      = 20 * time.Second
 	entryProxyProbePollInterval = time.Second
-	entryProxyTestConcurrency   = 50
+	entryProxyTestConcurrency   = 20
 )
 
 type entryProxyTestProgress struct {
@@ -382,61 +382,89 @@ func (adm *AdminHandler) runProxyBatchTest(
 		entryProxyTestMu.Unlock()
 	}()
 
-	sem := make(chan struct{}, entryProxyTestConcurrency)
+	jobs := make(chan config.ProxyCandidate)
+	workers := entryProxyTestConcurrency
+	if workers > len(candidates) {
+		workers = len(candidates)
+	}
+	if workers <= 0 {
+		close(jobs)
+		return
+	}
 	var wg sync.WaitGroup
-	for _, candidate := range candidates {
-		candidate := candidate
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
-			defer func() { <-sem }()
-
-			entryProxyTestMu.Lock()
-			if entryProxyTestGeneration == generation {
-				entryProxyTestState.CurrentNode = candidate.Name
-			}
-			entryProxyTestMu.Unlock()
-
-			probeCtx, probeCancel := context.WithTimeout(ctx, perItemTimeout)
-			elapsed, err := probeEntryProxyCandidate(probeCtx, adm.vc.Net(), candidate.RawURI, int(perItemTimeout.Seconds()))
-			probeCtxErr := probeCtx.Err()
-			probeCancel()
-			if ctx.Err() != nil {
-				return
-			}
-			errText := ""
-			if err != nil {
-				errText = err.Error()
-				if probeCtxErr != nil {
-					errText = "timeout"
+			for {
+				var candidate config.ProxyCandidate
+				var ok bool
+				select {
+				case candidate, ok = <-jobs:
+					if !ok {
+						return
+					}
+				case <-ctx.Done():
+					return
 				}
-			}
-			if updateErr := config.UpdateProxyCandidateTest(candidate.RawURI, err == nil, elapsed, errText); updateErr != nil {
-				err = updateErr
-			}
 
-			entryProxyTestMu.Lock()
-			if entryProxyTestGeneration == generation {
-				entryProxyTestState.Done++
-				if err == nil {
-					entryProxyTestState.OKCount++
-				} else {
-					entryProxyTestState.FailCount++
+				entryProxyTestMu.Lock()
+				if entryProxyTestGeneration == generation {
+					entryProxyTestState.CurrentNode = candidate.Name
 				}
+				entryProxyTestMu.Unlock()
+
+				probeCtx, probeCancel := context.WithTimeout(ctx, perItemTimeout)
+				elapsed, err := probeEntryProxyCandidate(probeCtx, adm.vc.Net(), candidate.RawURI, int(perItemTimeout.Seconds()))
+				probeCtxErr := probeCtx.Err()
+				probeCancel()
+				if ctx.Err() != nil {
+					return
+				}
+				errText := ""
+				if err != nil {
+					errText = err.Error()
+					if probeCtxErr != nil {
+						errText = "timeout"
+					}
+				}
+				if updateErr := config.UpdateProxyCandidateTest(candidate.RawURI, err == nil, elapsed, errText); updateErr != nil {
+					err = updateErr
+				}
+
+				entryProxyTestMu.Lock()
+				if entryProxyTestGeneration == generation {
+					entryProxyTestState.Done++
+					if err == nil {
+						entryProxyTestState.OKCount++
+					} else {
+						entryProxyTestState.FailCount++
+					}
+				}
+				entryProxyTestMu.Unlock()
 			}
-			entryProxyTestMu.Unlock()
 		}()
 	}
+	for _, candidate := range candidates {
+		select {
+		case jobs <- candidate:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return
+		}
+	}
+	close(jobs)
 	wg.Wait()
+	requestPostTestGC(len(candidates))
 }
 
 func probeEntryProxyCandidate(ctx context.Context, netClient *transport.NetworkClient, rawURI string, timeoutSeconds int) (float64, error) {
 	start := time.Now()
+	if !acquireTestSession(ctx) {
+		return float64(time.Since(start).Milliseconds()), ctx.Err()
+	}
+	defer releaseTestSession()
 	reqID := transport.RequestIDFromContext(ctx)
 	if reqID == "" {
 		reqID = "entry-probe-loop"
@@ -509,52 +537,84 @@ func runEntryProxyProbeRound(
 	var resultMu sync.Mutex
 	summary := entryProxyProbeSummary{Total: len(candidates)}
 
-	var wg sync.WaitGroup
-	for _, candidate := range candidates {
-		wg.Add(1)
-		go func(rawURI string) {
-			defer wg.Done()
-			probeCtx, cancel := context.WithTimeout(ctx, entryProxyProbeTimeout)
-			defer cancel()
-			elapsed, err := probe(probeCtx, rawURI)
-			errText := ""
-			if err != nil {
-				errText = err.Error()
-			}
-			autoDisabled, updateErr := config.UpdateProxyCandidateProbeResult(
-				rawURI, err == nil, elapsed, errText, cooldownSeconds, autoDisable, failureLimit,
-			)
-			if updateErr != nil {
-				log.Printf("[EntryProxy] 更新候选 %s 拨测状态失败: %v", redactProxyURI(rawURI), updateErr)
-			}
-			if err != nil {
-				if autoDisabled {
-					log.Printf(
-						"[EntryProxy] 候选 %s 周期拨测失败: %v（连续失败 %d 次，已自动禁用）",
-						redactProxyURI(rawURI), err, failureLimit,
-					)
-				} else {
-					log.Printf("[EntryProxy] 候选 %s 周期拨测失败: %v", redactProxyURI(rawURI), err)
-				}
-			} else if debugMode {
-				log.Printf("[EntryProxy] 候选 %s 周期拨测成功: %.0fms", redactProxyURI(rawURI), elapsed)
-			}
-
-			resultMu.Lock()
-			if err == nil {
-				summary.Success++
-			} else {
-				summary.Failed++
-				if autoDisabled {
-					summary.AutoDisabled++
-				} else if updateErr == nil && cooldownSeconds > 0 {
-					summary.Cooling++
-				}
-			}
-			resultMu.Unlock()
-		}(candidate.RawURI)
+	workers := entryProxyTestConcurrency
+	if workers > len(candidates) {
+		workers = len(candidates)
 	}
+	if workers <= 0 {
+		log.Printf("[EntryProxy] 自动拨测结束: 0 个节点自动测试完毕")
+		return summary
+	}
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				var rawURI string
+				var ok bool
+				select {
+				case rawURI, ok = <-jobs:
+					if !ok {
+						return
+					}
+				case <-ctx.Done():
+					return
+				}
+				probeCtx, cancel := context.WithTimeout(ctx, entryProxyProbeTimeout)
+				elapsed, err := probe(probeCtx, rawURI)
+				cancel()
+				errText := ""
+				if err != nil {
+					errText = err.Error()
+				}
+				autoDisabled, updateErr := config.UpdateProxyCandidateProbeResult(
+					rawURI, err == nil, elapsed, errText, cooldownSeconds, autoDisable, failureLimit,
+				)
+				if updateErr != nil {
+					log.Printf("[EntryProxy] 更新候选 %s 拨测状态失败: %v", redactProxyURI(rawURI), updateErr)
+				}
+				if err != nil {
+					if autoDisabled {
+						log.Printf(
+							"[EntryProxy] 候选 %s 周期拨测失败: %v（连续失败 %d 次，已自动禁用）",
+							redactProxyURI(rawURI), err, failureLimit,
+						)
+					} else {
+						log.Printf("[EntryProxy] 候选 %s 周期拨测失败: %v", redactProxyURI(rawURI), err)
+					}
+				} else if debugMode {
+					log.Printf("[EntryProxy] 候选 %s 周期拨测成功: %.0fms", redactProxyURI(rawURI), elapsed)
+				}
+
+				resultMu.Lock()
+				if err == nil {
+					summary.Success++
+				} else {
+					summary.Failed++
+					if autoDisabled {
+						summary.AutoDisabled++
+					} else if updateErr == nil && cooldownSeconds > 0 {
+						summary.Cooling++
+					}
+				}
+				resultMu.Unlock()
+			}
+		}()
+	}
+	for _, candidate := range candidates {
+		select {
+		case jobs <- candidate.RawURI:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return summary
+		}
+	}
+	close(jobs)
 	wg.Wait()
+	requestPostTestGC(summary.Total)
 	log.Printf(
 		"[EntryProxy] 自动拨测结束: %d 个节点自动测试完毕，%d 个成功，%d 个失败，%d 个冷却，%d 个自动禁用",
 		summary.Total, summary.Success, summary.Failed, summary.Cooling, summary.AutoDisabled,

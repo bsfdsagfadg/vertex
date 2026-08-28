@@ -28,6 +28,29 @@ var proxyTestProgressTimer = null;
 var proxySortMode = '';
 var testProgressTimer = null;
 
+async function importRequestNode() {
+  var input = document.getElementById('requestNodeURI');
+  var hint = document.getElementById('requestNodeImportHint');
+  var uri = (input && input.value || '').trim();
+  if (!uri) { toast('请先粘贴节点 URI'); return; }
+  if (/\r|\n/.test(uri) || /\s+\S+:\/\//.test(uri)) {
+    toast('一次只能导入一个节点；多节点或订阅内容请前往订阅管理');
+    if (hint) hint.textContent = '检测到多行或多个 URI，请前往“订阅管理”。';
+    return;
+  }
+  try {
+    var result = await API.nodes.importSingle(uri);
+    if (result.count !== 1) throw new Error('服务端未导入恰好一个节点');
+    input.value = '';
+    curNodePage = 1;
+    await loadNodes();
+    toast('请求节点导入成功');
+  } catch (e) {
+    toast('导入失败：' + (e.message || '格式不支持'));
+    if (hint) hint.textContent = e.message || '格式不支持';
+  }
+}
+
 function entryProxyIdentity(rawURI) {
   var value = (rawURI || '').trim();
   var separator = value.indexOf('://');

@@ -28,7 +28,7 @@
   <div id="app" class="hidden">
     <button class="menu-btn" id="menuBtn" onclick="toggleMenu()">☰</button>
     <aside class="glass">
-      <div class="brand"><span class="mk">V</span> Vertex AI Proxy</div>
+      <div class="brand"><span class="mk">V</span> Vertex AI Proxy <small id="buildVersion" title="构建信息">v未知</small></div>
       <nav>
         <button data-page="overview" class="active"><span class="ic">📊</span> 概览</button>
         <button data-page="settings"><span class="ic">⚙️</span> 设置</button>
@@ -57,6 +57,10 @@
             <button class="btn ghost" onclick="loadOverview()">刷新</button>
           </div>
           <div class="grid stats" id="ovCards"></div>
+          <div class="card glass" id="buildInfoCard" style="margin-top:16px;">
+            <h3>构建信息</h3>
+            <div id="buildInfoDetails" class="hint">加载中…</div>
+          </div>
         </section>
 
         <section id="page-settings" class="hidden">
@@ -203,6 +207,14 @@
               </div>
             </div>
             <div class="card glass">
+              <div class="field" style="margin-bottom:12px;">
+                <div class="field-heading label-gold">导入单个请求节点</div>
+                <div class="toolbar m-0 gap-8">
+                  <input id="requestNodeURI" class="flex-1" placeholder="粘贴一个节点 URI（vmess://、vless://、ss://…）" onkeydown="if(event.key==='Enter'){event.preventDefault();importRequestNode();}">
+                  <button class="btn" onclick="importRequestNode()">导入节点</button>
+                </div>
+                <div id="requestNodeImportHint" class="desc">仅支持单个节点 URI；多行内容或订阅链接请前往“订阅管理”。</div>
+              </div>
               <div class="desc summary-text" id="nodesSummary" style="margin-bottom: 12px; font-weight: bold;">当前共 0 个节点
               </div>
               <div class="actions">
