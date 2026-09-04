@@ -31,6 +31,7 @@
       <div class="brand"><span class="mk">V</span> Vertex AI Proxy</div>
       <nav>
         <button data-page="overview" class="active"><span class="ic">📊</span> 概览</button>
+        <button data-page="analytics"><span class="ic">📈</span> 调用统计</button>
         <button data-page="settings"><span class="ic">⚙️</span> 设置</button>
         <button data-page="keys"><span class="ic">🔑</span> 密钥</button>
         <button data-page="models"><span class="ic">🧩</span> 模型</button>
@@ -57,6 +58,14 @@
             <button class="btn ghost" onclick="loadOverview()">刷新</button>
           </div>
           <div class="grid stats" id="ovCards"></div>
+        </section>
+
+        <section id="page-analytics" class="hidden">
+          <div class="page-head"><div><h2>调用统计</h2><div class="hint">请求次数、状态与耗时</div></div><button class="btn ghost" onclick="loadAnalytics(true)">刷新</button></div>
+          <div class="grid stats" id="analyticsStats"></div>
+          <div class="toolbar"><select id="analyticsKey" onchange="loadAnalytics(true)"><option value="all">全部密钥</option></select><select id="analyticsModel" onchange="loadAnalytics(true)"><option value="all">全部模型</option></select><select id="analyticsRange" onchange="loadAnalytics(true)"><option value="all">全部时间</option><option value="today">今天</option><option value="7d">近 7 天</option><option value="30d">近 30 天</option></select><select id="analyticsStatus" onchange="loadAnalytics(true)"><option value="all">全部状态</option><option value="success">成功</option><option value="error">错误</option><option value="stream">流式</option></select><button class="btn danger" onclick="clearAnalytics()">清空记录</button></div>
+          <div class="card glass"><div class="table-wrap"><table><thead><tr><th>时间</th><th>模型</th><th>模式</th><th>状态</th><th>耗时</th><th>Token</th></tr></thead><tbody id="analyticsBody"></tbody></table></div></div>
+          <div class="toolbar" style="justify-content:center"><button class="btn ghost" id="analyticsPrev" onclick="changeAnalyticsPage(-1)">上一页</button><span id="analyticsPageInfo" class="hint">第 1 页</span><button class="btn ghost" id="analyticsNext" onclick="changeAnalyticsPage(1)">下一页</button></div>
         </section>
 
         <section id="page-settings" class="hidden">
@@ -683,6 +692,7 @@
   <script src="utils.js"></script>
   <script src="api.js"></script>
   <script src="page-overview.js"></script>
+  <script src="page-analytics.js"></script>
   <script src="page-settings.js"></script>
   <script src="page-keys.js"></script>
   <script src="page-models.js"></script>

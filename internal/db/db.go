@@ -104,6 +104,26 @@ func createTables(db *sql.DB) error {
 
 	CREATE INDEX IF NOT EXISTS idx_node_sources_owner
 	ON node_sources(source_type, source_id);
+	CREATE TABLE IF NOT EXISTS call_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		request_id TEXT NOT NULL,
+		key_name TEXT NOT NULL DEFAULT '',
+		key_prefix TEXT NOT NULL DEFAULT '',
+		model TEXT NOT NULL DEFAULT '',
+		is_stream BOOLEAN NOT NULL DEFAULT 0,
+		status_code INTEGER NOT NULL DEFAULT 200,
+		first_token_ms INTEGER NOT NULL DEFAULT 0,
+		total_duration_ms INTEGER NOT NULL DEFAULT 0,
+		prompt_tokens INTEGER NOT NULL DEFAULT 0,
+		completion_tokens INTEGER NOT NULL DEFAULT 0,
+		total_tokens INTEGER NOT NULL DEFAULT 0,
+		winner_node TEXT NOT NULL DEFAULT '',
+		error_message TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_call_logs_created_at ON call_logs(created_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_call_logs_key_name ON call_logs(key_name);
+	CREATE INDEX IF NOT EXISTS idx_call_logs_model ON call_logs(model);
 	CREATE TABLE IF NOT EXISTS entry_proxy_candidates (
 		raw_uri TEXT PRIMARY KEY,
 		normalized_uri TEXT NOT NULL UNIQUE,

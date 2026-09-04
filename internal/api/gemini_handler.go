@@ -84,6 +84,9 @@ func (g *GeminiHandler) readGeminiBody(w http.ResponseWriter, r *http.Request) (
 }
 
 func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Request, model string) {
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.model = model
+	}
 	actualModel, _, modelOK := resolveConfiguredModel(model, g.cfg)
 	if !modelOK {
 		geminiModelNotFound(w, model)
@@ -96,9 +99,14 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {
 		body = reqObj
 	}
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.promptTokens = vertex.EstimatePayloadTokens(body)
+	}
 	transform.ApplyImageConfig(body, body, actualModel)
 	transform.ApplyImageDefaults(body, actualModel, g.cfg.DefaultImageSize(), g.cfg.DefaultResponseModalities())
-	log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
+	if g.cfg.DebugMode() {
+		log.Printf("[Server] [GeminiGenerate] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
+	}
 
 	resp, vErr := g.vc.CompleteChat(r.Context(), actualModel, body)
 	if vErr != nil {
@@ -117,6 +125,10 @@ func (g *GeminiHandler) handleGeminiGenerate(w http.ResponseWriter, r *http.Requ
 }
 
 func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *http.Request, model string) {
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.model = model
+		metric.stream = true
+	}
 	actualModel, useFake, modelOK := resolveConfiguredModel(model, g.cfg)
 	if !modelOK {
 		geminiModelNotFound(w, model)
@@ -129,9 +141,14 @@ func (g *GeminiHandler) handleGeminiStreamGenerate(w http.ResponseWriter, r *htt
 	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {
 		body = reqObj
 	}
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.promptTokens = vertex.EstimatePayloadTokens(body)
+	}
 	transform.ApplyImageConfig(body, body, actualModel)
 	transform.ApplyImageDefaults(body, actualModel, g.cfg.DefaultImageSize(), g.cfg.DefaultResponseModalities())
-	log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 假流式=%v", model, actualModel, useFake)
+	if g.cfg.DebugMode() {
+		log.Printf("[Server] [GeminiStreamGenerate] 收到请求: 模型=%s, 真模型=%s, 假流式=%v", model, actualModel, useFake)
+	}
 
 	sw := newSSEWriter(w, "text/event-stream")
 
@@ -269,6 +286,9 @@ func (g *GeminiHandler) geminiFakeStream(ctx context.Context, w http.ResponseWri
 	}
 }
 func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request, model string) {
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.model = model
+	}
 	actualModel, _, modelOK := resolveConfiguredModel(model, g.cfg)
 	if !modelOK {
 		geminiModelNotFound(w, model)
@@ -278,7 +298,12 @@ func (g *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	log.Printf("[Server] [CountTokens] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.promptTokens = vertex.EstimatePayloadTokens(body)
+	}
+	if g.cfg.DebugMode() {
+		log.Printf("[Server] [CountTokens] 收到请求: 模型=%s, 真模型=%s", model, actualModel)
+	}
 
 	var contents []any
 	if reqObj, ok2 := body["generateContentRequest"].(map[string]any); ok2 {

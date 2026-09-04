@@ -32,11 +32,16 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 	}
 
 	rawModel := transform.ResolveImageModel(getStr(body, "model", ""))
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.model = rawModel
+	}
 	prompt := getStr(body, "prompt", "")
 	size := getStr(body, "size", "1024x1024")
 	respFmt := getStr(body, "response_format", "b64_json")
 
-	log.Printf("[Server] [ImageGenerations] 收到请求: 模型=%s, 尺寸=%s, 格式=%s", rawModel, size, respFmt)
+	if img.cfg.DebugMode() {
+		log.Printf("[Server] [ImageGenerations] 收到请求: 模型=%s, 尺寸=%s, 格式=%s", rawModel, size, respFmt)
+	}
 
 	model, _, modelOK := resolveConfiguredModel(rawModel, img.cfg)
 	if !modelOK {
@@ -77,6 +82,9 @@ func (img *ImageHandler) handleImageGenerations(w http.ResponseWriter, r *http.R
 }
 
 func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request) {
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.model = "image-edit"
+	}
 	if r.Method != http.MethodPost {
 		oaiError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
 		return
@@ -117,7 +125,9 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 	n := coerceOAIN(formValue(r, "n"))
 	respFmt := firstNonEmptyStr(formValue(r, "response_format"), "b64_json")
 
-	log.Printf("[Server] [ImageEdits] 收到请求: 模型=%s, 格式=%s, 图片数=%d", model, respFmt, len(images))
+	if img.cfg.DebugMode() {
+		log.Printf("[Server] [ImageEdits] 收到请求: 模型=%s, 格式=%s, 图片数=%d", model, respFmt, len(images))
+	}
 
 	geminiPayload := transform.BuildImagePayload(model, prompt, images, mask,
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"),
@@ -128,6 +138,9 @@ func (img *ImageHandler) handleImageEdits(w http.ResponseWriter, r *http.Request
 }
 
 func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Request) {
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.model = "image-variation"
+	}
 	if r.Method != http.MethodPost {
 		oaiError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
 		return
@@ -159,7 +172,9 @@ func (img *ImageHandler) handleImageVariations(w http.ResponseWriter, r *http.Re
 	n := coerceOAIN(formValue(r, "n"))
 	respFmt := firstNonEmptyStr(formValue(r, "response_format"), "b64_json")
 
-	log.Printf("[Server] [ImageVariations] 收到请求: 模型=%s, 格式=%s, 图片数=%d", model, respFmt, len(images))
+	if img.cfg.DebugMode() {
+		log.Printf("[Server] [ImageVariations] 收到请求: 模型=%s, 格式=%s, 图片数=%d", model, respFmt, len(images))
+	}
 
 	geminiPayload := transform.BuildImagePayload(model, prompt, images, nil,
 		formValue(r, "size"), formValue(r, "quality"), formValue(r, "style"), "", "variation")
@@ -172,7 +187,9 @@ func (img *ImageHandler) runOAIImageRequest(ctx context.Context, w http.Response
 	wantURL := responseFormat == "url"
 	items := make([]any, 0, n)
 	for i := 0; i < n; i++ {
-		log.Printf("[Server] [runOAIImageRequest] 开始获取图片 (第 %d/%d 张)", i+1, n)
+		if img.cfg.DebugMode() {
+			log.Printf("[Server] [runOAIImageRequest] 开始获取图片 (第 %d/%d 张)", i+1, n)
+		}
 		images, vErr := img.vc.CompleteChatImage(ctx, model, geminiPayload)
 		if vErr != nil {
 			ve := toVertexError(vErr)

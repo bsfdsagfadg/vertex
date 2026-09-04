@@ -10,6 +10,7 @@ import (
 
 	"github.com/bsfdsagfadg/vertex/internal/cli"
 	"github.com/bsfdsagfadg/vertex/internal/config"
+	"github.com/bsfdsagfadg/vertex/internal/db"
 	"github.com/bsfdsagfadg/vertex/internal/transport"
 	"github.com/bsfdsagfadg/vertex/internal/vertex"
 )
@@ -17,6 +18,27 @@ import (
 type middleware struct {
 	cfg  config.ConfigProvider
 	keys *APIKeyManager
+}
+
+type requestMetricContextKey struct{}
+type keyNameContextKey struct{}
+type rawKeyContextKey struct{}
+type requestMetric struct {
+	apiRequest       bool
+	model            string
+	keyName          string
+	keyPrefix        string
+	stream           bool
+	firstTokenMs     int64
+	promptTokens     int
+	completionTokens int
+	totalTokens      int
+	errorMessage     string
+}
+
+func requestMetricFromContext(ctx context.Context) *requestMetric {
+	m, _ := ctx.Value(requestMetricContextKey{}).(*requestMetric)
+	return m
 }
 
 type statusWriter struct {
@@ -29,8 +51,8 @@ func (w *statusWriter) WriteHeader(code int) {
 	if !w.wroteHeader {
 		w.status = code
 		w.wroteHeader = true
+		w.ResponseWriter.WriteHeader(code)
 	}
-	w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *statusWriter) Write(b []byte) (int, error) {
@@ -90,6 +112,8 @@ func (m *middleware) withMetrics(next http.Handler) http.Handler {
 		reqID := reqID24()
 		ctx := context.WithValue(r.Context(), vertex.RequestIDKey{}, reqID)
 		ctx = transport.WithRequestID(ctx, reqID)
+		metric := &requestMetric{}
+		ctx = context.WithValue(ctx, requestMetricContextKey{}, metric)
 		if skip[r.URL.Path] || isAdminPath(r.URL.Path) {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
@@ -101,7 +125,20 @@ func (m *middleware) withMetrics(next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r.WithContext(ctx))
 		elapsed := time.Since(start)
 		cli.FinishReq(reqID)
-		log.Printf("[Server] %s %s - %d (%.3fs) 请求ID=%s", r.Method, r.URL.Path, sw.status, elapsed.Seconds(), reqID)
+		if metric.apiRequest {
+			firstToken := metric.firstTokenMs
+			if metric.stream && firstToken == 0 && sw.status == http.StatusOK {
+				firstToken = elapsed.Milliseconds()
+			}
+			errorMessage := metric.errorMessage
+			if errorMessage == "" && sw.status != http.StatusOK {
+				errorMessage = http.StatusText(sw.status)
+			}
+			db.RecordCallLog(&db.CallLog{RequestID: reqID, KeyName: metric.keyName, KeyPrefix: metric.keyPrefix, Model: metric.model, IsStream: metric.stream, StatusCode: sw.status, FirstTokenMs: firstToken, TotalDurationMs: elapsed.Milliseconds(), PromptTokens: metric.promptTokens, CompletionTokens: metric.completionTokens, TotalTokens: metric.totalTokens, ErrorMessage: errorMessage, CreatedAt: time.Now().Unix()})
+		}
+		if m.cfg != nil && m.cfg.DebugMode() {
+			log.Printf("[Server] %s %s - %d (%.3fs) 请求ID=%s", r.Method, r.URL.Path, sw.status, elapsed.Seconds(), reqID)
+		}
 	})
 }
 
@@ -111,6 +148,9 @@ func (m *middleware) withAPIKey(next http.Handler) http.Handler {
 		if excluded[r.URL.Path] || isAdminPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
+		}
+		if metric := requestMetricFromContext(r.Context()); metric != nil {
+			metric.apiRequest = true
 		}
 		key := extractAPIKey(r)
 		if key == "" {
@@ -131,7 +171,17 @@ func (m *middleware) withAPIKey(next http.Handler) http.Handler {
 			}})
 			return
 		}
-		next.ServeHTTP(w, r)
+		ctx := context.WithValue(r.Context(), keyNameContextKey{}, m.keys.GetKeyName(key))
+		ctx = context.WithValue(ctx, rawKeyContextKey{}, key)
+		if metric := requestMetricFromContext(ctx); metric != nil {
+			metric.keyName = m.keys.GetKeyName(key)
+			if len(key) >= 8 {
+				metric.keyPrefix = key[:8] + "..."
+			} else {
+				metric.keyPrefix = key
+			}
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

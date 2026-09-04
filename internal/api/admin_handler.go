@@ -23,7 +23,9 @@ type AdminHandler struct {
 
 func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin")
-	log.Printf("[Server] [AdminAPI] 收到请求: %s %s", r.Method, path)
+	if adm.cfg != nil && adm.cfg.DebugMode() {
+		log.Printf("[Server] [AdminAPI] 收到请求: %s %s", r.Method, path)
+	}
 
 	if path == "/login" {
 		adm.adminLogin(w, r)
@@ -290,6 +292,18 @@ func (adm *AdminHandler) handleAdminAPI(w http.ResponseWriter, r *http.Request) 
 		adm.adminGetStats(w, r)
 	case "/stats/reset":
 		adm.adminResetStats(w, r)
+	case "/analytics":
+		if r.Method == http.MethodGet {
+			adm.adminGetCallLogs(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
+	case "/analytics/clear":
+		if r.Method == http.MethodPost {
+			adm.adminClearCallLogs(w, r)
+		} else {
+			adm.adminMethodNotAllowed(w)
+		}
 	case "/log":
 		if r.Method != http.MethodGet {
 			adm.adminMethodNotAllowed(w)

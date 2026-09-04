@@ -242,3 +242,15 @@ func estimateTextTokens(text string) int {
 	}
 	return int(tokens + 0.99)
 }
+
+// EstimatePayloadTokens exposes the local estimate used by request analytics.
+func EstimatePayloadTokens(payload map[string]any) int {
+	if payload == nil {
+		return 0
+	}
+	contents, _ := payload["contents"].([]any)
+	return estimateTokens(contents)
+}
+
+// EstimateTextTokensPublic exposes the local text estimate for response fallbacks.
+func EstimateTextTokensPublic(text string) int { return estimateTextTokens(text) }

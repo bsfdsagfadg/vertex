@@ -67,6 +67,9 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 		rawModel = ttsDefaultModel
 	}
 	actualModel, _, modelOK := resolveConfiguredModel(rawModel, a.cfg)
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.model = rawModel
+	}
 	if !modelOK || !strings.HasPrefix(actualModel, "gemini") {
 		oaiModelNotFound(w, rawModel)
 		return
@@ -82,7 +85,9 @@ func (a *AudioHandler) handleAudioSpeech(w http.ResponseWriter, r *http.Request)
 	voice := ttsResolveVoice(body["voice"])
 	respFmt := strings.ToLower(firstNonEmptyStr(getStr(body, "response_format", ""), "mp3"))
 
-	log.Printf("[Server] [AudioSpeech] 收到请求: 模型=%s, 语音=%s, 格式=%s", actualModel, voice, respFmt)
+	if a.cfg.DebugMode() {
+		log.Printf("[Server] [AudioSpeech] 收到请求: 模型=%s, 语音=%s, 格式=%s", actualModel, voice, respFmt)
+	}
 
 	fmtInfo, ok := ttsFormatInfo[respFmt]
 	if !ok {

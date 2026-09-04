@@ -39,6 +39,9 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	rawModel, _ := body["model"].(string)
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.model = strings.TrimSpace(rawModel)
+	}
 	if strings.TrimSpace(rawModel) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{
 			"message": "请求参数有误: 缺少必需字段 model (missing required field 'model')",
@@ -53,6 +56,9 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	body["model"] = actualModel
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.model = actualModel
+	}
 	cli.UpdateReqModel(vertex.RequestIDFromContext(r.Context()), actualModel)
 
 	stream, _ := body["stream"].(bool)
@@ -62,6 +68,10 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	if convErr != nil {
 		oaiError(w, http.StatusBadRequest, "请求参数有误: "+convErr.Error()+" (invalid argument)", "invalid_request_error")
 		return
+	}
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		metric.stream = stream
+		metric.promptTokens = vertex.EstimatePayloadTokens(geminiPayload)
 	}
 
 	n, nErr := resolveN(body["n"], c.cfg.MaxN())
@@ -79,7 +89,9 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	log.Printf("[Server] [ChatCompletions] 收到请求: 模型=%s, 真模型=%s, 流式=%v, n=%d", rawModel, actualModel, stream, n)
+	if c.cfg.DebugMode() {
+		log.Printf("[Server] [ChatCompletions] 收到请求: 模型=%s, 真模型=%s, 流式=%v, n=%d", rawModel, actualModel, stream, n)
+	}
 
 	transform.ApplyImageConfig(geminiPayload, body, actualModel)
 	transform.ApplyImageDefaults(geminiPayload, actualModel, c.cfg.DefaultImageSize(), c.cfg.DefaultResponseModalities())
@@ -102,6 +114,9 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		responses, vErr := c.vc.CompleteChatN(r.Context(), model, geminiPayload, n)
 		if vErr != nil {
 			ve := toVertexError(vErr)
+			if metric := requestMetricFromContext(r.Context()); metric != nil {
+				metric.errorMessage = ve.Message
+			}
 			if isSafetyBlock(ve) {
 				log.Printf("[Vertex] 请求被 Google 安全审查拦截, 请求ID=%s, 原因: %s", vertex.RequestIDFromContext(r.Context()), ve.Status)
 				writeJSON(w, http.StatusOK, oaiSafetyResponse(model))
@@ -110,17 +125,25 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			writeJSON(w, ve.Code, vertexErrorToOAI(ve))
 			return
 		}
+		agg := c.respConv.AggregateN(responses, model)
+		if metric := requestMetricFromContext(r.Context()); metric != nil {
+			_, completion, total := extractUsage(agg)
+			metric.completionTokens, metric.totalTokens = completion, total
+		}
 		toolCallIDAssigner := transform.NewFunctionCallIDAssigner()
 		for _, response := range responses {
 			toolCallIDAssigner.Ensure(response)
 		}
-		writeJSON(w, http.StatusOK, c.respConv.AggregateN(responses, model))
+		writeJSON(w, http.StatusOK, agg)
 		return
 	}
 
 	geminiResp, vErr := c.vc.CompleteChat(r.Context(), model, geminiPayload)
 	if vErr != nil {
 		ve := toVertexError(vErr)
+		if metric := requestMetricFromContext(r.Context()); metric != nil {
+			metric.errorMessage = ve.Message
+		}
 		if isSafetyBlock(ve) {
 			log.Printf("[Vertex] 请求被 Google 安全审查拦截, 请求ID=%s, 原因: %s", vertex.RequestIDFromContext(r.Context()), ve.Status)
 			writeJSON(w, http.StatusOK, oaiSafetyResponse(model))
@@ -132,11 +155,49 @@ func (c *ChatHandler) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	transform.EnsureFunctionCallIDs(geminiResp)
 	oaiResp := c.respConv.ToOAI(geminiResp, model)
+	if metric := requestMetricFromContext(r.Context()); metric != nil {
+		_, completion, total := extractUsage(oaiResp)
+		metric.completionTokens, metric.totalTokens = completion, total
+		if metric.completionTokens == 0 {
+			metric.completionTokens = vertex.EstimateTextTokensPublic(firstChoiceContent(oaiResp))
+		}
+		if metric.totalTokens == 0 {
+			metric.totalTokens = metric.promptTokens + metric.completionTokens
+		}
+	}
 	writeJSON(w, http.StatusOK, oaiResp)
 }
 
+func extractUsage(resp map[string]any) (int, int, int) {
+	usage, _ := resp["usage"].(map[string]any)
+	if usage == nil {
+		return 0, 0, 0
+	}
+	p, c, t := toIntMetric(usage["prompt_tokens"]), toIntMetric(usage["completion_tokens"]), toIntMetric(usage["total_tokens"])
+	if t == 0 {
+		t = p + c
+	}
+	return p, c, t
+}
+
+func toIntMetric(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
 func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
-	requestID := reqID24()
+	requestID := vertex.RequestIDFromContext(ctx)
+	if requestID == "" {
+		requestID = reqID24()
+	}
 
 	sw := newSSEWriter(w, "text/event-stream")
 
@@ -149,10 +210,18 @@ func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.Response
 
 	c.vc.StreamChat(ctx, model, geminiPayload, func(ch vertex.StreamChunk) bool {
 		if isFirst && ch.Err == nil {
-			log.Printf("[Server] [Stream] 请求ID=%s 首字响应耗时: %.2fs", requestID, time.Since(startTime).Seconds())
+			if metric := requestMetricFromContext(ctx); metric != nil {
+				metric.firstTokenMs = time.Since(startTime).Milliseconds()
+			}
+			if c.cfg.DebugMode() {
+				log.Printf("[Server] [Stream] 请求ID=%s 首字响应耗时: %.2fs", requestID, time.Since(startTime).Seconds())
+			}
 			cli.UpdateReqState(requestID, "💬 流式打字", "\033[36m", "正在输出...")
 		}
 		if ch.Err != nil {
+			if metric := requestMetricFromContext(ctx); metric != nil {
+				metric.errorMessage = ch.Err.Message
+			}
 			if !sw.hasWritten() {
 				ve := toVertexError(ch.Err)
 				if isSafetyBlock(ve) {
@@ -167,6 +236,13 @@ func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.Response
 			streamErrWritten = true
 			return false
 		}
+		if metric := requestMetricFromContext(ctx); metric != nil {
+			if usage, ok := ch.Data["usageMetadata"].(map[string]any); ok {
+				metric.promptTokens = toIntMetric(usage["promptTokenCount"])
+				metric.completionTokens = toIntMetric(usage["candidatesTokenCount"])
+				metric.totalTokens = toIntMetric(usage["totalTokenCount"])
+			}
+		}
 		events := c.respConv.StreamToSSE(ch.Data, model, requestID, isFirst, toolCallTracker)
 		isFirst = false
 		for _, ev := range events {
@@ -177,7 +253,9 @@ func (c *ChatHandler) streamChatCompletions(ctx context.Context, w http.Response
 				gotContent = true
 			}
 			if !sw.write(ev) {
-				log.Printf("[Server] [Stream] 请求ID=%s 客户端已主动断开连接", requestID)
+				if c.cfg.DebugMode() {
+					log.Printf("[Server] [Stream] 请求ID=%s 客户端已主动断开连接", requestID)
+				}
 				return false
 			}
 		}
@@ -222,12 +300,18 @@ func (c *ChatHandler) writeStreamError(write func(string) bool, e *vertex.Vertex
 }
 
 func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
-	requestID := reqID24()
+	requestID := vertex.RequestIDFromContext(ctx)
+	if requestID == "" {
+		requestID = reqID24()
+	}
 	sw := newSSEWriter(w, "text/event-stream")
 
 	resp, vErr := c.vc.CompleteChat(ctx, model, geminiPayload)
 	if vErr != nil {
 		ve := toVertexError(vErr)
+		if metric := requestMetricFromContext(ctx); metric != nil {
+			metric.errorMessage = ve.Message
+		}
 		if !sw.hasWritten() {
 			if isSafetyBlock(ve) {
 				log.Printf("[Vertex] 请求被 Google 安全审查拦截, 请求ID=%s, 原因: %s", vertex.RequestIDFromContext(ctx), ve.Status)
@@ -243,6 +327,15 @@ func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, 
 
 	transform.EnsureFunctionCallIDs(resp)
 	oai := c.respConv.ToOAI(resp, model)
+	if metric := requestMetricFromContext(ctx); metric != nil {
+		_, metric.completionTokens, metric.totalTokens = extractUsage(oai)
+		if metric.completionTokens == 0 {
+			metric.completionTokens = vertex.EstimateTextTokensPublic(firstChoiceContent(oai))
+		}
+		if metric.totalTokens == 0 {
+			metric.totalTokens = metric.promptTokens + metric.completionTokens
+		}
+	}
 	contentText := firstChoiceContent(oai)
 	toolCalls := firstChoiceToolCalls(oai)
 
@@ -294,12 +387,18 @@ func (c *ChatHandler) oaiFakeStream(ctx context.Context, w http.ResponseWriter, 
 }
 
 func (c *ChatHandler) oaiAggregateStream(ctx context.Context, w http.ResponseWriter, model string, geminiPayload map[string]any) {
-	requestID := reqID24()
+	requestID := vertex.RequestIDFromContext(ctx)
+	if requestID == "" {
+		requestID = reqID24()
+	}
 	sw := newSSEWriter(w, "text/event-stream")
 
 	resp, vErr := c.vc.CompleteChat(ctx, model, geminiPayload)
 	if vErr != nil {
 		ve := toVertexError(vErr)
+		if metric := requestMetricFromContext(ctx); metric != nil {
+			metric.errorMessage = ve.Message
+		}
 		if !sw.hasWritten() {
 			if isSafetyBlock(ve) {
 				log.Printf("[Vertex] 请求被 Google 安全审查拦截, 请求ID=%s, 原因: %s", vertex.RequestIDFromContext(ctx), ve.Status)
@@ -314,6 +413,15 @@ func (c *ChatHandler) oaiAggregateStream(ctx context.Context, w http.ResponseWri
 	}
 	transform.EnsureFunctionCallIDs(resp)
 	oai := c.respConv.ToOAI(resp, model)
+	if metric := requestMetricFromContext(ctx); metric != nil {
+		_, metric.completionTokens, metric.totalTokens = extractUsage(oai)
+		if metric.completionTokens == 0 {
+			metric.completionTokens = vertex.EstimateTextTokensPublic(firstChoiceContent(oai))
+		}
+		if metric.totalTokens == 0 {
+			metric.totalTokens = metric.promptTokens + metric.completionTokens
+		}
+	}
 	contentText := firstChoiceContent(oai)
 	toolCalls := firstChoiceToolCalls(oai)
 
