@@ -78,6 +78,32 @@ func TestLoadInitializesMissingConfigFromExample(t *testing.T) {
 	}
 }
 
+func TestLoadMigratesRecaptchaEntryOrDirectToDisabled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	t.Setenv("VPROXY_CONFIG", path)
+	t.Cleanup(InvalidateCache)
+	if err := os.WriteFile(path, []byte(`{"recaptcha_try_entry_or_direct":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateCache()
+	cfg := Load()
+	if cfg.RecaptchaTryEntryOrDirect {
+		t.Fatal("旧配置的 recaptcha_try_entry_or_direct 应自动关闭")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw["recaptcha_try_entry_or_direct"] != false {
+		t.Fatalf("旧配置应回写为 false，got %v", raw["recaptcha_try_entry_or_direct"])
+	}
+}
+
 // TestWriteModelsRoundTrip 验证 WriteModels：写盘 + 热重载，BaseModels/AliasMap 立即读到新值。
 func TestWriteModelsRoundTrip(t *testing.T) {
 	dir := t.TempDir()

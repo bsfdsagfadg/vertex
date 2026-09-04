@@ -28,10 +28,14 @@ func (s staticConfig) SafetySettings() map[string]string { return s.c.SafetySett
 func (s staticConfig) ParallelPoolEnabled() bool         { return s.c.ParallelPoolEnabled }
 func (s staticConfig) StickyNodePriority() bool          { return s.c.StickyNodePriority }
 func (s staticConfig) ParallelPoolRetryEnabled() bool    { return s.c.ParallelPoolRetryEnabled }
-func (s staticConfig) ParallelPoolSize() int             { return s.c.ParallelPoolSize }
-func (s staticConfig) ParallelPoolDelayDynamic() bool    { return s.c.ParallelPoolDelayDynamic }
-func (s staticConfig) ParallelPoolDelayMs() int          { return s.c.ParallelPoolDelayMs }
-func (s staticConfig) EntryProxyProbeEnabled() bool      { return s.c.EntryProxyProbeEnabled }
+func (s staticConfig) ParallelPoolSlidingWindowEnabled() bool {
+	return s.c.ParallelPoolSlidingWindowEnabled
+}
+func (s staticConfig) ParallelPoolSize() int           { return s.c.ParallelPoolSize }
+func (s staticConfig) ParallelPoolDelayDynamic() bool  { return s.c.ParallelPoolDelayDynamic }
+func (s staticConfig) ParallelPoolDelayMs() int        { return s.c.ParallelPoolDelayMs }
+func (s staticConfig) RecaptchaTryEntryOrDirect() bool { return s.c.RecaptchaTryEntryOrDirect }
+func (s staticConfig) EntryProxyProbeEnabled() bool    { return s.c.EntryProxyProbeEnabled }
 func (s staticConfig) EntryProxyProbeIntervalSeconds() int {
 	return s.c.EntryProxyProbeIntervalSeconds
 }

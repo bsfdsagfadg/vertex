@@ -2,6 +2,9 @@ const SETTINGS_FIELDS = [
   // 🚀 Group: pool (并发与 Token 池管理)
   { k: 'parallel_pool_enabled', label: '并发请求池', type: 'bool', group: 'pool', desc: '同时请求多个健康节点，首包到达即采纳，降低延迟' },
   { k: 'parallel_pool_retry_enabled', label: '单节点重试', type: 'bool', group: 'pool', desc: '开启：重试全部由节点内部完成（429/认证/5xx 原地重打），竞速层不换节点；关闭：每轮节点只打一次，全部失败后换一批新节点重试（总轮数 = 重试次数 + 1）' },
+  { k: 'parallel_pool_sliding_window_enabled', label: '滑动窗口并发重试', type: 'bool', group: 'pool', desc: '失败节点立即补位并发重试；开启后请求量更高，请结合节点质量谨慎使用。' },
+  { k: 'parallel_pool_delay_dynamic', label: '动态并发延迟', type: 'bool', group: 'pool', desc: '根据节点平均响应时间动态调整并发启动间隔。' },
+  { k: 'recaptcha_try_entry_or_direct', label: '优先前置/直连抓取 reCAPTCHA Token', type: 'bool', group: 'pool', desc: '开启后可能因 Token 与请求出口 IP 不一致触发 429 风控限制，谨慎使用；默认关闭。' },
   { k: 'sticky_node_priority', label: '粘性节点优先轮询', type: 'bool', group: 'pool', desc: '启用后优先从粘性池中逐个尝试成功节点，失败即换下一个。粘性池本身始终在工作，此开关只影响优先级的分配。' },
   { k: 'parallel_pool_size', label: '并发数', type: 'number', max: 20, min: 1, group: 'pool', desc: '每轮并发抢跑的节点数 (默认 15，最大 20)' },
   { k: 'race_timeout', label: '单节点竞速超时 (秒)', type: 'number', max: 1800, min: 0, group: 'pool', desc: '单个节点在该时间内未返回首包即单独淘汰，避免卡死节点拖住整轮竞速 (0 = 不限制)' },
@@ -18,7 +21,7 @@ const SETTINGS_FIELDS = [
   { k: 'request_timeout', label: '请求超时', type: 'number', max: 1800, min: 1, group: 'core', desc: '单次请求的最大连接时间 (默认 180 秒，最大 1800 秒)' },
   { k: 'aggregate_stream', label: '聚合流式', type: 'bool', group: 'core', desc: '拦截流式请求，改为一次性返回完整结果的单块流（解决部分客户端单字流式卡顿问题）' },
   { k: 'fake_stream_enabled', label: '假流式总开关', type: 'bool', group: 'core', desc: '控制所有模型的 fake-/假流式- 变体；可在模型页自定义。' },
-  { k: 'model_turn_guard_enabled', label: '模型尾部修复', type: 'bool', group: 'core', desc: '对 gemini-3.6-flash / gemini-3.5-flash-lite 等新模型，自动在消息末尾追加空用户消息，修复“末尾不能是 model”校验报错。可在模型页自定义。' },
+  { k: 'model_turn_guard_enabled', label: '模型尾部修复', type: 'bool', group: 'core', desc: '对 gemini-3.6/3.7/3.8-flash 与 gemini-3.5-flash-lite 等新模型，自动在消息末尾追加空用户消息，修复“末尾不能是 model”校验报错。可在模型页自定义。' },
   { k: 'debug_mode', label: 'Debug 日志', type: 'bool', group: 'core', desc: '开启更详细的错误与负载调试日志' },
   { k: 'default_image_size', label: '默认图片清晰度', type: 'select', group: 'core', opts: ['512', '1K', '2K', '4K'], desc: '图模型未指定清晰度时的默认档位；不支持的档位会按模型能力回退。' },
   { k: 'default_response_modalities', label: '默认图片输出模态', type: 'select', group: 'core', opts: ['图文', '仅图片'], desc: '图模型未指定输出模态时，默认返回图文或仅图片。' },

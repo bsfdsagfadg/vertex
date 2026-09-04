@@ -12,6 +12,7 @@
   "parallel_pool_delay_dynamic": false,
   "parallel_pool_delay_ms": 2500,
   "parallel_pool_enabled": true,
+  "parallel_pool_sliding_window_enabled": false,
   "entry_proxy_probe_enabled": false,
   "entry_proxy_probe_interval_seconds": 300,
   "entry_proxy_probe_cooldown_seconds": 60,
@@ -19,5 +20,6 @@
   "entry_proxy_probe_auto_disable_failures": 10,
   "sticky_node_priority": false,
   "parallel_pool_size": 15,
+  "recaptcha_try_entry_or_direct": false,
   "telemetry_enabled": false
 }

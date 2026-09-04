@@ -124,6 +124,31 @@ func TestRunRaceUsesConfiguredHedgeDelay(t *testing.T) {
 	}
 }
 
+func TestRunRaceSlidingWindowRefillsFailures(t *testing.T) {
+	r := raceTestNodes
+	r(t)
+	cfg := config.StaticProvider(config.AppConfig{ //nolint:exhaustruct
+		ParallelPoolEnabled:              true,
+		ParallelPoolSlidingWindowEnabled: true,
+		ParallelPoolSize:                 2,
+		ParallelNodeTopK:                 80,
+		MaxRetries:                       1,
+	})
+	var calls atomic.Int32
+	val, err := RunRace(context.Background(), cfg, func(_ context.Context, _ string) (string, error) {
+		if calls.Add(1) <= 2 {
+			return "", NewRateLimitError("quota", 0)
+		}
+		return "ok", nil
+	})
+	if err != nil || val != "ok" {
+		t.Fatalf("滑动窗口应在失败后补位并胜出，val=%q err=%v", val, err)
+	}
+	if got := calls.Load(); got < 3 || got > 4 {
+		t.Fatalf("滑动窗口调用预算异常: %d", got)
+	}
+}
+
 // TestRunRace_NoTimeoutKeepsLegacyBehavior 验证 RaceTimeout=0（默认）时行为不变：
 // 卡死节点不会提前被淘汰（保留原有等待语义，由上层 ctx 控制）。
 func TestRunRace_NoTimeoutKeepsLegacyBehavior(t *testing.T) {

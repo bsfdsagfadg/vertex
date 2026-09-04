@@ -28,9 +28,11 @@ type ConfigProvider interface {
 	ParallelPoolEnabled() bool
 	StickyNodePriority() bool
 	ParallelPoolRetryEnabled() bool
+	ParallelPoolSlidingWindowEnabled() bool
 	ParallelPoolSize() int
 	ParallelPoolDelayDynamic() bool
 	ParallelPoolDelayMs() int
+	RecaptchaTryEntryOrDirect() bool
 	EntryProxyProbeEnabled() bool
 	EntryProxyProbeIntervalSeconds() int
 	EntryProxyProbeCooldownSeconds() int
@@ -100,10 +102,14 @@ func (d dynamicConfig) SafetySettings() map[string]string {
 func (d dynamicConfig) ParallelPoolEnabled() bool      { return Load().ParallelPoolEnabled }
 func (d dynamicConfig) StickyNodePriority() bool       { return Load().StickyNodePriority }
 func (d dynamicConfig) ParallelPoolRetryEnabled() bool { return Load().ParallelPoolRetryEnabled }
-func (d dynamicConfig) ParallelPoolSize() int          { return Load().ParallelPoolSize }
-func (d dynamicConfig) ParallelPoolDelayDynamic() bool { return Load().ParallelPoolDelayDynamic }
-func (d dynamicConfig) ParallelPoolDelayMs() int       { return Load().ParallelPoolDelayMs }
-func (d dynamicConfig) EntryProxyProbeEnabled() bool   { return Load().EntryProxyProbeEnabled }
+func (d dynamicConfig) ParallelPoolSlidingWindowEnabled() bool {
+	return Load().ParallelPoolSlidingWindowEnabled
+}
+func (d dynamicConfig) ParallelPoolSize() int           { return Load().ParallelPoolSize }
+func (d dynamicConfig) ParallelPoolDelayDynamic() bool  { return Load().ParallelPoolDelayDynamic }
+func (d dynamicConfig) ParallelPoolDelayMs() int        { return Load().ParallelPoolDelayMs }
+func (d dynamicConfig) RecaptchaTryEntryOrDirect() bool { return Load().RecaptchaTryEntryOrDirect }
+func (d dynamicConfig) EntryProxyProbeEnabled() bool    { return Load().EntryProxyProbeEnabled }
 func (d dynamicConfig) EntryProxyProbeIntervalSeconds() int {
 	return Load().EntryProxyProbeIntervalSeconds
 }
