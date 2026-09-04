@@ -44,23 +44,26 @@ type AppConfig struct { //nolint:govet
 	ModelTurnGuardEnabled     bool              `json:"model_turn_guard_enabled"`
 
 	// 并发池与节点锁定配置
-	ActiveNodeURI                      string `json:"active_node_uri"`
-	ParallelPoolEnabled                bool   `json:"parallel_pool_enabled"`
-	StickyNodePriority                 bool   `json:"sticky_node_priority"`
-	ParallelPoolRetryEnabled           bool   `json:"parallel_pool_retry_enabled"`
-	ParallelPoolSlidingWindowEnabled   bool   `json:"parallel_pool_sliding_window_enabled"`
-	ParallelPoolSize                   int    `json:"parallel_pool_size"`
-	DebugPprof                         bool   `json:"debug_pprof"`
-	ParallelNodeTopK                   int    `json:"parallel_node_top_k"`
-	DebugMode                          bool   `json:"debug_mode"`
-	ParallelPoolDelayDynamic           bool   `json:"parallel_pool_delay_dynamic"`
-	ParallelPoolDelayMs                int    `json:"parallel_pool_delay_ms"`
-	RecaptchaTryEntryOrDirect          bool   `json:"recaptcha_try_entry_or_direct"`
-	EntryProxyProbeEnabled             bool   `json:"entry_proxy_probe_enabled"`
-	EntryProxyProbeIntervalSeconds     int    `json:"entry_proxy_probe_interval_seconds"`
-	EntryProxyProbeCooldownSeconds     int    `json:"entry_proxy_probe_cooldown_seconds"`
-	EntryProxyProbeAutoDisableEnabled  bool   `json:"entry_proxy_probe_auto_disable_enabled"`
-	EntryProxyProbeAutoDisableFailures int    `json:"entry_proxy_probe_auto_disable_failures"`
+	ActiveNodeURI                    string `json:"active_node_uri"`
+	ParallelPoolEnabled              bool   `json:"parallel_pool_enabled"`
+	StickyNodePriority               bool   `json:"sticky_node_priority"`
+	ParallelPoolRetryEnabled         bool   `json:"parallel_pool_retry_enabled"`
+	ParallelPoolSlidingWindowEnabled bool   `json:"parallel_pool_sliding_window_enabled"`
+	ParallelPoolSize                 int    `json:"parallel_pool_size"`
+	DebugPprof                       bool   `json:"debug_pprof"`
+	ParallelNodeTopK                 int    `json:"parallel_node_top_k"`
+	DebugMode                        bool   `json:"debug_mode"`
+	ParallelPoolDelayDynamic         bool   `json:"parallel_pool_delay_dynamic"`
+	ParallelPoolDelayMs              int    `json:"parallel_pool_delay_ms"`
+	RecaptchaTryEntryOrDirect        bool   `json:"recaptcha_try_entry_or_direct"`
+	// RecaptchaRouteMigrationV1 records that the legacy shared-token default
+	// has been migrated. It is intentionally not exposed as an admin setting.
+	RecaptchaRouteMigrationV1          bool `json:"recaptcha_route_migration_v1"`
+	EntryProxyProbeEnabled             bool `json:"entry_proxy_probe_enabled"`
+	EntryProxyProbeIntervalSeconds     int  `json:"entry_proxy_probe_interval_seconds"`
+	EntryProxyProbeCooldownSeconds     int  `json:"entry_proxy_probe_cooldown_seconds"`
+	EntryProxyProbeAutoDisableEnabled  bool `json:"entry_proxy_probe_auto_disable_enabled"`
+	EntryProxyProbeAutoDisableFailures int  `json:"entry_proxy_probe_auto_disable_failures"`
 
 	// 匿名遥测：仅发送实例 ID + 版本 + 平台，不含任何用户/网络/隐私数据。
 	// 用于了解软件的版本分布和活跃数。指针类型区分"未设置"和"显式 false"，未设置时默认开启。
@@ -99,6 +102,7 @@ func DefaultConfig() AppConfig {
 		ParallelPoolDelayDynamic:           false, // 建议默认关闭动态对冲，改为稳定的秒级接力
 		ParallelPoolDelayMs:                2500,  // 固定对冲间隔设为 2500ms（2.5秒），单节点撞墙后触发接力
 		RecaptchaTryEntryOrDirect:          false, // 默认必须由请求节点获取 token，避免 Token-IP 脱绑
+		RecaptchaRouteMigrationV1:          false,
 		EntryProxyProbeEnabled:             false, // 周期拨测默认关闭，避免后台自动产生入口代理流量
 		EntryProxyProbeIntervalSeconds:     DefaultEntryProxyProbeIntervalSeconds,
 		EntryProxyProbeCooldownSeconds:     DefaultEntryProxyProbeCooldownSeconds,
@@ -210,9 +214,13 @@ func Load() AppConfig {
 			log.Printf("[Config] 解析 config.json 失败: %v", err)
 		} else {
 			var needsSave bool
-			// 旧版本可能开启了优先前置/直连路线；迁移到请求节点绑定语义并关闭它。
-			if cfg.RecaptchaTryEntryOrDirect {
-				cfg.RecaptchaTryEntryOrDirect = false
+			// 旧版本可能开启了优先前置/直连路线；只迁移一次。
+			// 迁移标记避免后台显式重新开启后，又被下一次 Load 强制关闭。
+			if !cfg.RecaptchaRouteMigrationV1 {
+				if cfg.RecaptchaTryEntryOrDirect {
+					cfg.RecaptchaTryEntryOrDirect = false
+				}
+				cfg.RecaptchaRouteMigrationV1 = true
 				needsSave = true
 			}
 			// 自动补偿 RequestTimeout 默认值
@@ -291,6 +299,7 @@ func Load() AppConfig {
 					"parallel_pool_size":                      cfg.ParallelPoolSize,
 					"parallel_pool_sliding_window_enabled":    cfg.ParallelPoolSlidingWindowEnabled,
 					"recaptcha_try_entry_or_direct":           cfg.RecaptchaTryEntryOrDirect,
+					"recaptcha_route_migration_v1":            cfg.RecaptchaRouteMigrationV1,
 					"entry_proxy_probe_interval_seconds":      cfg.EntryProxyProbeIntervalSeconds,
 					"entry_proxy_probe_cooldown_seconds":      cfg.EntryProxyProbeCooldownSeconds,
 					"entry_proxy_probe_auto_disable_failures": cfg.EntryProxyProbeAutoDisableFailures,

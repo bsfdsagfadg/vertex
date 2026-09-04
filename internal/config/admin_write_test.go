@@ -102,6 +102,29 @@ func TestLoadMigratesRecaptchaEntryOrDirectToDisabled(t *testing.T) {
 	if raw["recaptcha_try_entry_or_direct"] != false {
 		t.Fatalf("旧配置应回写为 false，got %v", raw["recaptcha_try_entry_or_direct"])
 	}
+	if raw["recaptcha_route_migration_v1"] != true {
+		t.Fatalf("旧配置应写入迁移标记，got %v", raw["recaptcha_route_migration_v1"])
+	}
+}
+
+func TestLoadPreservesExplicitRecaptchaEnableAfterMigration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	t.Setenv("VPROXY_CONFIG", path)
+	t.Cleanup(InvalidateCache)
+	if err := os.WriteFile(path, []byte(`{"recaptcha_try_entry_or_direct":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateCache()
+	if cfg := Load(); cfg.RecaptchaTryEntryOrDirect {
+		t.Fatal("旧配置首次加载应迁移为关闭")
+	}
+	if err := WriteSettings(map[string]any{"recaptcha_try_entry_or_direct": true}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := Load(); !cfg.RecaptchaTryEntryOrDirect {
+		t.Fatal("迁移完成后后台显式开启的 recaptcha 路线不应被 Load 关闭")
+	}
 }
 
 // TestWriteModelsRoundTrip 验证 WriteModels：写盘 + 热重载，BaseModels/AliasMap 立即读到新值。

@@ -21,5 +21,6 @@
   "sticky_node_priority": false,
   "parallel_pool_size": 15,
   "recaptcha_try_entry_or_direct": false,
+  "recaptcha_route_migration_v1": true,
   "telemetry_enabled": false
 }
