@@ -24,7 +24,7 @@ function defaultModelRow(id) {
     id,
     enabled: true,
     fake_stream_enabled: true,
-    trailing_fix_enabled: id === 'gemini-3.6-flash' || id === 'gemini-3.5-flash-lite',
+    trailing_fix_enabled: id === 'gemini-3.6-flash' || id === 'gemini-3.7-flash' || id === 'gemini-3.8-flash' || id === 'gemini-3.5-flash-lite',
   };
 }
 

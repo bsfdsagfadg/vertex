@@ -50,6 +50,8 @@ var defaultModelRegistry = []ModelEntry{
 	{ID: "gemini-3.5-flash", Enabled: true, FakeStreamEnabled: true},
 	{ID: "gemini-3.5-flash-lite", Enabled: true, FakeStreamEnabled: true, TrailingFixEnabled: true},
 	{ID: "gemini-3.6-flash", Enabled: true, FakeStreamEnabled: true, TrailingFixEnabled: true},
+	{ID: "gemini-3.7-flash", Enabled: true, FakeStreamEnabled: true, TrailingFixEnabled: true},
+	{ID: "gemini-3.8-flash", Enabled: true, FakeStreamEnabled: true, TrailingFixEnabled: true},
 	{ID: "imagen-3.0-capability", Enabled: true, FakeStreamEnabled: true},
 	{ID: "imagen-4.0-generate-001", Enabled: true, FakeStreamEnabled: true},
 	{ID: "imagen-4.0-ultra-generate-001", Enabled: true, FakeStreamEnabled: true},

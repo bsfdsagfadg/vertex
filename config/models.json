@@ -15,6 +15,8 @@
     { "id": "gemini-3.5-flash", "enabled": true, "fake_stream_enabled": true, "trailing_fix_enabled": false },
     { "id": "gemini-3.5-flash-lite", "enabled": true, "fake_stream_enabled": true, "trailing_fix_enabled": true },
     { "id": "gemini-3.6-flash", "enabled": true, "fake_stream_enabled": true, "trailing_fix_enabled": true },
+    { "id": "gemini-3.7-flash", "enabled": true, "fake_stream_enabled": true, "trailing_fix_enabled": true },
+    { "id": "gemini-3.8-flash", "enabled": true, "fake_stream_enabled": true, "trailing_fix_enabled": true },
     { "id": "imagen-3.0-capability", "enabled": true, "fake_stream_enabled": true, "trailing_fix_enabled": false },
     { "id": "imagen-4.0-generate-001", "enabled": true, "fake_stream_enabled": true, "trailing_fix_enabled": false },
     { "id": "imagen-4.0-ultra-generate-001", "enabled": true, "fake_stream_enabled": true, "trailing_fix_enabled": false },

@@ -232,7 +232,7 @@ func dropUnsupportedPenaltyConfig(model string, cfg config.ConfigProvider, gener
 		realModel = cfg.ResolveModelName(model)
 	}
 	switch strings.ToLower(strings.TrimSpace(realModel)) {
-	case "gemini-3.6-flash", "gemini-3.5-flash-lite":
+	case "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite":
 		delete(generationConfig, "presencePenalty")
 		delete(generationConfig, "frequencyPenalty")
 	}
