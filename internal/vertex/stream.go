@@ -77,7 +77,7 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 	cfg := c.cfg
 	maxRetries := cfg.MaxRetries()
 	// 单节点重试关闭（并发池开启）：节点内只打 1 次，重试由竞速层换批节点完成。
-	if cfg.ParallelPoolEnabled() && !cfg.ParallelPoolRetryEnabled() {
+	if cfg.ParallelPoolEnabled() && (!cfg.ParallelPoolRetryEnabled() || cfg.ParallelPoolSlidingWindowEnabled()) {
 		maxRetries = 0
 	}
 	// 日志显示智能判断：
@@ -124,9 +124,18 @@ func (c *VertexAIClient) executeStreamingWithRetries(ctx context.Context, model 
 
 retryLoop:
 	for attempt <= maxRetries {
-		log.Printf("[Vertex] [StreamChat] 开始尝试 (Attempt %d/%d), 模型=%s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, reqID, nodes.GetNodeName(proxyURI))
+		if cfg.DebugMode() {
+			log.Printf("[Vertex] [StreamChat] 开始尝试 (Attempt %d/%d), 模型=%s, 请求ID=%s, 代理=%s", attempt+baseAttempt, attemptDenom, model, reqID, nodes.GetNodeName(proxyURI))
+		}
 		if recaptchaToken == "" {
-			tok, tokenErr := c.pool.GetTokenSharedContext(ctx)
+			var tok string
+			var tokenErr error
+			if cfg.RecaptchaTryEntryOrDirect() {
+				tok, tokenErr = c.pool.GetTokenSharedContext(ctx)
+			} else {
+				// 默认把 Token 获取绑定到当前业务请求出口，避免 Token-IP 脱绑。
+				tok, tokenErr = c.pool.GetTokenWithProxyContext(ctx, proxyURI)
+			}
 			if tokenErr != nil && ctx.Err() != nil {
 				lastError = NewContextError(ctx.Err())
 				break retryLoop
@@ -297,9 +306,11 @@ func (ir *idleTouchingReader) Read(p []byte) (int, error) {
 // emit 返回 false（客户端断开）时扫描正常停止、返回 nil（StreamChat 据 chunkCount>0 收尾，不重试）。
 // ctx 绑定 to 上游流连接：ctx 取消时 Body.Read 报错，scanStream 干净结束（返回 nil，不 panic）。
 func (c *VertexAIClient) executeStreamingAttempt(ctx context.Context, sess *transport.Session, model string, geminiPayload map[string]any, recaptchaToken string, _ bool, emit func(map[string]any) bool) error {
-	reqID := RequestIDFromContext(ctx)
-	log.Printf("[Vertex] [executeStreamingAttempt] 准备发送流式请求: 模型=%s, 请求ID=%s, 代理=%s", model, reqID, nodes.GetNodeName(sess.ProxyURI))
 	cfg := c.cfg
+	reqID := RequestIDFromContext(ctx)
+	if cfg.DebugMode() {
+		log.Printf("[Vertex] [executeStreamingAttempt] 准备发送流式请求: 模型=%s, 请求ID=%s, 代理=%s", model, reqID, nodes.GetNodeName(sess.ProxyURI))
+	}
 	newBody := buildRequestPayload(model, geminiPayload, recaptchaToken, cfg)
 	// 上游请求 payload 序列化到 spool 缓冲（大媒体自动落盘）。流式：请求体在 DoStream 发送期被读取，
 	// 缓冲存活到本函数返回（整个流消费完）后由 defer Close 删除临时文件。
@@ -689,7 +700,6 @@ func emitAndCheckFinish(chunk map[string]any, emit func(map[string]any) bool, st
 	}
 	if !emit(chunk) {
 		// 客户端断开 / 上层要求停止。
-		log.Printf("[Stream] 客户端主动断开，导致流结束")
 		return true, true
 	}
 	if done {

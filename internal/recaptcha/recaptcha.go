@@ -28,6 +28,7 @@ const (
 	recaptchaVFallback = "jdMmXeCQEkPbnFDy9T04NbgJ"
 	recaptchaVh        = "6581054572"
 	randomCharset      = "abcdefghijklmnopqrstuvwxyz0123456789"
+	versionUA          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
 )
 
 var (
@@ -64,7 +65,18 @@ func fetchVersionFromSession(ctx context.Context, sess *transport.Session) (stri
 }
 
 func enterpriseJSHeaders() transport.Header {
-	return transport.XHRHeaders("", "*/*", recaptchaBase, recaptchaBase, "cross-site")
+	// ==================== enterprise.js 原生脚本请求头 ====================
+	// 脚本由浏览器 <script src=...> 发起，不应携带 Vertex RPC/XHR 私有头。
+	return transport.Header{
+		"user-agent":      {versionUA},
+		"accept":          {"*/*"},
+		"accept-language": {"zh-CN,zh;q=0.9,en;q=0.8"},
+	}
+	// ==================== 当前版本异常 XHR 指纹（已停用） ====================
+	// 该实现会注入 x-goog-ext-353267353-jspb、x-browser-validation、
+	// x-goog-authuser 等仅属于 Vertex RPC 的私有头，可能触发 Google WAF/429。
+	// 如需审计差异，可恢复下面一行，但生产逻辑不得启用：
+	// return transport.XHRHeaders("", "*/*", recaptchaBase, recaptchaBase, "cross-site")
 }
 
 // currentVersion 返回缓存的 reCAPTCHA 版本号，未缓存则现场拉取。

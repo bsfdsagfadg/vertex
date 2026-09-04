@@ -25,6 +25,9 @@ func NewTokenPool(net *transport.NetworkClient, cfg config.ConfigProvider) *Toke
 		},
 		defaultProxy: cfg.ProxyURL,
 		routes: func() []string {
+			if !cfg.RecaptchaTryEntryOrDirect() {
+				return nil
+			}
 			return sharedTokenRoutes(cfg)
 		},
 	}
