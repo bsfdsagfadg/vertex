@@ -114,7 +114,9 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	log.Printf("[Server] [Health] 收到健康检查请求")
+	if s.mw.cfg.DebugMode() {
+		log.Printf("[Server] [Health] 收到健康检查请求")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":          "healthy",
 		"timestamp":       time.Now().Unix(),
@@ -125,7 +127,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleModelsOAI(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().Unix()
 	models := s.mw.cfg.ModelsWithFakeVariants()
-	log.Printf("[Server] [Models] 请求 OAI 模型列表，返回 %d 个模型", len(models))
+	if s.mw.cfg.DebugMode() {
+		log.Printf("[Server] [Models] 请求 OAI 模型列表，返回 %d 个模型", len(models))
+	}
 	data := make([]any, 0, len(models))
 	for _, m := range models {
 		data = append(data, map[string]any{

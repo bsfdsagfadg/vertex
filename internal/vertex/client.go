@@ -100,7 +100,9 @@ func (c *VertexAIClient) CompleteChatN(ctx context.Context, model string, gemini
 func (c *VertexAIClient) completeChatNWithRoute(ctx context.Context, model string, geminiPayload map[string]any, n int) ([]map[string]any, error) {
 	if n > 1 {
 		if b, err := json.Marshal(geminiPayload); err == nil && len(b) > largePayloadThreshold {
-			log.Printf("[Vertex] [CompleteChatN] 大 payload (%d bytes) 降级为串行", len(b))
+			if c.cfg.DebugMode() {
+				log.Printf("[Vertex] [CompleteChatN] 大 payload (%d bytes) 降级为串行", len(b))
+			}
 			return c.completeChatNSerialWithRoute(ctx, model, geminiPayload, n)
 		}
 	}

@@ -112,7 +112,6 @@ func LoadNodes() []Node {
 	mu.Lock()
 	defer mu.Unlock()
 	ensureLoaded()
-	log.Printf("[Nodes] 获取所有节点 (数量: %d)", len(nodeList))
 	return nodeList
 }
 
